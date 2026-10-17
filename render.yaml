@@ -1,0 +1,393 @@
+# NOT A LIVE BLUEPRINT (verified 2026-08-25).
+#
+# This file is the intended-state document for the environment; it is not
+# applied. The workspace has exactly one Blueprint instance -- projectseven
+# -- and it is not this repo. cerebrumdev-backend (srv-d9ta2pad0e5s738lllpg)
+# was created manually and its dashboard is authoritative.
+#
+# Keep it honest anyway: measured against the live service today it declared
+# 8 keys that are not set there and omitted 1 that is. A reader consulting
+# this file to learn what production runs on was wrong in nine places.
+services:
+  - type: web
+    name: cerebrumdev-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    # /ready probes real dependencies and returns a non-200 when they are
+    # broken. /health was pointed here before, but it returned 200 even while
+    # reporting "degraded" -- and Render only reads the status code, so a
+    # service with an unwritable disk looked healthy to the platform.
+    healthCheckPath: /ready
+    # The LIVE service runs 1c-2g (1 vCPU / 2 GB), read from the Render API
+    # 2026-09-16. This file said `starter` -- 0.5 vCPU / 512 MB -- which cannot
+    # host a `codewhale exec` Node child at all next to the app's own ~500 MB
+    # resident footprint. Syncing this blueprint to pick up the cap vars below
+    # would have silently DOWNGRADED production into an OOM.
+    plan: standard
+    region: oregon
+    envVars:
+      - key: ENV
+        value: production
+      - key: CEREBRUM_DEV_API_KEY
+        generateValue: true
+        sync: false
+      - key: CEREBRUM_API_URL
+        value: https://cerebrum-blocks-10ug.onrender.com
+      - key: CEREBRUM_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        value: https://cerebrum-dev.com
+      # Custom domain (2026-08-05) + the legacy onrender origin kept during
+      # transition. Live values are dashboard-managed; keep this in sync.
+      - key: CORS_ALLOW_ORIGINS
+        value: https://cerebrum-dev.com,https://www.cerebrum-dev.com,https://cerebrumdev-frontend-kkz2.onrender.com
+      - key: PLATFORM_CHAT_FLOW_ENABLED
+        value: "true"
+      - key: ARCHITECT_LLM_DRAFTING_ENABLED
+        value: "true"
+      # Factory coding uses Cursor Background Agents (cli-pivot).
+      # LLM_PROVIDER=cursor is valid (Factory coding / Cursor BA).
+      # HTTP Floor chat / architect draft use CEREBRUM_CHAT_LLM_* —
+      # Cursor has no public /v1/chat/completions.
+      #
+      # Cursor key names (any one arms BA; first present wins):
+      #   CURSOR_API_KEY
+      #   CURSOR_AGENT_API_KEY
+      #   FACTORY_CURSOR_API_KEY
+      # Do not declare KIMI_* / DEEPSEEK_* here — Dashboard/Blueprint
+      # sync would resurrect those keys.
+      - key: LLM_PROVIDER
+        value: cursor
+      - key: CURSOR_API_KEY
+        sync: false
+      - key: CURSOR_AGENT_API_KEY
+        sync: false
+      - key: FACTORY_CURSOR_API_KEY
+        sync: false
+      - key: CEREBRUM_LLM_API_KEY
+        sync: false
+      # Floor HTTP chat (OpenAI-compatible). Dashboard-filled values are
+      # authoritative. sync: false so a blueprint sync cannot prune them.
+      # Dashboard "filled" is not evidence the process received the key —
+      # GET /ready details.llm cerebrum_chat_llm_api_key_present is.
+      # LLM_PROVIDER=cursor still reads these — never api.cursor.com.
+      - key: CEREBRUM_CHAT_LLM_API_KEY
+        sync: false
+      - key: CEREBRUM_CHAT_LLM_BASE_URL
+        sync: false
+      - key: CEREBRUM_CHAT_LLM_MODEL
+        sync: false
+      # Cross-provider HTTP fallback / Floor chat leg
+      # (llm_config.get_factory_fallback_leg). Setting the key is the
+      # explicit act that arms it. sync: false declares the variable
+      # without committing the secret, which also means a blueprint
+      # sync cannot prune a dashboard-set value.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      # Declared rather than defaulted, so the leg's provider is greppable here
+      # instead of only in the code default.
+      - key: FACTORY_LLM_FALLBACK_PROVIDER
+        value: openrouter
+      # The :free suffix is load-bearing. minimax/minimax-m3 without it is a
+      # paid model at $0.30/$1.20 per Mtok; the leg refuses to arm on a paid
+      # slug unless FACTORY_LLM_FALLBACK_ALLOW_PAID is set. Pinning the slug
+      # here means a change to the code default cannot quietly move
+      # production onto a billable model.
+      #
+      # Was z-ai/glm-5.2:free until measured on 2026-08-27: four calls each,
+      # same key -- GLM answered 1 of 4 (upstream_provider_shared_pool 429),
+      # minimax-m3 answered 3 of 4. A leg that fails three times in four is a
+      # second way for the request to die, not a fallback. minimax-m3:free is
+      # also 1M context against GLM free's 256K.
+      - key: FACTORY_LLM_FALLBACK_MODEL
+        value: minimax/minimax-m3:free
+      - key: MARKER_ENABLED
+        value: "false"
+      - key: CHROMA_PERSIST_DIR
+        value: /app/storage/chroma
+      - key: STORAGE_PATH
+        value: /app/storage
+      # In-process nightly backup (core/backup_scheduler.py) — see the note
+      # below on why this is not a cron job.
+      - key: BACKUP_SCHEDULE_ENABLED
+        value: "1"
+      - key: BACKUP_UTC_HOUR
+        value: "3"
+      - key: BACKUP_KEEP
+        value: "14"
+      # Accounts engine. Left UNWIRED in this file on purpose (do not sync
+      # this Blueprint). The live dashboard value is the source of truth.
+      #
+      # Setting this switches accounts_store from SQLite to Postgres, and the
+      # switch copies nothing -- pointing a live service at an empty database
+      # silently loses every account. Do the cutover deliberately:
+      #   1. sync the blueprint so cerebrumdev-accounts (below) is provisioned
+      #   2. python -m scripts.migrate_accounts_to_postgres --verify
+      #   3. only then paste the connection string here
+      # Once set on the live web service, ACCOUNTS_DATABASE_URL MUST STAY SET.
+      # Unsetting it falls back to /app/storage/accounts.db while login reads
+      # the (now empty-ish) Postgres — that is how the owner account
+      # (acct_c38ae401…) became invisible. cerebrum-builds is not the
+      # accounts store. Restore leftover SQLite rows with master-key
+      # POST /v1/ops/accounts-restore?force=true (merge; never wipe).
+      - key: ACCOUNTS_DATABASE_URL
+        sync: false
+      # Encryption at rest for Drive OAuth refresh tokens and stored documents.
+      # file_crypto is a pass-through while this is unset, which is why those
+      # tokens are currently plaintext on the disk despite docstrings saying
+      # otherwise. generateValue creates it once and keeps it stable.
+      - key: DATA_ENCRYPTION_KEY
+        generateValue: true
+        sync: false
+      # Launch order (do not flip these in the dashboard until the earlier
+      # steps are live): (1) mail provider + Stripe checkout, (2) Floor
+      # entitlement gate on session generate/chat (H2), (3) then
+      # ACCOUNTS_REQUIRE_VERIFIED_EMAIL=1 and BILLING_ENFORCEMENT=true.
+      # Flipping the flags while checkout is 503 gives users a 402 with no
+      # self-serve remedy.
+      # Flip to "1" once a mail provider above is actually configured. Turning
+      # it on without working mail locks every new account out, because nobody
+      # can complete verification.
+      - key: ACCOUNTS_REQUIRE_VERIFIED_EMAIL
+        value: "0"
+      # Never set this in a shared environment. It returns live verification
+      # and password-reset tokens in HTTP responses, which is an account
+      # takeover for anyone who knows a user's email address.
+      - key: ACCOUNTS_EXPOSE_DEV_TOKENS
+        value: "0"
+      - key: PYTHONIOENCODING
+        value: utf-8
+      # Observability: paste the Sentry project DSN (python/fastapi) here.
+      # Inert when unset. Release is tagged from RENDER_GIT_COMMIT.
+      - key: SENTRY_DSN
+        sync: false
+      # Production smoke gate. Unset → POST /v1/auth/smoke-login 404s.
+      # Public email verification is unchanged. Paste a long random token
+      # in the dashboard; the smoke script reads SMOKE_GATE_TOKEN from env.
+      - key: SMOKE_GATE_TOKEN
+        sync: false
+      # Render Key Value (Redis-compatible). Provisions automatically below.
+      # Shared auth rate limits, Drive OAuth pending states, session fan-out.
+      - key: REDIS_URL
+        fromService:
+          name: cerebrumdev-redis
+          type: keyvalue
+          property: connectionString
+      # Stripe billing secrets. Set these in the dashboard; checkout/portal/webhook
+      # return 503 stripe_not_configured until all three are present.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PRICE_ID
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      # Email provider: Resend API is the easiest reliable path. Set either
+      # RESEND_API_KEY (recommended) or SMTP_HOST + SMTP_USER + SMTP_PASS.
+      # Without any provider, register/forgot-password surface dev tokens in UI.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        value: "no-reply@cerebrum.dev"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      # Engine checkout for platform packaging.
+      #
+      # GITHUB_TOKEN has NO REACHABLE CONSUMER today; leave it unset and do not
+      # read its absence as a missing production secret. All three call sites
+      # are inert for unrelated reasons:
+      #   - deployer.py returns at the DEPLOY_REPO_URL check (line 150) before
+      #     the token branch (line 160), and DEPLOY_REPO_URL is not set;
+      #   - engine_discovery._authenticated_repo_url only injects it for
+      #     PRIVATE GitHub URLs, and Cerebrum-Blocks is public (an anonymous
+      #     git-upload-pack probe returns 200);
+      #   - factory/build/store_write.py never pushes and never contacts the
+      #     network -- "Authorization is a committed file, not an env var."
+      # It becomes required only if CEREBRUM_BLOCKS_REPO is made private.
+      - key: CEREBRUM_BLOCKS_REPO
+        value: "https://github.com/bopoadz-del/Cerebrum-Blocks.git"
+      - key: GITHUB_TOKEN
+        sync: false
+      # Flip to true only AFTER mail + Stripe checkout are live AND the Floor
+      # generate/chat path is behind require_entitled. With Stripe
+      # unconfigured, an account that is not entitled gets 402 and the only
+      # self-serve remedy returns 503. scripts/ops_set_subscription.py is the
+      # recovery seam; there is no other one. Do not treat this file as a
+      # live Blueprint — the dashboard is source of truth.
+      - key: BILLING_ENFORCEMENT
+        value: "false"
+      # Per-HTTP hang abort for the factory coder. Live leftover is 160
+      # (Floor copy "timed out after 510s" = 160 × 3 + 30). 120 / 150
+      # are the same leftover. Code remaps 60–180 to 1200s so a dashboard
+      # pin cannot keep killing WRITER HTTP posts. 20 min is a hung-socket
+      # abort, not the 2-hour C-BRIEF coding budget.
+      # C-BRIEF CLI wait / Floor model-call deadline tracks
+      # FACTORY_CODER_TIMEOUT_S when that is a long coding wall
+      # (7200 → ~7230 with grace), else FACTORY_CODER_BUDGET_S / the
+      # 7200s coding ceiling. Do not pin TIMEOUT_S=1800 for the CLI —
+      # that froze sess_2fba31ab at 1785s (STAGE_1-15) while inspect
+      # still advertised a longer watchdog. Dashboard source of truth:
+      # set FACTORY_CODER_TIMEOUT_S=7200 for the C-BRIEF CLI wall, or
+      # keep 1200 here as HTTP hang and rely on BUDGET_S=7200 + the
+      # coding ceiling. Never set TIMEOUT_S=7200 if you want HTTP posts to
+      # abort a hung socket in 20 min — CLI dispatch is a separate wall.
+      # Required if the remap is ever removed: FACTORY_CODER_TIMEOUT_S=1200
+      # and FACTORY_CODER_ATTEMPT_WALL_S=2400 (never 160).
+      - key: FACTORY_CODER_TIMEOUT_S
+        value: "1200"
+      # One calling-NOTE wall (one generation + one alternate retry).
+      - key: FACTORY_CODER_ATTEMPT_WALL_S
+        value: "2400"
+      # How many per-capability coder shots the WRITER may have in flight.
+      # 1 is serial and is the default in code; the value only matters on the
+      # per-capability path (FACTORY_BRIEF_DISPATCH=0), since C-BRIEF answers
+      # for every capability in one dispatch. Raising it does not change what
+      # is emitted — writer_fanout keeps the bytes and the ledger identical at
+      # any fan-out — it changes how many requests land on the provider at
+      # once, and a 429 on a paid leg is deliberately not retried. Ceiling 8.
+      - key: FACTORY_CODER_FANOUT
+        value: "1"
+      # Template-generator loop across all GENERATE caps. Leftover 300
+      # stubbed remaining capabilities (pilot_ready false). Remapped in
+      # code; required override if remap is removed: 7200 (or 0 to disable).
+      # Also honoured as the C-BRIEF CLI / Floor watchdog when ≥1800
+      # (7200 + 30s grace = 7230).
+      - key: FACTORY_CODER_BUDGET_S
+        value: "7200"
+      # Owner-gated leftover FACTORY_CODE_CLI. This blueprint is not
+      # applied; the dashboard is source of truth. Factory coding uses
+      # Cursor BA when any Cursor key above is set (cli-pivot). Do not
+      # re-add KIMI_* / DEEPSEEK_* keys here.
+      # A keyed Floor without the selected executable still fail-closes
+      # FACTORY_CODE_CLI_UNAVAILABLE (no HTTP oneshot takeover).
+      # Do not set ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY process-wide —
+      # Floor chat stays on OpenRouter. Secrets are not in git.
+      - key: FACTORY_CODE_CLI
+        sync: false
+      - key: FACTORY_CODE_PROVIDER
+        sync: false
+      # WORKER CONCURRENCY -- two independent limits, both honoured by
+      # app/factory/build/codewhale_worker.py.
+      #
+      #   FACTORY_WORKER_PROFILE        THE SINGLE UPGRADE KNOB. A Render plan
+      #                                 slug from WORKER_PROFILES. Changing it
+      #                                 (plus resizing the instance) is the
+      #                                 WHOLE upgrade: 3 slots -> 50-tenant
+      #                                 capacity with no code edit.
+      #   FACTORY_CODEWHALE_WORKER_CAP  PROCESS cap: total jobs in flight on
+      #                                 this instance, across all tenants.
+      #                                 Host protection.
+      #   FACTORY_CODEWHALE_TENANT_CAP  PER-TENANT cap: jobs in flight for ONE
+      #                                 bound account. Fairness -- one tenant
+      #                                 cannot take the box.
+      #
+      # Only the PROFILE is declared below, deliberately. The two cap vars
+      # OVERRIDE the profile, so declaring them here as well would make the
+      # profile inert and let the two drift apart -- a reader would see
+      # `1c-2g` next to caps that no longer match it, and an operator who
+      # upgraded by changing only the profile would watch nothing happen.
+      # That silent no-op is the same class of bug this change removes. They
+      # stay UNSET so the profile governs; set one in the dashboard only to
+      # deviate from the table deliberately (e.g. after MEASURING PER_JOB_MB).
+      #
+      # WHY 3 on this box: 2048 MB RAM - 500 MB (uvicorn + FastAPI + chromadb
+      # + the app import graph, resident) - 150 MB (Render overhead, page
+      # cache, per-build Python objects) = 1398 MB; 1398 / 400 MB per
+      # `codewhale exec` Node child = 3. The CPU bound is MEASURED: 2 user
+      # builds per vCPU + the smoke's reserved slot (1 vCPU -> 3; live
+      # 2026-10-08, three jobs held one vCPU at 85-99 %). Caps are derived by
+      # codewhale_worker.derive_profile_caps -- never typed.
+      #
+      # Upgrade table (plan -> process / per-tenant):
+      #   1c-2g 3/1 (live) | 2c-4g 5/1 | 4c-8g 9/1 | 4c-16g 9/1 | 8c-32g 17/1
+      #
+      # NOTE ON THIS FILE: it is not applied (see the header), so declaring the
+      # keys here is DOCUMENTATION -- it makes the intended operating caps
+      # greppable and stops a future sync from pruning them. The REMEDIATION is
+      # the CODE DEFAULT (DEFAULT_PROCESS_CAP=3 / DEFAULT_TENANT_CAP=1), which
+      # production receives on the next deploy with zero dashboard action.
+      - key: FACTORY_WORKER_PROFILE
+        value: "1c-2g"
+    disk:
+      name: cerebrumdev-storage
+      mountPath: /app/storage
+      sizeGB: 1
+
+  # Nightly backups run INSIDE the web service (core/backup_scheduler.py),
+  # not as a Render cron job. A cron job here would be a lie twice over:
+  # Render cron jobs cannot mount persistent disks, and a disk is readable by
+  # exactly one service -- so no other service can ever see /app/storage.
+  # The web service is the only process that can take the snapshot, and it
+  # runs continuously on a paid plan. Knobs: BACKUP_SCHEDULE_ENABLED,
+  # BACKUP_UTC_HOUR (03 UTC default), BACKUP_KEEP (14 default) on the web
+  # service above; the last run's report is at /ready under details.last_backup.
+  #
+  # What an on-disk snapshot buys: protection against logical loss (accidental
+  # delete, bad migration, the arbitrary-rmtree class of bug). It does NOT
+  # protect against losing the disk, because the copy is on it. For disk-loss
+  # protection, move accounts to managed Postgres (below) and rely on its
+  # point-in-time recovery.
+
+  - type: keyvalue
+    name: cerebrumdev-redis
+    region: oregon
+    plan: starter
+    ipAllowList: []
+
+  # Header-capable static web service. The live dashboard service
+  # srv-d9ta36v40ujc73dsmhkg is still a static_site: Render static ignores
+  # frontend/public/_headers (Netlify/Pages) and this file is not a live
+  # Blueprint, so the old `headers:` block never reached the wire. `node
+  # serve.mjs` stamps the five smoke headers on every response. One-time
+  # cutover (not Custom Headers): New Web Service, Node, same repo / rootDir
+  # / buildCommand, startCommand `node serve.mjs`, then move the custom
+  # domains. After that, auto-deploy applies the serving path.
+  - type: web
+    name: cerebrumdev-frontend
+    runtime: node
+    env: node
+    plan: starter
+    region: oregon
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: node serve.mjs
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: VITE_API_URL
+        value: https://api.cerebrum-dev.com
+      # Do not bake CEREBRUM_DEV_API_KEY into the static bundle.
+      # The SPA authenticates with cdt_ login tokens, not VITE_API_KEY.
+      # Observability: paste the Sentry project DSN (javascript-react) here.
+      # The frontend loads Sentry lazily only when this is set at build time.
+      - key: VITE_SENTRY_DSN
+        sync: false
+
+# Managed Postgres for the accounts database.
+#
+# Without this, accounts_store falls back to SQLite at
+# $STORAGE_PATH/accounts.db -- a single file on one disk holding every account,
+# password hash, API key and the trial-quota ledger, with no point-in-time
+# recovery and a single-writer lock that turns concurrent public signups into
+# "database is locked" 500s.
+#
+# Declaring it here does not provision anything until the blueprint is synced.
+# Once synced, ACCOUNTS_DATABASE_URL is wired automatically below and
+# accounts_store switches engines on its own; alembic runs against it at boot.
+# MIGRATE THE EXISTING SQLITE DATA BEFORE CUTTING OVER -- the switch does not
+# copy anything, and an empty Postgres means every existing account is gone.
+databases:
+  - name: cerebrumdev-accounts
+    databaseName: cerebrumdev
+    user: cerebrumdev
+    plan: basic-256mb
+    region: oregon
+    ipAllowList: []

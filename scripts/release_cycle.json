@@ -1,0 +1,37 @@
+{
+  "_doc": "The release cycle's builds. Data, not code: scripts/release_cycle.py knows none of them. ANCHORS are the regression pair -- they have certified exports, so a flip there is a regression; each is one brief a customer could type, built on its own verified account BESIDE smoke A. ROTATION adds the pool index's `picks_per_cycle` blueprints per cycle: slot 1 repeats the previous cycle's failing pick, the rest are the next blueprints never built (the index's declared order); a certified blueprint is never re-run (scripts/release_cycle.py rotation_state). `rotation.seed` is the record from before the readable reports: cycles 1-2 (runs 37732081706, 37755589836) tried fintech and hotel operations; hotel operations certified both times, fintech never. `rotation.seed.void` lists cycles a Factory defect voided (full commit + reason): their picks count as neither tried nor failing. `user_build_slots` is how many user builds the live box runs at once (FACTORY_CODEWHALE_WORKER_CAP 3 on 1 vCPU / 2 GB, one slot reserved for the smoke): more builds than that QUEUE, so each repro is given one build ceiling per wave.",
+  "build_level": "production",
+  "user_build_slots": 2,
+  "anchors": [
+    {
+      "name": "coop",
+      "brief": "Build me a platform for a community bicycle repair co-op: log repair tickets with the bike and the fault, keep a parts inventory with reorder levels, schedule volunteer mechanic shifts, and track member dues."
+    },
+    {
+      "name": "vineyard",
+      "brief": "Build me a vineyard management platform for a family winery: track fermentation tanks, barrel inventory across two cellars, harvest scheduling by sugar readings, and club member shipments."
+    }
+  ],
+  "rotation": {
+    "pool": "backend/tests/repro_pool/pool.json",
+    "seed": {
+      "tried": [
+        "repro_fintech_payments_ledger",
+        "repro_hotel_operations"
+      ],
+      "certified": [
+        "repro_hotel_operations"
+      ],
+      "void": [
+        {
+          "commit": "5410237b7cc04ef994b13723a4626ecb97366ff7",
+          "reason": "Cycle 3 (run 37806645155) failed on a Factory defect, not on its builds: the build refresh skipped absent Factory-owned files, so ci.yml never rendered (fixed in #713). Its picks were never judged and re-enter the rotation."
+        },
+        {
+          "commit": "75a5a1ef82d459be81283679723d9e6f8cd2e0e4",
+          "reason": "Cycle 6 (run 37972176731) failed on a Factory defect, not on its builds: at 18:57:52Z the server obeyed an exit signal sent from inside the container while WRITERs ran, and every in-flight writer was orphaned mid-rework (service-events ops run 37985812586; fixed by the exit-signal guard). Its picks were never judged and re-enter the rotation."
+        }
+      ]
+    }
+  }
+}

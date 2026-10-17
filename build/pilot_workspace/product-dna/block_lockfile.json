@@ -1,0 +1,15 @@
+{
+  "blocks_commit": "unknown",
+  "factory_commit": "unknown",
+  "pins": [
+    {
+      "block_id": "analytics",
+      "source": "dual_registry"
+    },
+    {
+      "block_id": "dashboard",
+      "source": "dual_registry"
+    }
+  ],
+  "schema_version": "1.0.0"
+}

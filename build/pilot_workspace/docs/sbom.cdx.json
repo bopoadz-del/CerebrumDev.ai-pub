@@ -1,0 +1,92 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "pkg:docker/library/python@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a"
+        }
+      ],
+      "name": "python",
+      "purl": "pkg:docker/library/python@3.12-slim?digest=sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "type": "container",
+      "version": "3.12-slim"
+    },
+    {
+      "bom-ref": "pkg:pypi/fastapi",
+      "name": "fastapi",
+      "purl": "pkg:pypi/fastapi",
+      "type": "library",
+      "version": ">=0.110"
+    },
+    {
+      "bom-ref": "pkg:pypi/uvicorn",
+      "name": "uvicorn",
+      "purl": "pkg:pypi/uvicorn",
+      "type": "library",
+      "version": ">=0.29"
+    },
+    {
+      "bom-ref": "pkg:pypi/pydantic",
+      "name": "pydantic",
+      "purl": "pkg:pypi/pydantic",
+      "type": "library",
+      "version": ">=2.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/alembic",
+      "name": "alembic",
+      "purl": "pkg:pypi/alembic",
+      "type": "library",
+      "version": ">=1.13"
+    },
+    {
+      "bom-ref": "pkg:pypi/sqlalchemy",
+      "name": "sqlalchemy",
+      "purl": "pkg:pypi/sqlalchemy",
+      "type": "library",
+      "version": ">=2.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/starlette",
+      "name": "starlette",
+      "purl": "pkg:pypi/starlette",
+      "type": "library",
+      "version": ">=0.37"
+    },
+    {
+      "bom-ref": "pkg:generic/cerebrum-block/analytics",
+      "name": "analytics",
+      "purl": "pkg:generic/cerebrum-block/analytics",
+      "type": "library",
+      "version": "vendored"
+    },
+    {
+      "bom-ref": "pkg:generic/cerebrum-block/dashboard",
+      "name": "dashboard",
+      "purl": "pkg:generic/cerebrum-block/dashboard",
+      "type": "library",
+      "version": "vendored"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "product:runner-smoke",
+      "name": "Role Runner Smoke Product",
+      "type": "application",
+      "version": "factory-emitted"
+    },
+    "tools": [
+      {
+        "name": "app.factory.build.supply_chain",
+        "vendor": "CerebrumDev.ai",
+        "version": "S2"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:b9c529a4-9e34-50de-a8c3-b25a448ece20",
+  "specVersion": "1.5",
+  "version": 1
+}

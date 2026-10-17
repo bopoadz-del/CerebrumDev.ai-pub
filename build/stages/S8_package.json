@@ -1,0 +1,25 @@
+{
+  "stage": "S8",
+  "name": "PACKAGE",
+  "evaluated_at": "2026-08-23T07:54:00Z",
+  "verdict": "PASS",
+  "pass_criteria": {
+    "immutable_identified_artifact": true,
+    "residue_named_and_excluded": true,
+    "digest_pinned_base": true,
+    "two_builds_same_digest": true
+  },
+  "implementation": {
+    "module": "backend/app/factory/build/package.py",
+    "stamp": "RoleRunner._finish writes docs/package_identity.json on SUCCESS",
+    "algorithm": "sha256 over path+bytes, excluding residue and the identity file",
+    "residue": ["build_ledger.jsonl", "__pycache__", ".pytest_cache", ".factory-staging", ".pyc"],
+    "base_image": "python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a"
+  },
+  "evidence": {
+    "test": "backend/tests/factory/test_package_identity.py",
+    "probe_digest": "8b47c871b76f450fe00dda7e9645d38c23a6ed17f2ee9d9800f3e193dca9d8a2 (pre-identity payload; two trees matched)"
+  },
+  "not_claimed": ["PILOT_READY", "S9–S13", "byte-identity of coder-keyed builds"],
+  "lotdesk": "fixture only; not patched"
+}

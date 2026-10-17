@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocks_commit": {
+      "type": "string"
+    },
+    "factory_commit": {
+      "type": "string"
+    },
+    "pins": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "pins"
+  ],
+  "title": "block_lockfile",
+  "type": "object"
+}

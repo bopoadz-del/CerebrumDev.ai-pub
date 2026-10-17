@@ -1,0 +1,45 @@
+{
+  "stage": "S3",
+  "name": "domain_pack",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S3_domain_pack.json",
+  "reread_at": "2026-08-25T12:55:13Z",
+  "independent": true,
+  "reader": "cloud-agent-s3-domain-pack",
+  "emitter": "app.factory.build.domain_pack.evaluate_domain_pack",
+  "git_sha": "1779089fd8095b4dfc286a934385a2eeb56b713d",
+  "disagreements": [],
+  "checked": [
+    "DOMAIN_PACK_FIELDS has 15 names in delivery_standard.py",
+    "dealership pack emits all 15 fields with kernel bindings",
+    "dropping a field fails assert_pack",
+    "LotDesk-class empty pack is rejected; fixture not patched",
+    "_coder_route_body still returns None"
+  ],
+  "fields": [
+    "domain_purpose",
+    "primary_users",
+    "required_roles",
+    "required_product_modules",
+    "core_business_workflows",
+    "authoritative_calculations",
+    "domain_rules",
+    "high_impact_actions",
+    "prohibited_autonomous_actions",
+    "data_sources",
+    "required_connectors",
+    "required_exports",
+    "security_regulatory_rules",
+    "demo_data_requirements",
+    "domain_acceptance_conditions"
+  ],
+  "not_claimed": [
+    "PILOT_READY",
+    "S4 U4 _ensure_route_persists_payload removal",
+    "S5 U7 FACTORY_SUITE_MARKER_EXPR",
+    "generate-from-pack wiring",
+    "VIN check-digit math",
+    "live NHTSA connector"
+  ],
+  "PILOT_READY": false
+}

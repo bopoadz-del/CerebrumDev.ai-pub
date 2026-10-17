@@ -1,0 +1,4 @@
+# Needed by scripts/release_gate.py and tests/.
+#   pip install -r requirements-dev.txt
+pytest>=8
+httpx>=0.27

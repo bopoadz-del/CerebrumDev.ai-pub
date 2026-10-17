@@ -1,0 +1,15 @@
+{
+  "name": "REPLACE-WITH-REPO-NAME",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "REPLACE-WITH-IDEMPOTENT-DEP-INSTALL",
+  "terminals": [
+    {
+      "name": "app",
+      "command": "REPLACE-WITH-START-COMMAND",
+      "description": "Primary app process for this repo"
+    }
+  ]
+}

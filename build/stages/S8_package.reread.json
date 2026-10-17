@@ -1,0 +1,24 @@
+{
+  "stage": "S8",
+  "name": "package",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S8_package.json",
+  "reread_at": "2026-08-23T08:07:00Z",
+  "independent": true,
+  "reader": "cloud-agent-s7-continue-after-s5-s6",
+  "checked": [
+    "package.py artifact_digest hashes path+bytes and skips residue plus docs/package_identity.json",
+    "RoleRunner._finish writes identity only on Outcome.SUCCESS via WRITER lane after every role has committed",
+    "two coder-off RoleRunner builds of blueprints/examples/runner_smoke.yaml produced digest 8b47c871b76f450fe00dda7e9645d38c23a6ed17f2ee9d9800f3e193dca9d8a2",
+    "identity digest equals factory-side artifact_digest of each finished tree",
+    "generated Dockerfile FROM is PYTHON_312_SLIM_FROM (digest-pinned python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a)",
+    "WRITER lane names docs/package_identity.json; TESTER cannot write it",
+    "build_ledger.jsonl remains on disk and is named residue",
+    "LotDesk was not modified"
+  ],
+  "disagreements": [],
+  "probe": {
+    "command": "RoleRunner(runner_smoke) x2 with FACTORY_CODER_ENABLED=0",
+    "digest": "8b47c871b76f450fe00dda7e9645d38c23a6ed17f2ee9d9800f3e193dca9d8a2"
+  }
+}

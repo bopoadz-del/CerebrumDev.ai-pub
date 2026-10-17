@@ -1,0 +1,60 @@
+{
+  "stage": "S7",
+  "name": "NETWORK_POSTURE",
+  "evaluated_at": "2026-08-23T08:05:00Z",
+  "verdict": "PASS",
+  "chosen": "P1",
+  "chosen_id": "P1",
+  "catalog_note": "S1 F21 is signatures/digests. Capture network:false vs cloud defaults is S1 F22 (permissions vs behaviour). The S7 brief called that defect F21.",
+  "reason": "Delivered platforms run in-process against vendored blocks; local/scripted OCR only; no Store URL, no cloud LLM, no Ollama, no outbound HTTP at runtime.",
+  "production_requires_cloud_capture_or_chat": false,
+  "rejected": {
+    "P2": "Local inference (Ollama :11434, 'no external call', loopback only). Would rewrite the socket blocker and retract 'no network' to 'loopback LLM'. Ollama is not in the generated Dockerfile or Render blueprint. Cost: new runtime dependency, new deploy surface, blocker change.",
+    "P3": "Cloud allowlist; retract offline claim; state PII egress. Deleting the socket blocker is an S7 FAIL. Production generated products do not already require cloud capture or chat. Factory host LLM is the builder, not the product. Cost: every offline claim becomes a lie unless rewritten; PII egress is un-drilled."
+  },
+  "pass_criteria": {
+    "exactly_one_posture": true,
+    "artifacts_amended_consistently": true,
+    "socket_blocker_unchanged": true,
+    "capture_emission_offline": true,
+    "differences_declared": true,
+    "chat_block_not_invented": true,
+    "ui_schema_builder_not_pretended": true
+  },
+  "amended_artifacts": [
+    "backend/app/factory/build/network_posture.py",
+    "RoleRunner Dockerfile / README / .env.example / render.yaml / app/main.py / requirements.txt",
+    "docs/network_posture.json",
+    "docs/build_provenance.json network_posture field",
+    "tests/conftest.py (_CONFTEST) names P1; blocker still refuses non-loopback; :11434 not added",
+    "CLONER apply_p1_cloned_block replaces product vendor/blocks/capture/block.py with P1_CAPTURE_ADAPTER",
+    "factory vendor-mirror capture/block.json: llm_provider=none, cloud/ollama keys empty, model names empty, network=false"
+  ],
+  "declared_exceptions": [
+    "ProductGenerator._write_env_example still documents CEREBRUM_API_URL (template-path handlers POST to the store; S6 leftover)",
+    "ProductGenerator._write_runtime_packaging may emit estate Postgres / FastEmbed (not RoleRunner delivery)",
+    "vendor-mirror capture/block.py stays the Store shim snapshot (test_vendor_capture_not_echo); only cloned product capture is replaced",
+    "vendor-mirror capture/block.json still lists unused cloud input names; defaults are empty; P1 adapter ignores them",
+    "capture block.json digests/signature not refreshed (F21 signatures remain unverified)"
+  ],
+  "tests": {
+    "factory_suite": "349 passed",
+    "command": "cd backend && ENV=test ./venv/bin/python -m pytest tests/factory",
+    "files": [
+      "backend/tests/factory/test_network_posture.py",
+      "backend/tests/factory/test_role_runner.py::test_rework_budget_exhaustion_fails_the_run",
+      "backend/tests/factory/test_deploy_scaffold.py::test_the_env_example_offers_no_store_wiring"
+    ]
+  },
+  "not_claimed": [
+    "PILOT_READY",
+    "U7 — FACTORY_SUITE_MARKER_EXPR remains 'not pilot'",
+    "U6 STORE_MANAGER harvest",
+    "F18 _DISPATCH_RUNTIME fabrication",
+    "U11/F16 ui_schema_builder unused (Blocks not cloned)",
+    "F21 signatures/digests",
+    "Cerebrum-Blocks write"
+  ],
+  "lotdesk": "fixture only; not patched",
+  "blocks": "not written; harvest blocked (no authorized write path in this repo)"
+}

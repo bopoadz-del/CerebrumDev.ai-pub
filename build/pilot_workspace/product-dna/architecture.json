@@ -1,0 +1,26 @@
+{
+  "capabilities": [
+    {
+      "block_ids": [
+        "analytics"
+      ],
+      "capability_id": "analytics_surface",
+      "strategy": "REUSE"
+    },
+    {
+      "block_ids": [
+        "dashboard"
+      ],
+      "capability_id": "dashboard_surface",
+      "strategy": "REUSE"
+    }
+  ],
+  "connectors": [],
+  "layers": [],
+  "product_id": "runner-smoke",
+  "schema_version": "1.0.0",
+  "ui_modules": [
+    "command_center"
+  ],
+  "vertical": "product"
+}

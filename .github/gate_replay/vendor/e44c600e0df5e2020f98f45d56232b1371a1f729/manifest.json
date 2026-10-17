@@ -1,0 +1,38 @@
+{
+  "dropped": {
+    "previous_handover": "80da82e2f165f3773156e8d41f732f56c72ac043",
+    "products": "The certified product trees are not handed over in this snapshot: every bundle carried the private kit, and a scrubbed tree is not the tree that was certified, so none can stand in for one. With no handed-over tree the replay refuses to select (fail closed) until a new selection of clean certified builds is handed over."
+  },
+  "gate_files": {
+    ".github/gate_replay.json": "2ff529188969d59914c3e10e8a5579a22366ab908ee81141dd4a48dbd4290aa7",
+    ".github/store_gate/audit_evidence.py": "5a4345e2d1762e9671587bb9ba865d0b91b27959a9a4131dbf464a42ba32bb07",
+    ".github/store_gate/base_images.py": "0cf51c6516f869ef8be314fa47f8d787b80a85a0962ab95a6942ae84f3db343e",
+    ".github/store_gate/boot_crash.py": "ad0778dc5053f3885c8651cdd19bacb8e9afea83d1922ec3022dadfc63fd8af0",
+    ".github/store_gate/known_bad_fixtures.json": "ac786a311c8ae51c44d10215ffd3982a5b9d0404144f5969314c452d3072085d",
+    ".github/store_gate/replay_flips.py": "72d32742e0fa0419d02d213ca1f6aade37099a57d45cd7365dc1411d130cd4ea",
+    ".github/store_gate/replay_select.py": "ae9dfb273a020d75118101254a2e7ed1581f8b059dad6c275d35ea4a5c29a951",
+    ".github/store_gate/repo_mount.py": "b10bc69b7e30cc14d46fcef16b87db4579eaf3ed4e6744b14b62adf187e8cd2c",
+    ".github/store_gate/revocations.py": "e94323cb78aba4bc024fbe8b452c980885c69df3a024f5eab3d7dcec2b6e63b3",
+    ".github/store_gate/revoked_certifications.json": "7d8a76dbe9b9751550d1887870cc16f16be304121a9069038a0f12b6994bdcec",
+    ".github/store_gate/score_failed_build.py": "febcb474eaf1bd7d622a2af20e86b2ca61c333675d08bb82a6773c767d7f0c43",
+    ".github/store_gate/storage_mount.py": "31c5ad182baa96cc9b12411e93bf4a847db5f3511c0feabad95f49fbd0165b7a",
+    ".github/store_gate/test_audit_evidence.py": "739d27c2b18a6360c1f58ac675a2a1056caa87491433867067a3cbd55e14d870",
+    ".github/store_gate/test_base_images.py": "db7b7d5e04ad4af1b7f5713b0aff19006d88f195c00dced071c8c43894684387",
+    ".github/store_gate/test_boot_crash.py": "153bcfd45d12e0d883ab7cbc21a4fd9c247ab86ae4e39a499a45532a678cdc98",
+    ".github/store_gate/test_build_step_records_outcome.py": "31b1dc9fbc1910be9405d54b37c77056df76786d31087a0ec53f81e11dd6b1a8",
+    ".github/store_gate/test_gate_code_is_mains.py": "54c46c63c8b63ed666f50a15b27da8ce441816c8c61c7cdd8dfccd332bf37340",
+    ".github/store_gate/test_gate_replay.py": "bdc9407f52bdd1bd8e98888dc0812b9756551d6ec56a4a9de230f211669eedd1",
+    ".github/store_gate/test_image_pull_is_infra.py": "0621d6a072333e0514c32fa0c4ec435906b371839e8ec0e5d53c99051cbf5ae2",
+    ".github/store_gate/test_repo_mount.py": "3ffe20537f7c4cdace47d1d925c0d01740359e68e8fc016a7bd6b8f9195bded7",
+    ".github/store_gate/test_revocations.py": "b70b1d0889f6666579dc4a7e994d5572ad213cb5f614b28da0936e4d0d3a9c12",
+    ".github/store_gate/test_score_failed_build.py": "09c135e024af59af0ec407fb1149496c68f842ec566c81723a08b9485315a490",
+    ".github/store_gate/test_storage_mount.py": "6b051ed87ec0c7e5b5d9647537f4b3f5d44b9c4971d84d157e2ebee3ceaaddc4",
+    ".github/workflows/gate-replay.yml": "68d350c416addcc505c551a58bd87828f068dadfb94ef3130a03bb2fb181a379",
+    ".github/workflows/store-gate.yml": "4f30d9b1bc03e7224391d2158ecd59ed991f22aac03c17ebb86b74ed6f3ea582"
+  },
+  "products": {},
+  "schema": "gate_handover.v1",
+  "selection": [],
+  "source_commit": "e44c600e0df5e2020f98f45d56232b1371a1f729",
+  "source_repo": "bopoadz-del/cerebrum-builds"
+}

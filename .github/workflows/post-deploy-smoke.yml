@@ -1,0 +1,279 @@
+name: Post-deploy smoke
+
+# Market-ready gate AND the release cycle. Runs after a deploy (and on
+# demand), never on PRs. A red unit job on a PR must not be this workflow.
+#
+# The script waits for /health status=ok, /ready status=ready, and /version
+# git_sha matching the cycle's commit, then:
+#   - token/email set → full gated factory checks; fail the job on DEAD
+#   - SMOKE_GATE_TOKEN unset (and no SMOKE_EMAIL+PASSWORD) → unauthenticated
+#     health/ready/version only, PASS with a notice that gated checks skipped
+# Never invent or commit a token value.
+#
+# Runs AFTER deploy-aws, not beside it. It used to start on the same push as
+# the deploy, so it probed while the image was still building and gave up at
+# 5 minutes -- every deploy "failed" and every failure read as "AWS was slow".
+# Now: a deploy that did not succeed fails the cycle outright; otherwise it
+# waits (cap 20 min) for /version to serve the DEPLOYED commit. A red smoke
+# means the deploy failed.
+#
+# THE RELEASE CYCLE (owner's standing rules, 2026-10-08). The whole cycle is
+# these jobs -- never a local background process, so a laptop's memory can
+# never decide whether a cycle finishes:
+#
+#   resolve ──┬── live-smoke (smoke A) ──┐
+#             └── release-repros ────────┴── smoke-b (smoke B + the report)
+#
+#   resolve         the ONE commit this cycle is about: the deployed sha, the
+#                   dispatch input, or whatever /version serves now. Fails
+#                   closed unless live /version IS that commit.
+#   live-smoke      smoke A, the deploy verdict.
+#   release-repros  the repro builds, beside smoke A, one verified account
+#                   each (scripts/release_cycle.json holds the briefs).
+#   smoke-b         after smoke A AND the repros: smoke B, then the report,
+#                   which re-reads /version and fails if it moved.
+#
+# Start a cycle without a deploy: Actions → Post-deploy smoke → Run workflow
+# (leave `sha` empty for the commit live right now).
+
+on:
+  workflow_run:
+    workflows: [deploy-aws]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to cycle; empty = whatever live /version serves now. The cycle fails unless it is live."
+        required: false
+        default: ""
+
+# One cycle at a time. A cycle that is running is never cancelled; a new one
+# waits for it (GitHub keeps the newest waiting run). Two cycles on one live
+# backend would share its build slots and report each other's load.
+#
+# ONE CYCLE PER READY DEPLOY (order 1736Z; scripts/cycle_gate.py). A deploy
+# starts a cycle only when declared ready: a pushed commit whose message
+# carries [ready-for-cycle] (for a PR merge: in the PR title), or deploy-aws
+# dispatched with cycle=true (its run name carries [cycle]). A hand-dispatched
+# cycle always runs. Any other deploy (a batch merge) deploys and starts
+# nothing -- and its run takes a concurrency slot of its own, so it never
+# displaces a cycle that is waiting for the release-cycle slot. This
+# expression mirrors cycle_gate.starts_cycle; the gate job decides.
+concurrency:
+  group: >-
+    ${{ (github.event_name == 'workflow_dispatch'
+    || (github.event.workflow_run.event == 'workflow_dispatch' && contains(github.event.workflow_run.display_title, '[cycle]'))
+    || (github.event.workflow_run.event != 'workflow_dispatch' && contains(github.event.workflow_run.head_commit.message, '[ready-for-cycle]')))
+    && 'release-cycle' || format('release-cycle-not-ready-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Is this deploy declared ready for a cycle?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/cycle_gate.py
+          sparse-checkout-cone-mode: false
+      - name: One cycle per ready deploy
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEPLOY_EVENT: ${{ github.event.workflow_run.event }}
+          DEPLOY_TITLE: ${{ github.event.workflow_run.display_title }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+        run: python3 scripts/cycle_gate.py | tee -a "$GITHUB_OUTPUT"
+
+  resolve:
+    name: Resolve the live commit
+    needs: [gate]
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # Covers the wait for the deployed commit to serve (SMOKE_READY_WAIT_S).
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.live.outputs.sha }}
+    steps:
+      - name: The deploy must have succeeded
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'
+        run: |
+          echo "::error::deploy-aws ${{ github.event.workflow_run.conclusion }} for ${{ github.event.workflow_run.head_sha }} -- the deploy failed"
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Live /version must serve the cycle's commit
+        id: live
+        env:
+          EXPECT: ${{ github.event.workflow_run.head_sha || inputs.sha }}
+          SMOKE_READY_WAIT_S: "1200"
+        run: |
+          set -o pipefail
+          python3 scripts/release_cycle.py live-sha --expect "$EXPECT" \
+            --base ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }} | tee -a "$GITHUB_OUTPUT"
+
+  live-smoke:
+    name: Live factory smoke
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    # The export check waits on the build's OWN declared deadline
+    # (build-status deadline: run ceiling 120 min + Store-gate wall 30 min),
+    # after the 20 min ready wait: 170 min, plus margin.
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Run post-deploy smoke
+        env:
+          SMOKE_GATE_TOKEN: ${{ secrets.SMOKE_GATE_TOKEN }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          SMOKE_READY_WAIT_S: "1200"
+          SMOKE_EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          # DNS has moved: cerebrum-dev.com, www and api all resolve to the
+          # AWS load balancer, so these defaults are the public hostnames
+          # again rather than the load balancer's generated name.
+          #
+          # SMOKE_FRONTEND is a separate variable because it once silently
+          # measured the wrong thing: it pointed at a host still resolving to
+          # the suspended Render origin, so the security-header probe read a
+          # vendor error page and reported "1 dead kernel(s): security headers
+          # (frontend)" on every merge -- including one whose backend was
+          # verifiably healthy, with /version returning the merge sha.
+          #
+          # The frontend probe must use a host the :443 listener forwards to
+          # cerebrumdev-frontend, because what it checks is the SPA's security
+          # headers. That listener routes by HOST, so www is the SPA and api is
+          # the backend -- they are not interchangeable here, and pointing this
+          # at api would read the API's headers while reporting on the SPA.
+          SMOKE_FRONTEND: ${{ vars.SMOKE_FRONTEND || 'https://www.cerebrum-dev.com' }}
+        run: python3 scripts/post_deploy_smoke.py ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
+        # The API probes (/health, /ready, /version) need the host that
+        # reaches the backend target group, which is api.cerebrum-dev.com.
+        # Verified live: /version returns the deployed git_sha as JSON.
+        # Both defaults stay overridable by repo variable, so a future move
+        # needs no commit.
+
+  # The repro builds start the moment the commit is resolved -- the same
+  # moment as smoke A -- each on its own verified account from the smoke
+  # gate's roster (index 0 is the smoke's, the only one with the reserved
+  # build slot). A short roster fails closed. Polling rides out 502/503/504.
+  # They are the ANCHORS (scripts/release_cycle.json) plus this cycle's
+  # ROTATION picks from backend/tests/repro_pool, all in one process.
+  release-repros:
+    name: Release cycle repros (beside smoke A)
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    # Ready wait + one phase-wall ceiling per WAVE: four builds on a box that
+    # runs two user builds at once queue into two waves (release_cycle.py
+    # repro_wait_s). 2 x 90 + 20 = 200 min, plus margin; GitHub's cap is 360.
+    timeout-minutes: 240
+    # The rotation counter reads the previous cycle's verdict from this
+    # workflow's own earlier runs and their release-cycle-report artifacts:
+    # read-only, with the run's own token.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Repro builds, in parallel, one account each
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SMOKE_GATE_TOKEN: ${{ secrets.SMOKE_GATE_TOKEN }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          SMOKE_READY_WAIT_S: "1200"
+          SMOKE_EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+        run: python3 scripts/release_cycle.py repros --out cycle --base ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
+
+      # Every zip, its MANIFEST_<name>.json and repros.json -- kept whether the
+      # repros passed or not, so a red cycle still shows what it built.
+      - name: Keep the exports and their manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cycle-repros
+          path: cycle/
+          if-no-files-found: warn
+
+  # Smoke B runs after smoke A AND every repro have finished, on the same
+  # commit, then writes the one cycle report (per-run status, export size,
+  # MANIFEST certified/build_level/advisory_checks, wall times, cycle time).
+  # It runs even when a run failed -- a red cycle still gets its report --
+  # and only an unresolved commit stops it.
+  smoke-b:
+    name: Smoke B and the cycle report
+    needs: [resolve, live-smoke, release-repros]
+    if: always() && needs.resolve.result == 'success'
+    runs-on: ubuntu-latest
+    # Same bound as live-smoke: ready wait + the build's declared deadline.
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Smoke B
+        id: smoke_b
+        continue-on-error: true
+        env:
+          SMOKE_GATE_TOKEN: ${{ secrets.SMOKE_GATE_TOKEN }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          SMOKE_READY_WAIT_S: "1200"
+          SMOKE_EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          SMOKE_FRONTEND: ${{ vars.SMOKE_FRONTEND || 'https://www.cerebrum-dev.com' }}
+        run: python3 scripts/post_deploy_smoke.py ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: release-cycle-repros
+          path: cycle/
+
+      - name: Cycle report
+        env:
+          SMOKE_EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          DEPLOYED_AT: ${{ github.event.workflow_run.updated_at }}
+        run: |
+          started=""
+          if [ -n "$DEPLOYED_AT" ]; then started="--started-at $(date -d "$DEPLOYED_AT" +%s)"; fi
+          python3 scripts/release_cycle.py report --out cycle $started \
+            --base ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }} \
+            --smoke-a ${{ needs.live-smoke.result == 'success' && 'pass' || 'fail' }} \
+            --smoke-b ${{ steps.smoke_b.outcome == 'success' && 'pass' || 'fail' }}
+
+      - name: Keep the cycle report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cycle-report
+          path: |
+            cycle/cycle_report.json
+            cycle/cycle_report.md
+          if-no-files-found: warn

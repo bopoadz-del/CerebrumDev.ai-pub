@@ -1,0 +1,102 @@
+# Build the image and push it to ECR, then roll the ECS service.
+# Replaces Render's auto-deploy-on-merge for the Factory backend.
+name: deploy-aws
+# A dispatched deploy names whether it starts a release cycle: the cycle
+# workflow (post-deploy-smoke) reads "[cycle]" in this run's name
+# (scripts/cycle_gate.py). A push keeps GitHub's default run name; it starts
+# a cycle only when its commit message carries [ready-for-cycle].
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+  && format('deploy-aws (dispatched){0}', inputs.cycle && ' [cycle]' || '')
+  || '' }}
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      cycle:
+        description: "Start a release cycle after this deploy (one cycle per ready deploy)"
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: cerebrumdev-backend
+  ECS_CLUSTER: cerebrum
+  ECS_SERVICE: cerebrumdev-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Bake the Store into the build context
+        # Cerebrum-Blocks is private; the image carries its own pinned copy
+        # so the runtime never needs a token or a network clone.
+        env:
+          CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
+          git init -q store-blocks
+          cd store-blocks
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
+          git checkout -q FETCH_HEAD
+          test -d block_registry
+          rm -rf .git
+          echo "Store baked: $(ls block_registry | wc -l) blocks"
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY"
+          docker build --build-arg GIT_COMMIT="${{ github.sha }}" -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+      - name: Roll the service if it exists
+        run: |
+          count=$(aws ecs describe-services --cluster "$ECS_CLUSTER"             --services "$ECS_SERVICE"             --query 'length(services[?status==`ACTIVE`])' --output text 2>/dev/null || echo 0)
+          if [ "$count" = "1" ]; then
+            # The task's size is declared in the repo (infra/backend_task.json).
+            # When the live revision differs in cpu, memory or a declared env
+            # value, register a new revision = live with ONLY those fields
+            # replaced (scripts/declared_task_def.py) and roll onto it;
+            # otherwise roll the live revision as before.
+            live_td=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"               --query 'services[0].taskDefinition' --output text)
+            aws ecs describe-task-definition --task-definition "$live_td" --include TAGS > live_task_def.json
+            python3 scripts/declared_task_def.py --live live_task_def.json               --declared infra/backend_task.json --out declared_task_def.json
+            target="$live_td"
+            if [ -f declared_task_def.json ]; then
+              target=$(aws ecs register-task-definition --cli-input-json file://declared_task_def.json                 --query 'taskDefinition.taskDefinitionArn' --output text)
+              echo "registered $target (declared size; was $live_td)"
+            fi
+            aws ecs update-service --cluster "$ECS_CLUSTER"               --service "$ECS_SERVICE" --task-definition "$target" --force-new-deployment >/dev/null
+            echo "deployment triggered on $target"
+            # The deploy is not done when it is triggered. Wait for ECS to
+            # report the rollout COMPLETED (new tasks healthy in the target
+            # group, old drained). FAILED or 20 minutes is a failed deploy.
+            deadline=$(( $(date +%s) + 1200 ))
+            while :; do
+              state=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"                 --query 'services[0].deployments[?status==`PRIMARY`].rolloutState | [0]' --output text)
+              echo "rollout: $state"
+              case "$state" in
+                COMPLETED) break ;;
+                FAILED) echo "::error::ECS rollout FAILED"; exit 1 ;;
+              esac
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::ECS rollout not COMPLETED after 20 min -- the deploy failed"; exit 1
+              fi
+              sleep 15
+            done
+          else
+            echo "image pushed; service not created yet"
+          fi

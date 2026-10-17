@@ -1,0 +1,36 @@
+{
+  "capabilities": [
+    {
+      "block_ids": [
+        "analytics"
+      ],
+      "description": "Aggregate analytics over submitted payloads",
+      "id": "analytics_surface",
+      "required": true,
+      "strategy_hint": "REUSE"
+    },
+    {
+      "block_ids": [
+        "dashboard"
+      ],
+      "description": "Dashboard projection of analytics output",
+      "id": "dashboard_surface",
+      "required": true,
+      "strategy_hint": "REUSE"
+    }
+  ],
+  "connectors": [],
+  "drafting_mode": null,
+  "drafting_note": null,
+  "edge_profile": "standard",
+  "factory_scenario": "CREATE_PRODUCT",
+  "human_authority": true,
+  "product_id": "runner-smoke",
+  "product_name": "Role Runner Smoke Product",
+  "schema_version": "product_blueprint.v1",
+  "summary": "Minimal blueprint driven end to end by the role runner. Uses blocks whose vendored source imports with no store configured, so the CLONER's offline import gate is a real check rather than a formality.",
+  "ui_modules": [
+    "command_center"
+  ],
+  "vertical": "product"
+}

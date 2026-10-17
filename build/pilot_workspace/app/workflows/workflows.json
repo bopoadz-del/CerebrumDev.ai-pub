@@ -1,0 +1,17 @@
+[
+  {
+    "description": "Default linear workflow over planned capabilities.",
+    "name": "Capability sequence",
+    "steps": [
+      {
+        "capability_id": "analytics_surface",
+        "role": "execute"
+      },
+      {
+        "capability_id": "dashboard_surface",
+        "role": "execute"
+      }
+    ],
+    "workflow_id": "product.capability_sequence"
+  }
+]

@@ -1,0 +1,661 @@
+# The Store acceptance gate for every build branch.
+#
+# FORBIDDEN: do not run this gate on a Render worker (no Docker daemon).
+# This job needs `docker build` + `docker run` on a host that already has Docker
+# (GitHub-hosted ubuntu-latest, or an equivalent self-hosted builder).
+#
+# ONE SOURCE. This file used to carry its own list of 13 check names while the
+# Factory's acceptance floor grew to 21, so a platform could be scored 13/13
+# here and refused by the Factory, which requires k/N of ITS floor. The gate
+# now keeps no list at all: it runs the product's own scripts/acceptance.py --
+# which the Factory renders from its floor -- and reports the
+# "ACCEPTANCE: k/N" that script prints. Green only when k == N.
+#
+# It also MEASURES what only a gate can: the image is booted once against a
+# real Postgres to feed postgres_boot_200, instead of leaving it unmeasured.
+
+name: Store acceptance gate
+
+on:
+  # Dispatch only. The Factory ALWAYS triggers this explicitly at the N3
+  # handoff (runner.py dispatch_store_gate), and docker-available builds run
+  # acceptance locally without this workflow at all. An `on: push` to build/**
+  # fired a SECOND, identical run on every branch push and checkpoint commit
+  # (live 2026-10-01: two "Store acceptance gate" runs per push) — a duplicate
+  # gate execution, never a distinct result. One trigger, one run.
+  workflow_dispatch:
+  # The gate REPLAY (gate-replay.yml, owner rule 2026-10-08): the same gate,
+  # run on a build it already certified, with the gate scripts -- and, for a
+  # Factory change, the Factory-rendered files -- under change. A replay never
+  # writes the build's commit status and never fails on the score: the
+  # replay's own verdict job compares the result with the certified one.
+  workflow_call:
+    inputs:
+      product_sha:
+        description: The certified build commit to gate.
+        type: string
+        required: true
+      replay_label:
+        description: Names this replay's artifact; set only by the gate replay.
+        type: string
+        required: true
+      overlay_artifact:
+        description: Artifact of Factory-rendered files laid over the build before it is gated.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  statuses: write
+  # The base images and the postgres service come from the account's own
+  # mirror (image-mirror.yml), read with this workflow's built-in token.
+  packages: read
+
+jobs:
+  store-gate:
+    name: acceptance.py in Docker (k/N)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Throwaway values for the gate's own containers, generated per run (no value is stored in the repo).
+      GATE_PG_PASSWORD: gate-pg-${{ github.run_id }}-${{ github.run_attempt }}
+      GATE_PLATFORM_TOKEN: gate-token-${{ github.run_id }}-${{ github.run_attempt }}
+      REPLAY_LABEL: ${{ inputs.replay_label }}
+      PRODUCT_SHA: ${{ inputs.product_sha }}
+      # The gate's own service images, "<name>=<image>": pulled by the "Start
+      # Postgres" step (base_images.py pull), mirrored by image-mirror.yml
+      # (derived from this key), named by the scorer when a pull fails.
+      GATE_SERVICE_IMAGES: postgres=ghcr.io/${{ github.repository_owner }}/mirror/postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Empty (a dispatch on a build branch): that branch, as always.
+          ref: ${{ inputs.product_sha }}
+
+      - name: Verify the gate code is the default branch's
+        # A dispatch runs THIS file and the helpers under .github/store_gate/
+        # from the dispatched branch's own tree. A branch cut before a gate fix
+        # carries the old gate: live 2026-10-10 (run 38040326004) a branch
+        # forked before builds#41 ran its stale repo_mount.exec_path, the
+        # harness judged the mounted checkout (which carries vendor/) instead
+        # of the image (which does not), and a false 22/22 was written. The
+        # gate is the default branch's, or nothing is scored: the workflow
+        # file and every helper must be blob-for-blob the default branch's,
+        # else the run reads "no score" -- Factory-owed, the branch must carry
+        # the current gate (the Factory does so before it dispatches). An
+        # unverifiable comparison is the same "no score". A replay runs the
+        # gate under change by design and is judged by its own verdict job.
+        if: ${{ !inputs.replay_label }}
+        env:
+          GATE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GATE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -uo pipefail
+          set +e
+          default="${GATE_DEFAULT_BRANCH:-}"
+          ref="refs/remotes/origin/${default}"
+          reason=""
+          if [ -z "$default" ]; then
+            reason="the repository's default branch is unknown"
+          elif ! git fetch --quiet --no-tags --depth=1 origin "+refs/heads/${default}:${ref}"; then
+            reason="the default branch ${default} could not be fetched"
+          else
+            for path in .github/workflows/store-gate.yml .github/store_gate; do
+              # The workflow file runs from the workflow's commit; the helpers
+              # from the checked-out tree.
+              rev=HEAD
+              if [ "$path" = .github/workflows/store-gate.yml ]; then rev="${GATE_WORKFLOW_SHA:-HEAD}"; fi
+              ours=$(git rev-parse --verify --quiet "${rev}:${path}")
+              theirs=$(git rev-parse --verify --quiet "${ref}:${path}")
+              if [ -z "$ours" ] || [ -z "$theirs" ] || [ "$ours" != "$theirs" ]; then
+                reason="${reason:+${reason}; }${path} is ${ours:-absent} on the branch, ${theirs:-absent} on ${default}"
+              fi
+            done
+            if [ -n "$reason" ]; then
+              changed=$(git diff --name-only "$ref" HEAD -- .github/workflows/store-gate.yml .github/store_gate | tr '\n' ' ')
+              if [ -n "$changed" ]; then reason="${reason}; differs: ${changed% }"; fi
+            fi
+          fi
+          if [ -z "$reason" ]; then
+            echo "the gate code is ${default}'s"
+            echo "GATE_CODE=current" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "stale gate code on the branch: ${reason}"
+          printf 'stale gate code on the branch: %s\n' "$reason" > gate_code_stale.txt
+          echo "GATE_CODE=stale" >> "$GITHUB_ENV"
+          # Fail the step: every scoring step after it is skipped, and the
+          # always() steps record "no score" from gate_code_stale.txt.
+          exit 1
+
+      - name: Check out the gate scripts under replay
+        if: ${{ inputs.replay_label }}
+        uses: actions/checkout@v4
+        with:
+          path: _gate_under_replay
+
+      - name: Use the gate scripts under replay
+        if: ${{ inputs.replay_label }}
+        run: |
+          set -euo pipefail
+          rm -rf .github/store_gate
+          mkdir -p .github
+          cp -R _gate_under_replay/.github/store_gate .github/store_gate
+          rm -rf _gate_under_replay
+
+      - name: Lay the Factory files under replay over the build
+        if: ${{ inputs.overlay_artifact }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.overlay_artifact }}
+          path: .
+
+      - name: Start Postgres (gate infrastructure)
+        # A step, never a `services:` container: a service that cannot be
+        # pulled fails "Initialize containers" before any step can say why
+        # (live 2026-10-13, run 38351334962: ECR Public "toomanyrequests:
+        # Data limit exceeded", and the status read a bare "no score"). The
+        # official postgres:16, BY DIGEST: the account's ghcr mirror first,
+        # read with the built-in token, then the same digest from Google's
+        # mirror, ECR Public and Docker Hub (base_images.py pull). Every
+        # source failing is infrastructure: image_pull_failed.txt names the
+        # image and the registry's answers, the scorer names the cause
+        # ("image pull rate-limited") and the status is written as `error`.
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+          IMAGE_MIRROR: ghcr.io/${{ github.repository_owner }}/mirror
+        run: |
+          set -uo pipefail
+          set +e
+          if ! printf '%s' "${GHCR_TOKEN:-}" | docker login ghcr.io -u "${GHCR_USER:-}" --password-stdin >/dev/null 2>&1; then
+            echo "could not log in to ghcr.io; the public sources are tried next"
+          fi
+          image=""
+          for item in ${GATE_SERVICE_IMAGES:-}; do
+            if [ "${item%%=*}" = "postgres" ]; then image="${item#*=}"; fi
+          done
+          if ! python3 .github/store_gate/base_images.py pull "$image" "$IMAGE_MIRROR" gate-postgres:16; then
+            exit 1
+          fi
+          docker run -d --name gate-postgres -e POSTGRES_PASSWORD="$GATE_PG_PASSWORD" -p 5432:5432 \
+            --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 12 \
+            gate-postgres:16 >/dev/null
+          for i in $(seq 1 60); do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' gate-postgres 2>/dev/null)" = "healthy" ]; then
+              echo "postgres ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs gate-postgres 2>&1 | tail -20
+          echo "service postgres did not start: $image (never reported healthy)" > image_pull_failed.txt
+          exit 1
+
+      - name: Free the runner's disk for the image build
+        # A large product image ran the runner out of disk (replay run
+        # 37991684239, "no space left on device"). Toolchains the gate never
+        # uses go; failure here is never a verdict.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h / || true
+
+      - name: Build artifact image
+        # The product's Dockerfile is the product's: a build that fails is a
+        # product verdict (scored below), not a broken gate. Record the outcome
+        # and keep the log; the docker steps run only on a built image.
+        # GitHub runs this block under `bash -e`: a failed build would exit
+        # the step on the pipeline, before its outcome is recorded, so the
+        # scorer below never ran and the run read "workflow failed before
+        # scoring" (live 2026-10-07, build/plt_ebdc6359d25b4bba: an invalid
+        # HEALTHCHECK in the product's Dockerfile). The build's exit status is
+        # data here, never the step's own.
+        #
+        # Base images come from the account's own mirror on ghcr.io, BY
+        # DIGEST, read with the built-in token: Docker Hub 429'd the runners
+        # (2026-10-09) and its stand-ins throttle them too -- live 2026-10-13
+        # ECR Public answered "toomanyrequests: Data limit exceeded" for the
+        # products' bases. base_images.py pre-pulls each FROM of the product's
+        # own Dockerfile (never edited) and gives it the upstream name, so the
+        # build resolves it locally. A base that cannot be pulled is NOT the
+        # product's failure: IMAGE_PULL_FAILED is recorded, nothing is built
+        # or scored, and the scorer names the image.
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+          IMAGE_MIRROR: ghcr.io/${{ github.repository_owner }}/mirror
+        run: |
+          set -uo pipefail
+          set +e
+          if ! printf '%s' "${GHCR_TOKEN:-}" | docker login ghcr.io -u "${GHCR_USER:-}" --password-stdin >/dev/null 2>&1; then
+            echo "could not log in to ghcr.io; each mirror pull below says what failed"
+          fi
+          contexts="${RUNNER_TEMP:-$PWD}/gate-build-contexts.txt"
+          python3 .github/store_gate/base_images.py prepull Dockerfile "$IMAGE_MIRROR" "$contexts"
+          pulled=$?
+          if [ "$pulled" != "0" ] || [ -f image_pull_failed.txt ]; then
+            if [ ! -s image_pull_failed.txt ]; then
+              echo "image pull failed: the product's base images could not be resolved (base_images.py exit $pulled)" > image_pull_failed.txt
+            fi
+            cat image_pull_failed.txt
+            echo "IMAGE_PULL_FAILED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          build=(build)
+          while IFS= read -r context; do
+            if [ -n "$context" ]; then build+=(--build-context "$context"); fi
+          done < "$contexts"
+          docker "${build[@]}" -t cerebrum-artifact:${{ github.sha }} . 2>&1 | tee image_build.log
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "IMAGE_BUILD_EXIT=$code" >> "$GITHUB_ENV"
+          if [ "$code" = "0" ]; then echo "IMAGE_BUILT=1" >> "$GITHUB_ENV"; else echo "IMAGE_BUILT=0" >> "$GITHUB_ENV"; fi
+
+      - name: Score a failed image build (the product's Dockerfile)
+        # Live 2026-10-06 (build/plt_50b41be2cb184931): the Dockerfile ran the
+        # test suite inside `docker build`, the image never built, and the run
+        # read "the Factory's own workflow failed before scoring" -- a product
+        # defect reported as a Factory one, so the writer was never told. The
+        # harness's own IMAGE_CHECKS (the floor's stage:image) FAIL, the rest
+        # NOT_RUN, the log tail is evidence. A harness that predates
+        # IMAGE_CHECKS stays unscored, as before.
+        if: env.IMAGE_BUILT == '0'
+        run: |
+          set -uo pipefail
+          python3 .github/store_gate/score_failed_build.py scripts/acceptance.py image_build.log "${IMAGE_BUILD_EXIT:-1}" . || true
+
+      - name: Resolve the image's declared persistence root
+        if: env.IMAGE_BUILT == '1'
+        # The product's Dockerfile declares STORAGE_PATH and creates that root
+        # owned by its service account; a named volume mounted over it is
+        # initialised from it, ownership included. The gate mounts THERE and
+        # never overrides the path: an override to a directory the image never
+        # had gave the service a root-owned mount it could not write, and the
+        # product died at boot for the gate's assumption (live 2026-10-07,
+        # build/plt_c0b1ad1f127e43f8, sqlite "unable to open database file").
+        # Only an image declaring no root gets the gate's default, passed in.
+        run: |
+          set -euo pipefail
+          inspect=$(docker image inspect cerebrum-artifact:${{ github.sha }})
+          pg=$(printf '%s' "$inspect" | python3 .github/store_gate/storage_mount.py storegate-pg-${{ github.sha }})
+          acc=$(printf '%s' "$inspect" | python3 .github/store_gate/storage_mount.py storegate-storage-${{ github.sha }})
+          echo "STORAGE_MOUNT_ARGS_PG=$pg" >> "$GITHUB_ENV"
+          echo "STORAGE_MOUNT_ARGS=$acc" >> "$GITHUB_ENV"
+
+      - name: Boot the image on Postgres (measures postgres_boot_200)
+        if: env.IMAGE_BUILT == '1'
+        # The operator's DATABASE_URL, as a host hands it out. The product
+        # boots with it; /health is read inside the container. Whatever it
+        # answers is passed on as STORE_POSTGRES_BOOT -- a 503, or no answer,
+        # fails the check honestly.
+        run: |
+          set -uo pipefail
+          PROBE="cerebrum-pg-${{ github.sha }}"
+          # STORAGE_PATH gets a volume exactly like the acceptance container
+          # below: /health fail-closes on persistent_disk, so overriding the
+          # path WITHOUT providing the disk failed every product 20/21 on
+          # postgres_boot_200 for a directory the gate itself never mounted
+          # (VenueOps <SESSION_ID>: two writer rounds burned on a
+          # harness defect). On Postgres the disk still holds uploads; a
+          # missing mount must stay a real failure, so mount one, never
+          # mkdir inside the image.
+          # A container that cannot even be created is this check's verdict
+          # (no answer: 0), recorded as data -- under GitHub's `bash -e` a
+          # failed `docker run` would end the step before STORE_POSTGRES_BOOT
+          # is written and skip every scoring step after it.
+          # The probe's DATABASE_URL is written at run time from the per-run
+          # password (user and password passed as one printf argument), so no
+          # credential form is ever in the workflow text.
+          printf 'DATABASE_URL=postgresql://%s@host.docker.internal:5432/postgres\n' "postgres:$GATE_PG_PASSWORD" > pg_probe.env
+          set +e
+          docker run -d --name "$PROBE" \
+            --add-host=host.docker.internal:host-gateway \
+            --env-file pg_probe.env \
+            -e PLATFORM_TOKEN="$GATE_PLATFORM_TOKEN" \
+            $STORAGE_MOUNT_ARGS_PG \
+            cerebrum-artifact:${{ github.sha }} >/dev/null 2>pg_create.err
+          created=$?
+          set -e
+          code=0
+          if [ "$created" != "0" ]; then
+            echo "postgres boot: the container could not be created (docker run exit $created)"
+            cat pg_create.err || true
+          fi
+          for i in $(seq 1 60); do
+            if [ "$created" != "0" ]; then break; fi
+            code=$(docker exec "$PROBE" python3 -c "
+          import urllib.request, urllib.error
+          try:
+              print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status)
+          except urllib.error.HTTPError as exc:
+              print(exc.code)
+          except Exception:
+              print(0)
+          " 2>/dev/null || echo 0)
+            # Break on 200 ONLY. /health is fail-closed and answers 503 while
+            # startup (migrations, Alembic head) is still running, so the
+            # first non-zero answer is the transient, not the verdict. Run
+            # 35853121403 recorded 503 at 11:12:57 and the same container
+            # answered 200 at 11:13:01. Keep polling through 503 and 0 for
+            # the full budget; the last answer is the one passed on.
+            if [ "$code" = "200" ]; then break; fi
+            sleep 2
+          done
+          echo "postgres boot: /health answered $code"
+          if [ "$code" != "200" ]; then
+            # The health BODY names the failing check. The raw log tail is
+            # 40 lines of "GET /health 503" by construction (the poll above
+            # wrote them), which is how a missing volume hid for two rounds.
+            docker exec "$PROBE" python3 -c "
+          import urllib.request, urllib.error
+          try:
+              print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read().decode())
+          except urllib.error.HTTPError as exc:
+              print(exc.read().decode())
+          except Exception as exc:
+              print('health body unreadable:', exc)
+          " || true
+            docker logs "$PROBE" 2>&1 | grep -v '"GET /health' | tail -40 || true
+          fi
+          docker rm -f "$PROBE" >/dev/null 2>&1 || true
+          echo "STORE_POSTGRES_BOOT=$code" >> "$GITHUB_ENV"
+
+      - name: Run bandit and export the verdict (measures audit_clean)
+        # The floor's audit_clean check reads STORE_AUDIT_CLEAN, exactly as
+        # postgres_boot_200 reads STORE_POSTGRES_BOOT. Without this step the
+        # scan was never RUN, only confirmed configured -- a product shipped
+        # 16 hardcoded-SQL findings and still scored 21/21. Scan the runtime
+        # tree; fail on any HIGH severity or B608 (hardcoded SQL).
+        # The verdict and the evidence come from ONE rule
+        # (.github/store_gate/audit_evidence.py): a red audit carries the
+        # blocking findings -- test id, file, line -- to the checks the
+        # product's harness declares in AUDIT_CHECKS, so the writer is told
+        # what to change instead of only "unclean".
+        run: |
+          set -uo pipefail
+          # The scanners' install is the gate's own step: if it fails the
+          # step still ends cleanly, and the scan is recorded as NOT
+          # measured below -- never as a verdict on the product.
+          python3 -m pip install --quiet bandit pip-audit || pip install --quiet bandit pip-audit || echo "audit tools could not be installed"
+          bandit -r app/ -f json -o bandit.json --severity-level all || true
+          # pip-audit over the declared requirements: the floor's audit check
+          # requires both scans clean. Its report is typed per dependency so
+          # the Factory owns each vulnerability by who added the package.
+          PIP_REPORT=""
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt -f json -o pip_audit.json || true
+            PIP_REPORT=pip_audit.json
+          fi
+          # A scan that did not run (no scanner, no report, the verdict
+          # script could not start) exports NO verdict: STORE_AUDIT_CLEAN=0
+          # read as the product's unclean code -- a FAIL the writer was
+          # handed with no finding to change. Unset, the harness reports
+          # the scan unmeasured, a line with no evidence rows, which the
+          # Factory owns.
+          ran=$(python3 .github/store_gate/audit_evidence.py measured bandit.json $PIP_REPORT || echo 0)
+          echo "STORE_AUDIT_MEASURED=$ran" >> "$GITHUB_ENV"
+          if [ "$ran" = "1" ]; then
+            clean=$(python3 .github/store_gate/audit_evidence.py verdict bandit.json $PIP_REPORT || echo 0)
+            echo "audit verdict (bandit + pip-audit): STORE_AUDIT_CLEAN=$clean"
+            echo "STORE_AUDIT_CLEAN=$clean" >> "$GITHUB_ENV"
+            if [ -f scripts/acceptance.py ]; then
+              python3 .github/store_gate/audit_evidence.py evidence scripts/acceptance.py bandit.json . $PIP_REPORT || true
+            fi
+          else
+            echo "audit NOT measured: the gate's scan did not run; no verdict exported"
+          fi
+      - name: Run scripts/acceptance.py inside the image
+        if: env.IMAGE_BUILT == '1'
+        run: |
+          set -euo pipefail
+          CONTAINER="cerebrum-gate-${{ github.sha }}"
+          # The image ENTRYPOINT boots the server (alembic + uvicorn); the
+          # acceptance script probes it over HTTP. Run detached, wait for
+          # /health, then exec the script.
+          # A container that cannot be created never served: the same verdict
+          # as a boot crash, recorded as data. Under GitHub's `bash -e` a
+          # failed `docker run` ended this step before BOOT_CRASHED was
+          # written, so the run read "workflow failed before scoring".
+          # The checkout, read-only, for the harness's REPOSITORY checks (the
+          # floor's tree:/factory_record subjects): the image carries only
+          # what the product's .dockerignore lets in, and leaving .github/
+          # out of a served image is the product's call, not a missing file.
+          REPO_MOUNT_ARGS=$(python3 .github/store_gate/repo_mount.py scripts/acceptance.py "$PWD" || true)
+          set +e
+          docker run -d --name "$CONTAINER" \
+            -e PLATFORM_TOKEN="$GATE_PLATFORM_TOKEN" \
+            $STORAGE_MOUNT_ARGS \
+            $REPO_MOUNT_ARGS \
+            cerebrum-artifact:${{ github.sha }} 2>container_create.err
+          created=$?
+          set -e
+          trap 'docker rm -f "$CONTAINER" >/dev/null 2>&1 || true' EXIT
+          healthy=0
+          if [ "$created" != "0" ]; then
+            echo "the container could not be created (docker run exit $created)"
+            cat container_create.err > container_boot.log 2>/dev/null || true
+            cat container_boot.log || true
+            echo "BOOT_CRASHED=1" >> "$GITHUB_ENV"
+            python3 .github/store_gate/boot_crash.py scripts/acceptance.py container_boot.log . /app || true
+            exit 0
+          fi
+          for i in $(seq 1 60); do
+            if docker exec "$CONTAINER" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" >/dev/null 2>&1; then
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$healthy" != "1" ]; then
+            # The image built but never served: a verdict on the product's
+            # image (scored like a failed build), not a broken gate. Live
+            # 2026-10-07 (build/plt_0b355947d7a1494e): a PermissionError at
+            # boot read "workflow failed before scoring". The log is evidence;
+            # the innermost crashing frame inside /app is a typed row the
+            # Factory owns by its receipt.
+            echo "service never became healthy inside the container"
+            docker logs "$CONTAINER" > container_boot.log 2>&1 || true
+            tail -60 container_boot.log || true
+            echo "BOOT_CRASHED=1" >> "$GITHUB_ENV"
+            python3 .github/store_gate/boot_crash.py scripts/acceptance.py container_boot.log . /app || true
+            exit 0
+          fi
+          # The harness is the CHECKOUT's (Factory-rendered for this commit):
+          # a minimal production image (COPY app only) need not carry it --
+          # live 2026-10-08 (build/plt_28405ae4961d420b) "can't open file
+          # '/app/scripts/acceptance.py'". It runs from the mount, told the
+          # container's working directory so runtime checks judge the image.
+          # An older harness (no RUNTIME_ROOT_ENV) judges the tree it sits in:
+          # run from the mount it judged the CHECKOUT (live 2026-10-08,
+          # build/plt_5ac16f50c9384536 certified 22/22 an image with no
+          # vendor/). It is copied INTO the image's runtime tree instead.
+          WORKDIR=$(docker exec "$CONTAINER" pwd 2>/dev/null || true)
+          IN_IMAGE=0
+          if docker exec "$CONTAINER" test -f scripts/acceptance.py >/dev/null 2>&1; then IN_IMAGE=1; fi
+          HARNESS_ENV=$(python3 .github/store_gate/repo_mount.py exec-env scripts/acceptance.py "$WORKDIR" || true)
+          HARNESS_PATH=$(python3 .github/store_gate/repo_mount.py exec-path scripts/acceptance.py "$IN_IMAGE" "$WORKDIR" || echo scripts/acceptance.py)
+          case "$HARNESS_PATH" in
+            */.store-gate-harness/*)
+              docker exec -u 0 "$CONTAINER" mkdir -p "$(dirname "$HARNESS_PATH")" || true
+              docker cp scripts/acceptance.py "$CONTAINER:$HARNESS_PATH" || true
+              ;;
+          esac
+          docker exec -e PLATFORM_TOKEN="$GATE_PLATFORM_TOKEN" \
+            -e STORE_DOCKER_HEALTH=200 \
+            -e STORE_POSTGRES_BOOT="${STORE_POSTGRES_BOOT:-0}" \
+            -e STORE_AUDIT_CLEAN="${STORE_AUDIT_CLEAN:-}" \
+            $HARNESS_ENV \
+            "$CONTAINER" python3 "$HARNESS_PATH" | tee acceptance.out || rc=$?
+          # A replay's score is data for its verdict job (replay_flips.py) --
+          # a known-bad build failing here is the replay working -- never this
+          # job's exit. A dispatched gate keeps the harness's own exit code.
+          if [ -n "${REPLAY_LABEL:-}" ]; then exit 0; fi
+          exit "${rc:-0}"
+
+      - name: Parse k/N and write result
+        # always(): acceptance.py exits non-zero when k < N, which is honest --
+        # but without this the result is never written and the status would
+        # report the gate's wiring instead of the platform.
+        if: always()
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          out = Path("acceptance.out")
+          text = out.read_text(encoding="utf-8") if out.is_file() else ""
+          LINE = re.compile(r"^(PASS|FAIL|SKIP|NOT_RUN)\s+(\S+)\s*(?:�|—|-|:)?\s*(.*)$", re.IGNORECASE)
+          lines = []
+          for raw in text.splitlines():
+              m = LINE.match(raw.strip())
+              if m:
+                  lines.append({"name": m.group(2), "status": m.group(1).upper(), "detail": m.group(3).strip()})
+          # A failed image build attaches its log tail as EVIDENCE, apart from
+          # the detail (the Factory derives ownership from the detail only).
+          # The security scan attaches its blocking findings the same way
+          # (audit_evidence.json, keyed by the harness's AUDIT_CHECKS).
+          for name in ("image_build_evidence.json", "audit_evidence.json"):
+              ev = Path(name)
+              if not ev.is_file():
+                  continue
+              evidence = json.loads(ev.read_text(encoding="utf-8"))
+              for line in lines:
+                  if line["name"] in evidence:
+                      line["evidence"] = evidence[line["name"]]
+          # The audit findings as TYPED rows (file/line, package/version), so
+          # the Factory owns each one from its provenance, never from text.
+          # A container that died at boot attaches its crash the same way
+          # (image_evidence_rows.json: the innermost frame inside the product).
+          for rows_name in ("audit_evidence_rows.json", "image_evidence_rows.json"):
+              rows_file = Path(rows_name)
+              if not rows_file.is_file():
+                  continue
+              typed = json.loads(rows_file.read_text(encoding="utf-8"))
+              for line in lines:
+                  if line["name"] in typed:
+                      line["evidence_rows"] = list(line.get("evidence_rows") or []) + list(typed[line["name"]])
+          # The product's own verdict: the LAST "ACCEPTANCE: k/N" line.
+          scores = re.findall(r"^ACCEPTANCE:\s*(\d+)\s*/\s*(\d+)\s*$", text, re.MULTILINE)
+          if scores:
+              passed, total = (int(x) for x in scores[-1])
+              ok = total > 0 and passed == total
+              score = f"{passed}/{total}"
+          else:
+              passed, total, ok = 0, 0, False
+              score = "no score"
+          via = "image-build-failed" if os.environ.get("IMAGE_BUILT") == "0" else ("container-boot-failed" if os.environ.get("BOOT_CRASHED") == "1" else "scripts/acceptance.py-in-docker")
+          detail = ""
+          # Gate code that is not the default branch's scores NOTHING, whatever
+          # ran: a verdict from a stale gate is no verdict (Factory-owed).
+          stale = Path("gate_code_stale.txt")
+          # An image that could not be pulled judged nothing either. The run
+          # names it and scores nothing: the gate's own Postgres (its step
+          # writes image_pull_failed.txt) or a product base image the build
+          # step could not pull.
+          pull_failures = []
+          pulled = Path("image_pull_failed.txt")
+          if pulled.is_file():
+              pull_failures.append(pulled.read_text(encoding="utf-8").strip() or "image pull failed")
+          if stale.is_file():
+              passed, total, ok = 0, 0, False
+              score = "no score (stale gate code on the branch)"
+              lines = []
+              via = "stale-gate-code"
+              detail = stale.read_text(encoding="utf-8").strip()
+          elif pull_failures:
+              passed, total, ok = 0, 0, False
+              # A registry that throttled the runner is named as that, by
+              # the registry's own error code (base_images.pull_failure_cause);
+              # otherwise the score names the image. The registry's answers
+              # (which may carry anything) stay in the detail.
+              sys.path.insert(0, ".github/store_gate")
+              try:
+                  from base_images import pull_failure_cause
+                  cause = pull_failure_cause("; ".join(pull_failures))
+              except Exception:
+                  cause = "image pull failed"
+              if cause == "image pull failed":
+                  score = f"no score ({pull_failures[0].split(' (', 1)[0]})"
+              else:
+                  score = f"no score (infra: {cause})"
+              lines = []
+              via = "image-pull-failed"
+              detail = "; ".join(pull_failures)
+          report = {
+              "schema": "store_gate.v2",
+              "passed": passed,
+              "total": total,
+              "ok": ok,
+              "score": score,
+              "lines": lines,
+              "checks": [line["name"] for line in lines],
+              "sha": os.environ.get("PRODUCT_SHA") or os.environ.get("GITHUB_SHA", ""),
+              "via": via,
+          }
+          if detail:
+              report["detail"] = detail
+          Path("store_gate.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(f"STORE_GATE {score} ok={ok}")
+          # A replay is judged by its verdict job against the certified result;
+          # its score is data there, never this step's exit.
+          sys.exit(0 if ok or os.environ.get("REPLAY_LABEL") else 1)
+          PY
+
+      - name: Upload k/N artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.replay_label && format('gate-replay-{0}', inputs.replay_label) || format('store-gate-{0}', github.sha) }}
+          path: |
+            store_gate.json
+            acceptance.out
+            image_build.log
+            image_pull_failed.txt
+          if-no-files-found: warn
+
+      - name: Write commit status
+        # Dispatch is the ONLY trigger (on: push was removed for firing duplicate
+        # runs), so excluding it here meant no status was ever written: the
+        # Factory polled, timed out, and could not say which check failed
+        # (2026-10-04, two builds scored 19/22 and 20/22 with no status).
+        # A replay never writes it: the build's status is its certified verdict.
+        if: ${{ always() && !inputs.replay_label }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f store_gate.json ]; then
+            score=$(python3 -c "import json; print(json.load(open('store_gate.json'))['score'])")
+            ok=$(python3 -c "import json; print('true' if json.load(open('store_gate.json'))['ok'] else 'false')")
+            # Itemise WHAT failed. A score alone told the Factory nothing it
+            # could attribute: eight automotive rounds read "store gate failed"
+            # while the only red line was the Factory's own authorship counter.
+            # With the names, the Factory derives whose failure it is.
+            fails=$(python3 -c "import json; r=json.load(open('store_gate.json')); print(','.join(l['name'] for l in r.get('lines', []) if l.get('status') == 'FAIL'))")
+          else
+            score="no score (the image or the script did not run)"
+            ok="false"
+            fails=""
+          fi
+          if [ "$ok" = "true" ]; then state=success; else state=failure; fi
+          # Infrastructure kept the gate from scoring (an image it could not
+          # pull, its Postgres that never started): GitHub's "error" -- the
+          # check could not run -- never "failure", a verdict on the product.
+          if [ -f store_gate.json ] && [ "$(python3 -c "import json; print(json.load(open('store_gate.json')).get('via', ''))")" = "image-pull-failed" ]; then state=error; fi
+          description="acceptance.py in Docker ${score}"
+          if [ -n "$fails" ]; then description="${description} FAIL:${fails}"; fi
+          # GitHub caps a status description at 140 chars. A name that does not
+          # fit is dropped by the Factory's parser, never guessed at.
+          description="${description:0:140}"
+          gh api --method POST \
+            "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state="$state" \
+            -f context="store-gate" \
+            -f description="${description}"
+
+

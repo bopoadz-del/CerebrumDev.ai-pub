@@ -1,0 +1,15 @@
+{
+  "schema": "repro_pool.v1",
+  "_doc": "The release cycle's ROTATION pool. Data, not code: every cycle builds the anchors (scripts/release_cycle.json) plus `picks_per_cycle` blueprints taken from `blueprints` -- slot 1 repeats the previous cycle's failing pick, the rest are the next blueprints never built in THIS ORDER (never filesystem order, never at random), and a certified blueprint is never re-run (scripts/release_cycle.py rotation_state / select_rotation). Every *.json beside this index must be listed in it. The hardwiring gate forbids each blueprint's id, name and vertical as a string literal in Factory code (scripts/scan_hardwiring.py form blueprint_name), so nothing in the Factory can branch on which blueprint is running.",
+  "picks_per_cycle": 2,
+  "blueprints": [
+    "repro_fintech_payments_ledger.json",
+    "repro_hotel_operations.json",
+    "repro_motor_insurance_claims.json",
+    "repro_fleet_delivery_logistics.json",
+    "repro_clinic_appointment_scheduling.json",
+    "repro_construction_site_diary.json",
+    "repro_craft_marketplace.json",
+    "repro_employee_onboarding.json"
+  ]
+}

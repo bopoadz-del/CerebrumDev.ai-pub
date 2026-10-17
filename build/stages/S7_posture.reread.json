@@ -1,0 +1,26 @@
+{
+  "stage": "S7",
+  "name": "network_posture",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S7_posture.json",
+  "reread_at": "2026-08-23T08:06:00Z",
+  "independent": true,
+  "reader": "cloud-agent-s7-continue-after-s5-s6",
+  "checked": [
+    "NETWORK_POSTURE and POSTURE_ID are the string P1; P2 and P3 exist only as keys in REJECTED_ALTERNATIVES",
+    "P1_ENV_EXAMPLE contains no CEREBRUM_API_URL, CEREBRUM_API_KEY, or /v1/execute tokens",
+    "RoleRunner .env.example / README / Dockerfile / render.yaml / app/main.py / requirements.txt / docs/network_posture.json / docs/build_provenance.json name P1",
+    "assert_workspace_posture fails closed on missing artifacts; staged WRITER fallback reads destination README",
+    "_CONFTEST still assigns socket.socket.connect = _offline_connect; _LOCAL_HOSTS is localhost/127.0.0.1/::1; 11434 is not an allowed host",
+    "apply_p1_cloned_block rewrites capture only; vendor-mirror block.py still contains get_block",
+    "P1_CAPTURE_ADAPTER has no import httpx and returns llm_provider none",
+    "vendor-mirror capture/block.json llm_provider default is none; deepseek/openrouter/anthropic model defaults are empty strings",
+    "ProductGenerator._write_env_example still comments CEREBRUM_API_URL and names that leftover",
+    "No chat block module was added; ui_schema_builder is mentioned only as unused",
+    "Factory host coder/architect httpx is builder-side, not a delivered-product capture/chat requirement"
+  ],
+  "disagreements": [],
+  "agrees_blocks_residual": true,
+  "agrees_generator_exception": true,
+  "agrees_catalog_f22_not_f21": true
+}

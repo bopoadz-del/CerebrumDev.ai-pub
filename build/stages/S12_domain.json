@@ -1,0 +1,112 @@
+{
+  "stage": "S12",
+  "name": "DOMAIN ACCEPTANCE",
+  "evaluated_at": "2026-08-23T10:45:00Z",
+  "verdict": "PASS",
+  "first_failing_criterion": null,
+  "pass_criteria": {
+    "ten_named_capability_contract_outcomes": true,
+    "outcomes_performed_through_execute_action": true,
+    "crud_persist_and_read_back": true,
+    "queue_item_processed_not_noop": true,
+    "refused_action_returns_real_error": true,
+    "list_returns_only_persisted_rows": true,
+    "idempotent_duplicate_safe": true,
+    "unauthorized_and_missing_field_rejected": true,
+    "lotdesk_fails_all_ten": true,
+    "harness_emitted_from_role_runner": true,
+    "llm_route_authorship_not_restored": true
+  },
+  "outcomes": {
+    "create_persists": {
+      "status": "performed",
+      "via": "execute_action product.create then store.get",
+      "closes": "F6"
+    },
+    "read_returns_persisted": {
+      "status": "performed",
+      "via": "execute_action product.read",
+      "closes": "F6"
+    },
+    "update_persists": {
+      "status": "performed",
+      "via": "execute_action product.update then store.get",
+      "closes": "F6"
+    },
+    "delete_persists": {
+      "status": "performed",
+      "via": "execute_action product.delete then store.get",
+      "closes": "F6"
+    },
+    "list_only_persisted": {
+      "status": "performed",
+      "via": "execute_action product.list vs store.list_all",
+      "closes": "F6"
+    },
+    "queue_item_processed": {
+      "status": "performed",
+      "via": "execute_action product.enqueue then product.process",
+      "closes": "F5"
+    },
+    "refused_action_errors": {
+      "status": "performed",
+      "via": "execute_action product.refuse + invalid enum",
+      "closes": "F1,F12"
+    },
+    "idempotent_duplicate_safe": {
+      "status": "performed",
+      "via": "execute_action product.create with idempotency_key",
+      "closes": "F6"
+    },
+    "unauthorized_rejected": {
+      "status": "performed",
+      "via": "execute_action with empty permissions",
+      "closes": "F15"
+    },
+    "missing_field_rejected": {
+      "status": "performed",
+      "via": "execute_action product.create missing required field",
+      "closes": "F4"
+    }
+  },
+  "failed": [],
+  "performed": [
+    "create_persists",
+    "read_returns_persisted",
+    "update_persists",
+    "delete_persists",
+    "list_only_persisted",
+    "queue_item_processed",
+    "refused_action_errors",
+    "idempotent_duplicate_safe",
+    "unauthorized_rejected",
+    "missing_field_rejected"
+  ],
+  "implementation": {
+    "module": "backend/app/factory/build/domain_acceptance.py",
+    "wired_from": "backend/app/factory/build/roles.py emit_domain_artifacts + TESTER tests/test_domain_acceptance.py",
+    "kernel": "app/cerebrum_product_kernel/contract/runtime.py execute_action",
+    "store": "app/store.py save/get/update/delete; Alembic 0001 adds work_queue + idempotency",
+    "queue": "app/work_queue.py enqueue pending; process marks processed|failed with ActionResult",
+    "http": "PUT/DELETE /v1/{capability}/{id} and /v1/work_queue call perform() → execute_action"
+  },
+  "lotdesk": {
+    "fixture": "fixture only; not patched",
+    "gate": "reject_lotdesk_domain",
+    "ok": false,
+    "failed_all_ten": true,
+    "codes": ["F1", "F5", "F6"],
+    "reasons": {
+      "always_200": "GET /health returns {status: ok}",
+      "missing_update_delete": "store.py has save/get/list_all only",
+      "hollow_queue": "vendor/blocks/queue present; no persisted process transition"
+    }
+  },
+  "suite": {
+    "command": "cd backend && ENV=test ./venv/bin/python -m pytest tests/factory",
+    "result": "383 passed, 1 skipped in 166.22s"
+  },
+  "not_claimed": ["PILOT_READY", "S13", "LotDesk patched to pass", "LLM-authored route bodies"],
+  "stop": "S12 PASS. Ten outcomes performed through execute_action. Do not start S13. Not PILOT_READY.",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "analytics",
+  "name": "analytics",
+  "version": "1.0.0",
+  "description": "Factory vendor mirror of Cerebrum-Blocks block 'analytics' for dual-registration when Blocks checkout is unavailable (CI). Canonical upstream remains Cerebrum-Blocks — do not diverge.",
+  "source": "factory-vendor-mirror",
+  "upstream": "cerebrum-blocks/block_registry/analytics",
+  "layer": 1,
+  "tags": ["platform", "factory-mirror", "steward-kit"]
+}

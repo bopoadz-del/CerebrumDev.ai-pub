@@ -1,0 +1,219 @@
+# Gate replay (owner rule, 2026-10-08): every change to the gate is replayed,
+# BEFORE merge, on the newest N build branches this gate certified (N:
+# .github/gate_replay.json). A gate that fails a previously certified export
+# is a gate defect until proven a product defect.
+#
+# Two callers, one gate:
+# * a PR here that changes the gate (scripts or workflow): the PR's gate runs
+#   on each certified build as it was certified;
+# * the Factory (<private-repo> gate-replay.yml), for a change to the files it
+#   renders into every product or to how it reads a gate result: dispatched
+#   with `factory_ref`, the Factory at that sha re-renders its files onto
+#   each certified build first, and routes each result through its ingest.
+#
+# The gate itself is store-gate.yml, called -- never a copy of its steps.
+
+name: Gate replay
+run-name: ${{ inputs.request && format('gate replay {0}', inputs.request) || 'gate replay' }}
+
+on:
+  pull_request:
+    paths:
+      - ".github/store_gate/**"
+      - ".github/workflows/store-gate.yml"
+      - ".github/workflows/image-mirror.yml"
+      - ".github/workflows/gate-replay.yml"
+      - ".github/gate_replay.json"
+  workflow_dispatch:
+    inputs:
+      factory_ref:
+        description: Factory (<private-repo>) sha whose rendered files and ingest rule are replayed.
+        required: false
+        default: ""
+      certified_branches:
+        description: How many certified builds to replay on (default from .github/gate_replay.json).
+        required: false
+        default: ""
+      request:
+        description: The caller's id for this run (names the run so the caller can find it).
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  statuses: read
+
+env:
+  FACTORY_REPO: ${{ vars.FACTORY_REPO }}
+  FACTORY_REF: ${{ inputs.factory_ref }}
+
+jobs:
+  select:
+    name: select certified builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPLAY_N: ${{ inputs.certified_branches }}
+        run: python3 .github/store_gate/replay_select.py --repo "${{ github.repository }}" --out selection.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replay-selection
+          path: selection.json
+
+  render:
+    name: render the Factory under replay (${{ matrix.label }})
+    needs: select
+    if: ${{ inputs.factory_ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          path: product
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FACTORY_REPO }}
+          ref: ${{ env.FACTORY_REF }}
+          path: factory
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --quiet -r factory/backend/requirements-replay.txt
+      - name: Re-render the Factory's files onto the certified build
+        working-directory: factory/backend
+        env:
+          PYTHONPATH: .
+        run: python -m app.factory.build.gate_replay render "$GITHUB_WORKSPACE/product" --changed "$GITHUB_WORKSPACE/changed.txt"
+      - name: Collect the re-rendered files
+        run: |
+          set -euo pipefail
+          mkdir -p overlay
+          touch overlay/.gate-replay-overlay
+          while IFS= read -r rel; do
+            [ -n "$rel" ] || continue
+            mkdir -p "overlay/$(dirname "$rel")"
+            cp "product/$rel" "overlay/$rel"
+          done < changed.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overlay-${{ matrix.label }}
+          path: overlay/
+          include-hidden-files: true
+
+  replay:
+    name: replay (${{ matrix.label }})
+    needs: [select, render]
+    if: ${{ always() && needs.select.result == 'success' && (needs.render.result == 'success' || needs.render.result == 'skipped') }}
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+      # The gate pulls its service and base images from the account's own
+      # mirror on ghcr.io with the built-in token (image-mirror.yml).
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
+    uses: ./.github/workflows/store-gate.yml
+    with:
+      product_sha: ${{ matrix.sha }}
+      replay_label: ${{ matrix.label }}
+      overlay_artifact: ${{ inputs.factory_ref && format('overlay-{0}', matrix.label) || '' }}
+
+  route:
+    name: route through the Factory under replay (${{ matrix.label }})
+    needs: [select, replay]
+    if: ${{ always() && inputs.factory_ref && needs.select.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          path: product
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FACTORY_REPO }}
+          ref: ${{ env.FACTORY_REF }}
+          path: factory
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: overlay-${{ matrix.label }}
+          path: product
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gate-replay-${{ matrix.label }}
+          path: result
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --quiet -r factory/backend/requirements-replay.txt
+      - name: Route the replayed result through the Factory's ingest rule
+        working-directory: factory/backend
+        env:
+          PYTHONPATH: .
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/routing"
+          python -m app.factory.build.gate_replay verdict "$GITHUB_WORKSPACE/product" \
+            "$GITHUB_WORKSPACE/result/store_gate.json" --branch "${{ matrix.branch }}" \
+            --out "$GITHUB_WORKSPACE/routing/${{ matrix.label }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routing-${{ matrix.label }}
+          path: routing/
+
+  verdict:
+    # The PR check. Fails when any certified build no longer passes.
+    name: gate replay (certified builds)
+    needs: [select, render, replay, route]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: The selection must have run
+        if: ${{ needs.select.result != 'success' }}
+        run: |
+          echo "no certified build was selected (select: ${{ needs.select.result }}): the gate change cannot be replayed"
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: replay-selection
+          path: .
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: gate-replay-*
+          path: results
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.factory_ref }}
+        continue-on-error: true
+        with:
+          pattern: routing-*
+          path: routing
+          merge-multiple: true
+      - name: Compare with the certified results
+        run: |
+          set -euo pipefail
+          ROUTING=""
+          if [ -n "${FACTORY_REF}" ]; then ROUTING="--routing routing"; fi
+          python3 .github/store_gate/replay_flips.py selection.json results $ROUTING

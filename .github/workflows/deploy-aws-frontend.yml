@@ -1,0 +1,74 @@
+# Build the SPA and push it to ECR, then roll the ECS service.
+#
+# VITE_API_URL names the API's own hostname on purpose. Two traps sit behind
+# that one line, and the second one is the reason it is not empty.
+#
+# Vite bakes this value into the bundle at build time, so it is a constant the
+# SPA carries until someone rebuilds it. Trap one: the ALB's own hostname was
+# baked in as http://. Once DNS moved, the page was served over HTTPS and kept
+# calling http://...elb.amazonaws.com -- mixed content, which browsers block
+# outright. The cutover looked done and the app was dead.
+#
+# Trap two: empty looks like the fix. frontend/src/api/factory.ts reads
+# `VITE_API_URL || ''`, so empty makes every call same-origin, and same-origin
+# does resolve under the load balancer's own name -- the :80 listener routes by
+# PATH (/v1/*, /health, /ready, /version, /docs, /openapi.json to the backend
+# target group, everything else to this SPA). But :443 does not. It routes by
+# HOST: api.cerebrum-dev.com to the backend, cerebrum-dev.com and
+# www.cerebrum-dev.com to this SPA, projecteleven elsewhere. So over HTTPS
+# `https://www.cerebrum-dev.com/v1/auth/me` returns this SPA's index.html with
+# status 200 and content-type text/html -- never the API. Same-origin is
+# correct on :80 and dead on :443, and :443 is what the public gets.
+#
+# Hence the API's own host. That makes the calls cross-origin, which is already
+# provided for: backend/app/core/cors_policy.py pins https://www.cerebrum-dev.com
+# in PRODUCTION_DEFAULT_ALLOWLIST, and the live API returns it in
+# access-control-allow-origin with allow-credentials true.
+#
+# Why this URL is safe to bake when the ALB's was not: it is https, so no mixed
+# content, and it is a stable public hostname rather than the load balancer's
+# generated name, so replacing the load balancer does not require a rebuild.
+name: deploy-aws-frontend
+
+on:
+  push:
+    branches: [master]
+    paths: ['frontend/**', '.github/workflows/deploy-aws-frontend.yml']
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: cerebrumdev-frontend
+  ECS_CLUSTER: cerebrum
+  ECS_SERVICE: cerebrumdev-frontend
+  VITE_API_URL: https://api.cerebrum-dev.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY"
+          docker build -f frontend/Dockerfile.prod             --build-arg VITE_API_URL="$VITE_API_URL"             -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" frontend
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+      - name: Roll the service if it exists
+        run: |
+          count=$(aws ecs describe-services --cluster "$ECS_CLUSTER"             --services "$ECS_SERVICE"             --query 'length(services[?status==`ACTIVE`])' --output text 2>/dev/null || echo 0)
+          if [ "$count" = "1" ]; then
+            aws ecs update-service --cluster "$ECS_CLUSTER"               --service "$ECS_SERVICE" --force-new-deployment >/dev/null
+            echo "deployment triggered"
+          else
+            echo "image pushed; service not created yet"
+          fi

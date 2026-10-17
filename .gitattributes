@@ -1,0 +1,19 @@
+# Line endings: every text file is stored with LF on every platform; git's own
+# detection decides text vs binary per file.
+* text=auto eol=lf
+
+# Binary types present in this tree: stored and checked out byte for byte.
+*.zip binary
+
+# GOLD/ratified documents are hash-pinned in tests; preserve LF on all platforms.
+docs/COMMERCIAL_TIERS.md text eol=lf
+docs/PHASE2_SCOUT_LAW.md text eol=lf
+docs/PLATFORM_TIERS.md text eol=lf
+docs/REASONING_KERNEL.md text eol=lf
+docs/REASONING_KERNEL_OWNERSHIP.md text eol=lf
+docs/REASONING_KERNEL_V01_MISSION.md text eol=lf
+docs/UNIVERSAL_KERNEL.md text eol=lf
+
+# The gate replay handover (cerebrum-builds .github/gate_handover/) is pinned by
+# sha256 in its manifest: its bytes are never converted on any platform.
+.github/gate_replay/vendor/** -text

@@ -1,0 +1,11 @@
+# Optional heavier embedding / document-parsing backends.
+# Install this group only when you need the full local embedding stack or
+# higher-quality PDF parsing. The default fastembed backend in requirements.txt
+# is sufficient for RAG on a normal CPU install.
+
+# sentence-transformers pulls torch and larger transformer models; use it when
+# you need models not available via fastembed's ONNX hub.
+sentence-transformers>=6.1.0
+
+# High-quality local PDF -> Markdown extraction (pulls torch + ~1.35 GB weights).
+marker-pdf>=2.0.0

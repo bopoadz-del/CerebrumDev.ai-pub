@@ -1,0 +1,26 @@
+{
+  "stage": "S4",
+  "name": "SHIP_KERNEL",
+  "evaluated_at": "2026-08-23T07:07:00Z",
+  "verdict": "PASS",
+  "diagnosis_revision": "draft3_u10_two_emitters_kernel_not_shipped",
+  "one_sentence": "role_runner now vendors cerebrum_product_kernel and routes capability POST through execute_action; no new persist-wrapper was added.",
+  "closed": [
+    "U12 — kernel shipped under app/cerebrum_product_kernel/; kernel_bridge.run_capability awaits execute_action",
+    "U5 route displacement — _coder_route_body returns None so an LLM cannot author the HTTP path"
+  ],
+  "not_a_persist_wrapper": {
+    "kernel_bridge": "adapts sync handle() to ActionOutcome only",
+    "persist": "still save(payload) in _templated_route_body after ActionStatus.SUCCESS",
+    "execute_action": "backend/app/cerebrum_product_kernel/contract/runtime.py — unchanged contract"
+  },
+  "tests": {
+    "file": "backend/tests/factory/test_role_runner_kernel.py",
+    "factory_suite": "327 passed"
+  },
+  "s4_priority_remaining": [
+    "F18 _DISPATCH_RUNTIME / _default_block_field fabrication still emitted; handlers still call dispatch.execute. Not deleted because existing test_block_action_contract and generated TESTER dispatch tests require it. Kernel wrap does not remove that layer.",
+    "Emitter fixes F3/F7/F24/F28/F10/F17/F19/F9/F11/F16 not done in this stage"
+  ],
+  "links_1_to_5": "U1–U5 individual closes not required for U12; U5 route path is closed as support for U12. U4 _ensure_route_persists_payload remains for leftover bodies."
+}

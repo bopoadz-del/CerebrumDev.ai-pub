@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "algorithm": {
+      "const": "sha256",
+      "type": "string"
+    },
+    "files": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "read_only": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "algorithm",
+    "files",
+    "read_only"
+  ],
+  "title": "checksum_manifest",
+  "type": "object"
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_fleet_delivery_logistics",
+  "name": "Delivery Fleet Planner",
+  "vertical": "fleet_delivery_logistics",
+  "country": "SA",
+  "currency": "SAR",
+  "build_level": "production",
+  "brief": "Build me a fleet platform for a regional delivery company: track vans and drivers, plan each day's delivery routes with their stops, log fuel and maintenance costs per vehicle, and record proof of delivery for every stop."
+}

@@ -1,0 +1,6 @@
+{
+  "edge_profile": "standard",
+  "human_authority": true,
+  "isolation": "property",
+  "pii_in_learning": false
+}

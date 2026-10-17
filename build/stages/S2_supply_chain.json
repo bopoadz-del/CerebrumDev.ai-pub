@@ -1,0 +1,137 @@
+{
+  "stage": "S2",
+  "name": "SUPPLY_CHAIN",
+  "evaluated_at": "2026-08-25T12:55:16Z",
+  "emitter": "app.factory.build.supply_chain.evaluate_supply_chain",
+  "verdict": "PASS",
+  "ok": true,
+  "first_failing_criterion": null,
+  "git_sha": "1779089fd8095b4dfc286a934385a2eeb56b713d",
+  "python_base_image": {
+    "from": "python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+    "digest": "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+    "source": "https://hub.docker.com/v2/repositories/library/python/tags/3.12-slim",
+    "kind": "manifest_list_digest",
+    "note": "Floating :3.12-slim tag may move. S2 verifies the recorded digest still resolves at the registry, not that it still is the tag."
+  },
+  "pin_verification": {
+    "ok": true,
+    "performed": true,
+    "first_failing": null,
+    "local": {
+      "kind": "local_parse_vs_recorded",
+      "performed": true,
+      "ok": true,
+      "claimed": true,
+      "ref": "python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "digest": "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "recorded": "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "reason": ""
+    },
+    "registry": {
+      "kind": "registry_manifest",
+      "performed": true,
+      "ok": true,
+      "claimed": true,
+      "digest": "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "registry_digest": "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "bytes": 10373,
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "repo": "library/python",
+      "reason": ""
+    },
+    "configured_only": false
+  },
+  "signature": {
+    "kind": "cosign",
+    "performed": false,
+    "ok": false,
+    "claimed": false,
+    "tool": "cosign",
+    "ref": "python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+    "reason": "cosign not on PATH; refusing to claim signatures"
+  },
+  "sbom": {
+    "ok": true,
+    "format": "CycloneDX",
+    "specVersion": "1.5",
+    "path": "docs/sbom.cdx.json",
+    "reason": "",
+    "serialNumber": "urn:uuid:95059926-ef31-5a99-99bf-618d76881f25"
+  },
+  "f21_permissions": {
+    "ok": true,
+    "title": "permissions-vs-behaviour (THIS TURN F21; S1 F22 is capture network:false vs cloud, closed in S7)",
+    "declared": {
+      "schema_version": "product_permissions.v1",
+      "network": false,
+      "filesystem": true,
+      "install": true,
+      "network_scope": "runtime_outbound",
+      "filesystem_scope": "STORAGE_PATH sqlite and alembic",
+      "install_scope": "image_build pip",
+      "posture": "P1"
+    },
+    "observed": {
+      "network": false,
+      "filesystem": true,
+      "install": true
+    },
+    "findings": []
+  },
+  "pass_criteria": {
+    "generated_dockerfile_digest_pinned": true,
+    "latest_fails": true,
+    "floating_tag_fails": true,
+    "digest_fetched_not_invented": true,
+    "pin_verification_performed": true,
+    "pin_verification_ok": true,
+    "sbom_emitted": true,
+    "f21_permissions_match_behaviour": true,
+    "signature_claimed": false,
+    "signature_performed": false,
+    "coder_route_body_is_None": true
+  },
+  "checks_performed": {
+    "dockerfile_from_parse": true,
+    "local_digest_vs_recorded": true,
+    "registry_manifest_get": true,
+    "sbom_build": true,
+    "permissions_reconcile": true,
+    "cosign_verify": false
+  },
+  "checks_configured": {
+    "PYTHON_312_SLIM_DIGEST": true,
+    "PYTHON_312_SLIM_FROM": true,
+    "assert_generated_dockerfile": true,
+    "cosign_policy": false
+  },
+  "implementation": {
+    "module": "backend/app/factory/build/supply_chain.py",
+    "dockerfile_emitters": [
+      "backend/app/factory/build/roles.py::_render_dockerfile",
+      "backend/app/factory/generator.py::_write_runtime_packaging"
+    ],
+    "sbom": "RoleRunner WRITER writes docs/sbom.cdx.json (CycloneDX 1.5)",
+    "f21": "reconcile_permissions vs Dockerfile + entrypoint + network_posture",
+    "cloner": "redacts cloned block.json :latest image fields; records image_pin=refused_unverified; does not invent a replacement digest"
+  },
+  "residuals": [
+    "F20: factory vendor_blocks_mirror audit/capture source files still contain execution.image :latest. CLONER refuses those strings as pins on copy.",
+    "Signatures: cosign not performed; S2 does not claim signed. Pin is verified by registry manifest GET of the recorded digest.",
+    "CI ubuntu-latest is the GitHub-hosted runner OS, not a product image."
+  ],
+  "not_invented": [
+    "chat block id",
+    "GHCR cerebrum-blocks image digests",
+    "cosign signatures for library/python"
+  ],
+  "PILOT_READY": false,
+  "not_claimed": [
+    "PILOT_READY",
+    "cosign / image signature verification",
+    "S3 dealership Domain Pack"
+  ],
+  "lotdesk": "fixture only; not patched",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None"
+}

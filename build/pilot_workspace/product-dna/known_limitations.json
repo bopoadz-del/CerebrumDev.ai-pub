@@ -1,0 +1,10 @@
+{
+  "limitations": [
+    "Resident Engineer starts APPRENTICE \u2014 dual certification pending",
+    "Minor repairs require predefined catalog contracts",
+    "Product DNA deployment_topology/test_catalog are empty until Factory owns that data",
+    "Entity model stubs populated for estate vertical; work_order/budget/staff tables deferred",
+    "Migration 0001 still uses create_all \u2014 residual G5 gap documented in 0001 revision"
+  ],
+  "schema_version": "1.0.0"
+}

@@ -1,0 +1,8 @@
+#!/bin/sh
+# NO HARDWIRING is a blocking gate, locally as in CI (owner rule 2026-10-08):
+# a non-zero scan stops the commit. Run the scanner directly -- never through
+# a pipe (`scan | tail` reports tail's exit code, which is how a new form was
+# once committed and pushed). Install with scripts/install_git_hooks.sh.
+set -e
+root="$(git rev-parse --show-toplevel)"
+python3 "$root/scripts/scan_hardwiring.py"

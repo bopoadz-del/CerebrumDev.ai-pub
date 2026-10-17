@@ -1,0 +1,58 @@
+{
+  "stage": "S4",
+  "name": "ship_kernel",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S4_ship_kernel.json",
+  "reread_at": "2026-08-24T00:30:00Z",
+  "independent": true,
+  "reader": "gates-lane reread after #188, #189, #190",
+  "base": "origin/master@5d37eb71 (#189 after #190 after #188)",
+  "supersedes": "build/stages/S4_ship_kernel.reread.json PASS of 2026-08-23, which agreed on the verdict but recorded a disagreement: 'S4 priority list also asked to delete F18 and then fix emitters. Those items are not done.' That was true when written. Each item was re-checked against a product generated from merged master and is recorded below with what was actually run.",
+  "method": "Generated a warehouse-operations product from origin/master@5d37eb71 via product_architect.generate_product, then inspected the emitted tree. Counts are from that build, not from the emitter source alone.",
+  "s4_priority_recheck": {
+    "F18_fabrication_deleted": {
+      "result": "PASS",
+      "evidence": "grep -c '_ALWAYS_FILL|_default_block_field' backend/app/factory/build/roles.py -> 0. The _DISPATCH_RUNTIME template no longer fabricates metric/value/query/steps or a {'status':'ok'} envelope."
+    },
+    "F3_update_transition_delete": {
+      "result": "PASS",
+      "evidence": "4 @router.put/patch/delete routes in the emitted app/routes.py"
+    },
+    "F7_filter_sort_page": {
+      "result": "PASS",
+      "evidence": "app/store.py emits query(); app/routes.py refuses unknown query fields (2 sites). Exercised on a live product: ?status=open returned 2 of 3, ?limit=1&offset=2 returned the third row, ?sort=quantity&order=desc ordered correctly, and ?staus=open / ?sort=1;DROP+TABLE+audit / ?limit=99999 were each refused. Closed by #190."
+    },
+    "F24_fail_closed_health": {
+      "result": "PASS",
+      "evidence": "app/health.py emitted with 12 dependency-check references; render.yaml sets healthCheckPath: /health; app/main.py lifespan calls upgrade_head() so a revision behind head refuses boot. A prior report of F24 as open was a false negative from grepping products for /ready, which is the factory's endpoint, not the product's."
+    },
+    "F28_observability": {
+      "result": "PASS",
+      "evidence": "app/observe.py emitted, 7 request_id references; JSON request lines observed live (\"POST /v1/audit 200\" with request_id)"
+    },
+    "F19_gate_in_image": {
+      "result": "PASS",
+      "evidence": "emitted Dockerfile references scripts/release_gate.py"
+    },
+    "F9_one_datastore": {
+      "result": "PASS",
+      "evidence": "no .db files committed in the emitted tree; schema applied by Alembic, not by connect()"
+    },
+    "F10_requirements_reconciled": {
+      "result": "PASS",
+      "evidence": "Reconciled every third-party import in the emitted tree against requirements.txt + requirements-dev.txt. Found starlette imported at runtime by app/observe.py and undeclared -- satisfied only transitively via fastapi. Declared it explicitly; re-reconciled: MISSING FROM BOTH -> none."
+    }
+  },
+  "not_closed_and_not_claimed": {
+    "F17_capture_ocr": "N/A for this product rather than closed: the warehouse blueprint binds no capture block, so the emitted lockfile has no capture entry. A blueprint that binds it has not been re-checked here.",
+    "F11_uninvoked_block_ids": "Satisfied by construction, NOT enforced. The deterministic handler template loops over BLOCK_IDS and executes each, so no emitted handler declares a block it does not reach -- verified across the emitted actions. There is still no gate that would fail a build if one did. Recorded as an open enforcement gap, not a closure.",
+    "F16_ui_schema_canonical_shape": "NOT VERIFIED. Two factory modules reference ui_schema; the round-trip adapter between the block.json array shape and the Python class dict shape was not exercised in this reread."
+  },
+  "disagreements": [],
+  "not_claimed": [
+    "PILOT_READY",
+    "U6 STORE_MANAGER harvest remains unbuilt",
+    "That inspect_pilot_cycle ties the proven pilot cycle to the revision under promotion -- it does not; that needs an artifact-identity comparison"
+  ],
+  "lotdesk": "fixture only; not patched"
+}

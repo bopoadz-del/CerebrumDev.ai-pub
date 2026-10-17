@@ -1,0 +1,39 @@
+{
+  "stage": "S12",
+  "name": "domain",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S12_domain.json",
+  "reread_at": "2026-08-23T10:46:00Z",
+  "independent": true,
+  "reader": "cloud-agent-s12-domain-acceptance",
+  "checked": [
+    "OUTCOMES in domain_acceptance.py is exactly ten named capability-contract outcomes (CRUD + list + queue + refuse + idempotent + unauthorized + missing-field)",
+    "WRITER emit_domain_artifacts writes app/domain_ops.py, app/work_queue.py, docs/domain_acceptance.json; TESTER writes tests/test_domain_acceptance.py with @pytest.mark.pilot perform_all",
+    "store.py now emits update() and delete(); 0001_baseline creates work_queue and idempotency; head remains 0002_lifecycle_audit",
+    "domain_ops.perform / perform_all call cerebrum_product_kernel execute_action; HTTP PUT/DELETE/work_queue call perform_domain, not unconditional ok:true",
+    "factory test_ten_outcomes_are_performed_through_execute_action probes a RoleRunner smoke build and asserts all ten status=performed",
+    "reject_lotdesk_domain: ok=false, failed=all ten, F1+F5+F6 present; fixture not patched",
+    "roles._coder_route_body still returns None; prepare_pilot_workspace absent from runner.py and pilot.py",
+    "PILOT_READY string absent from domain_acceptance.py and emitted docs/domain_acceptance.json",
+    "full tests/factory: 383 passed, 1 skipped"
+  ],
+  "disagreements": [],
+  "outcomes_reread": {
+    "create_persists": "performed",
+    "read_returns_persisted": "performed",
+    "update_persists": "performed",
+    "delete_persists": "performed",
+    "list_only_persisted": "performed",
+    "queue_item_processed": "performed",
+    "refused_action_errors": "performed",
+    "idempotent_duplicate_safe": "performed",
+    "unauthorized_rejected": "performed",
+    "missing_field_rejected": "performed"
+  },
+  "probe": {
+    "factory_s12": "ENV=test ./venv/bin/python -m pytest tests/factory/test_domain_acceptance.py — 4 passed",
+    "full_factory": "383 passed, 1 skipped"
+  },
+  "not_claimed": ["PILOT_READY", "S13"],
+  "stop": "S12 independently re-read PASS. Do not start S13. Not PILOT_READY."
+}

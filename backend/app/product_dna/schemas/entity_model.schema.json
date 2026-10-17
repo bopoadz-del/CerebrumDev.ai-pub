@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "entities": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "relationships": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "entities",
+    "relationships"
+  ],
+  "title": "entity_model",
+  "type": "object"
+}

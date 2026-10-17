@@ -1,0 +1,542 @@
+{
+  "schema_version": "domain_pack.v1",
+  "domain_id": "dealership",
+  "product_id": "runner-smoke",
+  "product_name": "Role Runner Smoke Product",
+  "contract": "backend/app/factory/delivery_standard.py:DOMAIN_PACK_FIELDS",
+  "field_count": 15,
+  "fields_order": [
+    "domain_purpose",
+    "primary_users",
+    "required_roles",
+    "required_product_modules",
+    "core_business_workflows",
+    "authoritative_calculations",
+    "domain_rules",
+    "high_impact_actions",
+    "prohibited_autonomous_actions",
+    "data_sources",
+    "required_connectors",
+    "required_exports",
+    "security_regulatory_rules",
+    "demo_data_requirements",
+    "domain_acceptance_conditions"
+  ],
+  "header": {
+    "platform_name": "Role Runner Smoke Product",
+    "domain": "Automotive retail dealership operations",
+    "product_type": "Dealership operations platform",
+    "target_users": "Sales managers, F&I managers, service advisors, inventory controllers",
+    "mission": "A dealership operations platform where inventory, sales, F&I and service run through execute_action with a status machine, VIN class validation, and human confirmation on high-impact actions."
+  },
+  "kernel_entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+  "status_machine": {
+    "entity": "vehicle",
+    "field": "status",
+    "initial": "inbound",
+    "terminal": [
+      "delivered",
+      "unwound"
+    ],
+    "states": [
+      "inbound",
+      "inspected",
+      "priced",
+      "listed",
+      "sold",
+      "delivered",
+      "unwound"
+    ],
+    "transitions": [
+      [
+        "inbound",
+        "inspected"
+      ],
+      [
+        "inspected",
+        "priced"
+      ],
+      [
+        "priced",
+        "listed"
+      ],
+      [
+        "listed",
+        "sold"
+      ],
+      [
+        "sold",
+        "delivered"
+      ],
+      [
+        "listed",
+        "unwound"
+      ],
+      [
+        "sold",
+        "unwound"
+      ]
+    ],
+    "via": "execute_action product.update",
+    "skip_is": "validation_error",
+    "closes": "F7"
+  },
+  "fields": {
+    "domain_purpose": {
+      "value": "One system of record for vehicle inventory, sales desk, F&I, and service repair orders in a retail dealership.",
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create",
+          "product.read",
+          "product.update",
+          "product.delete",
+          "product.list"
+        ],
+        "permissions": [
+          "product.write",
+          "product.read"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [
+          "create_persists",
+          "read_returns_persisted"
+        ],
+        "confirmation_required": false
+      }
+    },
+    "primary_users": {
+      "value": [
+        "Sales consultant",
+        "F&I manager",
+        "Service advisor",
+        "Inventory controller"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.read"
+        ],
+        "permissions": [
+          "product.read"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.models.ActionContext"
+        ],
+        "outcomes": [],
+        "confirmation_required": false
+      }
+    },
+    "required_roles": {
+      "value": [
+        "dealership_admin",
+        "sales_manager",
+        "fi_manager",
+        "service_advisor",
+        "viewer"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create",
+          "product.read",
+          "product.update",
+          "product.delete",
+          "product.list",
+          "product.enqueue",
+          "product.process"
+        ],
+        "permissions": [
+          "product.write",
+          "product.read",
+          "product.process"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.models.ActionSpec.permissions"
+        ],
+        "outcomes": [],
+        "confirmation_required": false
+      }
+    },
+    "required_product_modules": {
+      "value": [
+        "Vehicle inventory / lot",
+        "Sales desk",
+        "F&I",
+        "Service repair order",
+        "Customer record",
+        "Compliance jacket"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create",
+          "product.read",
+          "product.update",
+          "product.delete",
+          "product.list"
+        ],
+        "permissions": [
+          "product.write",
+          "product.read"
+        ],
+        "contracts": [
+          "app.factory.build.domain_acceptance.compact_specs",
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [],
+        "confirmation_required": false,
+        "capabilities": [
+          "analytics_surface",
+          "dashboard_surface"
+        ]
+      }
+    },
+    "core_business_workflows": {
+      "value": [
+        "VIN inbound \u2192 inspect \u2192 price \u2192 list \u2192 sell \u2192 F&I \u2192 deliver",
+        "Service RO intake \u2192 diagnose \u2192 approve \u2192 close"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.enqueue",
+          "product.process"
+        ],
+        "permissions": [
+          "product.write",
+          "product.process"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [
+          "queue_item_processed"
+        ],
+        "confirmation_required": false
+      }
+    },
+    "authoritative_calculations": {
+      "value": [
+        "VIN character class and length (ISO 3779) via input_schema",
+        "Deal pack fees, tax, and payoff as stored fields \u2014 not HTTP 200"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create",
+          "product.update"
+        ],
+        "permissions": [
+          "product.write"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.runtime.execute_action",
+          "app.cerebrum_product_kernel.contract.schema_validation.validate"
+        ],
+        "outcomes": [
+          "missing_field_rejected"
+        ],
+        "confirmation_required": false,
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "vin"
+          ],
+          "properties": {
+            "vin": {
+              "type": "string",
+              "minLength": 17,
+              "maxLength": 17,
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$",
+              "description": "ISO 3779 VIN class; check-digit math is not claimed"
+            }
+          }
+        },
+        "closes": "F3",
+        "check_digit_claimed": false
+      }
+    },
+    "domain_rules": {
+      "value": [
+        "Vehicle status follows DEALERSHIP_STATUS_MACHINE; skips are validation_error",
+        "VIN is immutable after product.create",
+        "A listed vehicle cannot jump to delivered"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.update"
+        ],
+        "permissions": [
+          "product.write"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [],
+        "confirmation_required": false,
+        "status_machine": {
+          "entity": "vehicle",
+          "field": "status",
+          "initial": "inbound",
+          "terminal": [
+            "delivered",
+            "unwound"
+          ],
+          "states": [
+            "inbound",
+            "inspected",
+            "priced",
+            "listed",
+            "sold",
+            "delivered",
+            "unwound"
+          ],
+          "transitions": [
+            [
+              "inbound",
+              "inspected"
+            ],
+            [
+              "inspected",
+              "priced"
+            ],
+            [
+              "priced",
+              "listed"
+            ],
+            [
+              "listed",
+              "sold"
+            ],
+            [
+              "sold",
+              "delivered"
+            ],
+            [
+              "listed",
+              "unwound"
+            ],
+            [
+              "sold",
+              "unwound"
+            ]
+          ],
+          "via": "execute_action product.update",
+          "skip_is": "validation_error",
+          "closes": "F7"
+        }
+      }
+    },
+    "high_impact_actions": {
+      "value": [
+        "Retail price publication",
+        "Deal finalization",
+        "F&I product add",
+        "Repair-order close",
+        "Title transfer"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.update",
+          "product.process"
+        ],
+        "permissions": [
+          "product.write",
+          "product.process"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.models.ActionSpec"
+        ],
+        "outcomes": [],
+        "confirmation_required": true,
+        "risk_classification": "high"
+      }
+    },
+    "prohibited_autonomous_actions": {
+      "value": [
+        "Title transfer without a human-approved execute_action",
+        "Overwriting VIN after create",
+        "Silent deal recast"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.refuse"
+        ],
+        "permissions": [
+          "product.write"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [
+          "refused_action_errors",
+          "unauthorized_rejected"
+        ],
+        "confirmation_required": false,
+        "status": "permission_denied"
+      }
+    },
+    "data_sources": {
+      "value": [
+        "OEM invoices",
+        "VIN records (offline fixture; P1 has no live decode)",
+        "DMS exports (CSV/XLSX)",
+        "Service history files"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create"
+        ],
+        "permissions": [
+          "product.write"
+        ],
+        "contracts": [
+          "app.factory.build.converge:app/connectors"
+        ],
+        "outcomes": [],
+        "confirmation_required": false
+      }
+    },
+    "required_connectors": {
+      "value": [
+        "File ingest (CSV, XLSX, PDF) under app/connectors",
+        "Offline VIN fixture \u2014 live NHTSA is not claimed on P1"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create"
+        ],
+        "permissions": [
+          "product.write"
+        ],
+        "contracts": [
+          "app/connectors"
+        ],
+        "outcomes": [],
+        "confirmation_required": false,
+        "network": false,
+        "posture": "P1"
+      }
+    },
+    "required_exports": {
+      "value": [
+        "Inventory list (CSV)",
+        "Deal jacket (PDF)",
+        "RO closeout (PDF)"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.read",
+          "product.list"
+        ],
+        "permissions": [
+          "product.read"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [],
+        "confirmation_required": false,
+        "read_only": true
+      }
+    },
+    "security_regulatory_rules": {
+      "value": [
+        "Customer F&I and GLBA data stay in tenant scope",
+        "Cross-dealership access is 404-not-403",
+        "Reserved ActionContext keys cannot be set from arguments"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.read"
+        ],
+        "permissions": [
+          "product.read"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.isolation",
+          "app.cerebrum_product_kernel.contract.models.RESERVED_CONTEXT_KEYS"
+        ],
+        "outcomes": [
+          "unauthorized_rejected"
+        ],
+        "confirmation_required": false
+      }
+    },
+    "demo_data_requirements": {
+      "value": [
+        "Labeled demo VINs (not production)",
+        "One demo deal and one demo RO per required role"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create"
+        ],
+        "permissions": [
+          "product.write"
+        ],
+        "contracts": [
+          "app.cerebrum_product_kernel.contract.models.ActionSpec.evaluation_fixtures"
+        ],
+        "outcomes": [],
+        "confirmation_required": false
+      }
+    },
+    "domain_acceptance_conditions": {
+      "value": [
+        "Ten S12 outcomes performed through execute_action",
+        "Missing VIN fails closed (not HTTP ok:true)",
+        "Status skip is validation_error",
+        "LotDesk-class empty pack is rejected"
+      ],
+      "kernel": {
+        "entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+        "action_ids": [
+          "product.create",
+          "product.read",
+          "product.update",
+          "product.delete",
+          "product.list",
+          "product.enqueue",
+          "product.process",
+          "product.refuse"
+        ],
+        "permissions": [
+          "product.write",
+          "product.read",
+          "product.process"
+        ],
+        "contracts": [
+          "app.factory.build.domain_acceptance.perform_all",
+          "app.cerebrum_product_kernel.contract.runtime.execute_action"
+        ],
+        "outcomes": [
+          "create_persists",
+          "read_returns_persisted",
+          "update_persists",
+          "delete_persists",
+          "list_only_persisted",
+          "queue_item_processed",
+          "refused_action_errors",
+          "idempotent_duplicate_safe",
+          "unauthorized_rejected",
+          "missing_field_rejected"
+        ],
+        "confirmation_required": false
+      }
+    }
+  },
+  "lotdesk": "fixture only; not patched",
+  "PILOT_READY": false
+}

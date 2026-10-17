@@ -1,0 +1,10 @@
+{
+  "posture": "P1",
+  "reason": "Delivered platforms run in-process against vendored blocks; local/scripted OCR only; no Store URL, no cloud LLM, no Ollama, no outbound HTTP at runtime.",
+  "rejected": {
+    "P2": "Local inference (Ollama :11434, 'no external call', loopback only). Would rewrite the socket blocker and retract 'no network' to 'loopback LLM'. Ollama is not in the generated Dockerfile or Render blueprint. Factory products already promise no outbound call. Cost: new runtime dependency, new deploy surface, blocker change.",
+    "P3": "Cloud allowlist; retract offline claim; state PII egress. Deleting the socket blocker is an S7 FAIL. Production generated products do not already require cloud capture or chat (F17 is capture listed not executed). Factory host LLM is the builder, not the product. Cost: every offline claim becomes a lie unless rewritten; PII egress is un-drilled."
+  },
+  "schema_version": "network_posture.v1",
+  "socket_blocker": "unchanged_non_loopback_refuse"
+}

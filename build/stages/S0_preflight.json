@@ -1,0 +1,322 @@
+{
+  "stage": "S0",
+  "name": "PREFLIGHT",
+  "evaluated_at": "2026-08-25T12:55:19Z",
+  "emitter": "app.factory.build.preflight.evaluate_preflight",
+  "verdict": "PASS",
+  "ok": true,
+  "first_failing_criterion": null,
+  "git_sha": "1779089fd8095b4dfc286a934385a2eeb56b713d",
+  "kernel_ownership": {
+    "execute_action": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+    "execute_action_callable": true,
+    "_coder_route_body_is_None": true,
+    "prepare_pilot_workspace": "absent",
+    "prepare_pilot_workspace_in_runner": false,
+    "prepare_pilot_workspace_in_pilot": false,
+    "ok": true
+  },
+  "emitter_identity": {
+    "id": "app.factory.build.runner.RoleRunner",
+    "default_engine": "runner",
+    "engine_env": "FACTORY_BUILD_ENGINE",
+    "runner_is_default": true,
+    "template_revert": "FACTORY_BUILD_ENGINE=template",
+    "fourteen_artifact_classes": [
+      "app/main.py",
+      "app/actions",
+      "app/agents/manifests",
+      "app/workflows",
+      "app/cerebrum_product_kernel",
+      "app/connectors",
+      "product-dna",
+      "docs/blueprint",
+      "docs/provenance",
+      "docs/certification",
+      "frontend",
+      "vendor/blocks",
+      "kits",
+      "scripts/release_gate.py"
+    ],
+    "kernel_class_in_contract": true,
+    "generator_class": "app.factory.generator.ProductGenerator",
+    "converge_module": "backend/app/factory/build/converge.py"
+  },
+  "delivery_standard": {
+    "pin": "b0e15b92bb8f94445308d99ea25bb23da968e0204f5b2960fc802fefba6acc3b",
+    "domain_pack_field_count": 15
+  },
+  "factory_source": [
+    {
+      "path": "backend/app/factory/delivery_standard.py",
+      "present": true,
+      "sha256": "b7d78385187d38fc51e99a0fa83b0eb668a2dd3f968fbe162f62337877970cf0",
+      "bytes": 4681
+    },
+    {
+      "path": "backend/app/factory/standards/product_delivery_standard.md",
+      "present": true,
+      "sha256": "b0e15b92bb8f94445308d99ea25bb23da968e0204f5b2960fc802fefba6acc3b",
+      "bytes": 26530
+    },
+    {
+      "path": "backend/app/factory/build/roles.py",
+      "present": true,
+      "sha256": "a27ecd92d689c1dca3d3337df7d85ac6dc7a53507eab95526d43d2c50c97065d",
+      "bytes": 136558
+    },
+    {
+      "path": "backend/app/factory/build/gates.py",
+      "present": true,
+      "sha256": "d2fff2909e2a6ae372b65ca46362a6cf3116c49377a7a348fbd64de3872d5516",
+      "bytes": 15979
+    },
+    {
+      "path": "backend/app/factory/build/authority.py",
+      "present": true,
+      "sha256": "a99d7c77ad12764a9bb47919a73a16da225d480e0a23f3d28041f3b4770a2a14",
+      "bytes": 16724
+    },
+    {
+      "path": "backend/app/factory/build/runner.py",
+      "present": true,
+      "sha256": "d4c1ff895b090901f03bb6bb7526d4696d09af330217be32af1e8f401b81fb8f",
+      "bytes": 20002
+    },
+    {
+      "path": "backend/app/factory/build/pilot.py",
+      "present": true,
+      "sha256": "4ea4ae7c19ccc8005785a4a22a64f97846d817676ac0b237b3a292e697981931",
+      "bytes": 247
+    },
+    {
+      "path": "backend/app/factory/build/converge.py",
+      "present": true,
+      "sha256": "e907eec21caa8d18db6bb990a8318c6ca38e94619bb2f3c6fb9b61652aa4fb1a",
+      "bytes": 5990
+    },
+    {
+      "path": "backend/app/factory/coder.py",
+      "present": true,
+      "sha256": "4c5eefd6e9f766ebe162e71fb5e0e41f5a7a269bf6743f795e104ff97817a106",
+      "bytes": 48896
+    },
+    {
+      "path": "backend/app/factory/generator.py",
+      "present": true,
+      "sha256": "9b6eebf409cb28a682ccb95410db9036a4ea1c7dee8dcd87fb45c296dff0ac66",
+      "bytes": 56933
+    },
+    {
+      "path": "backend/app/factory/product_architect.py",
+      "present": true,
+      "sha256": "fa582be549f436abf4e49256ce88db002243284ed374f66568f59506e1ee5a83",
+      "bytes": 21728
+    },
+    {
+      "path": "backend/app/factory/build_jobs.py",
+      "present": true,
+      "sha256": "59cdc3213fd59316d5463841cab0df5dd15ae856c37040f8b948dd219829492b",
+      "bytes": 15222
+    },
+    {
+      "path": "backend/app/cerebrum_product_kernel/contract/runtime.py",
+      "present": true,
+      "sha256": "680f436948c64a718c795784cfb1c0d67b99e9f3a98da7064e85a25088112da4",
+      "bytes": 8030
+    },
+    {
+      "path": "backend/app/cerebrum_product_kernel/__init__.py",
+      "present": true,
+      "sha256": "def997bbbba2c72183dd97baf18fda316cd217b8f50089ebb1eed2093b2735c8",
+      "bytes": 478
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "present": true,
+      "sha256": "0f772fe146bc5aba193671b005209af495da2b5990dca96593f9b83b59e7e917",
+      "bytes": 5187
+    },
+    {
+      "path": "backend/app/factory/build/preflight.py",
+      "present": true,
+      "sha256": "b709e55263fc887bede32bdbaf1826665f2a8cf7a5b87711d27b44814feb0b52",
+      "bytes": 16841
+    },
+    {
+      "path": "backend/app/factory/build/root_cause.py",
+      "present": true,
+      "sha256": "c89485c71651583c1649c22c3982affb682fbbbcdfb33ca89f81dbf517ab728f",
+      "bytes": 24491
+    },
+    {
+      "path": "backend/app/factory/build/domain_pack.py",
+      "present": true,
+      "sha256": "3d8aa0036ca91b512f1d6899e6032e4b592d2322c3fd8b91cb78ac2b3eedf6d2",
+      "bytes": 29371
+    }
+  ],
+  "existing_stage_files": [
+    "HARVEST_BLOCKED.json",
+    "S0_preflight.json",
+    "S0_preflight.reread.json",
+    "S10_data.json",
+    "S10_data.reread.json",
+    "S11_deploy.json",
+    "S11_deploy.reread.json",
+    "S12_domain.json",
+    "S12_domain.reread.json",
+    "S13_promotion.json",
+    "S13_promotion.reread.json",
+    "S1_root_cause.json",
+    "S1_root_cause.reread.json",
+    "S2_supply_chain.json",
+    "S2_supply_chain.reread.json",
+    "S3_domain_pack.json",
+    "S3_domain_pack.reread.json",
+    "S4_ship_kernel.json",
+    "S4_ship_kernel.reread.json",
+    "S5_gate_contract.json",
+    "S5_gate_contract.reread.json",
+    "S5_pilot_path.json",
+    "S5_pilot_path.reread.json",
+    "S6_emitter_parity.json",
+    "S6_emitter_parity.reread.json",
+    "S7_network_posture.json",
+    "S7_network_posture.reread.json",
+    "S7_posture.json",
+    "S7_posture.reread.json",
+    "S8_package.json",
+    "S8_package.reread.json",
+    "S9_test.json",
+    "S9_test.reread.json"
+  ],
+  "s4_evidence": "S4_ship_kernel.json",
+  "stage_module_inventory": [
+    {
+      "stage": "S0",
+      "expected": "backend/app/factory/build/preflight.py",
+      "purpose": "fingerprint factory + RoleRunner emission before a build",
+      "present": true
+    },
+    {
+      "stage": "S1",
+      "expected": "backend/app/factory/build/root_cause.py",
+      "purpose": "lane-authority map U1\u2013U12, F1\u2013F29",
+      "present": true
+    },
+    {
+      "stage": "S2",
+      "expected": "backend/app/factory/build/supply_chain.py",
+      "purpose": "Dockerfile digest pin, SBOM, performed digest verify, F21",
+      "gaps": [
+        "cosign/signature verification not performed (honest; not claimed)"
+      ],
+      "present": true
+    },
+    {
+      "stage": "S3",
+      "expected": "backend/app/factory/build/domain_pack.py",
+      "purpose": "dealership Domain Pack against DOMAIN_PACK_FIELDS (15)",
+      "present": true
+    },
+    {
+      "stage": "S4",
+      "expected": "backend/app/factory/build/roles.py",
+      "purpose": "kernel shipped via execute_action",
+      "gaps": [
+        "_ensure_route_persists_payload still present (U4)"
+      ],
+      "present": true
+    },
+    {
+      "stage": "S5",
+      "expected": "backend/app/factory/build/gates.py",
+      "purpose": "gate contract",
+      "gaps": [
+        "FACTORY_SUITE_MARKER_EXPR remains \"not pilot\" (U7)"
+      ],
+      "present": true
+    },
+    {
+      "stage": "S6",
+      "expected": "backend/app/factory/build/converge.py",
+      "purpose": "14-class emitter parity",
+      "gaps": [
+        "chat not bound (U11)",
+        "capture not executed (F17)"
+      ],
+      "present": true
+    },
+    {
+      "stage": "S7",
+      "expected": "backend/app/factory/build/network_posture.py",
+      "purpose": "P1 offline-strict posture",
+      "present": true
+    },
+    {
+      "stage": "S8",
+      "expected": "backend/app/factory/build/package.py",
+      "purpose": "package.write_identity",
+      "present": true
+    },
+    {
+      "stage": "S9",
+      "expected": "backend/tests/factory/test_keyed_path_ci.py",
+      "purpose": "keyed path + LotDesk fixture rejection",
+      "gaps": [
+        "F26 parity matrix not honestly Windows"
+      ],
+      "present": true
+    },
+    {
+      "stage": "S10",
+      "expected": "backend/app/factory/build/data_lifecycle.py",
+      "purpose": "Alembic + restore drill",
+      "gaps": [
+        "no factory evidence emitter for S10_data.json"
+      ],
+      "present": true
+    },
+    {
+      "stage": "S11",
+      "expected": "backend/app/factory/build/deploy.py",
+      "purpose": "fail-closed health, observability, rollback drill",
+      "note": "audit said no module; deploy.py is present",
+      "present": true
+    },
+    {
+      "stage": "S12",
+      "expected": "backend/app/factory/build/domain_acceptance.py",
+      "purpose": "ten outcomes through execute_action",
+      "note": "verified present; do not assume from the table",
+      "present": true
+    },
+    {
+      "stage": "S13",
+      "expected": "backend/app/factory/build/promotion.py",
+      "purpose": "PILOT_READY machine emitter; harvest BLOCKED",
+      "note": "fail-closed is not completion",
+      "present": true
+    }
+  ],
+  "missing_modules": [],
+  "pass_criteria": {
+    "factory_source_fingerprinted": true,
+    "git_sha_recorded": true,
+    "emitter_identity_recorded": true,
+    "kernel_execute_action_callable": true,
+    "kernel_coder_route_body_is_None": true,
+    "existing_stage_files_listed": true,
+    "missing_modules_named": true
+  },
+  "PILOT_READY": false,
+  "not_claimed": [
+    "PILOT_READY",
+    "S2 cosign / image signature verification",
+    "S4 U4 _ensure_route_persists_payload removal",
+    "S5 U7 FACTORY_SUITE_MARKER_EXPR"
+  ],
+  "lotdesk": "fixture only; not patched",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None"
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "tests": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tests"
+  ],
+  "title": "test_catalog",
+  "type": "object"
+}

@@ -1,0 +1,29 @@
+# Static analysis gate.
+#
+# Deliberately narrow: only pyflakes (`F`). The default rule set reported
+# 2,393 findings across this tree, which is a number nobody acts on -- it gets
+# waved through or switched off, and then it catches nothing. `F` alone
+# reported 130, of which 113 were mechanically fixable and the rest were real:
+# an undefined `List` in a type annotation that made typing.get_type_hints()
+# raise, and a byte-identical duplicate test definition silently shadowing its
+# twin.
+#
+# Ratchet upward deliberately (`E`, `I`, `UP`, `B`) once each addition is
+# driven to zero, rather than adopting a broad set and living with a backlog.
+
+line-length = 100
+target-version = "py311"
+
+exclude = [
+    ".venv",
+    "storage",
+    "factory_outputs",
+]
+
+[lint]
+select = ["F"]
+
+[lint.per-file-ignores]
+# Generated platform templates embed code as strings; the vendor mirror is a
+# snapshot of another repository and is not ours to lint.
+"app/factory/vendor_blocks_mirror/**" = ["F"]

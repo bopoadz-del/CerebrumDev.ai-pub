@@ -1,0 +1,216 @@
+{
+  "schema": "acceptance_floor.v2",
+  "version": 8,
+  "note": "ONE SPEC, TWO CONSUMERS. The C-BRIEF renders `requirement` into the coder's prompt so it builds toward the floor on the first pass; the Store gate executes `check` as its checklist. Neither side is hand-edited and neither may carry its own copy -- test_acceptance_floor_is_one_source fails if they drift. Order is the gate's reporting order and `authorship_floor` stays last. Every check also declares `subject` -- what it judges: `runtime` (the booted product's answers), `tree:<path>` (a file or directory in the tree) or `factory_record` (the Factory's own bookkeeping). The owner of a failure is DERIVED from that subject and from who wrote it (acceptance_floor.owner_of): a file the Factory renders is the Factory's failure wherever it lands, never the product's. There is no list of check names anywhere that says who owns what.",
+  "checks": [
+    {
+      "id": "no_token_401",
+      "requirement_text": "Every /v1 route refuses an unauthenticated request with HTTP 401. No route is open by accident.",
+      "brief_render": "- no_token_401: Every /v1 route refuses an unauthenticated request with HTTP 401. No route is open by accident.",
+      "gate_fn": "check_no_token_401",
+      "check": "a request with no bearer token answers 401",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "missing_field_422",
+      "requirement_text": "A payload missing a required field is refused with HTTP 422 naming the field. Never accept a partial record and fill the gap yourself.",
+      "brief_render": "- missing_field_422: A payload missing a required field is refused with HTTP 422 naming the field. Never accept a partial record and fill the gap yourself.",
+      "gate_fn": "check_missing_field_422",
+      "check": "a payload missing a required field answers 422",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "enum_422",
+      "requirement_text": "A field with a fixed vocabulary refuses a value outside it with HTTP 422. A status column that accepts any string is not a status column.",
+      "brief_render": "- enum_422: A field with a fixed vocabulary refuses a value outside it with HTTP 422. A status column that accepts any string is not a status column.",
+      "gate_fn": "check_enum_422",
+      "check": "a value outside a declared vocabulary answers 422",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "ui_served_200",
+      "requirement_text": "app/static/index.html is served at / and is a working console: it discovers capabilities from the API and drives at least two of them against the real routes. A page that lists routes it never calls is a facade and fails this.",
+      "brief_render": "- ui_served_200: app/static/index.html is served at / and is a working console: it discovers capabilities from the API and drives at least two of them against the real routes. A page that lists routes it never calls is a facade and fails this.",
+      "gate_fn": "check_ui_served_200",
+      "check": "GET / answers 200 and the page drives real capability routes",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "rag_roundtrip_hit",
+      "requirement_text": "If the product retrieves, an ingested document is findable again through the retrieval path, and the answer carries its authority label.",
+      "brief_render": "- rag_roundtrip_hit: If the product retrieves, an ingested document is findable again through the retrieval path, and the answer carries its authority label.",
+      "gate_fn": "check_rag_roundtrip_hit",
+      "check": "a document ingested through the product is retrieved back",
+      "applies_when": "retrieval",
+      "subject": "runtime"
+    },
+    {
+      "id": "single_persistence_root",
+      "requirement_text": "One storage root, read from STORAGE_PATH. No second database, no stray sqlite file beside it. The persistence root is writable by the user the service runs as: the image creates STORAGE_PATH owned by that user before it switches to it, so a fresh volume mounted there starts with that ownership; the service never needs root to write its own data. The Dockerfile declares STORAGE_PATH as an ENV: the Store gate mounts its volume at exactly that declared path and never overrides it.",
+      "brief_render": "- single_persistence_root: One storage root, read from STORAGE_PATH. No second database, no stray sqlite file beside it. The persistence root is writable by the user the service runs as: the image creates STORAGE_PATH owned by that user before it switches to it, so a fresh volume mounted there starts with that ownership; the service never needs root to write its own data. The Dockerfile declares STORAGE_PATH as an ENV: the Store gate mounts its volume at exactly that declared path and never overrides it.",
+      "gate_fn": "check_single_persistence_root",
+      "check": "exactly one persistence root in the tree",
+      "universal": true,
+      "subject": "tree:app"
+    },
+    {
+      "id": "ci_present_and_full_suite",
+      "requirement_text": ".github/workflows/ci.yml exists and runs the WHOLE suite, not a chosen subset.",
+      "brief_render": "- ci_present_and_full_suite: .github/workflows/ci.yml exists and runs the WHOLE suite, not a chosen subset.",
+      "gate_fn": "check_ci_present_and_full_suite",
+      "check": "CI is committed and runs the full suite",
+      "universal": true,
+      "subject": "tree:.github/workflows/ci.yml"
+    },
+    {
+      "id": "handler_bodies_distinct",
+      "requirement_text": "Each capability handler does its own work. Copies of one body with the names changed are refused.",
+      "brief_render": "- handler_bodies_distinct: Each capability handler does its own work. Copies of one body with the names changed are refused.",
+      "gate_fn": "check_handler_bodies_distinct",
+      "check": "no two handler bodies are the same work",
+      "universal": true,
+      "subject": "tree:app/handlers"
+    },
+    {
+      "id": "health_fail_closed",
+      "requirement_text": "/health reports unhealthy when a dependency it needs is down. A health check that answers 200 regardless is worse than none. The Factory ships app/health.py, app/observe.py and app/revision.py and owns their shape; app/main.py serves GET /health by returning app.health.health_response() and calls app.observe.install_observability(app) -- never a health body or request logger of its own.",
+      "brief_render": "- health_fail_closed: /health reports unhealthy when a dependency it needs is down. A health check that answers 200 regardless is worse than none. The Factory ships app/health.py, app/observe.py and app/revision.py and owns their shape; app/main.py serves GET /health by returning app.health.health_response() and calls app.observe.install_observability(app) -- never a health body or request logger of its own.",
+      "gate_fn": "check_health_fail_closed",
+      "check": "/health fails closed on a broken dependency",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "openapi_committed",
+      "requirement_text": "docs/openapi.json is committed and matches the routes actually served.",
+      "brief_render": "- openapi_committed: docs/openapi.json is committed and matches the routes actually served.",
+      "gate_fn": "check_openapi_committed",
+      "check": "openapi.json is present and current",
+      "universal": true,
+      "subject": "tree:docs/openapi.json"
+    },
+    {
+      "id": "docker_health_200",
+      "requirement_text": "The image builds, boots, and answers its healthcheck before traffic. The Dockerfile installs only the runtime requirements, against the Factory-owned constraints.txt (COPY it beside requirements.txt; pip install -c constraints.txt -r requirements.txt) so every build resolves the same framework versions, and starts the service; it never runs the test suite, the release gate, or anything that needs dev dependencies during the build -- tests run in CI, not in docker build. Build it and start it yourself before you claim this.",
+      "brief_render": "- docker_health_200: The image builds, boots, and answers its healthcheck before traffic. The Dockerfile installs only the runtime requirements, against the Factory-owned constraints.txt (COPY it beside requirements.txt; pip install -c constraints.txt -r requirements.txt) so every build resolves the same framework versions, and starts the service; it never runs the test suite, the release gate, or anything that needs dev dependencies during the build -- tests run in CI, not in docker build. Build it and start it yourself before you claim this.",
+      "gate_fn": "check_docker_health_200",
+      "check": "the built image answers its healthcheck",
+      "universal": true,
+      "subject": "runtime",
+      "stage": "image"
+    },
+    {
+      "id": "cross_tenant_404",
+      "requirement_text": "A record belonging to another tenant is invisible: reading it answers 404, never 403 and never the record. Tenancy is resolved from the authenticated principal, never from the payload.",
+      "brief_render": "- cross_tenant_404: A record belonging to another tenant is invisible: reading it answers 404, never 403 and never the record. Tenancy is resolved from the authenticated principal, never from the payload.",
+      "gate_fn": "check_cross_tenant_404",
+      "check": "another tenant's record answers 404",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "concurrent_writes_hold",
+      "requirement_text": "Every write path holds under concurrency: N simultaneous creates on each capability that persists a record all answer the declared success with their own stored id, and all N are stored -- through the HTTP route and through app.store.save from N threads. N is twice the database pool's capacity (pool_size + max_overflow of the engine app.db builds; the library default 5 + 10 when none is configured) and never fewer than the sync threadpool (FASTAPI_SYNC_THREADPOOL). Never hold a pooled connection while checking out another (e.g. save() calling get() on a fresh connection): that exhausts the pool and fails this.",
+      "brief_render": "- concurrent_writes_hold: Every write path holds under concurrency: N simultaneous creates on each capability that persists a record all answer the declared success with their own stored id, and all N are stored -- through the HTTP route and through app.store.save from N threads. N is twice the database pool's capacity (pool_size + max_overflow of the engine app.db builds; the library default 5 + 10 when none is configured) and never fewer than the sync threadpool (FASTAPI_SYNC_THREADPOOL). Never hold a pooled connection while checking out another (e.g. save() calling get() on a fresh connection): that exhausts the pool and fails this.",
+      "gate_fn": "check_concurrent_writes_hold",
+      "check": "N = 2x pool capacity concurrent creates per write path, all stored",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "migration_no_create_all",
+      "requirement_text": "The schema lives in alembic revisions as real DDL -- one op.create_table per entity. No create_all() anywhere: a table created at boot means the migration is decoration, and the first deploy against a real database diverges from what the tests ran on.",
+      "brief_render": "- migration_no_create_all: The schema lives in alembic revisions as real DDL -- one op.create_table per entity. No create_all() anywhere: a table created at boot means the migration is decoration, and the first deploy against a real database diverges from what the tests ran on.",
+      "gate_fn": "check_migration_no_create_all",
+      "check": "alembic carries real DDL and no module calls create_all()",
+      "universal": true,
+      "subject": "tree:alembic"
+    },
+    {
+      "id": "negative_floor",
+      "requirement_text": "Every capability ships at least four counter-cases: a value the brief declares invalid is rejected, a cross-tenant write is blocked, the boundary of whatever rule the brief states is exercised exactly on the line rather than either side of it, and one malformed payload is fuzzed. Name them from THIS brief -- the rules, vocabularies and limits are the customer's, not a shape carried over from another product. Proving the platform does the right thing is half a suite; prove it refuses the wrong thing. A field whose spec marks it approval is validated against the platform's configured principals (APPROVED_PRINCIPALS env, comma-separated): a free-text approver is refused, never trusted -- 'i am the director trust me' must not pass a safety escalation. A refusal is an HTTP 400/403/404/409/422 answer, or HTTP 200 with 'ok': false and 'error' saying why; never a 500.",
+      "brief_render": "- negative_floor: Every capability ships at least four counter-cases: a value the brief declares invalid is rejected, a cross-tenant write is blocked, the boundary of whatever rule the brief states is exercised exactly on the line rather than either side of it, and one malformed payload is fuzzed. Name them from THIS brief -- the rules, vocabularies and limits are the customer's, not a shape carried over from another product. Proving the platform does the right thing is half a suite; prove it refuses the wrong thing. A field whose spec marks it approval is validated against the platform's configured principals (APPROVED_PRINCIPALS env, comma-separated): a free-text approver is refused, never trusted -- 'i am the director trust me' must not pass a safety escalation. A refusal is an HTTP 400/403/404/409/422 answer, or HTTP 200 with 'ok': false and 'error' saying why; never a 500.",
+      "gate_fn": "check_negative_floor",
+      "check": "each capability's tests carry >=4 pytest.raises or 4xx assertions",
+      "universal": true,
+      "subject": "tree:tests"
+    },
+    {
+      "id": "postgres_boot_200",
+      "requirement_text": "app/store.py MUST obtain its connection from app.db and MUST NOT open its own database. The Factory ships app/db.py: DATABASE_URL present means Postgres, absent means SQLite under STORAGE_PATH, and one place decides so the two cannot disagree. A DATABASE_URL that is read and then ignored is a FAIL -- the operator believes they are on Postgres while the platform writes a SQLite file onto the container disk, which is worse than not supporting it at all. /health is the shipped app/health.py: it asks app.db which database is live and runs its probe there; keep it.",
+      "brief_render": "- postgres_boot_200: app/store.py MUST obtain its connection from app.db and MUST NOT open its own database. The Factory ships app/db.py: DATABASE_URL present means Postgres, absent means SQLite under STORAGE_PATH, and one place decides so the two cannot disagree. A DATABASE_URL that is read and then ignored is a FAIL -- the operator believes they are on Postgres while the platform writes a SQLite file onto the container disk, which is worse than not supporting it at all. /health is the shipped app/health.py: it asks app.db which database is live and runs its probe there; keep it.",
+      "gate_fn": "check_postgres_boot_200",
+      "check": "store.py takes its connection from app.db, and a set DATABASE_URL is honoured",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "one_live_connector",
+      "requirement_text": "One connector performs a real outbound round-trip in every build -- SMTP or webhook delivery is the cheapest. Other connectors stay stubs and keep declaring blocks_unavailable. A capability whose blueprint declares a placeholder connector answers HTTP 503 with error_kind \"unavailable\" naming the setting each connector needs (app/placeholders.py, Factory-shipped) and stores nothing; its tests assert that refusal, never a stored record. A platform where every integration is mocked has never been proven to leave the box.",
+      "brief_render": "- one_live_connector: One connector performs a real outbound round-trip in every build -- SMTP or webhook delivery is the cheapest. Other connectors stay stubs and keep declaring blocks_unavailable. A capability whose blueprint declares a placeholder connector answers HTTP 503 with error_kind \"unavailable\" naming the setting each connector needs (app/placeholders.py, Factory-shipped) and stores nothing; its tests assert that refusal, never a stored record. A platform where every integration is mocked has never been proven to leave the box.",
+      "gate_fn": "check_one_live_connector",
+      "check": "a real outbound delivery is observed, not mocked",
+      "advisory": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "metrics_served",
+      "requirement_text": "GET /metrics answers 200 with a request count and latency. The Factory ships app/observability.py -- mount it once in app/main.py with mount_observability(app), which also honours SENTRY_DSN and rate limits the auth routes. This is measured on the booted container, not by the module being present: no mount, no pass.",
+      "brief_render": "- metrics_served: GET /metrics answers 200 with a request count and latency. The Factory ships app/observability.py -- mount it once in app/main.py with mount_observability(app), which also honours SENTRY_DSN and rate limits the auth routes. This is measured on the booted container, not by the module being present: no mount, no pass.",
+      "gate_fn": "check_metrics_served",
+      "check": "GET /metrics on the booted container answers 200 with a request count",
+      "universal": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "backup_restore_roundtrip",
+      "requirement_text": "The backup script runs on a schedule AND its output restores into an empty database with the rows intact. The Factory ships scripts/backup.sh and tests/test_backup_restore.py; keep them wired. A backup nobody has restored is a file, not a backup.",
+      "brief_render": "- backup_restore_roundtrip: The backup script runs on a schedule AND its output restores into an empty database with the rows intact. The Factory ships scripts/backup.sh and tests/test_backup_restore.py; keep them wired. A backup nobody has restored is a file, not a backup.",
+      "gate_fn": "check_backup_restore_roundtrip",
+      "check": "a backup is taken and restored with its rows intact",
+      "advisory": true,
+      "subject": "tree:scripts/backup.sh"
+    },
+    {
+      "id": "bench_p95",
+      "requirement_text": "200 concurrent requests answer with p95 under 500ms on the reference box. The Factory ships scripts/bench.py, which prints the number. Measure it; do not estimate it.",
+      "brief_render": "- bench_p95: 200 concurrent requests answer with p95 under 500ms on the reference box. The Factory ships scripts/bench.py, which prints the number. Measure it; do not estimate it.",
+      "gate_fn": "check_bench_p95",
+      "check": "p95 under 500ms over a 200-request concurrent smoke",
+      "advisory": true,
+      "subject": "runtime"
+    },
+    {
+      "id": "audit_clean",
+      "requirement_text": "CI runs pip-audit and bandit and both are clean. The Factory ships a .github/workflows/ci.yml with those jobs; keep them. A dependency advisory found by the buyer's scanner and not by yours is the worst order to find it in. Persist and read through the shipped app/store.py (save, get, list_all, query, update, delete). A handler that needs its own query builds it as SQLAlchemy Core from table/column objects for the declared schema: values as bound parameters, column and ORDER BY names taken from the declared columns. The gate runs bandit over app/ and checks on the syntax tree that every statement reaching an execute call is a Core statement or a constant with bound parameters.",
+      "brief_render": "- audit_clean: CI runs pip-audit and bandit and both are clean. The Factory ships a .github/workflows/ci.yml with those jobs; keep them. A dependency advisory found by the buyer's scanner and not by yours is the worst order to find it in. Persist and read through the shipped app/store.py (save, get, list_all, query, update, delete). A handler that needs its own query builds it as SQLAlchemy Core from table/column objects for the declared schema: values as bound parameters, column and ORDER BY names taken from the declared columns. The gate runs bandit over app/ and checks on the syntax tree that every statement reaching an execute call is a Core statement or a constant with bound parameters.",
+      "gate_fn": "check_audit_clean",
+      "check": "CI runs pip-audit and bandit",
+      "applies_when": "production",
+      "subject": "tree:requirements.txt",
+      "stage": "audit"
+    },
+    {
+      "id": "no_token_literal",
+      "requirement_text": "Runtime code (app/**) carries no bearer-token literal and no environment-fallback token. Tokens come from the deploy environment only: PLATFORM_TOKEN for the platform tenant, TENANT_TOKENS (token:tenant pairs) for further tenants. A baked token is a production backdoor -- a certified product shipped one and it opened a second tenant with a world-known value.",
+      "brief_render": "- no_token_literal: Runtime code (app/**) carries no bearer-token literal and no environment-fallback token. Tokens come from the deploy environment only: PLATFORM_TOKEN for the platform tenant, TENANT_TOKENS (token:tenant pairs) for further tenants. A baked token is a production backdoor -- a certified product shipped one and it opened a second tenant with a world-known value.",
+      "gate_fn": "check_no_token_literal",
+      "check": "no token literal or env-fallback token in runtime app/**",
+      "universal": true,
+      "subject": "tree:app"
+    },
+    {
+      "id": "authorship_floor",
+      "requirement_text": "Every action handler you author sets a module-level AUTHORED_BY = \"<your writer source>\" assignment (a str constant, directly under its imports); the gate reads it from the syntax tree.",
+      "brief_render": "- authorship_floor: Every action handler you author sets a module-level AUTHORED_BY = \"<your writer source>\" assignment (a str constant, directly under its imports); the gate reads it from the syntax tree.",
+      "gate_fn": "check_authorship_floor",
+      "check": "authored handlers carry the stamp",
+      "universal": true,
+      "subject": "factory_record"
+    }
+  ]
+}

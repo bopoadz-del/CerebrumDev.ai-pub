@@ -1,0 +1,45 @@
+{
+  "activation": {
+    "default_enabled": true,
+    "mode": "auto",
+    "put_off_by": [
+      "disable:product.base"
+    ],
+    "triggers": [
+      {
+        "type": "intent",
+        "value": "unknown"
+      }
+    ]
+  },
+  "agent_id": "product.base",
+  "allowed_actions": [
+    "product.analytics_surface",
+    "product.dashboard_surface"
+  ],
+  "context_sources": [
+    {
+      "description": "Tenant/project documents via hybrid retrieval",
+      "kind": "project_documents",
+      "source_id": "project_docs"
+    }
+  ],
+  "discipline": "base",
+  "display_name": "Role Runner Smoke Product Base Agent",
+  "extends": null,
+  "handoffs": [],
+  "human_authority": true,
+  "kind": "base",
+  "manifest_version": "1.0.0",
+  "memory": {
+    "pii_policy": "never_store_pii",
+    "save": [],
+    "scope": "tenant_project"
+  },
+  "summary": "Shared product cortex adapted from RetailClient hat patterns: trusted context, ActionRegistry awareness, honesty policies. Discipline hats specialize this base \u2014 they never replace it.",
+  "tags": [
+    "base",
+    "factory-generated",
+    "product"
+  ]
+}

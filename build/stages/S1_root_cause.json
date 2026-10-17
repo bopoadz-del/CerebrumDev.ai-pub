@@ -1,0 +1,630 @@
+{
+  "stage": "S1",
+  "name": "ROOT_CAUSE",
+  "evaluated_at": "2026-08-25T12:55:12Z",
+  "emitter": "app.factory.build.root_cause.evaluate_root_cause",
+  "verdict": "PASS",
+  "ok": true,
+  "first_failing_criterion": null,
+  "required_ids": [
+    "U1",
+    "U2",
+    "U3",
+    "U4",
+    "U5",
+    "U6",
+    "U7",
+    "U8",
+    "U9",
+    "U10",
+    "U11",
+    "U12",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "F13",
+    "F14",
+    "F15",
+    "F16",
+    "F17",
+    "F18",
+    "F19",
+    "F20",
+    "F21",
+    "F22",
+    "F23",
+    "F24",
+    "F25",
+    "F26",
+    "F27",
+    "F28",
+    "F29"
+  ],
+  "counts": {
+    "U": 12,
+    "F": 29,
+    "total": 41
+  },
+  "note_on_count": "U1\u2013U12 (12) + F1\u2013F29 (29) = 41. No U0. F0 from draft-1 (shape-not-outcome) aliases U7.",
+  "lane_authority_map": {
+    "source": "backend/app/factory/build/authority.py",
+    "roles": {
+      "COLLECTOR": {
+        "title": "Binding surveyor",
+        "write_lanes": [],
+        "read_only": true,
+        "gate": "every referenced block id is dual-registered; gaps enumerated",
+        "agent": "consult"
+      },
+      "CLONER": {
+        "title": "Block stocker",
+        "write_lanes": [
+          "vendor/**",
+          "kits/**",
+          "blocks.lock.json"
+        ],
+        "read_only": false,
+        "gate": "every vendored block imports with no network configured",
+        "agent": "none"
+      },
+      "WRITER": {
+        "title": "Platform manufacturer",
+        "write_lanes": [
+          "app/**",
+          "ui/**",
+          "README.md",
+          "requirements.txt",
+          "requirements-dev.txt",
+          "pyproject.toml",
+          "Dockerfile",
+          "Procfile",
+          ".env.example",
+          ".dockerignore",
+          "render.yaml",
+          "scripts/release_gate.py",
+          "scripts/entrypoint.sh",
+          "scripts/rollback.sh",
+          "alembic.ini",
+          "alembic/**",
+          "docs/build_provenance.json",
+          "docs/data_lifecycle.json",
+          "docs/deploy.json",
+          "docs/domain_acceptance.json",
+          "product-dna/**",
+          "docs/blueprint/**",
+          "docs/provenance/**",
+          "docs/certification/**",
+          "docs/edge_profile.json",
+          "docs/network_posture.json",
+          "docs/sbom.cdx.json",
+          "docs/permissions.json",
+          "docs/domain_pack.json",
+          "docs/package_identity.json",
+          "frontend/**"
+        ],
+        "read_only": false,
+        "gate": "workspace imports and type-checks clean",
+        "agent": "manufacture"
+      },
+      "TESTER": {
+        "title": "Acceptance inspector",
+        "write_lanes": [
+          "tests/**"
+        ],
+        "read_only": false,
+        "gate": "code-phase suite green (pytest -m 'not pilot')",
+        "agent": "consult"
+      },
+      "STORE_MANAGER": {
+        "title": "Store registrar",
+        "write_lanes": [
+          "block_registry/**",
+          "registry.json"
+        ],
+        "read_only": false,
+        "gate": "store_manager.assert_store_op_allowed passes for every op applied",
+        "agent": "none"
+      }
+    },
+    "COLLECTOR_blocked": "cannot remove echo stubs or invent block ids",
+    "CLONER_blocked": "cannot vendor kernel under app/; cannot rewrite factory/",
+    "WRITER_blocked": "cannot write tests/** or vendor/**",
+    "TESTER_blocked": "Never patch app/; cannot ship kernel",
+    "STORE_MANAGER_blocked": "harvest remain unbuilt"
+  },
+  "defect_owners": {
+    "U1": {
+      "title": "WRITER gate is compileall only",
+      "owner_module": "backend/app/factory/build/gates.py",
+      "owner_symbol": "gate_workspace_compiles",
+      "lane": "no role writes gates.py",
+      "status": "partial",
+      "also": "backend/app/factory/build/writer_behaviour.py",
+      "note": "writer_behaviour added; compileall remains the named WRITER gate",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U2": {
+      "title": "tested path \u2260 shipped path (template in CI, kimi when keyed)",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "_coder_route_body",
+      "lane": "TESTER cannot change emitters",
+      "status": "partial",
+      "also": ".github/workflows/ci.yml",
+      "note": "keyed-path CI fixtures exist; routes stay kernel-owned (None)",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U3": {
+      "title": "coder gate is syntactic/security only",
+      "owner_module": "backend/app/factory/coder.py",
+      "owner_symbol": "_validate_body",
+      "lane": "WRITER consumes coder output",
+      "status": "open",
+      "owner_present": true
+    },
+    "U4": {
+      "title": "_ensure_route_persists_payload force-injects save(payload)",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "_ensure_route_persists_payload",
+      "lane": "factory host, outside RoleContract",
+      "status": "open",
+      "note": "S4 residual on S4_ship_kernel.json; this PR does not remove the persist wrapper",
+      "owner_present": true
+    },
+    "U5": {
+      "title": "on keyed path the model owns persist/envelope",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "_coder_route_body",
+      "lane": "WRITER writes routes from coder",
+      "status": "closed",
+      "note": "_coder_route_body returns None; kernel owns HTTP",
+      "owner_present": true
+    },
+    "U6": {
+      "title": "STORE_MANAGER harvest remain unbuilt",
+      "owner_module": "backend/app/factory/build/harvest.py",
+      "owner_symbol": "evaluate_harvest",
+      "lane": "STORE_MANAGER mandate",
+      "status": "open",
+      "also": "backend/app/factory/store_manager.py",
+      "note": "harvest is BLOCKED; _store_write_authorized is a policy no-op",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U7": {
+      "title": "TESTER judges shape not outcome",
+      "owner_module": "backend/app/factory/build/gates.py",
+      "owner_symbol": "FACTORY_SUITE_MARKER_EXPR",
+      "lane": "TESTER tests/** only",
+      "status": "open",
+      "also": "backend/app/factory/build/promotion.py",
+      "note": "FACTORY_SUITE_MARKER_EXPR remains \"not pilot\"; S13 adds pilot-cycle",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U8": {
+      "title": "roles.py claimed both emitters write the same shape \u2014 false",
+      "owner_module": "backend/app/factory/build/converge.py",
+      "owner_symbol": "FOURTEEN_ARTIFACT_CLASSES",
+      "lane": "no parity test without converge",
+      "status": "partial",
+      "also": "backend/app/factory/build/runner.py",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U9": {
+      "title": "dispatch fabricates Store inputs (F18)",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "_DISPATCH_RUNTIME",
+      "lane": "WRITER emits dispatch.py",
+      "status": "partial",
+      "also": "backend/app/factory/build/lotdesk_gate.py",
+      "note": "factory dispatch no longer fabricates; LotDesk fixture still does",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U10": {
+      "title": "two emitters; runner docstring stale; classes dropped",
+      "owner_module": "backend/app/factory/build/runner.py",
+      "owner_symbol": "RoleRunner",
+      "lane": "engine switch FACTORY_BUILD_ENGINE",
+      "status": "partial",
+      "also": "backend/app/factory/product_architect.py",
+      "note": "RoleRunner is default; converge copies 14-class emitters",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U11": {
+      "title": "chat/UI unused upstream",
+      "owner_module": "backend/app/factory/build/ui_schema.py",
+      "owner_symbol": "block.json ui_schema canonical",
+      "lane": "WRITER ui/**; do not invent chat id",
+      "status": "open",
+      "also": "backend/app/factory/platform_chat_flow.py",
+      "note": "S6 residual: chat not bound; ui_schema_builder unused",
+      "owner_present": true,
+      "also_present": true
+    },
+    "U12": {
+      "title": "cerebrum_product_kernel not shipped by role_runner",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "execute_action route template",
+      "lane": "WRITER app/** can vendor kernel",
+      "status": "closed",
+      "also": "backend/app/cerebrum_product_kernel/contract/runtime.py",
+      "note": "S4 shipped kernel (S4_ship_kernel.json); U4 persist rewrite remains",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F1": {
+      "title": "echo/stub still succeeds \u2014 always-200 health / HTTP ok:true",
+      "owner_module": "backend/app/factory/build/deploy.py",
+      "owner_symbol": "health_is_always_200",
+      "lane": "WRITER app/main.py",
+      "status": "partial",
+      "also": "backend/app/factory/build/domain_acceptance.py",
+      "lotdesk": true,
+      "owner_present": true,
+      "also_present": true
+    },
+    "F2": {
+      "title": "queue/workflow/notification in-process",
+      "owner_module": "backend/app/factory/build/offline_adapters.py",
+      "owner_symbol": "CLONER offline adapter emission",
+      "lane": "CLONER vendor/**",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F3": {
+      "title": "VIN sample accepted",
+      "owner_module": "backend/app/cerebrum_product_kernel/contract/runtime.py",
+      "owner_symbol": "execute_action input_schema",
+      "lane": "kernel, not HTTP 200",
+      "status": "open",
+      "note": "S3 pack binds VIN class to execute_action input_schema; sample acceptance still kernel-side",
+      "owner_present": true
+    },
+    "F4": {
+      "title": "missing required skipped",
+      "owner_module": "backend/app/cerebrum_product_kernel/contract/runtime.py",
+      "owner_symbol": "execute_action validate required[]",
+      "lane": "kernel",
+      "status": "partial",
+      "also": "backend/app/factory/build/roles.py",
+      "note": "_constraint_guard still exists beside the kernel",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F5": {
+      "title": "HTTP 200 = acceptance / hollow queue",
+      "owner_module": "backend/app/factory/build/domain_acceptance.py",
+      "owner_symbol": "inspect_lotdesk_domain",
+      "lane": "TESTER + kernel outcomes",
+      "status": "partial",
+      "lotdesk": true,
+      "owner_present": true
+    },
+    "F6": {
+      "title": "missing update/delete persist; agent_domain_cases uncollected",
+      "owner_module": "backend/app/factory/build/domain_acceptance.py",
+      "owner_symbol": "OUTCOME_UPDATE_PERSISTS / OUTCOME_DELETE_PERSISTS",
+      "lane": "TESTER",
+      "status": "partial",
+      "lotdesk": true,
+      "owner_present": true
+    },
+    "F7": {
+      "title": "no status transition machine",
+      "owner_module": "backend/app/factory/build/domain_pack.py",
+      "owner_symbol": "DEALERSHIP_STATUS_MACHINE / domain_rules",
+      "lane": "S3 Domain Pack + kernel",
+      "status": "partial",
+      "note": "S3 pack binds domain_rules to execute_action status contracts; machine not closed this stage",
+      "owner_present": true
+    },
+    "F8": {
+      "title": "no restart-survival test",
+      "owner_module": "backend/app/factory/build/pilot_durability.py",
+      "owner_symbol": "gate_pilot_outcome_survives_restart",
+      "lane": "TESTER",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F9": {
+      "title": "multiple datastores",
+      "owner_module": "backend/app/factory/build/data_lifecycle.py",
+      "owner_symbol": "render_store",
+      "lane": "WRITER one DOR",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F10": {
+      "title": "requirements vs vendor imports",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "requirements emission",
+      "lane": "WRITER requirements.txt",
+      "status": "open",
+      "owner_present": true
+    },
+    "F11": {
+      "title": "estate_registry echo / uninvoked BLOCK_IDS",
+      "owner_module": "backend/app/factory/build/lotdesk_gate.py",
+      "owner_symbol": "inspect_files F11",
+      "lane": "CLONER + COLLECTOR",
+      "status": "partial",
+      "also": "backend/app/factory/build/offline_adapters.py",
+      "lotdesk": true,
+      "owner_present": true,
+      "also_present": true
+    },
+    "F12": {
+      "title": "money as REAL/float",
+      "owner_module": "backend/app/factory/build/data_lifecycle.py",
+      "owner_symbol": "_SA_TYPES",
+      "lane": "WRITER store/migrations",
+      "status": "open",
+      "also": "backend/app/cerebrum_product_kernel/contract/runtime.py",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F13": {
+      "title": "dispatch swallows refusals",
+      "owner_module": "backend/app/factory/build/roles.py",
+      "owner_symbol": "dispatch execute envelope",
+      "lane": "WRITER dispatch.py",
+      "status": "partial",
+      "also": "backend/tests/factory/test_windows_cp1252_parity.py",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F14": {
+      "title": "no ui/ / frontend/",
+      "owner_module": "backend/app/factory/build/ui_surface.py",
+      "owner_symbol": "gate_ui_surface",
+      "lane": "WRITER frontend/**",
+      "status": "partial",
+      "also": "backend/app/factory/build/converge.py",
+      "lotdesk": true,
+      "owner_present": true,
+      "also_present": true
+    },
+    "F15": {
+      "title": "no auth on capability routes",
+      "owner_module": "backend/app/factory/build/domain_acceptance.py",
+      "owner_symbol": "OUTCOME_UNAUTHORIZED_REJECTED",
+      "lane": "kernel ActionContext",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F16": {
+      "title": "ui_schema unused",
+      "owner_module": "backend/app/factory/build/ui_schema.py",
+      "owner_symbol": "block.json canonical",
+      "lane": "U11",
+      "status": "open",
+      "owner_present": true
+    },
+    "F17": {
+      "title": "capture listed not executed",
+      "owner_module": "backend/app/factory/build/network_posture.py",
+      "owner_symbol": "P1_CAPTURE_ADAPTER",
+      "lane": "CLONER capture emission",
+      "status": "open",
+      "note": "P1 adapter is local OCR; chat/capture still not bound as a capability",
+      "owner_present": true
+    },
+    "F18": {
+      "title": "_default_block_field fabricates Store inputs",
+      "owner_module": "backend/app/factory/build/lotdesk_gate.py",
+      "owner_symbol": "inspect_files F18",
+      "lane": "WRITER dispatch.py",
+      "status": "partial",
+      "also": "backend/app/factory/build/roles.py",
+      "lotdesk": true,
+      "note": "required LotDesk rejection code; factory emitter no longer fabricates",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F19": {
+      "title": "FAIL can still be a deployable image",
+      "owner_module": "backend/app/factory/build/supply_chain.py",
+      "owner_symbol": "assert_generated_dockerfile",
+      "lane": "WRITER Dockerfile",
+      "status": "partial",
+      "also": "backend/app/factory/build/lotdesk_gate.py",
+      "lotdesk": true,
+      "note": "release_gate in generated image; LotDesk fixture still omits it",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F20": {
+      "title": "execution.image :latest",
+      "owner_module": "backend/app/factory/build/supply_chain.py",
+      "owner_symbol": "findings_for_image_ref",
+      "lane": "CLONER copies Store block.json",
+      "status": "partial",
+      "lotdesk": true,
+      "owner_present": true
+    },
+    "F21": {
+      "title": "signatures/digests not verified",
+      "owner_module": "backend/app/factory/build/supply_chain.py",
+      "owner_symbol": "perform_pin_verification",
+      "lane": "CLONER lock records commit/path only",
+      "status": "partial",
+      "note": "S2 performs registry manifest GET of the recorded digest. Cosign is not claimed when it cannot be performed. THIS TURN F21 is also permissions-vs-behaviour in supply_chain.",
+      "owner_present": true
+    },
+    "F22": {
+      "title": "permissions vs behaviour",
+      "owner_module": "backend/app/factory/build/network_posture.py",
+      "owner_symbol": "NETWORK_POSTURE P1",
+      "lane": "CLONER capture emission",
+      "status": "partial",
+      "also": "backend/app/factory/build/supply_chain.py",
+      "note": "S7 closed capture network:false vs cloud defaults. S2 reconcile_permissions covers Dockerfile/entrypoint/posture.",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F23": {
+      "title": "no SBOM",
+      "owner_module": "backend/app/factory/build/supply_chain.py",
+      "owner_symbol": "emit_supply_chain_artifacts",
+      "lane": "packager / S2",
+      "status": "closed",
+      "note": "RoleRunner WRITER emits docs/sbom.cdx.json (CycloneDX 1.5)",
+      "owner_present": true
+    },
+    "F24": {
+      "title": "health always ok",
+      "owner_module": "backend/app/factory/build/deploy.py",
+      "owner_symbol": "health_is_always_200",
+      "lane": "WRITER app/main.py",
+      "status": "partial",
+      "also": "backend/app/factory/build/lotdesk_gate.py",
+      "lotdesk": true,
+      "owner_present": true,
+      "also_present": true
+    },
+    "F25": {
+      "title": "no versioned migrations",
+      "owner_module": "backend/app/factory/build/data_lifecycle.py",
+      "owner_symbol": "REVISION_0001",
+      "lane": "WRITER alembic/**",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F26": {
+      "title": "backup/restore not drilled / Windows cp1252 not honest",
+      "owner_module": "backend/app/factory/build/data_lifecycle.py",
+      "owner_symbol": "restore drill",
+      "lane": "TESTER + S9",
+      "status": "partial",
+      "also": "backend/tests/factory/test_windows_cp1252_parity.py",
+      "note": "Linux restore drill exists; F26 Windows matrix is not this host",
+      "owner_present": true,
+      "also_present": true
+    },
+    "F27": {
+      "title": "no rollback",
+      "owner_module": "backend/app/factory/build/deploy.py",
+      "owner_symbol": "rollback drill",
+      "lane": "WRITER scripts/rollback.sh",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F28": {
+      "title": "no request-id / structured logs",
+      "owner_module": "backend/app/factory/build/deploy.py",
+      "owner_symbol": "REQUEST_ID_HEADER",
+      "lane": "WRITER app/main.py",
+      "status": "partial",
+      "owner_present": true
+    },
+    "F29": {
+      "title": "patch-until-green (prepare_pilot_workspace)",
+      "owner_module": "backend/app/factory/build/runner.py",
+      "owner_symbol": "SEALED_AFTER_CLONER",
+      "lane": "no vendor/** after CLONER",
+      "status": "closed",
+      "also": "backend/app/factory/build/offline_adapters.py",
+      "note": "prepare_pilot_workspace absent from runner.py and pilot.py",
+      "owner_present": true,
+      "also_present": true
+    }
+  },
+  "lotdesk_symptoms": {
+    "codes": [
+      "F18",
+      "F19",
+      "F20",
+      "F11",
+      "F24",
+      "F1",
+      "F14",
+      "F6",
+      "F5"
+    ],
+    "mapped": [
+      {
+        "code": "F18",
+        "owner_module": "backend/app/factory/build/lotdesk_gate.py",
+        "owner_present": true,
+        "title": "_default_block_field fabricates Store inputs"
+      },
+      {
+        "code": "F19",
+        "owner_module": "backend/app/factory/build/supply_chain.py",
+        "owner_present": true,
+        "title": "FAIL can still be a deployable image"
+      },
+      {
+        "code": "F20",
+        "owner_module": "backend/app/factory/build/supply_chain.py",
+        "owner_present": true,
+        "title": "execution.image :latest"
+      },
+      {
+        "code": "F11",
+        "owner_module": "backend/app/factory/build/lotdesk_gate.py",
+        "owner_present": true,
+        "title": "estate_registry echo / uninvoked BLOCK_IDS"
+      },
+      {
+        "code": "F24",
+        "owner_module": "backend/app/factory/build/deploy.py",
+        "owner_present": true,
+        "title": "health always ok"
+      },
+      {
+        "code": "F1",
+        "owner_module": "backend/app/factory/build/deploy.py",
+        "owner_present": true,
+        "title": "echo/stub still succeeds \u2014 always-200 health / HTTP ok:true"
+      },
+      {
+        "code": "F14",
+        "owner_module": "backend/app/factory/build/ui_surface.py",
+        "owner_present": true,
+        "title": "no ui/ / frontend/"
+      },
+      {
+        "code": "F6",
+        "owner_module": "backend/app/factory/build/domain_acceptance.py",
+        "owner_present": true,
+        "title": "missing update/delete persist; agent_domain_cases uncollected"
+      },
+      {
+        "code": "F5",
+        "owner_module": "backend/app/factory/build/domain_acceptance.py",
+        "owner_present": true,
+        "title": "HTTP 200 = acceptance / hollow queue"
+      }
+    ],
+    "unmapped": [],
+    "lotdesk": "fixture only; not patched",
+    "ok": true
+  },
+  "parent_defect": "U10",
+  "s4_evidence": "S4_ship_kernel.json",
+  "one_sentence": "Each U/F class is owned by a named factory module; LotDesk-class symptoms map to those owners and the fixture is not patched.",
+  "PILOT_READY": false,
+  "not_claimed": [
+    "PILOT_READY",
+    "S2 cosign / image signature verification",
+    "U4 persist-rewrite removal",
+    "U7 marker change"
+  ],
+  "lotdesk": "fixture only; not patched",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None"
+}

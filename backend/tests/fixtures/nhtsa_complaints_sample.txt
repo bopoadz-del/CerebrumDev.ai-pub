@@ -1,0 +1,4 @@
+ODINO	MAKETXT	MODELTXT	YEARTXT	COMPNAME	MFR_NAME	CDESCR	CRASH	FIRE	INJURED	DEATHS	DATEA	CMPL_RECALL
+100001	Honda	Accord	2014	AIR BAGS	Honda	Passenger air bag warning light illuminated intermittently.	N	N	0	0	20150401	15V176000
+100002	Toyota	Camry	2018	FUEL SYSTEM	Toyota	Vehicle stalled while driving due to fuel pump failure.	N	N	0	0	20210301	21V127000
+100003	Ford	Fusion	2016	POWER TRAIN	Ford Motor Company	Unexpected acceleration reported while approaching stop.	Y	N	1	0	20160215	

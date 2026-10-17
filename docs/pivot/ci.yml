@@ -1,0 +1,27 @@
+# CI workflow for cerebrum-builds `build/**` branches (proven green).
+# Copy to .github/workflows/ci.yml there. Not live on CerebrumDev.ai.
+#
+# The store acceptance check ci_present_and_full_suite requires
+# .github/workflows/ci.yml running the FULL suite (`python -m pytest
+# tests`, no `not pilot` exclusion). Proven green 2026-09-16 on
+# build/sess_c8b01eb6de53495c-4db4944f (55/55 after requirements
+# declared numpy for the vendored vector_search/formula_executor blocks).
+
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest tests

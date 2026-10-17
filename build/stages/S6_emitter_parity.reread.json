@@ -1,0 +1,19 @@
+{
+  "stage": "S6",
+  "name": "emitter_parity",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S6_emitter_parity.json",
+  "reread_at": "2026-08-23T08:31:00Z",
+  "independent": true,
+  "checked": [
+    "rg ProductGenerator.generate in converge.py / roles.py is comments-only",
+    "vendor/** is in FOURTEEN_ARTIFACT_CLASSES but not CONVERGED_TREES",
+    "factory suite 356 passed including test_emitter_parity.py (3 tests)",
+    "frontend/src/App.tsx exists on both emitters; no invented chat block",
+    "factory_plan.json remains a declared generator extra",
+    "S5 seal still holds: prepare_pilot_workspace absent from runner.py"
+  ],
+  "disagreements": [],
+  "agrees_not_pilot_ready": true,
+  "agrees_blocks_residual": true
+}

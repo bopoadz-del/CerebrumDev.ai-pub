@@ -1,0 +1,15 @@
+# Runtime dependencies. Persistence is stdlib sqlite3 on purpose --
+# the platform runs with no database server and no network (P1).
+# pydantic is required by the vendored cerebrum_product_kernel contract.
+# Alembic applies versioned schema at deploy against STORAGE_PATH.
+# starlette is imported directly by app/observe.py. FastAPI pulls it in
+# transitively, but a runtime module that imports a package must declare
+# it: relying on someone else's dependency graph breaks the moment that
+# graph changes, and F10 is exactly the class of defect where an import
+# is satisfied by accident rather than by declaration.
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.0
+alembic>=1.13
+sqlalchemy>=2.0
+starlette>=0.37

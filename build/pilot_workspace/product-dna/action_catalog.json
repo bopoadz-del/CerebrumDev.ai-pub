@@ -1,0 +1,19 @@
+{
+  "actions": [
+    {
+      "block_ids": [
+        "analytics"
+      ],
+      "capability_id": "analytics_surface",
+      "strategy": "REUSE"
+    },
+    {
+      "block_ids": [
+        "dashboard"
+      ],
+      "capability_id": "dashboard_surface",
+      "strategy": "REUSE"
+    }
+  ],
+  "schema_version": "1.0.0"
+}

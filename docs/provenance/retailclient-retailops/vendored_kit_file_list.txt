@@ -1,0 +1,11 @@
+/workspace/backend/app/retailops/kit/contract/__init__.py
+/workspace/backend/app/retailops/kit/contract/models.py
+/workspace/backend/app/retailops/kit/contract/registry.py
+/workspace/backend/app/retailops/kit/contract/runtime.py
+/workspace/backend/app/retailops/kit/contract/schema_validation.py
+/workspace/backend/app/retailops/kit/domains/__init__.py
+/workspace/backend/app/retailops/kit/domains/retail/actions.py
+/workspace/backend/app/retailops/kit/domains/retail/fixtures/__init__.py
+/workspace/backend/app/retailops/kit/domains/retail/__init__.py
+/workspace/backend/app/retailops/kit/domains/retail/schemas.py
+/workspace/backend/app/retailops/kit/__init__.py

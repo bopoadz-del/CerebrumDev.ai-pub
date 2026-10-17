@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocks_commit": {
+      "type": "string"
+    },
+    "factory_commit": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "factory_commit",
+    "blocks_commit",
+    "sources"
+  ],
+  "title": "source_provenance",
+  "type": "object"
+}

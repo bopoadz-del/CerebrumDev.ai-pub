@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "JSON projection used to validate YAML blueprint content after load.",
+  "properties": {
+    "capabilities": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "connectors": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "product_id": {
+      "type": "string"
+    },
+    "product_name": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "ui_modules": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "vertical": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "product_id",
+    "product_name"
+  ],
+  "title": "product_blueprint",
+  "type": "object"
+}

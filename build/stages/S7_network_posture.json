@@ -1,0 +1,42 @@
+{
+  "stage": "S7",
+  "name": "NETWORK_POSTURE",
+  "evaluated_at": "2026-08-23T07:45:30Z",
+  "verdict": "PASS",
+  "chosen": "P1",
+  "chosen_id": "P1",
+  "reason": "Delivered platforms run in-process against vendored blocks; local/scripted OCR only; no Store URL, no cloud LLM, no Ollama, no outbound HTTP at runtime.",
+  "rejected": {
+    "P2": "Local inference (Ollama). Would rewrite the socket blocker and add a runtime the Dockerfile/Render blueprint do not ship.",
+    "P3": "Cloud allowlist / open egress. Would retract every offline claim and undo the socket blocker that exists because a handler already escaped once."
+  },
+  "pass_criteria": {
+    "exactly_one_posture": true,
+    "artifacts_amended_consistently": true,
+    "socket_blocker_unchanged": true,
+    "capture_emission_offline": true,
+    "differences_declared": true
+  },
+  "amended_artifacts": [
+    "backend/app/factory/build/network_posture.py",
+    "RoleRunner Dockerfile / README / .env.example / render.yaml / app/main.py / requirements.txt",
+    "docs/network_posture.json",
+    "docs/build_provenance.json network_posture field",
+    "tests/conftest.py (_CONFTEST) names P1; blocker still refuses non-loopback",
+    "CLONER capture adapter (P1_CAPTURE_ADAPTER) replaces Store shim",
+    "factory vendor-mirror capture/block.json defaults llm_provider=none, network=false"
+  ],
+  "declared_exceptions": [
+    "ProductGenerator._write_env_example still documents CEREBRUM_API_URL (template-path leftover; S6 extra)",
+    "ProductGenerator estate packaging may mention Postgres / FastEmbed (not RoleRunner delivery)"
+  ],
+  "not_claimed": [
+    "PILOT_READY",
+    "U7",
+    "U6 STORE_MANAGER harvest",
+    "Cerebrum-Blocks write",
+    "S8–S13"
+  ],
+  "lotdesk": "fixture only; not patched",
+  "blocks": "not written; harvest blocked (no authorized write path in this repo)"
+}

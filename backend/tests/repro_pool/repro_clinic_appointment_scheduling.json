@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_clinic_appointment_scheduling",
+  "name": "Family Clinic Scheduler",
+  "vertical": "clinic_appointment_scheduling",
+  "country": "CA",
+  "currency": "CAD",
+  "build_level": "production",
+  "brief": "Build me a scheduling platform for a three-doctor family clinic: book patient appointments by doctor and consulting room, keep patient contact details and visit notes, send appointment reminders, and track the invoice for each visit."
+}

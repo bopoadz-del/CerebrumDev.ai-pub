@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "networks": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "services": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "targets": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "targets",
+    "services",
+    "networks"
+  ],
+  "title": "deployment_topology",
+  "type": "object"
+}

@@ -1,0 +1,63 @@
+{
+  "stage": "S6",
+  "name": "EMITTER_PARITY",
+  "evaluated_at": "2026-08-23T08:30:00Z",
+  "verdict": "PASS",
+  "independent": true,
+  "reread_of": "shipping tree at cursor/factory-s5-no-workspace-patch-2476@b598a4b",
+  "diagnosis_revision": "draft3_u10_two_emitters_kernel_not_shipped",
+  "pass_criteria": {
+    "role_runner_does_not_call_generate": true,
+    "fourteen_classes_present_on_both_emitters": true,
+    "vendor_sealed_not_reconverged": true,
+    "extras_declared_not_silently_dropped": true,
+    "factory_tests_green": true
+  },
+  "checked": [
+    "converge.py has no ProductGenerator.generate() call (comment only)",
+    "run_writer invokes converge_writer_emitters after deploy scaffold",
+    "CONVERGED_TREES excludes vendor/** and kits/** (CLONER lanes; vendor sealed after S5)",
+    "WRITER lanes gained product-dna/**, docs/blueprint|provenance|certification/**, docs/edge_profile.json, frontend/** — no docs/** wildcard",
+    "test_role_runner_does_not_call_product_generator_generate",
+    "test_role_runner_and_product_generator_share_fourteen_classes",
+    "ENV=test pytest tests/factory tests/test_build_authority_lanes.py → 356 passed in 80.61s"
+  ],
+  "implementation": {
+    "module": "backend/app/factory/build/converge.py",
+    "emitters_invoked": [
+      "ProductGenerator._write_hats",
+      "ProductGenerator._write_workflows",
+      "ProductGenerator._write_connectors",
+      "ProductGenerator._write_ui_stub",
+      "ProductGenerator._write_blueprint_copy",
+      "ProductGenerator._write_edge_profile",
+      "ProductGenerator._write_certification_scaffold",
+      "emit_product_dna",
+      "build_provenance (generated_at = blueprint hash)"
+    ],
+    "not_invented": "no third emitter; no chat block; frontend is the existing UI stub"
+  },
+  "declared_not_required": {
+    "generator_extras": [
+      "product-agent/",
+      "factory_plan.json",
+      "pyproject.toml",
+      "app/static/console.html",
+      "resident-engineer docs / inject_resident_runtime"
+    ],
+    "runner_extras": [
+      "app/dispatch.py",
+      "app/kernel_bridge.py",
+      "docs/build_provenance.json"
+    ]
+  },
+  "not_claimed": [
+    "PILOT_READY",
+    "byte-identical trees",
+    "universal console / Resident Engineer port",
+    "U7 shape-vs-outcome",
+    "U6 STORE_MANAGER harvest"
+  ],
+  "residual_risk": "Cerebrum-Blocks harvest remains unbuilt. Converge copies Factory-owned ProductGenerator surfaces; it does not write sibling repos.",
+  "lotdesk": "fixture only; not patched"
+}

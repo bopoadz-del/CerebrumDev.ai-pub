@@ -1,0 +1,42 @@
+# Production image for the Factory SPA.
+#
+# frontend/Dockerfile is a LOCAL DEV image: it ends in `npm run dev -- --host`,
+# the Vite dev server on 5173. Render never used it â€” render.yaml ran the
+# frontend as a node service with `npm install && npm run build` then
+# `node serve.mjs`. This reproduces that on ECS.
+#
+# VITE_API_URL is read by Vite at BUILD time and baked into the bundle, so it
+# is a build arg, not a runtime variable. Changing which API the SPA talks to
+# means rebuilding the image, not restarting the container.
+FROM node:20-slim AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+ARG VITE_API_URL
+ARG VITE_SENTRY_DSN=""
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+RUN npm run build
+
+FROM node:20-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+# serve.mjs is the same server Render started; it serves ./dist and answers
+# `/` for the health check.
+# serve.mjs reads TWO things at startup: ./dist and ./security-headers.json.
+# The header file is read at module load (serve.mjs:23), before the server can
+# listen, so omitting it is not a missing header -- it is ENOENT and a crash
+# loop. The first build of this image left it out and did exactly that.
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/serve.mjs ./serve.mjs
+COPY --from=build /app/security-headers.json ./security-headers.json
+COPY --from=build /app/package.json ./package.json
+
+EXPOSE 8000
+ENV PORT=8000
+CMD ["node", "serve.mjs"]

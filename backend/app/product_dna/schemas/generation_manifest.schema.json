@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocks_commit": {
+      "type": "string"
+    },
+    "connectors": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "factory_commit": {
+      "type": "string"
+    },
+    "factory_scenario": {
+      "type": "string"
+    },
+    "product_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "ui_modules": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "product_id",
+    "factory_scenario",
+    "ui_modules",
+    "connectors"
+  ],
+  "title": "generation_manifest",
+  "type": "object"
+}

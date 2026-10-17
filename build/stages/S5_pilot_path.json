@@ -1,0 +1,41 @@
+{
+  "stage": "S5",
+  "name": "PILOT_PATH",
+  "evaluated_at": "2026-08-23T07:00:00Z",
+  "verdict": "PASS",
+  "supersedes": "build/stages/S5_pilot_path.json FAIL of 2026-08-23T07:09:00Z (prior draft; now closed)",
+  "diagnosis_revision": "draft3_u10_two_emitters_kernel_not_shipped",
+  "f29_disposition": "caught by named authority seal SEALED_AFTER_CLONER → AuthorityError → FAILED_AUTHORITY",
+  "pass_criteria": {
+    "prepare_pilot_workspace_not_invoked_from_runner": true,
+    "no_vendor_write_between_gate_fail_and_pass": true,
+    "factory_tests_updated_and_green": true,
+    "f29_caught_by_named_gate": true
+  },
+  "implementation": {
+    "emission": "backend/app/factory/build/offline_adapters.py applied from _vendor_runtime_slice / _rewrite_shim_constructors",
+    "contracts": [
+      "DatabaseBlock SQLite init (_ensure_store_block_ready)",
+      "notification MCP offline fallback",
+      "database insert CREATE TABLE IF NOT EXISTS",
+      "database query SQL synthesis from table/filters",
+      "storage aiofiles fallback"
+    ],
+    "runner": "prepare_pilot_workspace call removed; pilot cycle no longer writes vendor/**",
+    "authority": "assert_write_allowed(sealed=SEALED_AFTER_CLONER) after CLONER is in completed_roles",
+    "pilot_module": "backend/app/factory/build/pilot.py retains no prepare_pilot_workspace"
+  },
+  "tests": {
+    "factory_suite": "335 passed",
+    "files": [
+      "backend/tests/factory/test_pilot_cycle.py",
+      "backend/tests/factory/test_cloner_runtime_slice.py::test_cloner_emits_store_unwired_adapter_contracts"
+    ]
+  },
+  "not_claimed": [
+    "U7 — FACTORY_SUITE_MARKER_EXPR remains 'not pilot'; code-phase still judges shape. Pilot is a later blocking cycle that no longer patches first.",
+    "U6 STORE_MANAGER harvest remains unbuilt"
+  ],
+  "residual_risk": "Cerebrum-Blocks harvest is unbuilt. The next product will re-ship Store-unwired adapters unless Factory CLONER emission (offline_adapters) stays applied. This does not pretend Blocks was fixed. No Blocks write was performed; none is authorized from this repo.",
+  "lotdesk": "fixture only; not patched"
+}

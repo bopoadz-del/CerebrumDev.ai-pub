@@ -1,0 +1,29 @@
+{
+  "stage": "S10",
+  "name": "data",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S10_data.json",
+  "reread_at": "2026-08-23T09:46:00Z",
+  "independent": true,
+  "reader": "cloud-agent-s10-data-lifecycle",
+  "checked": [
+    "roles._render_store delegates to data_lifecycle.render_store; store source contains WAL and busy_timeout and does not contain CREATE TABLE",
+    "emit_writer_artifacts writes alembic.ini, alembic/env.py, 0001_baseline.py (upgrade/downgrade create/drop entity tables), 0002_lifecycle_audit.py (upgrade/downgrade lifecycle_audit)",
+    "scripts/entrypoint.sh runs python -m alembic upgrade head then exec uvicorn; Dockerfile ENTRYPOINT uses that script; STORAGE_PATH=/app/data matches render.yaml disk mount",
+    "app/main.py lifespan calls upgrade_head() fail-closed",
+    "WRITER lanes include alembic.ini, alembic/**, scripts/entrypoint.sh, docs/data_lifecycle.json",
+    "TESTER emits tests/test_data_lifecycle.py; generated suite on /tmp/s10-debug-build2: 16 passed including restore drill, schema up/down, 40 parallel writes",
+    "factory test_data_lifecycle.py runs probes in a subprocess (does not import generated app into factory app); 5 passed after re-run",
+    "docs/data_lifecycle.json names SPOF, disk_gb=1, ha=false",
+    "LotDesk fixture not modified; _coder_route_body not restored",
+    "full tests/factory: 372 passed, 1 skipped"
+  ],
+  "disagreements": [],
+  "probe": {
+    "factory": "ENV=test ./venv/bin/python -m pytest tests/factory/test_data_lifecycle.py — 5 passed",
+    "generated_suite": "pytest /tmp/s10-debug-build2/tests -m 'not pilot' — 16 passed",
+    "full_factory": "372 passed, 1 skipped"
+  },
+  "not_claimed": ["PILOT_READY", "S11–S13"],
+  "stop": "S10 independently re-read PASS. Do not start S11. Not PILOT_READY."
+}

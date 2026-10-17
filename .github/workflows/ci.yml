@@ -1,0 +1,502 @@
+name: CI
+
+# One GitHub Actions run per change: the pull request into master.
+# Do not also run on push to master — that retested the same squash-merge
+# a second time. Feature branches never run CI until a PR exists.
+# Production deploy (Render auto-deploy on master) is the main-branch build.
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fail-closed twin for the #244 class: a requirements.txt / package.json
+  # bump with no lock delta. Automerge arms `gh pr merge --auto` and does
+  # not inspect lockfiles — a red CI check is what blocks the merge.
+  # Lock-only and manifest+lock are OK. This job is not continue-on-error.
+  #
+  # EXEMPTION (owner's call, 2026-09-21): dependabot cannot satisfy this gate.
+  # It bumps the manifest and never writes the lock, so every bump PR was red
+  # by construction -- #533 #534 #537 #538 all failed on this step alone, 8
+  # other checks green. The exemption is deliberately narrow -- one login --
+  # so a human PR moving a manifest without its lock still fails, which is the
+  # case the gate was written for.
+  #
+  # The predicate is the PR AUTHOR, not github.actor: actor is whoever
+  # triggered the latest event, so a human clicking "re-run failed checks" on
+  # a dependabot PR would have turned it red again.
+  #
+  # WHAT IT COSTS: a merged bump can now leave requirements.txt and
+  # requirements.lock disagreeing, and the install resolves from the lock --
+  # so the bump may not take effect. Regenerating the lock after a batch of
+  # bumps is a manual step that nothing here enforces.
+  lockfile-consistency:
+    name: Lockfile consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fail if a manifest moved without its lockfile
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "${{ github.event.pull_request.base.sha }}"
+          python3 scripts/check_lockfile_consistency.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head HEAD
+
+      # Says so out loud rather than reporting a silent green: a reviewer
+      # looking at why this passed sees that it was skipped, not that it held.
+      - name: Lockfile gate exempted for dependabot
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        run: |
+          echo "SKIPPED: dependabot bumps the manifest and cannot write the lock."
+          echo "requirements.txt and requirements.lock may disagree on this PR."
+          echo "Regenerate the lock after merging a batch of bumps."
+
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    # 25, not 15. The suite alone is ~9.5 min (3,279 tests) before checkout,
+    # pip install and the Store clone; at 15 the job was CANCELLED at 15m16s
+    # on #547 with no test red, which reads as a failure and blocks the merge.
+    # A limit the healthy suite cannot fit inside measures the runner, not
+    # the code. Still bounded, so a genuine hang is still killed.
+    # 40, not 25: by 2026-10-05 the suite alone was ~21.7 min (3,794 tests)
+    # and #648's job was CANCELLED at 25m06s after "3794 passed" -- the same
+    # runner-not-code failure, again.
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      ENV: test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The lockfile twin below diffs BASE...HEAD. Three-dot needs a merge
+          # base; a shallow checkout has none, and fetching the base sha into
+          # a shallow clone brings no common ancestor ("no merge base").
+          fetch-depth: 0
+
+      # Same twin, on the already-required "Backend (pytest)" check, so a
+      # newly named job is not the only gate while branch protection catches up.
+      # Git-based, not the pulls API: GITHUB_TOKEN gets
+      # "Resource not accessible by integration" (403) on that endpoint here.
+      # Exempted for dependabot in step with the standalone job above; see the
+      # EXEMPTION note there for what it costs. Both sites must carry it or the
+      # bump PR stays red on whichever one does not.
+      - name: Fail if a manifest moved without its lockfile
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE"
+          python3 scripts/check_lockfile_consistency.py --base "$BASE" --head HEAD
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Pyflakes only -- see backend/ruff.toml for why the default rule set is
+      # deliberately not used. Runs before pytest because an undefined name or
+      # a duplicate test definition is cheaper to read here than as a confusing
+      # test failure.
+      - name: Lint (ruff, pyflakes)
+        run: python -m ruff check .
+
+      # The Factory holds no blocks -- the Store does. Tests that build a
+      # product must clone from the real Store at the SAME commit production
+      # uses, read from the one place that pin lives. Before this, CI ran
+      # entirely off Factory-local copies, which is how five always-ok estate
+      # stubs shipped inside customer platforms without a single red test.
+      # CI checks out the Store at exactly the commit in store.pin -- the
+      # same commit the image bakes and the lock was generated from. Store
+      # main is never followed: a Store change reaches the Factory only
+      # through a PR that runs `cli bump-store <sha>` (pin + lock together),
+      # and test_store_pin fails if the lock disagrees with the pinned Store.
+      - name: Check out the Store
+        working-directory: .
+        env:
+          # Cerebrum-Blocks is private, so the fetch must authenticate. The
+          # default GITHUB_TOKEN is scoped to THIS repo only; CROSS_REPO_PAT
+          # (an existing repo secret) has read access to the Store. Passed via
+          # a token URL that is never stored in remote config, and GitHub masks
+          # the secret in logs.
+          CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
+          echo "Store ref: $STORE_REF"
+          git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
+          cd "$RUNNER_TEMP/Cerebrum-Blocks"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
+          git checkout -q FETCH_HEAD
+          test -d block_registry
+          echo "Store head: $(git rev-parse HEAD)  ($(ls block_registry | wc -l) blocks)"
+          echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
+
+      - name: Run pytest suite
+        # -rs names every skipped test and its reason. A skip is invisible in
+        # the default summary, so a platform-guarded test that quietly stops
+        # running on the Linux runner would read as coverage it is not
+        # providing. Reporting only; it cannot change a result.
+        # f as well as s: a red run must NAME its failures in the summary, or the
+        # only way to find them is to read thousands of log lines.
+        run: python -m pytest -rfs
+
+      # U2: production enables the coder when a key is set. The job above
+      # is ENV=test only; this step is the keyed-path fixture — stub keys,
+      # no paid calls, same RoleRunner entry points production uses.
+      - name: Factory keyed-path fixtures (U2)
+        env:
+          FACTORY_CODER_ENABLED: "1"
+          KEYED_PATH_CI: "1"
+          LLM_PROVIDER: kimi
+          # Serial, so this job asserts one behaviour and not a scheduler's.
+          # test_writer_fanout.py sets the fan-out itself, per test, and is
+          # what proves 1 and 5 deliver the same bytes.
+          FACTORY_CODER_FANOUT: "1"
+        # The stub keys are generated per run (never a fixed value in the workflow text);
+        # the ci-stub-not-a-real-key prefix marks them as stubs.
+        run: |
+          STUB="ci-stub-not-a-real-key-$(openssl rand -hex 12)"
+          export KIMI_API_KEY="$STUB" CEREBRUM_LLM_API_KEY="$STUB"
+          python -m pytest tests/factory/test_keyed_path_ci.py tests/factory/test_writer_coder_wiring.py tests/factory/test_kernel_coder_wiring.py tests/factory/test_writer_fanout.py -rs
+
+      - name: Reject LotDesk-as-shipped fixture
+        run: python -m app.factory.build.lotdesk_gate
+
+      # Repo-wide gates (run from repo root, not backend/): every hollow
+      # function must be implemented or registered in KNOWN_INCOMPLETE.md,
+      # and no secret-shaped literal may ship on a non-test path.
+      - name: Vendor mirror lock parity
+        working-directory: .
+        run: python3 scripts/verify_vendor_parity.py
+
+      - name: Stub audit (implement or register)
+        working-directory: .
+        run: python scripts/audit_stubs.py
+
+      - name: Gate audit (reachable, consumed, proven to refuse)
+        working-directory: .
+        run: python scripts/audit_gates.py
+
+      - name: Secret scan
+        working-directory: .
+        run: python scripts/scan_secrets.py
+
+      # NO HARDWIRING (owner's standing rule, 2026-10-02): a failing case is
+      # never fixed by name. This rejects any NEW session-id literal, LIVE_*
+      # snapshot, probe id, _rescue_* function, *_NEEDLES list or rescue knob
+      # in shipped factory code. Pre-doctrine forms are grandfathered in
+      # scripts/hardwiring_baseline.json, which may only shrink. Exit 1 is a
+      # rejection, not a warning: if this fails your diff, your diff is the
+      # problem -- fix the mechanism, not the case.
+      # product_literal: a string equal to any capability / product / vertical
+      # name loaded at run time from the Store (CEREBRUM_BLOCKS_ROOT, checked
+      # out above), the golden blueprints and every cerebrum-builds build
+      # branch (additive: without the token the step runs on the Store and
+      # blueprints and logs that the builds branches were skipped).
+      # block_name_dispatch: a Store block id (loaded from the same Store
+      # checkout) compared against / keyed on / aliased to a block reference.
+      # blueprint_name: a string equal to a release-cycle rotation blueprint's
+      # id, name or vertical (read from backend/tests/repro_pool): nothing in
+      # the Factory may branch on which blueprint a cycle is building.
+      # Enforced at baseline 0; with no Store or no pool the step fails closed.
+      - name: Hardwiring gate (no new per-case form)
+        working-directory: .
+        env:
+          CEREBRUM_BUILDS_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: python scripts/scan_hardwiring.py
+
+      # Owner rule: the Factory holds no kits. Kits live in the Store and the
+      # Factory references them by registry id; a kits/ directory, a
+      # kit-shaped manifest or a *_runtime directory under backend/ fails.
+      - name: Factory holds no kits
+        working-directory: .
+        run: python scripts/check_factory_kit_free.py
+
+      - name: Forbid VITE_API_KEY in frontend/src
+        working-directory: .
+        run: |
+          if grep -R --line-number -E 'VITE_API_KEY' frontend/src; then
+            echo "VITE_API_KEY must never appear in frontend/src (it would bake the master key into the static bundle)." >&2
+            exit 1
+          fi
+          echo "ok: no VITE_API_KEY in frontend/src"
+
+  # Incremental typecheck. Scope is backend/mypy.ini — not the whole tree.
+  # Adding a new HTTP/ops helper under app/core/ means adding it to files=
+  # and keeping this job green. Do not widen to factory god-files in this job.
+  backend-types:
+    name: Backend typecheck (mypy, scoped)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: mypy (scoped files= in mypy.ini)
+        run: python -m mypy
+
+  # S03: Linux pip-audit resolve. Remaining advisories must have a dated
+  # note + registry row; a published fix makes the note stale. Never a
+  # bare --ignore-vuln (see scripts/dep_audit.py and the test twin).
+  backend-dep-audit:
+    name: Backend dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: pip-audit + dated adjudications
+        working-directory: .
+        # Wrapper audits backend/requirements.txt (factory pin set), not the
+        # runner site-packages. A local-env scan flags GHA setuptools
+        # (PYSEC-2026-3447) which is not a factory pin. No --ignore-vuln.
+        run: python3 scripts/dep_audit.py --python
+
+  # F26 / windows_cp1252_parity. Linux agents cannot certify this.
+  # Required (no continue-on-error / allow_failure). Workflow fails if red.
+  windows-cp1252-parity:
+    name: Windows cp1252 encoding parity (F13/F26)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+        shell: cmd
+    env:
+      ENV: test
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # test_network_posture self-clones the Store during collection via
+      # resolve_blocks_root(); with Cerebrum-Blocks now private that anonymous
+      # clone fails ("Repository not found"). Provide an authenticated checkout
+      # and point CEREBRUM_BLOCKS_ROOT at it so the resolver returns early and
+      # never clones.
+      - name: Check out the Store
+        shell: bash
+        working-directory: .
+        env:
+          CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
+          git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
+          cd "$RUNNER_TEMP/Cerebrum-Blocks"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
+          git checkout -q FETCH_HEAD
+          echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
+
+      - name: Encoding + posture subset (F13/F26)
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+          PYTHONUTF8: "0"
+        run: |
+          chcp 1252
+          python -c "import sys; enc=(sys.stdout.encoding or '').lower().replace('_','-'); print('stdout-encoding', enc); assert enc in ('cp1252','windows-1252'), enc"
+          python -m pytest -rs tests/factory/test_windows_cp1252_parity.py tests/factory/test_tester_isolation.py tests/factory/test_network_posture.py tests/factory/test_block_action_contract.py::test_dispatch_does_not_pass_on_a_block_refusal
+
+  frontend:
+    name: Frontend (build + lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Serve dist and assert security headers on the wire
+        run: |
+          set -euo pipefail
+          PORT=4173 HOST=127.0.0.1 node serve.mjs &
+          serve_pid=$!
+          trap 'kill "$serve_pid" 2>/dev/null || true' EXIT
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -sf -o /dev/null http://127.0.0.1:4173/; then
+              break
+            fi
+            sleep 0.2
+          done
+          curl -sI http://127.0.0.1:4173/ | tee /tmp/fe-security-headers.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("/tmp/fe-security-headers.txt").read_text().lower()
+          need = (
+              "content-security-policy",
+              "x-content-type-options",
+              "x-frame-options",
+              "referrer-policy",
+              "strict-transport-security",
+          )
+          missing = [h for h in need if h not in text]
+          if missing:
+              raise SystemExit(f"missing security headers: {missing}")
+          print("ok: all five security headers on the wire")
+          PY
+
+      - name: Lint
+        run: npm run lint
+
+  # S03: npm audit of the lockfile on Linux. Production was already clean;
+  # remaining dev transitives were upgraded in package-lock.json. The
+  # wrapper refuses a bare `npm audit --ignore`.
+  frontend-dep-audit:
+    name: Frontend dependency audit (npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: npm audit + dated adjudications
+        working-directory: .
+        run: python3 scripts/dep_audit.py --npm
+
+  frontend-e2e:
+    name: Frontend Playwright (mocked)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Mocked factory surfaces
+        run: npx playwright test e2e/factory_surfaces.spec.ts e2e/verify_email_boot.spec.ts
+
+  docker:
+    name: Production Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build production image
+        # store-blocks/ is baked by the DEPLOY workflow (private-Store clone
+        # via CROSS_REPO_PAT). CI ships an empty placeholder so the COPY
+        # succeeds; blocks_source ignores a root with no block_registry/.
+        run: |
+          mkdir -p store-blocks
+          docker build -t cerebrumdev-backend:ci .
+
+      - name: S0 factory source is in the image workdir
+        run: |
+          docker run --rm --entrypoint python cerebrumdev-backend:ci -c "
+          from app.factory.build.preflight import FACTORY_SOURCE_PATHS, _repo_root
+          root = _repo_root()
+          missing = [p for p in FACTORY_SOURCE_PATHS if not (root / p).is_file()]
+          raise SystemExit(0 if not missing else 'factory_source_missing:' + ','.join(missing))
+          "
+
+      - name: Retired executors (kimi / claude) are NOT in the image
+        run: |
+          docker run --rm --user 10001 --entrypoint /bin/sh cerebrumdev-backend:ci -c '
+            set -eu
+            ! command -v kimi
+            ! command -v claude
+          '
+
+      - name: codewhale (DeepSeek worker) is on PATH
+        run: |
+          docker run --rm --user 10001 --entrypoint /bin/sh cerebrumdev-backend:ci -c '
+            set -eu
+            command -v codewhale
+            codewhale --version
+          '

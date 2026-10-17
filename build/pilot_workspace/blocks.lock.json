@@ -1,0 +1,46 @@
+{
+  "blocks": {
+    "analytics": {
+      "commit": "sha256:86e22465a4524aab6505afea98e5aa3fe7b93308",
+      "image_pin": "none",
+      "integrity": {
+        "absent": [],
+        "files_hashed": 0,
+        "findings": [],
+        "has_digests": false,
+        "mismatched": [],
+        "signed_unverified": false,
+        "verified": true
+      },
+      "path": "vendor/blocks/analytics",
+      "source": "factory-vendor-mirror"
+    },
+    "dashboard": {
+      "commit": "sha256:9ad6042bd5028289ba8492b5f8602c9f6fe6f56d",
+      "image_pin": "none",
+      "integrity": {
+        "absent": [],
+        "files_hashed": 0,
+        "findings": [],
+        "has_digests": false,
+        "mismatched": [],
+        "signed_unverified": false,
+        "verified": true
+      },
+      "path": "vendor/blocks/dashboard",
+      "source": "factory-vendor-mirror"
+    }
+  },
+  "kits": {
+    "platform": {
+      "blocks": [
+        "analytics",
+        "dashboard"
+      ],
+      "files_copied": 0,
+      "path": "kits/platform",
+      "source": "synthesized-from-factory-shelf"
+    }
+  },
+  "schema": "blocks.lock.v1"
+}

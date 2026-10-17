@@ -1,0 +1,9 @@
+{
+  "product": "cerebrum-retailops",
+  "retailops_version": "1.0.0",
+  "blocks_commit": "4a5ad84246f885764ba05d1ab1398dc0d2b56be3",
+  "blocks_kit": "retail@1.1.0",
+  "runtime_entrypoint": "app.retailops.app_factory:app",
+  "database": "postgresql-16+pgvector",
+  "notes": "Same package is used for local Docker and Render deployment."
+}

@@ -1,0 +1,194 @@
+name: ops
+
+# Ops jobs that need the live API (scripts/ops.py). They run HERE, on a runner
+# that holds the deploy secrets and can reach the API -- never from a laptop or
+# an agent sandbox. Every answer goes to the run summary and is committed to
+# the `ops-results` branch (runs/<run id>/), so it can be read with repository
+# access alone, after the logs expire.
+#
+#   ledger-dump    the build ledger of one session + the service log naming it
+#   gate-dispatch  the Store gate on a cerebrum-builds branch; with a target,
+#                  then Continue on that session and follow it to its end
+#   export-check   the export through the API, its strip audit, Your Platforms
+#   service-events why the service restarted: ECS events, stopped tasks and
+#                  their exit codes, memory/CPU maxima, lifecycle log lines
+#                  (AWS only -- it never needs the API to be up)
+#
+# Inputs are data: a session id or anything its record carries (platform id,
+# builds branch), a branch, or a cycle run id + run name (that cycle's
+# repros.json maps the name to its session). Nothing is keyed in this file.
+#
+# Two ways to start one:
+#   - Actions -> ops -> Run workflow (workflow_dispatch), or
+#   - push a branch `ops-run/<anything>` carrying ops/request.json with the
+#     same fields ({"action", "target", "branch", "run_id", "sha"}). That path
+#     exists so a request can run from a branch before this file reaches the
+#     default branch, and from an agent that can push but not dispatch.
+# Read-only against the product except gate-dispatch, which does exactly what
+# the Floor's Store gate and Continue button do.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "ledger-dump | gate-dispatch | export-check | service-events"
+        required: true
+        type: choice
+        options: [ledger-dump, gate-dispatch, export-check, service-events]
+      target:
+        description: "Session id, or an identifier its record carries (platform id, builds branch), or a run name with run_id"
+        required: false
+        default: ""
+      branch:
+        description: "gate-dispatch: the cerebrum-builds branch to gate"
+        required: false
+        default: ""
+      run_id:
+        description: "A release-cycle run id; target may then be a run name from its repros.json"
+        required: false
+        default: ""
+      sha:
+        description: "Commit that must be live; empty = whatever is live"
+        required: false
+        default: ""
+  push:
+    branches: ["ops-run/**"]
+
+# One ops job at a time PER TARGET: two Continues on one session would race.
+# A single shared group made GitHub drop every pending run but the newest
+# (three ledger-dumps dispatched together: one ran, one was cancelled).
+concurrency:
+  group: ops-${{ inputs.target || inputs.branch || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: write
+      actions: read
+    env:
+      AWS_REGION: us-west-2
+      ECS_CLUSTER: cerebrum
+      ECS_SERVICE: cerebrumdev-backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: The request
+        id: req
+        env:
+          IN_ACTION: ${{ inputs.action }}
+          IN_TARGET: ${{ inputs.target }}
+          IN_BRANCH: ${{ inputs.branch }}
+          IN_RUN_ID: ${{ inputs.run_id }}
+          IN_SHA: ${{ inputs.sha }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, pathlib, re
+          keys = ("action", "target", "branch", "run_id", "sha")
+          if os.environ.get("GITHUB_EVENT_NAME") == "push":
+              path = pathlib.Path("ops/request.json")
+              if not path.is_file():
+                  raise SystemExit("::error::an ops-run push must carry ops/request.json")
+              req = json.loads(path.read_text())
+          else:
+              req = {k: os.environ.get("IN_" + k.upper(), "") for k in keys}
+          if req.get("action") not in ("ledger-dump", "gate-dispatch", "export-check", "service-events"):
+              raise SystemExit(f"::error::unknown action {req.get('action')!r}")
+          for k in keys:
+              v = str(req.get(k) or "")
+              if not re.fullmatch(r"[A-Za-z0-9_./:-]*", v):
+                  raise SystemExit(f"::error::{k} carries characters an id never has")
+              print(f"{k}={v}")
+          PY
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        continue-on-error: true
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Backend requirements (export-check reads the export rule; gate-dispatch carries main's Store gate)
+        # gate-dispatch carries main's whole Store gate onto the branch with
+        # the checkpoint's own carry (branch_attach) before it dispatches.
+        if: steps.req.outputs.action == 'export-check' || steps.req.outputs.action == 'gate-dispatch'
+        run: pip install -q -r backend/requirements.txt
+
+      - name: The cycle's repros.json
+        if: steps.req.outputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ steps.req.outputs.run_id }}" -n release-cycle-repros -D cyclein -R "$GITHUB_REPOSITORY"
+
+      - name: Live /version must serve the requested commit
+        if: steps.req.outputs.sha != ''
+        env:
+          SMOKE_READY_WAIT_S: "60"
+        run: |
+          python3 scripts/release_cycle.py live-sha --expect "${{ steps.req.outputs.sha }}" \
+            --base ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
+
+      - name: Run
+        env:
+          SMOKE_GATE_TOKEN: ${{ secrets.SMOKE_GATE_TOKEN }}
+          BUILDS_GITHUB_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          FACTORY_BASE_URL: ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
+        run: |
+          repros=""
+          if [ -f cyclein/repros.json ]; then repros="--repros cyclein/repros.json"; fi
+          python3 scripts/ops.py "${{ steps.req.outputs.action }}" \
+            --target "${{ steps.req.outputs.target }}" \
+            --branch "${{ steps.req.outputs.branch }}" \
+            $repros --out ops-out
+
+      - name: Keep the answer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ops-${{ steps.req.outputs.action }}
+          path: ops-out/
+          if-no-files-found: warn
+
+      # The branch holds runs/ and nothing else. The commit is built on a
+      # private index from the previous runs/ tree plus this run's answer, so
+      # the checkout's own files never reach it.
+      - name: Commit the answer to ops-results
+        if: always()
+        env:
+          RUN_DIR: runs/${{ github.run_id }}
+          GIT_INDEX_FILE: ${{ runner.temp }}/ops-results.index
+        run: |
+          [ -d ops-out ] || exit 0
+          mkdir -p "$RUN_DIR"
+          cp -r ops-out/. "$RUN_DIR/"
+          printf '{"run": "%s", "event": "%s", "ref": "%s", "action": "%s", "target": "%s", "branch": "%s"}\n' \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ github.event_name }}" "${{ github.ref_name }}" "${{ steps.req.outputs.action }}" \
+            "${{ steps.req.outputs.target }}" "${{ steps.req.outputs.branch }}" > "$RUN_DIR/request.json"
+          export GIT_AUTHOR_NAME=ops-bot GIT_COMMITTER_NAME=ops-bot
+          export GIT_AUTHOR_EMAIL=ops-bot@users.noreply.github.com GIT_COMMITTER_EMAIL=ops-bot@users.noreply.github.com
+          # Concurrent ops runs race for this ref: retry with growing, jittered
+          # backoff (three quick tries lost to four runs at once).
+          for attempt in 1 2 3 4 5 6 7 8; do
+            rm -f "$GIT_INDEX_FILE"
+            git read-tree --empty
+            parent=""
+            if git fetch -q origin ops-results 2>/dev/null; then
+              parent="-p FETCH_HEAD"
+              if git rev-parse -q --verify FETCH_HEAD:runs >/dev/null; then
+                git read-tree --prefix=runs/ FETCH_HEAD:runs
+              fi
+            fi
+            git add -f "$RUN_DIR"
+            tree=$(git write-tree)
+            commit=$(git commit-tree "$tree" $parent -m "ops ${{ steps.req.outputs.action }} run ${{ github.run_id }}")
+            git push -q origin "$commit:refs/heads/ops-results" && exit 0
+            sleep $((attempt * 3 + RANDOM % 7))
+          done
+          exit 1

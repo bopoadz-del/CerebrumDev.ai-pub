@@ -1,0 +1,35 @@
+{
+  "stage": "S0",
+  "name": "preflight",
+  "verdict": "PASS",
+  "reread_of": "/workspace/build/stages/S0_preflight.json",
+  "reread_at": "2026-08-25T12:55:19Z",
+  "independent": true,
+  "reader": "cloud-agent-s0-preflight",
+  "emitter": "app.factory.build.preflight.evaluate_preflight",
+  "git_sha": "1779089fd8095b4dfc286a934385a2eeb56b713d",
+  "kernel_ownership": {
+    "execute_action": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+    "execute_action_callable": true,
+    "_coder_route_body_is_None": true,
+    "prepare_pilot_workspace": "absent",
+    "prepare_pilot_workspace_in_runner": false,
+    "prepare_pilot_workspace_in_pilot": false,
+    "ok": true
+  },
+  "disagreements": [],
+  "checked": [
+    "factory sources re-hashed",
+    "RoleRunner default engine re-read",
+    "execute_action callable; _coder_route_body is None",
+    "existing build/stages files listed",
+    "missing stage-table modules named"
+  ],
+  "not_claimed": [
+    "PILOT_READY",
+    "S2 cosign / image signature verification",
+    "S4 U4 _ensure_route_persists_payload removal",
+    "S5 U7 FACTORY_SUITE_MARKER_EXPR"
+  ],
+  "PILOT_READY": false
+}

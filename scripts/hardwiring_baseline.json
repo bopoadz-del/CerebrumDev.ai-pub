@@ -1,0 +1,32 @@
+{
+  "files": {},
+  "forms": [
+    "session_id",
+    "live_snapshot",
+    "rescue_fn",
+    "needle_list",
+    "rescue_knob",
+    "product_literal",
+    "word_list",
+    "probe_id",
+    "phrase_match",
+    "block_name_dispatch",
+    "blueprint_name"
+  ],
+  "roots": [
+    "backend/app/factory",
+    "backend/app/routers",
+    "backend/app/core",
+    "backend/app/blocks",
+    "backend/app/cerebrum_product_kernel",
+    "backend/app/domain_compiler",
+    "backend/app/models",
+    "backend/app/product_dna",
+    "backend/app/workbench",
+    "backend/app/change_requests",
+    "backend/app/resident_engineer",
+    "backend/app/main.py"
+  ],
+  "schema": "hardwiring_baseline.v1",
+  "total": 0
+}

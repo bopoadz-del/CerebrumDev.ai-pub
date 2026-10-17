@@ -1,0 +1,18 @@
+{
+  "blocks": [
+    "analytics",
+    "dashboard"
+  ],
+  "id": "platform",
+  "name": "Platform",
+  "product_blocks": [
+    "analytics",
+    "dashboard"
+  ],
+  "source": "synthesized-from-factory-shelf",
+  "vendored_blocks": {
+    "analytics": "vendor/blocks/analytics",
+    "dashboard": "vendor/blocks/dashboard"
+  },
+  "version": "1.0.0"
+}

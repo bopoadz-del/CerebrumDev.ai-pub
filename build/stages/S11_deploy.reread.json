@@ -1,0 +1,28 @@
+{
+  "stage": "S11",
+  "name": "deploy",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S11_deploy.json",
+  "reread_at": "2026-08-23T10:19:10Z",
+  "independent": true,
+  "reader": "cloud-agent-s11-deploy-observe",
+  "checked": [
+    "roles._render_main delegates to deploy.render_main; generated health() returns health_response() JSONResponse, not return {status: ok}",
+    "app/health.py evaluate_health checks process, persistent_disk (STORAGE_PATH exists+writable, no mkdir), database (platform.db SELECT 1), migrations (current_revision == head_revision); 503 when any fail",
+    "WRITER emit_deploy_artifacts writes app/health.py, app/observe.py, app/revision.py, scripts/rollback.sh, docs/deploy.json",
+    "TESTER emits tests/test_deploy.py; generated suite includes fail-closed health and mark-change identity",
+    "factory test_rollback_drill_is_performed starts uvicorn rev-n, persists a row, starts rev-n-plus-1 with mutated MARK, runs rollback.sh, restarts rev-n; prior health+row asserted",
+    "factory test_always_200_health_is_f1_and_lotdesk_is_rejected; lotdesk_gate now also records F1; fixture not patched",
+    "observe JsonFormatter + request.jsonl; CorrelationMiddleware sets x-request-id; emoji stripped; configure_logging re-bound after uvicorn lifespan",
+    "docs/deploy.json names SPOF, disk_gb=1, ha=false, replicas=0",
+    "LotDesk fixture not modified; _coder_route_body still returns None; prepare_pilot_workspace absent",
+    "full tests/factory: 379 passed, 1 skipped; no PILOT_READY string in deploy.py"
+  ],
+  "disagreements": [],
+  "probe": {
+    "factory_s11": "ENV=test ./venv/bin/python -m pytest tests/factory/test_deploy_observe.py — 7 passed after rollback.sh/python and request.jsonl fixes",
+    "full_factory": "379 passed, 1 skipped"
+  },
+  "not_claimed": ["PILOT_READY", "S12–S13"],
+  "stop": "S11 independently re-read PASS. Do not start S12. Not PILOT_READY."
+}

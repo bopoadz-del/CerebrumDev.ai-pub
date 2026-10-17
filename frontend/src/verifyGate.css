@@ -1,0 +1,20 @@
+/* Verify-email gate: stacked ghost actions, domain-store toast. */
+
+.auth-panel button.ghost {
+  margin-left: 0;
+}
+
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  background: var(--panel);
+  border: 1px solid var(--gold-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  max-width: 320px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}

@@ -1,0 +1,144 @@
+{
+  "stage": "S3",
+  "name": "DOMAIN_PACK",
+  "evaluated_at": "2026-08-25T12:55:13Z",
+  "emitter": "app.factory.build.domain_pack.evaluate_domain_pack",
+  "verdict": "PASS",
+  "ok": true,
+  "first_failing_criterion": null,
+  "git_sha": "1779089fd8095b4dfc286a934385a2eeb56b713d",
+  "contract": {
+    "module": "backend/app/factory/delivery_standard.py",
+    "symbol": "DOMAIN_PACK_FIELDS",
+    "field_count": 15,
+    "sources": [
+      "backend/app/factory/delivery_standard.py:DOMAIN_PACK_FIELDS",
+      "backend/app/factory/standards/product_delivery_standard.md:section 3",
+      "backend/app/factory/standards/domain_packs/buildops_construction.md",
+      "docs/PRODUCT_DELIVERY_STANDARD.md"
+    ],
+    "not_the_contract": "docs/REASONING_KERNEL.md Phase 2 directory spec is unnumbered and is not DOMAIN_PACK_FIELDS"
+  },
+  "fields": [
+    "domain_purpose",
+    "primary_users",
+    "required_roles",
+    "required_product_modules",
+    "core_business_workflows",
+    "authoritative_calculations",
+    "domain_rules",
+    "high_impact_actions",
+    "prohibited_autonomous_actions",
+    "data_sources",
+    "required_connectors",
+    "required_exports",
+    "security_regulatory_rules",
+    "demo_data_requirements",
+    "domain_acceptance_conditions"
+  ],
+  "field_count": 15,
+  "pack": {
+    "ok": true,
+    "schema_version": "domain_pack.v1",
+    "domain_id": "dealership",
+    "path": "docs/domain_pack.json",
+    "module": "backend/app/factory/build/domain_pack.py",
+    "findings": []
+  },
+  "lotdesk_pack": {
+    "ok": false,
+    "gate": "lotdesk_domain_pack",
+    "fixture": "backend/tests/factory/fixtures/lotdesk_pilot_ready.zip",
+    "empty": true,
+    "reason": "LotDesk-class empty Domain Pack",
+    "lotdesk": "fixture only; not patched"
+  },
+  "pass_criteria": {
+    "numbered_15_field_contract_found": true,
+    "pack_exists": true,
+    "all_15_fields_present": true,
+    "missing_field_fails_gate": true,
+    "lotdesk_empty_pack_rejected": true,
+    "kernel_bindings_present": true,
+    "coder_route_body_is_None": true
+  },
+  "implementation": {
+    "module": "backend/app/factory/build/domain_pack.py",
+    "emitter": "RoleRunner WRITER writes docs/domain_pack.json",
+    "kernel_entry": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+    "status_machine": {
+      "entity": "vehicle",
+      "field": "status",
+      "initial": "inbound",
+      "terminal": [
+        "delivered",
+        "unwound"
+      ],
+      "states": [
+        "inbound",
+        "inspected",
+        "priced",
+        "listed",
+        "sold",
+        "delivered",
+        "unwound"
+      ],
+      "transitions": [
+        [
+          "inbound",
+          "inspected"
+        ],
+        [
+          "inspected",
+          "priced"
+        ],
+        [
+          "priced",
+          "listed"
+        ],
+        [
+          "listed",
+          "sold"
+        ],
+        [
+          "sold",
+          "delivered"
+        ],
+        [
+          "listed",
+          "unwound"
+        ],
+        [
+          "sold",
+          "unwound"
+        ]
+      ],
+      "via": "execute_action product.update",
+      "skip_is": "validation_error",
+      "closes": "F7"
+    }
+  },
+  "PILOT_READY": false,
+  "not_claimed": [
+    "PILOT_READY",
+    "S4 U4 _ensure_route_persists_payload removal",
+    "S5 U7 FACTORY_SUITE_MARKER_EXPR",
+    "generate-from-pack wiring",
+    "VIN check-digit math",
+    "live NHTSA connector"
+  ],
+  "lotdesk": "fixture only; not patched",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None",
+  "not_started": [
+    "S4",
+    "S5",
+    "S6",
+    "S7",
+    "S8",
+    "S9",
+    "S10",
+    "S11",
+    "S12",
+    "S13"
+  ]
+}

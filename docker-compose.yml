@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    # Local-dev image (backend/Dockerfile). Production uses the repo-root
+    # Dockerfile. Host 8001 avoids colliding with native uvicorn on 8000.
+    build: ./backend
+    ports:
+      - "8001:8000"
+    environment:
+      - ENV=dev
+      - CEREBRUM_API_URL=http://host.docker.internal:8000
+      # Copy the key from backend/.env (ignored by git). No default secrets.
+      - CEREBRUM_API_KEY=${CEREBRUM_API_KEY:-}
+    volumes:
+      - ./backend/app:/app/app
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8001
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+    restart: unless-stopped

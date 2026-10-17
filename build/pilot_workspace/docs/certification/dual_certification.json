@@ -1,0 +1,6 @@
+{
+  "PRODUCT_CERTIFIED": "pending",
+  "RESIDENT_AGENT_CERTIFIED": "pending",
+  "factory_scenario": "CREATE_PRODUCT",
+  "incomplete_until_both": true
+}

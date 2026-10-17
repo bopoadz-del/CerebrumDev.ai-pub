@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_fintech_payments_ledger",
+  "name": "Remittance Ledger and KYC Desk",
+  "vertical": "fintech_payments",
+  "country": "AE",
+  "currency": "AED",
+  "build_level": "production",
+  "brief": "Build me a payments platform for a small money-transfer business: keep a double-entry ledger of customer wallets, transfers and payouts, run KYC checks on new customers with ID document uploads and an approval queue, and reconcile each day's bank statement against the ledger with a list of unmatched items."
+}

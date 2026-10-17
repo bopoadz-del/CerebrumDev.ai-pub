@@ -1,0 +1,23 @@
+{
+  "stage": "S5",
+  "name": "gate_contract",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S5_gate_contract.json",
+  "reread_at": "2026-08-23T08:16:00Z",
+  "independent": true,
+  "checked": [
+    "runner.py has no prepare_pilot_workspace symbol (rg empty)",
+    "pilot.py has no prepare_pilot_workspace attribute",
+    "offline_adapters.py is imported from roles.py _vendor_runtime_slice",
+    "SEALED_AFTER_CLONER is ('vendor/**',)",
+    "test_opening_pilot_does_not_rewrite_vendor snapshots vendor hashes",
+    "test_cloner_emits_store_unwired_adapter_contracts asserts cloned bytes",
+    "factory suite 335 passed on this tree",
+    "LotDesk was not modified",
+    "No persist-wrapper was added",
+    "LLM route authorship was not restored"
+  ],
+  "disagreements": [],
+  "agrees_u7_not_closed": true,
+  "agrees_blocks_residual": true
+}

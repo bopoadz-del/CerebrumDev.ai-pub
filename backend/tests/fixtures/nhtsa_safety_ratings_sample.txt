@@ -1,0 +1,4 @@
+VehicleId	Make	Model	ModelYear	OverallRating	OverallFrontCrashRating	OverallSideCrashRating	RolloverRating	VehicleDescription
+12345	Honda	Accord	2014	5	5	5	4	2014 Honda Accord 4 DR FWD
+67890	Toyota	Camry	2018	5	4	5	4	2018 Toyota Camry 4 DR FWD
+24680	Ford	Fusion	2016	4	4	5	4	2016 Ford Fusion 4 DR FWD

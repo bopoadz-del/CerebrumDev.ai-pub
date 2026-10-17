@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cerebrum.dev/factory/standards/intake_blueprint.v1",
+  "title": "intake_blueprint.v1",
+  "description": "COLLECTOR output. Every field carries the chat turn it came from. Nothing looser.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "vertical",
+    "capabilities",
+    "roles",
+    "users",
+    "data_sources",
+    "integrations",
+    "constraints",
+    "done_when"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "intake_blueprint.v1"
+    },
+    "product_name": {
+      "$ref": "#/$defs/sourced_string"
+    },
+    "product_id": {
+      "$ref": "#/$defs/sourced_string"
+    },
+    "summary": {
+      "$ref": "#/$defs/sourced_string"
+    },
+    "vertical": {
+      "$ref": "#/$defs/sourced_string"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["customer_words", "id", "source_turn"],
+        "properties": {
+          "customer_words": { "type": "string", "minLength": 1 },
+          "id": { "type": "string", "minLength": 1 },
+          "block_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "strategy": { "type": "string" },
+          "source_turn": { "type": "integer", "minimum": 0 },
+          "source_text": { "type": "string" }
+        }
+      }
+    },
+    "roles": {
+      "$ref": "#/$defs/sourced_string_list"
+    },
+    "users": {
+      "$ref": "#/$defs/sourced_string_list"
+    },
+    "data_sources": {
+      "$ref": "#/$defs/sourced_string_list"
+    },
+    "integrations": {
+      "$ref": "#/$defs/sourced_string_list"
+    },
+    "constraints": {
+      "$ref": "#/$defs/sourced_string_list"
+    },
+    "done_when": {
+      "$ref": "#/$defs/sourced_string_list"
+    }
+  },
+  "$defs": {
+    "sourced_string": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source_turn"],
+      "properties": {
+        "value": { "type": "string", "minLength": 1 },
+        "source_turn": { "type": "integer", "minimum": 0 },
+        "source_text": { "type": "string" }
+      }
+    },
+    "sourced_string_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source_turn"],
+      "properties": {
+        "value": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "source_turn": { "type": "integer", "minimum": 0 },
+        "source_text": { "type": "string" }
+      }
+    }
+  }
+}

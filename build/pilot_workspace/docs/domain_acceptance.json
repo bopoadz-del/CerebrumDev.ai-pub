@@ -1,0 +1,81 @@
+{
+  "capability_id": "analytics_surface",
+  "http_ok_true_is": "F1",
+  "kernel": "cerebrum_product_kernel.contract.runtime.execute_action",
+  "llm_route_authorship": "forbidden; _coder_route_body stays None",
+  "lotdesk": "fixture only; not patched",
+  "outcomes": [
+    {
+      "closes": "F6",
+      "id": "create_persists",
+      "requires": "row persists and reads back",
+      "via": "execute_action product.create then store.get"
+    },
+    {
+      "closes": "F6",
+      "id": "read_returns_persisted",
+      "requires": "read returns the persisted fields",
+      "via": "execute_action product.read"
+    },
+    {
+      "closes": "F6",
+      "id": "update_persists",
+      "requires": "changed fields persist and read back",
+      "via": "execute_action product.update then store.get"
+    },
+    {
+      "closes": "F6",
+      "id": "delete_persists",
+      "requires": "deleted id is gone",
+      "via": "execute_action product.delete then store.get"
+    },
+    {
+      "closes": "F6",
+      "id": "list_only_persisted",
+      "requires": "list/search ids equal store.list_all ids",
+      "via": "execute_action product.list"
+    },
+    {
+      "closes": "F5",
+      "id": "queue_item_processed",
+      "requires": "pending item is processed, not a no-op",
+      "via": "execute_action product.enqueue then product.process"
+    },
+    {
+      "closes": "F1,F12",
+      "id": "refused_action_errors",
+      "requires": "status is not success and envelope is not ok:true",
+      "via": "execute_action product.refuse / invalid contract"
+    },
+    {
+      "closes": "F6",
+      "id": "idempotent_duplicate_safe",
+      "requires": "duplicate key returns the same row",
+      "via": "execute_action product.create with idempotency_key"
+    },
+    {
+      "closes": "F15",
+      "id": "unauthorized_rejected",
+      "requires": "permission_denied, not ok:true",
+      "via": "execute_action with empty permissions"
+    },
+    {
+      "closes": "F4",
+      "id": "missing_field_rejected",
+      "requires": "validation_error, not ok:true",
+      "via": "execute_action product.create missing required field"
+    }
+  ],
+  "permissions": [
+    "product.write",
+    "product.read",
+    "product.process"
+  ],
+  "queue": {
+    "hollow_is": "F5",
+    "idempotency_table": "idempotency",
+    "table": "work_queue"
+  },
+  "schema_version": "domain_acceptance.v1",
+  "stage": "S12"
+}

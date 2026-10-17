@@ -1,0 +1,9 @@
+{
+  "schema": "precedence.v1",
+  "rank": [
+    {"layer": 1, "rank": 1, "label": "certified"},
+    {"layer": 2, "rank": 2, "label": "documents"},
+    {"layer": 3, "rank": 3, "label": "formulas"},
+    {"layer": 4, "rank": 4, "label": "procedures"}
+  ]
+}

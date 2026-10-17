@@ -1,0 +1,77 @@
+name: Dependabot auto-merge
+
+# Turns a green dependabot PR into a merged one without a human clicking.
+#
+# It does NOT merge anything itself and it does NOT bypass a single check.
+# `gh pr merge --auto` hands the PR to GitHub's own auto-merge queue, which
+# merges only once every required check is green and the branch is mergeable.
+# A red check leaves the PR open, exactly as if nobody had run this.
+#
+# Scope is deliberately narrow — patch and minor only. A major bump is a
+# behaviour change wearing a version number: vite 5 -> 8 rewrote the build,
+# typescript 5 -> 7 changes what compiles. Those stay manual, forever.
+#
+# `pull_request_target` runs with write permission against the BASE commit.
+# That is only safe because this workflow never checks out, builds, or
+# executes any code from the pull request — it reads metadata and calls the
+# API. Do not add `actions/checkout` here without a `ref:` you control.
+#
+# Lockfile consistency is NOT checked here. This workflow must not inspect
+# the PR tree (write token + pull_request_target). The fail-closed twin is
+# the lockfile-consistency job (and the same script on Backend (pytest))
+# in ci.yml. A red CI check is what blocks `gh pr merge --auto`.
+# Do not skip, bypass, or `--admin` required CI checks from this file.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    name: Enable auto-merge for safe bumps
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read the bump's metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Explain the decision
+        run: |
+          echo "package      : ${{ steps.meta.outputs.dependency-names }}"
+          echo "update type  : ${{ steps.meta.outputs.update-type }}"
+          echo "ecosystem    : ${{ steps.meta.outputs.package-ecosystem }}"
+
+      - name: Hold majors for a human
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "::notice title=Major bump held::${{ steps.meta.outputs.dependency-names }} is a major version bump. Auto-merge is deliberately not enabled; review and merge it by hand."
+
+      - name: Enable auto-merge (patch and minor only)
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          # --auto queues the merge behind the required checks. If the repo
+          # has "Allow auto-merge" switched off in Settings > General, this
+          # call fails; say so plainly rather than failing the workflow for a
+          # reason that has nothing to do with the code.
+          if gh pr merge --auto --squash "$PR_URL"; then
+            echo "::notice title=Auto-merge armed::Will squash-merge as soon as every required check is green."
+          else
+            echo "::warning title=Auto-merge unavailable::Could not arm auto-merge. Enable Settings > General > 'Allow auto-merge' on this repository. The PR is untouched."
+          fi

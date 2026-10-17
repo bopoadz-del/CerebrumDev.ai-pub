@@ -1,0 +1,5 @@
+NHTSA_ACTION_NUMBER	MAKE	MODEL	YEAR	COMPNAME	MFR_NAME	ODATE	CDATE	CAMPNO	SUBJECT	SUMMARY
+PE16-007	Tesla	Model S	2015	AIR BAGS	Tesla Motors	20160101	20161231	16V176000	Air bag deployment investigation	Investigation into unintended air bag deployment events.
+PE16-007	Tesla	Model S	2016	AIR BAGS	Tesla Motors	20160101	20161231	16V176000	Air bag deployment investigation	Investigation into unintended air bag deployment events.
+DP20-001	Ford	F-150	2018	BRAKES	Ford Motor Company	20200101			Unexpected braking investigation	Investigation into reports of unintended braking.
+AQ08001	PACE AMERICAN	TRAILER	2003	WHEELS	PACE AMERICAN, INC.	20080618	20081029		PACE AMERICAN 573 RETRACTION	Retraction request for earlier defect report.

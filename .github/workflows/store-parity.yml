@@ -1,0 +1,54 @@
+name: Store parity
+
+# The Factory builds from the Store commit in store.pin, and blocks.lock.json
+# is generated from that same commit (cli bump-store moves both at once). This
+# scheduled job re-checks that the committed lock still matches the pinned
+# Store -- e.g. after a force-push in the Store -- and fails loudly if not.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: blocks.lock.json matches the pinned Store
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Same step as ci.yml, on purpose: the guard must look at the Store the
+      # way production does, or it guards the wrong thing.
+      - name: Check out the Store
+        env:
+          # Cerebrum-Blocks is private; authenticate with CROSS_REPO_PAT (an
+          # existing repo secret with Store read access). Token URL, never
+          # persisted to remote config; GitHub masks the secret in logs.
+          CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
+          echo "Store ref: $STORE_REF"
+          git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
+          cd "$RUNNER_TEMP/Cerebrum-Blocks"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
+          git checkout -q FETCH_HEAD
+          test -d block_registry
+          echo "Store head: $(git rev-parse HEAD)  ($(ls block_registry | wc -l) blocks)"
+          echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
+
+      - name: Verify the lock against the Store
+        run: python scripts/verify_vendor_parity.py --blocks-root "$CEREBRUM_BLOCKS_ROOT"

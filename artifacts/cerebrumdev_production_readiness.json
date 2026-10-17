@@ -1,0 +1,81 @@
+{
+  "repo": "bopoadz-del/CerebrumDev.ai",
+  "scope": "Factory, not Projectsix",
+  "audited_at_utc": "2026-08-17T00:40:33Z",
+  "verdicts": {
+    "production": "GO",
+    "unattended_public_demo": "GO"
+  },
+  "shas": {
+    "origin_master": "3665c86ef63908a6b1659921d78da6e4e6bd58ab",
+    "live_backend": "3665c86ef63908a6b1659921d78da6e4e6bd58ab",
+    "live_frontend_previous": "bffeeaeb06fa0dc6f2cb3e0b66387bf70c2a5867",
+    "live_frontend_redeploy": "dep-da15h7dbedkc73c3t4eg"
+  },
+  "render": {
+    "workspace_id_live": "tea-d9rteq2jnfac738dnc70",
+    "backend": {
+      "id": "srv-d9ta2pad0e5s738lllpg",
+      "plan": "starter",
+      "disk_mount": "/app/storage"
+    },
+    "frontend": {
+      "id": "srv-d9ta36v40ujc73dsmhkg",
+      "redeploy_id": "dep-da15h7dbedkc73c3t4eg"
+    },
+    "postgres_leftover": {
+      "id": "dpg-d9vlh6c9v7es73b53l9g-a",
+      "is_live_accounts_engine": false,
+      "dropped": false
+    },
+    "factory_redis": {
+      "id": "red-da131ae1egvs739s8ihg",
+      "wired_as_REDIS_URL": true
+    }
+  },
+  "neon": {
+    "wired_as_accounts_database_url": true,
+    "project_id": "shy-glade-57354706",
+    "project_name": "cerebrumdev",
+    "database": "cerebrumdev-accounts",
+    "alembic": "0002",
+    "backup_branch": "backup-post-cutover-20260817"
+  },
+  "stripe": {
+    "keys_present_on_backend": false,
+    "checkout_honesty": "503 stripe_not_configured"
+  },
+  "domains": [
+    {"id": 1, "name": "deploy_pin", "status": "PASS"},
+    {"id": 2, "name": "live_smoke_kernels", "status": "PASS"},
+    {"id": 3, "name": "readiness_ops", "status": "PASS", "note": "cutover backup ran; pg_dump exit 1 is a follow-up"},
+    {"id": 4, "name": "auth_security", "status": "PASS"},
+    {"id": 5, "name": "ci_latest_master", "status": "PASS"},
+    {"id": 6, "name": "data_migrations", "status": "PASS", "note": "Neon live; leftover Render PG not dropped"},
+    {"id": 7, "name": "factory_vs_product", "status": "PASS"},
+    {"id": 8, "name": "frontend_production", "status": "PASS"},
+    {"id": 9, "name": "observability_safe_errors", "status": "PASS"},
+    {"id": 10, "name": "docs_vs_reality", "status": "PASS"}
+  ],
+  "probes": {
+    "live_api": "https://api.cerebrum-dev.com",
+    "version": {"http": 200, "git_sha": "3665c86ef63908a6b1659921d78da6e4e6bd58ab"},
+    "ready": {
+      "http": 200,
+      "last_backup_ok": false,
+      "last_backup_at": "2026-08-17T00:37:14.248122+00:00",
+      "last_backup_error": "accounts dump failed: pg_dump failed with exit code 1",
+      "matches_live_engine": true
+    },
+    "smoke_api_cerebrum_dev_com": {
+      "exit": 0,
+      "at": "2026-08-17T00:40:33Z",
+      "drafting_mode": "architect_llm",
+      "caps": 6,
+      "populated": 6,
+      "dead": []
+    }
+  },
+  "github_branches_after_cleanup": ["master"],
+  "blockers": []
+}

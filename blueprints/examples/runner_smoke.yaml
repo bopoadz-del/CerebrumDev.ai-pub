@@ -1,0 +1,22 @@
+schema_version: product_blueprint.v1
+product_id: runner-smoke
+product_name: Role Runner Smoke Product
+vertical: product
+summary: >-
+  Minimal blueprint driven end to end by the role runner. Uses estate
+  factory-vendor-mirror blocks whose vendored source imports with no store
+  configured (Store-sourced lock pins are get_block shims). The CLONER's
+  offline import gate is a real check rather than a formality.
+capabilities:
+  - id: analytics_surface
+    description: Aggregate analytics over submitted payloads
+    block_ids: [estate_registry]
+    strategy_hint: REUSE
+  - id: dashboard_surface
+    description: Dashboard projection of analytics output
+    block_ids: [estate_maintenance]
+    strategy_hint: REUSE
+ui_modules: [command_center]
+connectors: []
+edge_profile: standard
+human_authority: true

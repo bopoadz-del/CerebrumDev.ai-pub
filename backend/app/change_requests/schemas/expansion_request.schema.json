@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "type": "string"
+    },
+    "dna_version": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "expansion": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "hat_id": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability"
+      ],
+      "type": "object"
+    },
+    "kind": {
+      "enum": [
+        "EXPANSION"
+      ],
+      "type": "string"
+    },
+    "product_id": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "requested_autonomy_level": {
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "type": "string"
+    },
+    "requester": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "resident",
+            "human"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "enum": [
+        "1.0.0"
+      ],
+      "type": "string"
+    },
+    "signature": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "ed25519"
+          ],
+          "type": "string"
+        },
+        "public_key_id": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "algorithm",
+        "public_key_id",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "kind",
+    "product_id",
+    "dna_version",
+    "requester",
+    "evidence",
+    "requested_autonomy_level",
+    "created_at",
+    "signature",
+    "expansion"
+  ],
+  "title": "EXPANSION",
+  "type": "object"
+}

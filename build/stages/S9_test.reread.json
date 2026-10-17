@@ -1,0 +1,25 @@
+{
+  "stage": "S9",
+  "name": "test",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S9_test.json",
+  "reread_at": "2026-08-23T13:05:00Z",
+  "independent": true,
+  "reader": "gates-lane reread after PR #188",
+  "supersedes": "build/stages/S9_test.reread.json FAIL of 2026-08-23T08:26:00Z, which recorded 'ci.yml jobs remain ubuntu-latest only; no windows-latest, no PYTHONIOENCODING=cp1252 job'. That was true when written and is false now: the primary S9 record is timestamped 08:56:00Z, thirty minutes after the twin, and the Windows job was added in between. The old twin was stale, not wrong at the time.",
+  "checked": [
+    ".github/workflows/ci.yml:83-84 declares job 'Windows cp1252 encoding parity (F13/F26)' with runs-on: windows-latest",
+    ".github/workflows/ci.yml:81 comments 'Required (no continue-on-error / allow_failure). Workflow fails if red.' — the job is blocking, not advisory",
+    ".github/workflows/ci.yml:110 sets PYTHONIOENCODING: cp1252 and :113 runs chcp 1252, so the job exercises the encoding F13/F26 describe",
+    "Observed green on head_sha e3eb3d4359d3bcd58c83b8a8e4d951b938d48437: run 32640534484, job 97196830320, conclusion success",
+    "Observed green three consecutive times while babysitting PR #188 (checks settled 22:31, 22:43, 22:52 local) — the job is stable, not a single lucky run",
+    "PR #188 merged to master as fad63936; no workflow run is recorded against that squash SHA, so the citation above is the branch head that produced it"
+  ],
+  "disagreements": [],
+  "not_claimed": [
+    "PILOT_READY — S4 reread still records remaining emitter work (F7, F24)",
+    "U6 STORE_MANAGER harvest remains unbuilt",
+    "That the cp1252 job covers anything beyond encoding parity; the rest of S9's criteria are carried from the primary record unchanged"
+  ],
+  "lotdesk": "fixture only; not patched"
+}

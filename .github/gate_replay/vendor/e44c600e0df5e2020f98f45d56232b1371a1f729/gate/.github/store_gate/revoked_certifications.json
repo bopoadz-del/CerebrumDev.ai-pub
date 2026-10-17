@@ -1,0 +1,20 @@
+{
+  "revoked": [
+    {
+      "branch": "build/plt_5ac16f50c9384536",
+      "sha": "157c84c05f4e4a1150f735c8c9d043f897c1a48c",
+      "run_id": 37767964892,
+      "reason": "older harness ran from the mounted checkout and judged the checkout, not the image",
+      "evidence": "https://github.com/bopoadz-del/cerebrum-builds/actions/runs/37767964892 -- log: 'the harness runs from the mounted checkout' then 'PASS cross_tenant_404'. The image (Dockerfile: COPY app, alembic, alembic.ini) carries no vendor/; app/dispatch.py:29-34 resolves /app/vendor/blocks, so the image cannot load its storage block. Replay run 37768176412 judged the image: 21/22, cross_tenant_404 BlockNotVendored. Session <SESSION_ID> (cycle 2 smoke B).",
+      "revoked_at": "2026-10-08"
+    },
+    {
+      "branch": "build/plt_5ac16f50c9384536",
+      "sha": "157c84c05f4e4a1150f735c8c9d043f897c1a48c",
+      "run_id": 38040326004,
+      "reason": "re-gated with the branch's stale gate code: the older harness again judged the mounted checkout, not the image",
+      "evidence": "https://github.com/bopoadz-del/cerebrum-builds/actions/runs/38040326004 -- log 09:09:37 'the harness runs from the mounted checkout: /repository/scripts/acceptance.py', 09:09:38 'PASS cross_tenant_404', 09:09:39 'ACCEPTANCE: 22/22', 09:09:40 'STORE_GATE 22/22 ok=True'. Dispatched by the Factory's ops gate-dispatch (<private-repo> scripts/ops.py, POST workflows/store-gate.yml/dispatches with ref = the build branch), so the workflow and .github/store_gate ran from the branch, which forked before builds#41: its repo_mount.exec_path (lines 96-101) ran the older harness from the mount, so every runtime check judged /repository (which carries vendor/) instead of the image (/app, no vendor/). Same sha as the revoked run 37767964892, which this newer success superseded; replay run 37768176412 judged the image: 21/22, cross_tenant_404 BlockNotVendored.",
+      "revoked_at": "2026-10-10"
+    }
+  ]
+}

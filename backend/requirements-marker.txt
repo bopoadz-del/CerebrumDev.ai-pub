@@ -1,0 +1,6 @@
+# Optional local-only dependency for high-quality PDF -> Markdown parsing.
+# marker-pdf pulls torch, transformers, and ~1.35 GB of model weights.
+# Install this ONLY on local development machines with enough disk/RAM.
+# Render/production deployments should leave this uninstalled and set
+# MARKER_ENABLED=false so the upload pipeline falls back to pypdf.
+marker-pdf>=2.0.0

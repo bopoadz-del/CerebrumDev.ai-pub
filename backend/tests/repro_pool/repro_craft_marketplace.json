@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_craft_marketplace",
+  "name": "Craft Makers Marketplace",
+  "vertical": "craft_maker_marketplace",
+  "country": "US",
+  "currency": "USD",
+  "build_level": "production",
+  "brief": "Build me a marketplace platform for local craft makers: let makers list products with prices and stock, take customer orders, split each payment between the maker and a platform commission, and track the shipping status of every order."
+}

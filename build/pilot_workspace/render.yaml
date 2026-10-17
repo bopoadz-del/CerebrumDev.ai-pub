@@ -1,0 +1,15 @@
+# Render blueprint. One web service, no database and no key-value
+# store: persistence is a sqlite file on the mounted disk (P1).
+services:
+  - type: web
+    name: runner-smoke
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: STORAGE_PATH
+        value: /app/data
+    disk:
+      name: runner-smoke-data
+      mountPath: /app/data
+      sizeGB: 1

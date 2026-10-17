@@ -1,0 +1,46 @@
+{
+  "activation": {
+    "default_enabled": true,
+    "mode": "hybrid",
+    "put_off_by": [
+      "disable:product.hat.dashboard_surface"
+    ],
+    "triggers": [
+      {
+        "type": "intent",
+        "value": "dashboard_surface"
+      },
+      {
+        "type": "capability",
+        "value": "dashboard_surface"
+      }
+    ]
+  },
+  "agent_id": "product.hat.dashboard_surface",
+  "allowed_actions": [
+    "product.dashboard_surface"
+  ],
+  "block_ids": [
+    "dashboard"
+  ],
+  "discipline": "dashboard_surface",
+  "display_name": "Role Runner Smoke Product Dashboard Surface Hat",
+  "extends": "product.base",
+  "handoffs": [],
+  "human_authority": true,
+  "kind": "hat",
+  "manifest_version": "1.0.0",
+  "memory": {
+    "pii_policy": "never_store_pii",
+    "save": [],
+    "scope": "tenant_project"
+  },
+  "strategy": "REUSE",
+  "summary": "Specialized hat for capability 'dashboard_surface' (strategy=REUSE). Adapted from RetailClient retail hat pattern; estate/product-neutral.",
+  "tags": [
+    "hat",
+    "factory-generated",
+    "product",
+    "dashboard_surface"
+  ]
+}

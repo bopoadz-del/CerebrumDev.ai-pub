@@ -1,0 +1,22 @@
+{
+  "stage": "S7",
+  "name": "network_posture",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S7_network_posture.json",
+  "reread_at": "2026-08-23T07:46:00Z",
+  "independent": true,
+  "reader": "cloud-agent-verify-s5-s6-continue-s7",
+  "checked": [
+    "NETWORK_POSTURE and POSTURE_ID are P1; P2 and P3 exist only in REJECTED_ALTERNATIVES",
+    "P1_ENV_EXAMPLE has no CEREBRUM_API_URL= / key / execute",
+    "RoleRunner writes docs/network_posture.json and stamps provenance",
+    "assert_workspace_posture fails closed on missing or disagreeing artifacts",
+    "_CONFTEST still patches socket.socket.connect; 11434 is not in the allowlist",
+    "apply_p1_cloned_block rewrites capture only; vendor-mirror block.py stays a Store shim snapshot",
+    "P1_CAPTURE_ADAPTER has no httpx and no cloud provider default",
+    "ProductGenerator store URL leftover is declared, not silently dropped"
+  ],
+  "disagreements": [],
+  "agrees_blocks_residual": true,
+  "agrees_generator_exception": true
+}

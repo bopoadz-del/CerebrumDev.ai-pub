@@ -1,0 +1,41 @@
+{
+  "capacity": {
+    "disk_gb": 1,
+    "ha": false,
+    "replicas": 0,
+    "rollback_retains_disk": true
+  },
+  "health": {
+    "checks": [
+      "process",
+      "persistent_disk",
+      "database",
+      "migrations"
+    ],
+    "fail_closed": true,
+    "path": "/health",
+    "render": "healthCheckPath: /health (same probe; 503 takes the instance out)",
+    "unconditional_ok_is": "F1"
+  },
+  "logging": {
+    "correlation_header": "x-request-id",
+    "emoji_on_machine_stdout": false,
+    "f13": "structured request lines are ASCII JSON; emoji stripped",
+    "format": "json_lines"
+  },
+  "revisions": {
+    "mark_n": "baseline",
+    "mark_n_plus_1": "changed",
+    "n": "rev-n",
+    "n_plus_1": "rev-n-plus-1"
+  },
+  "rollback": {
+    "drill": "tests/test_deploy.py + factory test_deploy_observe.py start rev-n, persist a row, start rev-n-plus-1 with a detectable mark, roll back to rev-n, assert prior health and prior data",
+    "performed": true,
+    "render_equivalent": "Dashboard rollback to the previous deploy; same disk",
+    "script": "scripts/rollback.sh"
+  },
+  "schema_version": "deploy_observe.v1",
+  "spof": "SPOF: Render rollback restarts a prior image against the same single-instance disk. There is no replica and no multi-AZ handoff. Losing the disk loses live SQLite (platform.db) and same-disk backups. Rollback does not create HA. A prior image that cannot read a newer schema is an S10 concern; this stage rolls back process identity, not a second copy of the data.",
+  "sqlite_on_mounted_disk": true
+}

@@ -1,0 +1,40 @@
+{
+  "stage": "S2",
+  "name": "supply_chain",
+  "verdict": "PASS",
+  "reread_of": "build/stages/S2_supply_chain.json",
+  "reread_at": "2026-08-25T12:55:16Z",
+  "independent": true,
+  "reader": "cloud-agent-s2-supply-chain",
+  "emitter": "app.factory.build.supply_chain.evaluate_supply_chain",
+  "git_sha": "1779089fd8095b4dfc286a934385a2eeb56b713d",
+  "disagreements": [],
+  "checked": [
+    "emitted Dockerfile FROM parsed and compared to PYTHON_312_SLIM_DIGEST",
+    "registry manifest GET of the recorded digest (not the floating tag)",
+    "CycloneDX SBOM names the recorded digest and refuses :latest",
+    "F21 declared network/fs/install vs Dockerfile + entrypoint + posture",
+    "cosign not claimed when not performed",
+    "_coder_route_body still returns None"
+  ],
+  "checks_performed": {
+    "dockerfile_from_parse": true,
+    "local_digest_vs_recorded": true,
+    "registry_manifest_get": true,
+    "sbom_build": true,
+    "permissions_reconcile": true,
+    "cosign_verify": false
+  },
+  "checks_configured": {
+    "PYTHON_312_SLIM_DIGEST": true,
+    "PYTHON_312_SLIM_FROM": true,
+    "assert_generated_dockerfile": true,
+    "cosign_policy": false
+  },
+  "not_claimed": [
+    "PILOT_READY",
+    "cosign / image signature verification",
+    "S3 dealership Domain Pack"
+  ],
+  "PILOT_READY": false
+}

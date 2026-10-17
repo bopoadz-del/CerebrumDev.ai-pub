@@ -1,0 +1,43 @@
+{
+  "artifact_sources": {
+    "analytics_surface": "deterministic contract template",
+    "dashboard_surface": "deterministic contract template",
+    "deploy_observe": "S11 fail-closed health, rollback drill, JSON request logs",
+    "deploy_scaffold": "deterministic contract template",
+    "domain_acceptance": "S12 ten outcomes through execute_action; LotDesk-class fixtures fail",
+    "domain_pack": "deterministic contract template",
+    "emitter_parity": "ProductGenerator class emitters (converge)",
+    "entrypoint": "deterministic contract template",
+    "jobs": "deterministic contract template",
+    "migrations": "alembic revisions emitted from unused-kit pattern",
+    "model:analytics_surface": "deterministic contract template",
+    "model:dashboard_surface": "deterministic contract template",
+    "network_posture": "P1",
+    "permissions": "deterministic contract template",
+    "persistence": "deterministic contract template",
+    "readme": "deterministic contract template",
+    "release_gate": "deterministic contract template",
+    "requirements": "deterministic contract template",
+    "route:analytics_surface": "kernel execute_action template",
+    "route:dashboard_surface": "kernel execute_action template",
+    "sbom": "deterministic contract template"
+  },
+  "coder_failures": {},
+  "engine": "role_runner",
+  "kernel_agents": {
+    "CLONER": "deterministic \u2014 no agent",
+    "COLLECTOR": {
+      "model": "",
+      "reviews": []
+    },
+    "STORE_MANAGER": "deterministic \u2014 no agent",
+    "TESTER": "consults the coding agent after this file is written",
+    "WRITER": {
+      "artifacts": 0
+    }
+  },
+  "network_posture": "P1",
+  "product_id": "runner-smoke",
+  "product_name": "Role Runner Smoke Product",
+  "schema_version": "build_provenance.v1"
+}

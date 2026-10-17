@@ -1,0 +1,13 @@
+{
+  "allowlisted_heal_actions": [
+    "resident.retry_ingestion",
+    "resident.restart_worker",
+    "resident.rebuild_index",
+    "resident.restore_config_default"
+  ],
+  "boundaries": [],
+  "human_authority": true,
+  "pii_in_learning": false,
+  "schema_version": "1.0.0",
+  "tool_permissions": []
+}

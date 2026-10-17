@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_construction_site_diary",
+  "name": "Contractor Site Diary",
+  "vertical": "construction_site_diary",
+  "country": "AU",
+  "currency": "AUD",
+  "build_level": "production",
+  "brief": "Build me a site diary platform for a building contractor: record each day's weather, labour and plant on site, log delays and instructions received from the client, attach site photos, and track open snag items by area of the building."
+}

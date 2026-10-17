@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "capabilities": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "connectors": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "layers": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "product_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "ui_modules": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "vertical": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "product_id",
+    "vertical",
+    "ui_modules",
+    "connectors",
+    "capabilities",
+    "layers"
+  ],
+  "title": "architecture",
+  "type": "object"
+}

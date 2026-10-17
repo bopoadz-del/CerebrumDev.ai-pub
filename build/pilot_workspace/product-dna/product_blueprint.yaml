@@ -1,0 +1,28 @@
+schema_version: product_blueprint.v1
+product_id: runner-smoke
+product_name: Role Runner Smoke Product
+vertical: product
+summary: Minimal blueprint driven end to end by the role runner. Uses blocks whose
+  vendored source imports with no store configured, so the CLONER's offline import
+  gate is a real check rather than a formality.
+capabilities:
+- id: analytics_surface
+  description: Aggregate analytics over submitted payloads
+  block_ids:
+  - analytics
+  strategy_hint: REUSE
+  required: true
+- id: dashboard_surface
+  description: Dashboard projection of analytics output
+  block_ids:
+  - dashboard
+  strategy_hint: REUSE
+  required: true
+ui_modules:
+- command_center
+connectors: []
+edge_profile: standard
+human_authority: true
+factory_scenario: CREATE_PRODUCT
+drafting_mode: null
+drafting_note: null

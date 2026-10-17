@@ -1,0 +1,10 @@
+{
+  "filesystem": true,
+  "filesystem_scope": "STORAGE_PATH sqlite and alembic",
+  "install": true,
+  "install_scope": "image_build pip",
+  "network": false,
+  "network_scope": "runtime_outbound",
+  "posture": "P1",
+  "schema_version": "product_permissions.v1"
+}

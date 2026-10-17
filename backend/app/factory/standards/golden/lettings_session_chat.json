@@ -1,0 +1,16 @@
+{
+  "session_id": "golden_lettings_sess_6400b6c273414352",
+  "product_id": "residential-lettings",
+  "turns": [
+    {
+      "turn": 1,
+      "role": "user",
+      "text": "build a platform for residential lettings"
+    },
+    {
+      "turn": 2,
+      "role": "assistant",
+      "text": "Drafted Residential Lettings Platform from the golden roster: unit registry and vacancy tracking, viewing management, maintenance issue tracking, tenancy application pipeline."
+    }
+  ]
+}

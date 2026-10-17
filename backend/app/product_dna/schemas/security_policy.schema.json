@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "allowlisted_heal_actions": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "boundaries": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "human_authority": {
+      "type": "boolean"
+    },
+    "pii_in_learning": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "tool_permissions": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "boundaries",
+    "tool_permissions",
+    "allowlisted_heal_actions"
+  ],
+  "title": "security_policy",
+  "type": "object"
+}

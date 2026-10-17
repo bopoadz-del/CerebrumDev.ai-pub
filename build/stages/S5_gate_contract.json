@@ -1,0 +1,50 @@
+{
+  "stage": "S5",
+  "name": "GATE_CONTRACT",
+  "evaluated_at": "2026-08-23T08:15:00Z",
+  "verdict": "PASS",
+  "independent": true,
+  "reread_of": "shipping tree at cursor/factory-s5-no-workspace-patch-2476@4a053bc",
+  "base": "origin/master@17bb160 (#183 after #184)",
+  "supersedes": "build/stages/S5_gate_contract.json PASS of 2026-08-23T07:00:30Z (docs-only claim; prepare_pilot_workspace was still on master)",
+  "named_gate": "SEALED_AFTER_CLONER / assert_write_allowed sealed vendor/**",
+  "maps_f29_to": "FAILED_AUTHORITY",
+  "pass_criteria": {
+    "prepare_pilot_workspace_not_invoked_from_runner": true,
+    "prepare_pilot_workspace_absent_from_pilot_module": true,
+    "no_vendor_write_between_gate_fail_and_pass": true,
+    "factory_tests_updated_and_green": true,
+    "f29_caught_by_named_gate": true
+  },
+  "checked": [
+    "rg prepare_pilot_workspace backend/app/factory/build/runner.py → no matches",
+    "rg 'def prepare_pilot_workspace' backend/app/factory/build/pilot.py → no matches",
+    "roles.py _vendor_runtime_slice applies emit_runtime_module + emit_instantiate_ready",
+    "RoleRunner._run_phase sets sealed=SEALED_AFTER_CLONER when CLONER is already complete",
+    "assert_write_allowed(..., sealed=) raises 'sealed after CLONER (patch-until-green is FAILED_AUTHORITY)'",
+    "ENV=test pytest tests/factory → 335 passed in 74.73s",
+    "ENV=test pytest tests/test_build_authority_lanes.py → 18 passed"
+  ],
+  "implementation": {
+    "emission": "backend/app/factory/build/offline_adapters.py applied from _vendor_runtime_slice",
+    "runner": "prepare_pilot_workspace call removed; opening a pilot cycle does not write vendor/**",
+    "authority": "SEALED_AFTER_CLONER = ('vendor/**',); AuthorityError → Outcome.FAILED_AUTHORITY",
+    "pilot_module": "backend/app/factory/build/pilot.py retains no prepare_pilot_workspace"
+  },
+  "tests": {
+    "factory_suite": "335 passed",
+    "authority_lanes": "18 passed",
+    "files": [
+      "backend/tests/factory/test_pilot_cycle.py",
+      "backend/tests/factory/test_cloner_runtime_slice.py::test_cloner_emits_store_unwired_adapter_contracts"
+    ]
+  },
+  "not_claimed": [
+    "PILOT_READY",
+    "U7 — FACTORY_SUITE_MARKER_EXPR remains 'not pilot'; code-phase still judges shape",
+    "U6 STORE_MANAGER harvest remains unbuilt",
+    "S6 emitter parity"
+  ],
+  "residual_risk": "Cerebrum-Blocks harvest is unbuilt. The next product will re-ship Store-unwired adapters unless Factory CLONER emission (offline_adapters) stays applied. This does not pretend Blocks was fixed. No Blocks write was performed; none is authorized from this repo.",
+  "lotdesk": "fixture only; not patched"
+}

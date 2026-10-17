@@ -1,0 +1,37 @@
+node_modules
+dist
+*.pyc
+__pycache__
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.log
+.DS_Store
+# Runtime data at repo root only. Do not ignore vendor_blocks_mirror/storage/
+# (that directory is a lock-pinned Factory block; a bare `storage/` hid its
+# Dockerfile from CI and broke CD-PARITY-1).
+/storage/
+.venv
+backend/venv/
+venv/
+
+# Generated deployment packages contain per-session secrets and build artifacts.
+deployments/
+.worktrees/
+.superpowers/sdd/
+generated/
+
+# Factory generate/regenerate outputs (local only; golden Steward tagged steward-golden-v1).
+factory_outputs/
+
+# Generated live audit artifacts (timestamps + deployment evidence; kept locally).
+artifacts/audits/
+
+# Steward gate/oracle run outputs — written by scripts/steward_gate_v2.py when
+# tests shell out to it. They embed a machine-specific worktree path + timestamp
+# and must never be committed (they were, as test-run byproducts).
+artifacts/steward_*.json
+backend/.venv-factory/
+store-blocks/

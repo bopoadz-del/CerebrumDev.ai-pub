@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_hotel_operations",
+  "name": "Boutique Hotel Operations Board",
+  "vertical": "hotel_operations",
+  "country": "PT",
+  "currency": "EUR",
+  "build_level": "production",
+  "brief": "Build me an operations platform for a 60-room boutique hotel: track room status and housekeeping assignments, log maintenance requests by room, manage guest check-in and check-out, and report nightly occupancy and room revenue."
+}

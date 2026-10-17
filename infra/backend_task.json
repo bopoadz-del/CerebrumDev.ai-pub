@@ -1,0 +1,9 @@
+{
+  "_comment": "The backend ECS task's size, declared in the repo. deploy-aws.yml compares it with the live task definition and registers a new revision (everything else copied verbatim) only when cpu, memory or these environment values differ. Owner decision 2026-10-08: 2 vCPU / 4 GB; FACTORY_WORKER_PROFILE names the plan whose slot caps codewhale_worker.derive_profile_caps derives (2c-4g -> 4 user builds + 1 reserved smoke slot).",
+  "container": "cerebrumdev-backend",
+  "cpu": "2048",
+  "memory": "4096",
+  "environment": {
+    "FACTORY_WORKER_PROFILE": "2c-4g"
+  }
+}

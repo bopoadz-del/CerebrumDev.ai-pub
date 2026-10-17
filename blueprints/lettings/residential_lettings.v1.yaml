@@ -1,0 +1,42 @@
+schema_version: product_blueprint.v1
+product_id: residential-lettings
+product_name: Residential Lettings Platform
+vertical: residential_lettings
+serves_verticals: [residential_lettings, lettings, letting]
+# Provenance (not product text, never sent to a coder): capability ids and
+# block bindings are the live roster of build session sess_6400b6c273414352,
+# blueprint hash b36090a424db -- not a keyword-fallback GENERATE stub.
+summary: >-
+  Residential-lettings platform: unit registry and vacancy tracking,
+  viewings, maintenance, tenancy applications.
+factory_scenario: CREATE_PRODUCT
+capabilities:
+  - id: unit_registry_and_vacancy_tracking
+    description: >-
+      Register a residential unit and track vacancy. Handler must accept
+      property_reference_code; analytics is called with metric and value
+      at the top level.
+    block_ids: [analytics]
+    strategy_hint: REUSE
+  - id: viewing_management
+    description: >-
+      Record a viewing and notify the assigned team. Team, workflow, and
+      notification must receive constructed inputs (not raw domain JSON).
+    block_ids: [team, workflow, notification]
+    strategy_hint: COMPOSE
+  - id: maintenance_issue_tracking
+    description: >-
+      Raise a maintenance issue against a unit and assign a team.
+      Team fields must be strings (never None.lower).
+    block_ids: [team]
+    strategy_hint: REUSE
+  - id: tenancy_application_pipeline
+    description: >-
+      Record a tenancy application and attach supporting documents.
+      document_engine paths must be str/bytes, not dict.
+    block_ids: [team, document_engine]
+    strategy_hint: COMPOSE
+ui_modules: [command_center]
+connectors: []
+edge_profile: standard
+human_authority: true

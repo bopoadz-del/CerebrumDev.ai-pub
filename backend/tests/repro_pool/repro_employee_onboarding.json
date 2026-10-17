@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_employee_onboarding",
+  "name": "New Hire Onboarding Hub",
+  "vertical": "employee_onboarding",
+  "country": "IN",
+  "currency": "INR",
+  "build_level": "production",
+  "brief": "Build me an employee onboarding platform for a 200-person company: track each new hire's onboarding checklist, collect signed documents, assign equipment and system accounts, and schedule first-week training sessions."
+}

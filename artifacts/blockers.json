@@ -1,0 +1,14 @@
+{
+  "schema": "gate_blockers.v1",
+  "why": "Gate lines that need an operator setting the Factory cannot supply. A line backed by an entry here reads WITHHELD, never PASS and never FAIL, until the setting exists and the line is run.",
+  "live_suites": {
+    "class": "c",
+    "gate_lines": ["G13_oracle (suites A, B, C, D, E, G, I, O, R)"],
+    "needs": [
+      "a DEPLOYED instance of the product (its base URL passed as --base-url)",
+      "the product's Postgres (its *_DATABASE_URL) and embedding backend configured on that instance",
+      "SMOKE_GATE_TOKEN (or a verified smoke account) for authenticated suites"
+    ],
+    "owner": "operator"
+  }
+}

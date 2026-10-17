@@ -1,0 +1,11 @@
+{
+  "fixtures": [
+    {
+      "branch": "known-bad/image-omits-runtime-dir",
+      "sha": "60d7cd08ea0b8db3a0af3149d188d768da452a50",
+      "expected_failing_check": "cross_tenant_404",
+      "reason": "A minimal image that omits vendor/ (and the harness, scripts/), the tree app/dispatch.py loads every capability's block from at runtime, so the containerised app answers BlockNotVendored. A gate that judges the checkout instead of the image certifies it (the cycle-2 smoke B false certification).",
+      "derived_from": "build/plt_1cfc5b8b2d214e17 @ 7f163be4f2f378318d677b6769d24cc4b9198c25 (certified, store-gate run 37758037593); only the Dockerfile differs (explicit copies without vendor/ and scripts/, entrypoint inline)"
+    }
+  ]
+}

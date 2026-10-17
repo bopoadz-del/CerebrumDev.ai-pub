@@ -1,0 +1,74 @@
+{
+  "stage": "S10",
+  "name": "DATA LIFECYCLE",
+  "evaluated_at": "2026-08-23T09:45:00Z",
+  "verdict": "PASS",
+  "first_failing_criterion": null,
+  "pass_criteria": {
+    "versioned_migrations_replace_create_table_if_not_exists": true,
+    "up_and_down_paths": true,
+    "applied_at_deploy_against_persistent_disk": true,
+    "schema_change_on_populated_v1_and_rollback_performed": true,
+    "restore_drill_performed": true,
+    "concurrency_tested_under_parallel_writes": true,
+    "sqlite_spof_and_capacity_stated": true
+  },
+  "implementation": {
+    "module": "backend/app/factory/build/data_lifecycle.py",
+    "wired_from": "backend/app/factory/build/roles.py emit_writer_artifacts + TESTER render_product_tests",
+    "alembic_source": "unused kit backend/app/factory/kits/private_estate_operations/steward_runtime/migrations — pattern emitted, not Steward pgvector revisions",
+    "revisions": ["0001_baseline", "0002_lifecycle_audit"],
+    "store": "app/store.py: WAL, busy_timeout=30000, connect_timeout=30s, check_same_thread=False; no CREATE TABLE",
+    "deploy": "scripts/entrypoint.sh: python -m alembic upgrade head then uvicorn; FastAPI lifespan also upgrade_head(); Procfile same; STORAGE_PATH=/app/data (render.yaml disk 1GB)",
+    "backup": "app/backup.py sqlite3.Connection.backup; retention 14; BACKUP_DIR override"
+  },
+  "performed": {
+    "schema_upgrade_populated_v1": {
+      "test": "tests/factory/test_data_lifecycle.py::test_schema_change_on_populated_v1_is_performed_and_rolls_back",
+      "result": "PASS",
+      "detail": "upgrade 0001_baseline; insert analytics_surface; upgrade head (0002_lifecycle_audit); row survived; lifecycle_audit present; downgrade 0001_baseline; row survived; lifecycle_audit dropped"
+    },
+    "restore_drill": {
+      "test": "tests/factory/test_data_lifecycle.py::test_restore_drill_is_performed",
+      "result": "PASS",
+      "detail": "5 rows inserted; backup file written (size>0); wipe removed platform.db; restore; restored ids and references matched originals. Not a configured-only backup."
+    },
+    "parallel_writes": {
+      "test": "tests/factory/test_data_lifecycle.py::test_parallel_writes_at_fastapi_threadpool_are_performed",
+      "result": "PASS",
+      "workers": 40,
+      "written": 40,
+      "persisted": 40,
+      "journal_mode": "wal",
+      "busy_timeout_ms": 30000
+    },
+    "connect_does_not_create_tables": {
+      "test": "tests/factory/test_data_lifecycle.py::test_connect_without_migrate_has_no_domain_tables",
+      "result": "PASS"
+    }
+  },
+  "sqlite_on_mounted_disk": {
+    "retained": true,
+    "spof": "Render persistent disk is single-instance. Live SQLite (platform.db) lives on it. One writer. Losing the disk loses the live database. Same-disk $STORAGE_PATH/backups do not survive disk loss; set BACKUP_DIR onto another volume if disk loss is in scope.",
+    "capacity": {
+      "disk_gb": 1,
+      "ha": false,
+      "replicas": 0,
+      "practical_bound": "the 1 GiB Render disk in render.yaml, not SQLite's theoretical file limit"
+    }
+  },
+  "catalog_notes": {
+    "S1_F25": "no versioned migrations — closed for RoleRunner products",
+    "S1_F26": "backup/restore not drilled — closed; drill performed",
+    "S1_F27": "no rollback — closed; downgrade performed on populated v1",
+    "S1_F23": "catalog item is 'no SBOM', a different defect. User S10 brief 'F23' means the persistent disk mount at /app/data. SBOM is not claimed here."
+  },
+  "suite": {
+    "command": "cd backend && ENV=test ./venv/bin/python -m pytest tests/factory",
+    "result": "372 passed, 1 skipped in 116.53s"
+  },
+  "not_claimed": ["PILOT_READY", "S11–S13", "SBOM", "HA SQLite", "off-disk backup vehicle"],
+  "stop": "S10 PASS. Restore drill performed. Do not start S11. Not PILOT_READY.",
+  "lotdesk": "fixture only; not patched",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None"
+}

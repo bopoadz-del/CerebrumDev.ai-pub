@@ -1,0 +1,27 @@
+{
+  "capabilities": [
+    {
+      "block_ids": [
+        "analytics"
+      ],
+      "capability_id": "analytics_surface",
+      "notes": "dual-registered",
+      "strategy": "REUSE"
+    },
+    {
+      "block_ids": [
+        "dashboard"
+      ],
+      "capability_id": "dashboard_surface",
+      "notes": "dual-registered",
+      "strategy": "REUSE"
+    }
+  ],
+  "dual_registered_blocks": [
+    "analytics",
+    "dashboard"
+  ],
+  "notes": [],
+  "schema_version": "1.0.0",
+  "unsupported": []
+}

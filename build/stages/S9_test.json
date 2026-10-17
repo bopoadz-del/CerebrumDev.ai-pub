@@ -1,0 +1,63 @@
+{
+  "stage": "S9",
+  "name": "TEST",
+  "evaluated_at": "2026-08-23T08:56:00Z",
+  "verdict": "PASS",
+  "first_failing_criterion": null,
+  "checked": {
+    "windows_cp1252_parity": {
+      "result": "PASS",
+      "reason": "Required job 'Windows cp1252 encoding parity (F13/F26)' went green on windows-latest for SHA b86d457cad7efef6ab19620f616e7a4a9d1b637d. Run https://github.com/bopoadz-del/CerebrumDev.ai/actions/runs/32629349658 job 97169583912. Setup: Active code page 1252, stdout-encoding cp1252, PYTHONIOENCODING=cp1252, PYTHONUTF8=0. Result: 18 passed in 2.69s. Earlier SHA bd1e610 failed only on a harness JSON parse of polluted stdout (same test on ubuntu and windows); b86d457 isolated F13_RESULT on stderr. Not faked on Linux."
+    },
+    "keyed_path_in_ci": {
+      "result": "PASS",
+      "reason": ".github/workflows/ci.yml backend job has 'Factory keyed-path fixtures (U2)'. HEAD still has pytest.skip(reason=\"not the keyed-path CI job\") in test_keyed_path_ci.py:89 (004aa4d). Backend pytest on b86d457 succeeded; skip hygiene not the bd1e610 failure."
+    },
+    "lotdesk_fixture_rejection": {
+      "result": "PASS",
+      "reason": "Named gate app.factory.build.lotdesk_gate rejects committed backend/tests/factory/fixtures/lotdesk_pilot_ready.zip (sha256 matches S0 8eec994d…). Required codes F18 and F19 present. Fixture not patched. CI step ran on b86d457."
+    },
+    "f18_fabrication": {
+      "result": "PASS",
+      "reason": "_DISPATCH_RUNTIME no longer defines _default_block_field / _ALWAYS_FILL / _ensure_offline_block_input. Missing required fields and unknown fields/params return an error envelope."
+    },
+    "f19_release_gate_in_image": {
+      "result": "PASS",
+      "reason": "RoleRunner _render_dockerfile and ProductGenerator _write_runtime_packaging RUN python3 scripts/release_gate.py."
+    },
+    "negative_space": {
+      "result": "PASS",
+      "reason": "Dispatch rejects unknown fields/params when a contract names them. Block status=error stays ok=False. Kernel execute_action additionalProperties:false → VALIDATION_ERROR. Templated route does not persist or return ok on kernel refusal."
+    },
+    "linux_conformance": {
+      "result": "PASS",
+      "reason": "Fresh RoleRunner runner_smoke tree has no F18/F19. LotDesk fixture still has both."
+    },
+    "f13_dispatch_stdio": {
+      "result": "PASS",
+      "reason": "_DISPATCH_RUNTIME _force_utf8_stdio() certified on windows-latest cp1252: printer block printed U+2713 and U+1F698, execute() returned {status: ok, printed: true}, no swallowed UnicodeEncodeError. bd1e610 showed the product path already worked; b86d457 fixed the probe isolation."
+    },
+    "u7_shape_not_outcome": {
+      "result": "OPEN",
+      "reason": "FACTORY_SUITE_MARKER_EXPR remains 'not pilot'; code-phase still judges shape. Residual, not an S9 failing criterion."
+    }
+  },
+  "ci": {
+    "workflow": ".github/workflows/ci.yml",
+    "job_id": "windows-cp1252-parity",
+    "job_name": "Windows cp1252 encoding parity (F13/F26)",
+    "runs_on": "windows-latest",
+    "allow_failure": false,
+    "ubuntu_jobs_unchanged": ["backend", "frontend", "docker"],
+    "certified_sha": "b86d457cad7efef6ab19620f616e7a4a9d1b637d",
+    "certified_run": "https://github.com/bopoadz-del/CerebrumDev.ai/actions/runs/32629349658",
+    "windows_job": "https://github.com/bopoadz-del/CerebrumDev.ai/actions/runs/32629349658/job/97169583912",
+    "windows_result": "18 passed, 4 warnings in 2.69s",
+    "bd1e610_failed_run": "https://github.com/bopoadz-del/CerebrumDev.ai/actions/runs/32629102379",
+    "job_green_on_certified_sha": true
+  },
+  "not_claimed": ["PILOT_READY", "S10–S13"],
+  "stop": "S9 PASS on F26 after windows-latest went green on b86d457. Do not start S10. Not PILOT_READY.",
+  "lotdesk": "fixture only; not patched",
+  "blocks_harvest": "BLOCKED — no authorized write path to Cerebrum-Blocks in this repo. STORE_MANAGER harvest remains unbuilt (U6)."
+}

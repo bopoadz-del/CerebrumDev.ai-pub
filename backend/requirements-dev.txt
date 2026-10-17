@@ -1,0 +1,24 @@
+-r requirements.txt
+pytest>=7.0.0
+pytest-asyncio>=1.4.0
+
+# Steward factory kit tests import steward_runtime modules and exercise generated products.
+sqlalchemy>=2.0.52
+alembic>=1.19.2
+pgvector>=0.5.0
+
+# Static analysis gate (pyflakes only -- see ruff.toml for why).
+ruff>=0.16.8
+
+# Incremental typecheck. Scope is backend/mypy.ini (not the whole tree).
+mypy>=2.3.1
+
+# The Store gate's audit_clean runs bandit over every product's app/; the
+# factory's own test of the emitted persistence modules runs the same scan
+# (tests/factory/test_emitted_sql_core.py), so CI must have it installed.
+bandit>=1.9.4
+
+# Dependency audit (S03). The CI job and scripts/dep_audit.py consume this.
+# Adjudications live in docs/security/dependency-adjudications/ — never a
+# bare --ignore-vuln.
+pip-audit>=2.10.1

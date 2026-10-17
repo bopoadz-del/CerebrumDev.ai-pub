@@ -1,0 +1,28 @@
+{
+  "topic": "Cerebrum-Blocks harvest",
+  "verdict": "BLOCKED",
+  "evaluated_at": "2026-08-23T10:48:08Z",
+  "gate": "app.factory.build.harvest.evaluate_harvest",
+  "authorized_write_path_in_this_repo": false,
+  "copied": [],
+  "copied_count": 0,
+  "blocks_repo": "bopoadz-del/Cerebrum-Blocks",
+  "blocks_checkout": null,
+  "unharvested_fixes": [
+    "RoleRunner offline_adapters (Store-unwired vendor contracts)",
+    "P1 capture adapter (network:false / llm_provider=none)",
+    "S10 versioned Alembic + WAL store (no CREATE TABLE on connect)",
+    "S11 fail-closed /health, rollback.sh, JSON request logs",
+    "S12 domain_ops / work_queue through execute_action"
+  ],
+  "evidence": [
+    "STORE_MANAGER write_lanes are LaneRoot.STORE block_registry/** \u2014 local store root, not the sibling GitHub repo",
+    "backend/app/factory/build/registrar.py is read-only by construction; publish/version/deprecate deferred",
+    "authority.py STORE_MANAGER mandate: harvesting improvements back upstream remains unbuilt",
+    "No git remote or workflow in this repo writes to bopoadz-del/Cerebrum-Blocks",
+    "evaluate_harvest copies nothing; authorized_write_path is false by policy"
+  ],
+  "reason": "STORE_MANAGER harvest remains unbuilt (U6). authority.py STORE_MANAGER mandate: harvesting improvements back upstream remains unbuilt. registrar.py is read-only. No git remote or workflow in this repo writes to bopoadz-del/Cerebrum-Blocks.",
+  "consequence": "Products will not receive those Factory pipeline fixes from Cerebrum-Blocks until harvest exists. The next product re-ships Factory-owned corrections only if CLONER/WRITER emission in this repo stays applied. This does not pretend Blocks was fixed. No Blocks write was performed; none is authorized from this repo.",
+  "factory_side_in_scope": "S4/S5/S7/S10\u2013S12 emission stays in CerebrumDev.ai"
+}

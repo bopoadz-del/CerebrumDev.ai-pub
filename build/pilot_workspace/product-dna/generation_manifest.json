@@ -1,0 +1,12 @@
+{
+  "blocks_commit": "unknown",
+  "connectors": [],
+  "factory_commit": "unknown",
+  "factory_scenario": "CREATE_PRODUCT",
+  "product_dna_version": "1.0.0",
+  "product_id": "runner-smoke",
+  "schema_version": "1.0.0",
+  "ui_modules": [
+    "command_center"
+  ]
+}

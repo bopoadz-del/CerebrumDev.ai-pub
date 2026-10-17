@@ -1,0 +1,78 @@
+{
+  "stage": "S11",
+  "name": "DEPLOY OBSERVE ROLLBACK",
+  "evaluated_at": "2026-08-23T10:18:48Z",
+  "verdict": "PASS",
+  "first_failing_criterion": null,
+  "pass_criteria": {
+    "verified_health_process_disk_db_migrations": true,
+    "unconditional_ok_always_200_rejected_as_f1": true,
+    "rollback_drill_performed": true,
+    "structured_logs_request_id_no_emoji": true,
+    "emitted_from_role_runner": true,
+    "factory_tests_cover_emission_fail_closed_rollback_lotdesk": true,
+    "spof_stated": true
+  },
+  "implementation": {
+    "module": "backend/app/factory/build/deploy.py",
+    "wired_from": "backend/app/factory/build/roles.py emit_deploy_artifacts + _render_main + TESTER tests/test_deploy.py",
+    "reused": [
+      "scripts/entrypoint.sh (alembic upgrade head then uvicorn; JSON start line)",
+      "Steward kit readiness pattern (alembic current==head, DB probe)",
+      "Render healthCheckPath: /health (same fail-closed probe; 503 removes the instance)"
+    ],
+    "health": "app/health.py evaluate_health → JSONResponse 200|503; checks process, persistent_disk, database, migrations",
+    "rollback": "scripts/rollback.sh writes STORAGE_PATH/deploy_revision; does not wipe platform.db",
+    "logging": "app/observe.py JSON lines + request.jsonl; x-request-id; emoji stripped (F13)"
+  },
+  "performed": {
+    "health_app_down": {
+      "test": "tests/factory/test_deploy_observe.py::test_health_fails_when_app_is_down",
+      "result": "PASS",
+      "detail": "GET /health to a closed port raises URLError/ConnectionError"
+    },
+    "health_disk_or_migrations_missing": {
+      "test": "tests/factory/test_deploy_observe.py::test_health_fails_when_disk_or_migrations_missing",
+      "result": "PASS",
+      "detail": "missing STORAGE_PATH → 503 persistent_disk; empty disk no platform.db → 503 database/migrations"
+    },
+    "health_ready": {
+      "test": "tests/factory/test_deploy_observe.py::test_health_is_200_when_process_disk_db_and_head_are_present",
+      "result": "PASS",
+      "detail": "upgrade_head then evaluate_health → 200, all checks ok"
+    },
+    "rollback_drill": {
+      "test": "tests/factory/test_deploy_observe.py::test_rollback_drill_is_performed",
+      "result": "PASS",
+      "detail": "start uvicorn rev-n, GET /health 200 mark=baseline, persist analytics_surface id+s11-keep; mutate MARK to changed and start rev-n-plus-1, health mark=changed and row remains; restore revision.py, run scripts/rollback.sh, start rev-n; health mark=baseline and prior row id/reference/quantity match"
+    },
+    "structured_logs": {
+      "test": "tests/factory/test_deploy_observe.py::test_structured_logs_carry_request_id_and_reject_emoji",
+      "result": "PASS",
+      "detail": "live GET /health X-Request-Id=s11-factory written to request.jsonl; JsonFormatter strips U+1F389"
+    },
+    "lotdesk_always_200": {
+      "test": "tests/factory/test_deploy_observe.py::test_always_200_health_is_f1_and_lotdesk_is_rejected",
+      "result": "PASS",
+      "detail": "stub return {status: ok} is F1; LotDesk fixture rejected with F1; RoleRunner main.py is not always-200. Fixture not patched."
+    }
+  },
+  "sqlite_on_mounted_disk": {
+    "retained": true,
+    "spof": "SPOF: Render rollback restarts a prior image against the same single-instance disk. No replica, no multi-AZ handoff. Losing the disk loses live SQLite (platform.db) and same-disk backups. Rollback does not create HA. A prior image that cannot read a newer schema is an S10 concern; this stage rolls back process identity, not a second copy of the data.",
+    "capacity": {
+      "disk_gb": 1,
+      "ha": false,
+      "replicas": 0,
+      "rollback_retains_disk": true
+    }
+  },
+  "suite": {
+    "command": "cd backend && ENV=test ./venv/bin/python -m pytest tests/factory",
+    "result": "379 passed, 1 skipped in 157.98s"
+  },
+  "not_claimed": ["PILOT_READY", "S12–S13", "HA rollback", "multi-instance Render", "off-disk replica"],
+  "stop": "S11 PASS. Rollback drill performed. Do not start S12. Not PILOT_READY.",
+  "lotdesk": "fixture only; not patched",
+  "llm_route_authorship": "not restored; _coder_route_body still returns None"
+}

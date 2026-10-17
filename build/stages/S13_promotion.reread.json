@@ -1,0 +1,39 @@
+{
+  "stage": "S13",
+  "name": "promotion",
+  "verdict": "PASS",
+  "PILOT_READY": true,
+  "reread_of": "/workspace/build/stages/S13_promotion.json",
+  "reread_at": "2026-08-29T14:50:29Z",
+  "independent": true,
+  "reader": "cloud-agent-s13-promotion",
+  "emitter": "app.factory.build.promotion.evaluate_promotion",
+  "checked": [
+    "evaluate_promotion re-ran against the same stages dir",
+    "PILOT_READY equals the primary machine bit",
+    "required S10/S11/S12 plus any earlier S*.json present",
+    "reread twins compared by verdict + empty disagreements",
+    "LotDesk reject_lotdesk_promotion keeps PILOT_READY false",
+    "_coder_route_body still returns None; prepare_pilot_workspace absent",
+    "harvest evaluate_harvest is BLOCKED; no Blocks write"
+  ],
+  "disagreements": [],
+  "first_failing_criterion": null,
+  "git_sha": "eacc2548dcd01d4d02a8425203f3f92fe9836a8c",
+  "harvest_verdict": "BLOCKED",
+  "kernel_ownership": {
+    "execute_action": "app.cerebrum_product_kernel.contract.runtime.execute_action",
+    "execute_action_callable": true,
+    "_coder_route_body_is_None": true,
+    "prepare_pilot_workspace": "absent",
+    "prepare_pilot_workspace_in_runner": false,
+    "prepare_pilot_workspace_in_pilot": false,
+    "ok": true
+  },
+  "not_claimed": [
+    "Cerebrum-Blocks write",
+    "STORE_MANAGER harvest",
+    "LotDesk patched to pass",
+    "LLM-authored route bodies"
+  ]
+}

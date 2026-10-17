@@ -1,0 +1,10 @@
+{
+  "schema": "repro_blueprint.v1",
+  "id": "repro_motor_insurance_claims",
+  "name": "Motor Claims Desk",
+  "vertical": "motor_insurance_claims",
+  "country": "GB",
+  "currency": "GBP",
+  "build_level": "production",
+  "brief": "Build me a claims platform for a small motor insurer: register claims with the policy and incident details, attach photos and repair estimates, route each claim to an adjuster for approval, and track the payout status of every approved claim."
+}

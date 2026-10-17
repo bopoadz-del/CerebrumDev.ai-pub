@@ -1,0 +1,14 @@
+# What the gate replay (app/factory/build/gate_replay.py) imports: rendering
+# the Factory's files onto a build tree and routing a gate result. Never the
+# serving stack. A distribution requirements.txt pins is pinned here at the
+# same version (tests/factory/test_gate_replay.py holds them equal); requirements.txt
+# is not used as a constraints file -- pip refuses constraints with extras
+# (psycopg[binary], sentry-sdk[fastapi]).
+pydantic==2.13.5
+httpx==0.28.1
+rich==15.0.0
+click==8.5.0
+pyyaml
+# dependency_pins reads specifiers with packaging; without it every product
+# specifier would read as excluding its pin.
+packaging

@@ -1,0 +1,18 @@
+schema_version: product_blueprint.v1
+product_id: basic-factory-smoke
+product_name: Basic Factory Smoke Product
+vertical: product
+summary: Minimal standalone product used for Factory generate/regenerate smoke tests.
+capabilities:
+  - id: health_surface
+    description: Health and capability discovery endpoints
+    block_ids: []
+    strategy_hint: GENERATE
+  - id: audit_trail
+    description: Immutable audit trail using dual-registered audit block
+    block_ids: [audit]
+    strategy_hint: REUSE
+ui_modules: [command_center]
+connectors: []
+edge_profile: standard
+human_authority: true

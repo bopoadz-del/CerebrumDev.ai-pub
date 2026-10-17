@@ -1,0 +1,36 @@
+{
+  "backup": {
+    "api": "sqlite3.Connection.backup",
+    "default_dir": "$STORAGE_PATH/backups",
+    "restore_drill": "tests/test_data_lifecycle.py performs backup\u2192wipe\u2192restore",
+    "retention": 14
+  },
+  "capacity": {
+    "disk_gb": 1,
+    "ha": false,
+    "practical_sqlite": "Bound by the 1 GiB Render disk declared in render.yaml, not SQLite's theoretical file limit.",
+    "replicas": 0
+  },
+  "durability": {
+    "busy_timeout_ms": 30000,
+    "connect_timeout_s": 30.0,
+    "fastapi_sync_threadpool": 40,
+    "journal_mode": "WAL",
+    "synchronous": "NORMAL",
+    "writers": 1
+  },
+  "migrations": {
+    "applied_at": "deploy entrypoint + FastAPI lifespan",
+    "database": "platform.db",
+    "revisions": [
+      "0001_baseline",
+      "0002_lifecycle_audit"
+    ],
+    "source": "RoleRunner emission, patterned on unused kit backend/app/factory/kits/private_estate_operations/steward_runtime/migrations",
+    "storage_path": "/app/data",
+    "tool": "alembic"
+  },
+  "schema_version": "data_lifecycle.v1",
+  "spof": "SPOF: Render persistent disk is single-instance and the live SQLite file lives on it. One writer. Losing the disk loses the live database. Same-disk backups do not survive disk loss; set BACKUP_DIR onto another volume if disk loss is in scope.",
+  "sqlite_on_mounted_disk": true
+}
