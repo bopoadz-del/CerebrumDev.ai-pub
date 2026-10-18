@@ -141,7 +141,9 @@ jobs:
           # existing repo secret) has read access; for a public mirror an empty
           # token is harmless. Passed via a token URL that is never stored in
           # remote config, and GitHub masks the secret in logs.
-          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO }}
+          # Default: <owner>/Cerebrum-Blocks-pub (owner-derived); the repo
+          # variable vars.BLOCKS_PUB_REPO overrides it when set.
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO || format('{0}/Cerebrum-Blocks-pub', github.repository_owner) }}
           CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
         run: |
           test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
@@ -345,7 +347,9 @@ jobs:
           # Store repo named by a workflow variable, not a hardcoded literal
           # (see the backend job's note). The orchestrator sets
           # vars.BLOCKS_PUB_REPO to the Store mirror's "owner/repo" slug.
-          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO }}
+          # Default: <owner>/Cerebrum-Blocks-pub (owner-derived); the repo
+          # variable vars.BLOCKS_PUB_REPO overrides it when set.
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO || format('{0}/Cerebrum-Blocks-pub', github.repository_owner) }}
           CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
         run: |
           test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
