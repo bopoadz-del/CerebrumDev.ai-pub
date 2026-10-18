@@ -133,18 +133,23 @@ jobs:
       - name: Check out the Store
         working-directory: .
         env:
-          # Cerebrum-Blocks is private, so the fetch must authenticate. The
-          # default GITHUB_TOKEN is scoped to THIS repo only; CROSS_REPO_PAT
-          # (an existing repo secret) has read access to the Store. Passed via
-          # a token URL that is never stored in remote config, and GitHub masks
-          # the secret in logs.
+          # The Store repo is named by a workflow-level variable, never a
+          # hardcoded owner/repo literal here: this tree publishes to a public
+          # mirror, so the repo differs per deployment and the orchestrator
+          # sets vars.BLOCKS_PUB_REPO (an "owner/repo" slug). The fetch still
+          # authenticates when the Store is private: CROSS_REPO_PAT (an
+          # existing repo secret) has read access; for a public mirror an empty
+          # token is harmless. Passed via a token URL that is never stored in
+          # remote config, and GitHub masks the secret in logs.
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO }}
           CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
         run: |
+          test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
           STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
-          echo "Store ref: $STORE_REF"
+          echo "Store ref: $STORE_REF  (repo: $BLOCKS_PUB_REPO)"
           git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
           cd "$RUNNER_TEMP/Cerebrum-Blocks"
-          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/${BLOCKS_PUB_REPO}.git" "$STORE_REF"
           test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
           git checkout -q FETCH_HEAD
           test -d block_registry
@@ -337,12 +342,17 @@ jobs:
         shell: bash
         working-directory: .
         env:
+          # Store repo named by a workflow variable, not a hardcoded literal
+          # (see the backend job's note). The orchestrator sets
+          # vars.BLOCKS_PUB_REPO to the Store mirror's "owner/repo" slug.
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO }}
           CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
         run: |
+          test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
           STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
           git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
           cd "$RUNNER_TEMP/Cerebrum-Blocks"
-          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/${BLOCKS_PUB_REPO}.git" "$STORE_REF"
           test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
           git checkout -q FETCH_HEAD
           echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
