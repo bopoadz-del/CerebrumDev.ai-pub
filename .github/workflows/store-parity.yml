@@ -34,16 +34,23 @@ jobs:
       # way production does, or it guards the wrong thing.
       - name: Check out the Store
         env:
-          # Cerebrum-Blocks is private; authenticate with CROSS_REPO_PAT (an
-          # existing repo secret with Store read access). Token URL, never
-          # persisted to remote config; GitHub masks the secret in logs.
+          # The Store repo is named by a workflow-level variable, never a
+          # hardcoded owner/repo literal here: this tree publishes to a public
+          # mirror, so the repo differs per deployment and the orchestrator
+          # sets vars.BLOCKS_PUB_REPO (an "owner/repo" slug). The fetch still
+          # authenticates when the Store is private: CROSS_REPO_PAT (an
+          # existing repo secret) has read access; for a public mirror an empty
+          # token is harmless. Token URL, never persisted to remote config;
+          # GitHub masks the secret in logs.
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO }}
           CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
         run: |
+          test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
           STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
           echo "Store ref: $STORE_REF"
           git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
           cd "$RUNNER_TEMP/Cerebrum-Blocks"
-          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/${BLOCKS_PUB_REPO}.git" "$STORE_REF"
           test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
           git checkout -q FETCH_HEAD
           test -d block_registry

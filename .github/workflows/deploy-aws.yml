@@ -39,15 +39,22 @@ jobs:
       - id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
       - name: Bake the Store into the build context
-        # Cerebrum-Blocks is private; the image carries its own pinned copy
-        # so the runtime never needs a token or a network clone.
+        # The Store repo is named by a workflow-level variable, never a
+        # hardcoded owner/repo literal here: this tree publishes to a public
+        # mirror, so the repo differs per deployment and the orchestrator
+        # sets vars.BLOCKS_PUB_REPO (an "owner/repo" slug). The image carries
+        # its own pinned copy so the runtime never needs a token or a network
+        # clone; the fetch authenticates with CROSS_REPO_PAT when the Store is
+        # private, and for a public mirror an empty token is harmless.
         env:
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO }}
           CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
         run: |
+          test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
           STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
           git init -q store-blocks
           cd store-blocks
-          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/bopoadz-del/Cerebrum-Blocks.git" "$STORE_REF"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/${BLOCKS_PUB_REPO}.git" "$STORE_REF"
           test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
           git checkout -q FETCH_HEAD
           test -d block_registry
