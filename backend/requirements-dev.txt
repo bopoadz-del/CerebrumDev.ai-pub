@@ -11,7 +11,7 @@ pgvector>=0.5.0
 ruff>=0.17.1
 
 # Incremental typecheck. Scope is backend/mypy.ini (not the whole tree).
-mypy>=2.3.1
+mypy>=2.4.0
 
 # The Store gate's audit_clean runs bandit over every product's app/; the
 # factory's own test of the emitted persistence modules runs the same scan
