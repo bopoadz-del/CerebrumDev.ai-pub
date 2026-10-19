@@ -4,7 +4,7 @@
 # same version (tests/factory/test_gate_replay.py holds them equal); requirements.txt
 # is not used as a constraints file -- pip refuses constraints with extras
 # (psycopg[binary], sentry-sdk[fastapi]).
-pydantic==2.13.5
+pydantic==2.14.1
 httpx==0.28.1
 rich==15.0.0
 click==8.5.0
