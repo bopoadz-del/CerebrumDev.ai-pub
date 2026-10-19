@@ -13,7 +13,7 @@
     "e2e:mocked": "playwright test e2e/factory_surfaces.spec.ts e2e/verify_email_boot.spec.ts"
   },
   "dependencies": {
-    "@sentry/react": "^11.0.0",
+    "@sentry/react": "^11.8.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.0"
   },
