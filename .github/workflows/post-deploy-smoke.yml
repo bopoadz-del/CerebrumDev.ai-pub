@@ -250,7 +250,7 @@ jobs:
           SMOKE_FRONTEND: ${{ vars.SMOKE_FRONTEND || 'https://www.cerebrum-dev.com' }}
         run: python3 scripts/post_deploy_smoke.py ${{ vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: release-cycle-repros
