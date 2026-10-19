@@ -25,7 +25,7 @@ stripe==15.6.1
 
 # Observability: error tracking + performance. Activates when SENTRY_DSN is
 # set; inert otherwise. See backend/.env.example.
-sentry-sdk[fastapi]==2.70.0
+sentry-sdk[fastapi]==2.72.0
 
 # Prometheus /metrics (ops scrape; route is master-key gated in main).
 prometheus-client==0.21.1
