@@ -140,9 +140,17 @@ missing file is a missing gate, so write it all under this checkout root:
 
 - app/main.py (FastAPI app factory + /health)
 - app/models.py exporting ``MODELS``: dict of capability -> model class,
-  each class with ``FIELDS`` and ``from_dict``/``to_dict``
+  each class with ``FIELDS`` and ``from_dict``/``to_dict``. Every model's
+  ``to_dict()`` MUST expose an ``id`` key -- ``None`` until the record is
+  stored, the store's identifier after -- because your own tests read it
+  back; a ``to_dict()`` that omits ``id`` contradicts the suite that GETs the
+  record and fails it.
 - app/actions/<capability>.py — one module per capability, each exporting
-  ``CAPABILITY_ID`` and ``handle(payload) -> dict``
+  ``CAPABILITY_ID`` and ``handle(payload) -> dict``. The capability response
+  envelope is ``{{ok, record, id}}``: ``ok`` the success flag, ``record`` the
+  stored entity as ``to_dict()``, and ``id`` that record's identifier (the
+  same value as ``record["id"]``). A success that omits ``record`` or ``id``
+  is an incomplete answer the harness rejects.
 - app/routers/ — HTTP routes over the actions
 - app/tenancy.py, app/security.py, app/authority.py (precedence.v1),
   app/retrieval.py, app/formulas.py, app/llm.py

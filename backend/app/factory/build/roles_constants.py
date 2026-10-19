@@ -177,12 +177,61 @@ offline and independent of the factory's uptime.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 from pathlib import Path
 from typing import Any, Dict
 
 _VENDOR = Path(__file__).resolve().parents[1] / "vendor" / "blocks"
 _CACHE: Dict[str, Any] = {}
+
+
+class _NonRaisingStream:
+    """Wrap a text stream so a non-ASCII write can never raise.
+
+    pytest's fd-level capture and a cp1252/C-locale console both hand the
+    process a sink that encodes strictly and raises on the first glyph it
+    cannot map -- and such a sink has no ``reconfigure``, so forcing UTF-8 on
+    it is a no-op. This wrapper degrades the write with ``backslashreplace``
+    instead of raising, so a block's incidental log line is garbled at worst,
+    never a UnicodeEncodeError that dispatch mistakes for a domain refusal.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, text: Any) -> int:
+        try:
+            return self._stream.write(text)
+        except UnicodeError:
+            enc = getattr(self._stream, "encoding", None) or "ascii"
+            safe = str(text).encode(enc, "backslashreplace").decode(enc, "replace")
+            try:
+                self._stream.write(safe)
+            except Exception:
+                pass
+            return len(str(text))
+        except (ValueError, OSError):
+            return len(str(text))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+@contextlib.contextmanager
+def _tolerant_stdio():
+    """Run a block with stdout/stderr that cannot raise on a non-ASCII log."""
+    import sys
+
+    saved_out, saved_err = sys.stdout, sys.stderr
+    try:
+        if saved_out is not None:
+            sys.stdout = _NonRaisingStream(saved_out)
+        if saved_err is not None:
+            sys.stderr = _NonRaisingStream(saved_err)
+        yield
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
 
 
 class BlockNotVendored(RuntimeError):
@@ -199,7 +248,11 @@ def load_block(block_id: str):
         )
     spec = importlib.util.spec_from_file_location(f"vendored_{block_id}", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # A block may print a non-ASCII glyph at import time. That incidental log
+    # is never the block's contract, so a strict stdout must not turn it into
+    # an import crash that sinks every capability binding the block.
+    with _tolerant_stdio():
+        spec.loader.exec_module(module)
     _CACHE[block_id] = module
     return module
 
@@ -611,15 +664,15 @@ def execute(
     # a block that is not vendored -- still raise above.
     _force_utf8_stdio()
     try:
-        result = run(input=adapted, **kwargs)
+        # A block's own print/log must not sink the call: a UnicodeEncodeError
+        # or IOError raised purely from writing a non-ASCII glyph to a strict
+        # stdout is an encoding accident, not a domain refusal. Tolerant stdio
+        # degrades that write so the block's real result (or its real
+        # exception) is what decides the envelope -- never ok:False for a log.
+        with _tolerant_stdio():
+            result = run(input=adapted, **kwargs)
     except BlockNotVendored:
         raise
-    except UnicodeEncodeError as exc:
-        return _error_envelope(
-            block_id,
-            action,
-            f"UnicodeEncodeError on block stdout (encoding, not domain): {exc}",
-        )
     except Exception as exc:
         reason = unavailable_reason(block_id, exc)
         if reason:
@@ -732,6 +785,25 @@ import socket
 import sys
 import tempfile
 from pathlib import Path
+
+# Force UTF-8 on this interpreter's stdout/stderr BEFORE the product is
+# imported. A vendored block may print a non-ASCII glyph (a checkmark, a
+# currency sign, an accented place name) at import or on its first call. Under
+# an ascii/C-locale CI, a cp1252 console, or pytest's fd-level capture, that
+# incidental write would raise UnicodeEncodeError and sink any capability that
+# merely touched the block -- an encoding accident read as a domain refusal.
+# ``errors="backslashreplace"`` means a glyph that still cannot be encoded
+# degrades the log line, never the call; the env vars steer any child the
+# suite spawns. This runs first so no later import can print before it.
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8:backslashreplace")
+for _std_stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_std_stream, "reconfigure", None)
+    if callable(_reconfigure):
+        try:
+            _reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["STORAGE_PATH"] = tempfile.mkdtemp(prefix="platform-test-")
