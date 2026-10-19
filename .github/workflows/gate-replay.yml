@@ -134,7 +134,7 @@ jobs:
         env:
           PRODUCT_SHA: ${{ matrix.sha }}
         run: python3 factory/.github/gate_replay/replay_in_factory.py extract "$PRODUCT_SHA" product
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: python -m pip install --quiet -r factory/backend/requirements-replay.txt
@@ -211,7 +211,7 @@ jobs:
         with:
           name: gate-replay-${{ matrix.label }}
           path: result
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: python -m pip install --quiet -r factory/backend/requirements-replay.txt
