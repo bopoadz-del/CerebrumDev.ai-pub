@@ -14,12 +14,13 @@ def _redirect(monkeypatch, tmp_path):
     monkeypatch.setattr("app.factory.paths.factory_outputs_root", lambda: tmp_path)
 
 
-def test_flag_default_off_and_parses(monkeypatch):
+def test_flag_default_on_and_off_switch(monkeypatch):
     monkeypatch.delenv("FACTORY_STAGE_RESUME", raising=False)
-    assert bc.stage_resume_on() is False
-    for on in ("1", "on", "true", "YES"):
+    assert bc.stage_resume_on() is True  # ON by default (option B)
+    for off in ("0", "off", "false", "NO"):
+        assert bc.stage_resume_on({"FACTORY_STAGE_RESUME": off}) is False
+    for on in ("on", "1", "yes", ""):
         assert bc.stage_resume_on({"FACTORY_STAGE_RESUME": on}) is True
-    assert bc.stage_resume_on({"FACTORY_STAGE_RESUME": "off"}) is False
 
 
 def test_factory_code_version_reads_env():
