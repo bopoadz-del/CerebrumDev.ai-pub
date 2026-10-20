@@ -55,7 +55,7 @@ jobs:
       GATE_SERVICE_IMAGES: postgres=ghcr.io/${{ github.repository_owner }}/mirror/postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
     steps:
       - name: Check out the handover (the Factory at the PR head)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.factory_ref }}
           path: _factory_vendor

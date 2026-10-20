@@ -101,7 +101,7 @@ jobs:
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.FACTORY_REF }}
           persist-credentials: false
@@ -125,7 +125,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.FACTORY_REF }}
           path: factory
@@ -192,7 +192,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.FACTORY_REF }}
           path: factory
@@ -240,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.FACTORY_REF }}
           persist-credentials: false
