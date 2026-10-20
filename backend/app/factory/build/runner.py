@@ -683,6 +683,57 @@ class RoleRunner:
 
     # -- one phase -------------------------------------------------------
 
+    @staticmethod
+    def _incremental_rework_on() -> bool:
+        """FACTORY_INCREMENTAL_REWORK gates seeding a rework round's staging
+        tree from the committed product. Off by default: the live default is
+        unchanged until the flag is set, so this can be carried safely and
+        enabled after a validating build."""
+        val = os.environ.get("FACTORY_INCREMENTAL_REWORK", "").strip().lower()
+        return val in ("1", "on", "true", "yes")
+
+    def _writer_committed_before(self) -> bool:
+        """A prior WRITER pass already landed product handlers in the
+        destination. True only on a rework re-entry -- the first WRITER pass
+        leaves the destination empty until its own commit, so this is False
+        there and the seed never fires on a first pass."""
+        actions = self.workspace / "app" / "actions"
+        if not actions.is_dir():
+            return False
+        return any(
+            p.is_file() and p.suffix == ".py" and p.name != "__init__.py"
+            for p in actions.iterdir()
+        )
+
+    def _seed_rework_staging(self, staging: Path) -> int:
+        """Copy the committed product's writer-authored areas into the fresh
+        staging tree so a rework round patches in place. Only the dirs the
+        WRITER authors are seeded (app/docs/tests/scripts); vendor, the
+        ledger and build artifacts are not. Factory-owned paths are then
+        removed from the seed so prestamp re-renders them fresh and the
+        writer-touched-factory-file guard compares against a clean stamp.
+        Returns the count of seeded files kept."""
+        from app.factory.build import factory_owned
+
+        dest = self.workspace
+        seed_dirs = ("app", "docs", "tests", "scripts")
+        for top in seed_dirs:
+            base = dest / top
+            if not base.is_dir():
+                continue
+            for src in base.rglob("*"):
+                if not src.is_file():
+                    continue
+                rel = src.relative_to(dest).as_posix()
+                out = staging / rel
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(src.read_bytes())
+        for rel in factory_owned.factory_owned_paths():
+            p = staging / rel
+            if p.is_file():
+                p.unlink()
+        return sum(1 for p in staging.rglob("*") if p.is_file())
+
     def _writer_can_resume(self, staging: Path) -> bool:
         """An interrupted CodeWhale pass that left a progress log to read."""
         try:
@@ -886,6 +937,7 @@ class RoleRunner:
             if role is BuildRole.WRITER
             else None
         )
+        resumed_pass = False
         if staging is not None and staging.exists():
             # A staging tree at phase start means the previous WRITER pass
             # died mid-way (a committed pass removes its own staging). It
@@ -897,6 +949,7 @@ class RoleRunner:
             # because the server restarted 25 seconds after it (live).
             if self._writer_can_resume(staging):
                 self.state["writer_resumed"] = True
+                resumed_pass = True
                 self.ledger.append(
                     EventKind.NOTE,
                     role=role,
@@ -922,6 +975,35 @@ class RoleRunner:
             staging=staging,
             sealed=sealed,
         )
+        # Incremental rework (FACTORY_INCREMENTAL_REWORK): a WRITER rework
+        # round re-runs against a FRESH staging tree, so with an empty
+        # checkout the agent re-authors the whole product (file count resets
+        # 1->N) and the brief's "keep what works, fix only these" is
+        # unactionable. Seed the staging tree from the committed product so
+        # the agent patches it in place and every passing file stays
+        # byte-identical. Factory-owned paths are left out of the seed --
+        # prestamp re-renders them, so the writer-touched-factory-file guard
+        # is unaffected. Never on a first pass (destination still empty) and
+        # never when resuming an interrupted pass (staging already carries
+        # that pass's own files).
+        if (
+            role is BuildRole.WRITER
+            and staging is not None
+            and not resumed_pass
+            and self._incremental_rework_on()
+            and self._writer_committed_before()
+        ):
+            kept = self._seed_rework_staging(staging)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=role,
+                detail=(
+                    "incremental rework: seeded the staging tree from the "
+                    f"committed product ({kept} file(s) kept) so the writer "
+                    "patches in place; passing files are not re-authored"
+                ),
+                payload={"incremental_rework_seeded": kept},
+            )
         def _progress(detail: str, payload: Dict[str, Any]) -> None:
             """Record intra-phase progress as a ledger NOTE.
 
