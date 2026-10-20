@@ -1107,7 +1107,44 @@ def generate_approved_product(
         elif prior and Path(prior).is_dir():
             out = Path(prior)
         else:
+            # Item 2 (cross-session resume): a fresh session with the SAME
+            # inputs reuses the prior build's workspace so reattach_point
+            # resumes from the last green stage instead of rebuilding from
+            # intake. The reuse is a POINTER only -- reattach_point (workspace
+            # intact, phases passed) and the ledger's assert_resumable (its
+            # inputs_hash must match the re-run's) still guard it, so a stale
+            # or mismatched candidate falls back to the fresh per-session
+            # workspace. Gated by FACTORY_STAGE_RESUME (default on; set off to
+            # disable). Start over is a separate typed Floor action and never
+            # reaches here.
             out = _session_output(session_id, bp.product_id)
+            from app.factory.build.blueprint_cache import (
+                factory_code_version,
+                stage_resume_on,
+            )
+
+            if stage_resume_on():
+                try:
+                    from app.factory.blocks_lock import resolve_lock
+                    from app.factory.build.resume_index import (
+                        lookup_resume,
+                        record_resume,
+                    )
+                    from app.factory.build.runner import full_input_hash
+                    from app.factory.build_jobs import reattach_point
+
+                    _fih = full_input_hash(
+                        bp,
+                        brief=str(state.product_design.brief or ""),
+                        factory_git_sha=factory_code_version(),
+                        blocks_lock=resolve_lock(blocks_root=blocks_root),
+                    )
+                    _cand = lookup_resume(_fih)
+                    if _cand is not None and reattach_point(_cand)[0] is not None:
+                        out = _cand
+                    record_resume(_fih, out)
+                except Exception:  # noqa: BLE001 -- resume is best-effort
+                    out = _session_output(session_id, bp.product_id)
         from app.factory.build.platform_identity import ensure_platform_id
 
         result = generate_product(
