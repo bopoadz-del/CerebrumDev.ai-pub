@@ -722,25 +722,44 @@ class RoleRunner:
 
     @staticmethod
     def _incremental_rework_on() -> bool:
-        """FACTORY_INCREMENTAL_REWORK gates seeding a rework round's staging
-        tree from the committed product. Off by default: the live default is
-        unchanged until the flag is set, so this can be carried safely and
-        enabled after a validating build."""
+        """Incremental rework is ON by default (owner ruling, option B):
+        FACTORY_INCREMENTAL_REWORK is the DISABLE switch -- set it to a falsey
+        value (0/off/false/no) to turn staging-seed off. Any other value (or
+        unset) keeps it on."""
         val = os.environ.get("FACTORY_INCREMENTAL_REWORK", "").strip().lower()
-        return val in ("1", "on", "true", "yes")
+        return val not in ("0", "off", "false", "no")
 
     def _writer_committed_before(self) -> bool:
-        """A prior WRITER pass already landed product handlers in the
-        destination. True only on a rework re-entry -- the first WRITER pass
-        leaves the destination empty until its own commit, so this is False
-        there and the seed never fires on a first pass."""
-        actions = self.workspace / "app" / "actions"
-        if not actions.is_dir():
+        """A prior WRITER pass already landed product code in the destination.
+        True only on a rework re-entry -- the first WRITER pass leaves the
+        destination empty until its own commit, so this is False there and the
+        seed never fires on a first pass. The probe is any writer-authored
+        file across the seed dirs (a handler, routes, models or main), not
+        app/actions alone, so a product that renders no app/actions handler
+        still resumes."""
+        app_dir = self.workspace / "app"
+        if not app_dir.is_dir():
             return False
-        return any(
+        actions = app_dir / "actions"
+        if actions.is_dir() and any(
             p.is_file() and p.suffix == ".py" and p.name != "__init__.py"
             for p in actions.iterdir()
-        )
+        ):
+            return True
+        return any((app_dir / rel).is_file() for rel in ("routes.py", "models.py", "main.py"))
+
+    def _should_seed_rework(
+        self, role: "BuildRole", staging: Optional[Path], resumed_pass: bool
+    ) -> bool:
+        """The single seed-decision predicate (extracted so it is unit
+        testable at the _run_phase level): seed only a WRITER rework round
+        that is staged, not resuming an interrupted pass, with the flag on and
+        a prior committed pass present."""
+        if role is not BuildRole.WRITER or staging is None or resumed_pass:
+            return False
+        if not self._incremental_rework_on():
+            return False
+        return self._writer_committed_before()
 
     def _seed_rework_staging(self, staging: Path) -> int:
         """Copy the committed product's writer-authored areas into the fresh
@@ -1023,13 +1042,7 @@ class RoleRunner:
         # is unaffected. Never on a first pass (destination still empty) and
         # never when resuming an interrupted pass (staging already carries
         # that pass's own files).
-        if (
-            role is BuildRole.WRITER
-            and staging is not None
-            and not resumed_pass
-            and self._incremental_rework_on()
-            and self._writer_committed_before()
-        ):
+        if self._should_seed_rework(role, staging, resumed_pass):
             kept = self._seed_rework_staging(staging)
             self.ledger.append(
                 EventKind.NOTE,
