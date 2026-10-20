@@ -11,6 +11,7 @@ the committed product is seeded instead.
 import types
 from pathlib import Path
 
+from app.factory.build.authority import BuildRole
 from app.factory.build.runner import RoleRunner
 
 
@@ -18,19 +19,30 @@ def _ns(workspace):
     return types.SimpleNamespace(workspace=Path(workspace))
 
 
-def test_flag_default_off_and_parses(monkeypatch):
+def _seed_ns(workspace):
+    """A stub self for _should_seed_rework: provides workspace plus the two
+    collaborator methods it calls (the flag staticmethod and the committed
+    probe), so the predicate's branch logic is exercised directly."""
+    ns = types.SimpleNamespace(workspace=Path(workspace))
+    ns._incremental_rework_on = RoleRunner._incremental_rework_on
+    ns._writer_committed_before = lambda: RoleRunner._writer_committed_before(ns)
+    return ns
+
+
+def test_flag_default_on_and_off_switch(monkeypatch):
     monkeypatch.delenv("FACTORY_INCREMENTAL_REWORK", raising=False)
-    assert RoleRunner._incremental_rework_on() is False
-    for on in ("1", "on", "true", "YES"):
+    assert RoleRunner._incremental_rework_on() is True  # ON by default (option B)
+    for off in ("0", "off", "false", "NO"):
+        monkeypatch.setenv("FACTORY_INCREMENTAL_REWORK", off)
+        assert RoleRunner._incremental_rework_on() is False
+    for on in ("on", "1", "yes", ""):
         monkeypatch.setenv("FACTORY_INCREMENTAL_REWORK", on)
         assert RoleRunner._incremental_rework_on() is True
-    monkeypatch.setenv("FACTORY_INCREMENTAL_REWORK", "off")
-    assert RoleRunner._incremental_rework_on() is False
 
 
 def test_committed_before_is_false_on_first_pass(tmp_path):
     ns = _ns(tmp_path)
-    # no app/actions yet -> first pass, seed must not fire
+    # no app/ yet -> first pass, seed must not fire
     assert RoleRunner._writer_committed_before(ns) is False
     actions = tmp_path / "app" / "actions"
     actions.mkdir(parents=True)
@@ -39,6 +51,42 @@ def test_committed_before_is_false_on_first_pass(tmp_path):
     assert RoleRunner._writer_committed_before(ns) is False
     (actions / "work_orders.py").write_text("def handle(p): return p\n", encoding="utf-8")
     assert RoleRunner._writer_committed_before(ns) is True
+
+
+def test_committed_before_sees_routes_or_models_without_actions(tmp_path):
+    # a product that renders no app/actions handler still resumes: routes.py
+    # (or models.py / main.py) is a prior authored pass.
+    ns = _ns(tmp_path)
+    (tmp_path / "app").mkdir(parents=True)
+    assert RoleRunner._writer_committed_before(ns) is False
+    (tmp_path / "app" / "routes.py").write_text("router = 1\n", encoding="utf-8")
+    assert RoleRunner._writer_committed_before(ns) is True
+
+
+def test_should_seed_rework_guard(tmp_path, monkeypatch):
+    monkeypatch.delenv("FACTORY_INCREMENTAL_REWORK", raising=False)  # default ON
+    # a committed prior pass present
+    actions = tmp_path / "app" / "actions"
+    actions.mkdir(parents=True)
+    (actions / "work_orders.py").write_text("x = 1\n", encoding="utf-8")
+    ns = _seed_ns(tmp_path)
+    staging = tmp_path / ".staging"
+    # rework round, flag on, prior pass -> seed
+    assert RoleRunner._should_seed_rework(ns, BuildRole.WRITER, staging, False) is True
+    # resuming an interrupted pass -> never seed
+    assert RoleRunner._should_seed_rework(ns, BuildRole.WRITER, staging, True) is False
+    # not staged -> never seed
+    assert RoleRunner._should_seed_rework(ns, BuildRole.WRITER, None, False) is False
+    # a non-WRITER role -> never seed
+    assert RoleRunner._should_seed_rework(ns, BuildRole.CLONER, staging, False) is False
+    # flag disabled -> never seed, even on a rework round
+    monkeypatch.setenv("FACTORY_INCREMENTAL_REWORK", "off")
+    assert RoleRunner._should_seed_rework(ns, BuildRole.WRITER, staging, False) is False
+    monkeypatch.delenv("FACTORY_INCREMENTAL_REWORK", raising=False)
+    # first pass (empty destination) -> never seed
+    empty = _seed_ns(tmp_path / "empty")
+    (tmp_path / "empty").mkdir()
+    assert RoleRunner._should_seed_rework(empty, BuildRole.WRITER, staging, False) is False
 
 
 def test_seed_keeps_passing_files_and_drops_factory_owned(tmp_path, monkeypatch):
