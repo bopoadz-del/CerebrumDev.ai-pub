@@ -5030,6 +5030,7 @@ def run_writer(
     from app.factory.build.workflow_accept import (
         EventBusWorkflowHalt,
         assert_event_bus_workflow_handlers,
+        assert_workflow_step_targets_bound,
         declares_event_bus_workflow,
     )
 
@@ -5040,6 +5041,18 @@ def run_writer(
             )
         except EventBusWorkflowHalt as exc:
             raise RoleError(str(exc)) from exc
+
+    # Every build (independent of whether any capability binds an events
+    # block): a handler must dispatch only to blocks the product actually
+    # has. A step naming an unbound Store block fails at runtime as
+    # "Block '<id>' not found"; catch it here with an actionable message
+    # instead of letting PRODUCT/TESTER surface it after the whole build.
+    try:
+        assert_workflow_step_targets_bound(
+            ctx.workspace.workspace, compiled_brief
+        )
+    except EventBusWorkflowHalt as exc:
+        raise RoleError(str(exc)) from exc
 
     # Handlers may validate domain fields the model_specs omitted (live:
     # property_reference_code) or enforce a vocabulary/type the spec left as
