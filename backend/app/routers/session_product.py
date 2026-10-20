@@ -784,9 +784,44 @@ def draft_product(
 
             choice = chosen_vertical(body.vertical_hint)
             state.product_design.vertical = None if choice == NO_VERTICAL else choice
-        bp = draft_blueprint_from_brief(
-            body.brief, vertical_hint=state.product_design.vertical
+        # Item 2 (stage resume): reuse a cached blueprint for an unchanged
+        # brief so the architect does not draft a different one each run (the
+        # draft is non-deterministic) -- a stable blueprint is what makes the
+        # downstream stages resumable. Gated by FACTORY_STAGE_RESUME; off by
+        # default, so this path is inert until enabled after a validating
+        # build. A bad or absent cache entry simply falls through to a fresh
+        # draft -- the cache is an optimisation, never a hard dependency.
+        from app.factory.build.blueprint_cache import (
+            brief_blueprint_key,
+            factory_code_version,
+            load_blueprint,
+            stage_resume_on,
+            store_blueprint,
         )
+
+        _resume = stage_resume_on()
+        _bp_key = ""
+        _bp_resumed = False
+        bp = None
+        if _resume:
+            _bp_key = brief_blueprint_key(
+                body.brief,
+                vertical=state.product_design.vertical or "",
+                factory_sha=factory_code_version(),
+            )
+            _cached = load_blueprint(_bp_key)
+            if _cached is not None:
+                try:
+                    bp = ProductBlueprint.model_validate(_cached)
+                    _bp_resumed = True
+                except Exception:  # noqa: BLE001 -- a bad cache entry: re-draft
+                    bp = None
+        if bp is None:
+            bp = draft_blueprint_from_brief(
+                body.brief, vertical_hint=state.product_design.vertical
+            )
+            if _resume and _bp_key:
+                store_blueprint(_bp_key, bp.model_dump(mode="json"))
         if body.delivery_format in ("zip", "github_repo"):
             bp.delivery_format = body.delivery_format
         state.product_design.brief = body.brief
@@ -807,7 +842,10 @@ def draft_product(
             "ok": True,
             "blueprint": state.product_design.blueprint,
             "yaml": blueprint_to_yaml(bp),
-            "source": "golden" if bp.drafting_mode == "golden" else "drafted",
+            "source": (
+                "resumed" if _bp_resumed
+                else ("golden" if bp.drafting_mode == "golden" else "drafted")
+            ),
         }
     except Exception as exc:  # noqa: BLE001
         _raise_product_error(session_id, state, exc)
