@@ -354,6 +354,43 @@ def blueprint_hash(blueprint: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def full_input_hash(
+    blueprint: Any,
+    brief: str = "",
+    factory_git_sha: str = "",
+    blocks_lock: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Cross-session stage-resume key: the blueprint hash folded together
+    with the other inputs a stage's output depends on -- the brief text, the
+    Factory code version (its git sha) and the Store pin (the blocks lock).
+
+    A stage may be resumed only when ALL of these are unchanged; a different
+    brief, a new Factory deploy, or a moved Store pin changes the key so the
+    stage is redone -- the output a stage produced under old Factory code or
+    an old Store is not reused. Deliberately DISTINCT from ``blueprint_hash``,
+    which stays blueprint-only: that hash drives the in-session capability
+    ratchet and must not move when a Factory release only adds a defaulted
+    field (#645). The Store component hashes the whole lock, so any change to
+    the pinned blocks moves the key without depending on the lock's schema.
+    General: keyed only on these inputs and (at call sites) the stage name --
+    never on a product, brief identity or session id.
+    """
+    store_pin = hashlib.sha256(
+        json.dumps(blocks_lock or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    payload = json.dumps(
+        {
+            "blueprint": blueprint_hash(blueprint),
+            "brief": (brief or "").strip(),
+            "factory": str(factory_git_sha or ""),
+            "store": store_pin,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class Outcome(str, Enum):
     SUCCESS = "SUCCESS"
     #: Instrumented collect-all run: every phase executed, every gate
