@@ -95,9 +95,22 @@ def ci_evidence(status: Dict[str, Any], env: Optional[Dict[str, str]] = None) ->
     return ""
 
 
-def assert_zip_eligibility(status: Dict[str, Any], run_id: str) -> None:
-    """6.3: a zip is produced ONLY after CI is green AND the artifact gate
-    (Phase 0.5) passed. Anything else refuses with the named reason."""
+def assert_zip_eligibility(
+    status: Dict[str, Any], run_id: str, build_level: Optional[str] = None
+) -> None:
+    """6.3: a zip is produced ONLY after the build's own gate is green AND the
+    artifact gate (Phase 0.5) passed.
+
+    Level-aware CI requirement: light/pilot/production climb to the Store gate
+    in CI, so they must carry the recorded green CI run id -- that path is
+    unchanged. A PROTOTYPE build stops at the CODE gate and never runs CI or
+    the Store gate, so its bar is CODE_GREEN (state succeeded + an
+    agent-authored artifact), NOT a CI run id it can never have. Before this,
+    every prototype download was refused as "not greened by CI" even though
+    CODE_GREEN -- the UI promised "download unlocks at CODE_GREEN" while the
+    endpoint demanded a CI run id. The level is read from the build status
+    (``build_level``), overridable by the caller.
+    """
     state = str(status.get("state") or "")
     authorship = status.get("authorship") or {}
     agent_written = int(authorship.get("agent_written") or 0)
@@ -110,6 +123,13 @@ def assert_zip_eligibility(status: Dict[str, Any], run_id: str) -> None:
             f"{ZIP_REQUIRES_GREEN_CI}: the artifact gate did not pass "
             f"(agent_written={agent_written})"
         )
+    level = str(
+        build_level if build_level is not None else status.get("build_level") or ""
+    ).strip().lower()
+    if level == "prototype":
+        # CODE_GREEN is the prototype's definition of done; the Store gate and
+        # CI do not run at this level, so there is no CI run id to require.
+        return
     if not run_id:
         raise ExportManifestError(
             f"{ZIP_REQUIRES_GREEN_CI}: no CI run id recorded — the build "
