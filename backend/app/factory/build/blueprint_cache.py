@@ -33,11 +33,13 @@ _SHA_ENV = ("RENDER_GIT_COMMIT", "GIT_COMMIT", "SOURCE_VERSION")
 
 
 def stage_resume_on(env: Optional[Dict[str, str]] = None) -> bool:
-    """FACTORY_STAGE_RESUME gates the cross-session blueprint cache / resume.
-    Off by default so carrying the code changes nothing live until enabled."""
+    """Stage resume (the blueprint cache, and the cross-session stage-skip) is
+    ON by default (owner ruling, option B): FACTORY_STAGE_RESUME is the
+    DISABLE switch -- set it to a falsey value (0/off/false/no) to turn it
+    off. Any other value (or unset) keeps it on."""
     src = env if env is not None else os.environ
-    return str(src.get("FACTORY_STAGE_RESUME", "")).strip().lower() in (
-        "1", "on", "true", "yes",
+    return str(src.get("FACTORY_STAGE_RESUME", "")).strip().lower() not in (
+        "0", "off", "false", "no",
     )
 
 
