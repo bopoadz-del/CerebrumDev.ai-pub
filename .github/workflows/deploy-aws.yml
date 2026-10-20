@@ -38,6 +38,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+      - name: Log in to Amazon ECR Public
+        # Base image is pulled from public.ecr.aws; authenticated pulls
+        # get a far higher data limit than anonymous ones, which avoids
+        # intermittent 429 'Data limit exceeded' throttling on the pull.
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
       - name: Bake the Store into the build context
         # The Store repo is named by a workflow-level variable, never a
         # hardcoded owner/repo literal here: this tree publishes to a public
