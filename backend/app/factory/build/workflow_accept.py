@@ -22,7 +22,13 @@ from app.factory.build.schema_accept import (
     GENERIC_STR_SAMPLE,
     TIME_SAMPLE,
 )
-from app.factory.store_kits import EVENTS, ORCHESTRATION, blocks_of_class, capability_classes
+from app.factory.store_kits import (
+    EVENTS,
+    ORCHESTRATION,
+    block_manifests,
+    blocks_of_class,
+    capability_classes,
+)
 
 PRODUCT_ACCEPT_TEST = "test_every_capability_route_accepts_payload"
 PRODUCT_ACCEPT_CHECK = "event_bus_workflow"
@@ -37,6 +43,11 @@ WORKFLOW_RESULT_KEY = "result"
 WRITER_EVENT_BUS_WORKFLOW_HALT = (
     "WRITER [check:event_bus_workflow] failed — plan binds "
     "workflow+event_bus without the prepared contract"
+)
+
+WRITER_UNBOUND_DISPATCH_HALT = (
+    "WRITER [check:workflow_bound_targets] failed — a handler dispatches to a "
+    "block the product does not have"
 )
 
 #: PRODUCT ``_sample_value`` for email-shaped names (not writer_behaviour).
@@ -764,6 +775,93 @@ def assert_event_bus_workflow_handlers(
     if errors:
         raise EventBusWorkflowHalt(
             WRITER_EVENT_BUS_WORKFLOW_HALT + ": " + "; ".join(errors)
+        )
+
+
+def _referenced_dispatch_ids(text: str) -> FrozenSet[str]:
+    """Literal block ids a handler dispatches to: the first arg of an
+    ``execute("<id>", ...)`` call, or a workflow step dict's ``block``/``tool``
+    value. AST only — an id built at runtime (a variable, an f-string) is not
+    resolvable and is skipped, so the check never flags what it cannot read."""
+    tree = _parse_handler(text)
+    if tree is None:
+        return frozenset()
+    out: set = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and _call_name(node) == "execute"
+                and node.args):
+            bid = _ast_str(node.args[0])
+            if bid:
+                out.add(bid)
+        pairs = _ast_dict_map(node)
+        if pairs:
+            for key in ("block", "tool"):
+                if key in pairs:
+                    bid = _ast_str(pairs[key])
+                    if bid:
+                        out.add(bid)
+    return frozenset(out)
+
+
+def workflow_step_unbound_target_errors(
+    root: Path,
+    compiled_or_inventory: Any,
+) -> List[str]:
+    """Every build: a handler may dispatch only to blocks the product has.
+
+    A workflow step (or an ``execute`` call) that names a real Store block
+    bound to no capability in this product fails at runtime as ``Block '<id>'
+    not found`` — today only PRODUCT/TESTER sees it, after the whole build.
+    Catch it at the WRITER gate with an actionable message. Structural:
+    decided by the bound ``block_ids`` and the Store registry, never by a
+    capability's or a block's name. A literal that is not a real Store block
+    id (an unrelated dict value, a runtime-built id) is never flagged."""
+    inventory = (
+        getattr(compiled_or_inventory, "inventory", None)
+        if not isinstance(compiled_or_inventory, (list, tuple))
+        else compiled_or_inventory
+    )
+    bids_by_cid = {
+        str(getattr(item, "capability_id", "") or ""): [
+            str(b) for b in (getattr(item, "block_ids", None) or [])
+        ]
+        for item in inventory or ()
+    }
+    product_ids = {b for ids in bids_by_cid.values() for b in ids}
+    store_ids = set(block_manifests() or {})
+    norm_to_cid = {cid.replace("-", "_"): cid for cid in bids_by_cid}
+    errors: List[str] = []
+    base = Path(root)
+    for name in _action_module_ids(base):
+        path = base / "app" / "actions" / f"{name}.py"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        cid = norm_to_cid.get(name, name)
+        for bid in sorted(_referenced_dispatch_ids(text)):
+            if bid in product_ids or bid not in store_ids:
+                continue
+            errors.append(
+                f"{cid}: dispatches to block '{bid}', a Store block bound to "
+                f"no capability in this product (available: "
+                f"{', '.join(sorted(product_ids)) or 'none'}). Bind it to a "
+                f"capability, or dispatch only to a bound block — do not emit "
+                f"a workflow step for a block the product does not have."
+            )
+    return errors
+
+
+def assert_workflow_step_targets_bound(
+    root: Path,
+    compiled_or_inventory: Any,
+) -> None:
+    """Fail closed before WRITER claims done. Runs on every build, whether or
+    not any capability binds an events block."""
+    errors = workflow_step_unbound_target_errors(root, compiled_or_inventory)
+    if errors:
+        raise EventBusWorkflowHalt(
+            WRITER_UNBOUND_DISPATCH_HALT + ": " + "; ".join(errors)
         )
 
 
