@@ -201,12 +201,12 @@ jobs:
         env:
           PRODUCT_SHA: ${{ matrix.sha }}
         run: python3 factory/.github/gate_replay/replay_in_factory.py extract "$PRODUCT_SHA" product
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: overlay-${{ matrix.label }}
           path: product
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: gate-replay-${{ matrix.label }}
@@ -249,16 +249,16 @@ jobs:
         run: |
           echo "no certified build was selected (select: ${{ needs.select.result }}): the gate change cannot be replayed"
           exit 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: replay-selection
           path: .
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: gate-replay-*
           path: results
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: routing-*
