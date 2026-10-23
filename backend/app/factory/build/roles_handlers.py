@@ -2150,6 +2150,13 @@ def _render_models(specs: Dict[str, Dict[str, Any]]) -> str:
                 f["name"] for f in spec["fields"]
                 if _semantic_field_type(f.get("type")) == MONEY_SEMANTIC_TYPE
             ]),
+            # Fields whose DECLARED type is a quantity (hours, km, units, days);
+            # the money contract reads this to allow a money / quantity rate,
+            # never a field's name.
+            "    QUANTITY_FIELDS = " + repr([
+                f["name"] for f in spec["fields"]
+                if _semantic_field_type(f.get("type")) == QUANTITY_SEMANTIC_TYPE
+            ]),
             "    _FIELD_PY = " + repr(json_to_py),
             "    _FIELD_JSON = " + repr(py_to_json),
             "",
@@ -5560,6 +5567,8 @@ _TYPE_ALIASES = {
     "numeric": "float",
     "money": "float",
     "currency": "float",
+    "quantity": "float",
+    "meter": "float",
 }
 
 _TEMPORAL_SAMPLES = {
@@ -5599,7 +5608,15 @@ def _resolve_known_field_type(raw: Any) -> Optional[str]:
 #: Declared types that carry meaning beyond their storage type. A money field
 #: is stored as float; its declaration is what the money contract reads.
 MONEY_SEMANTIC_TYPE = "money"
-_SEMANTIC_TYPES = {"money": MONEY_SEMANTIC_TYPE, "currency": MONEY_SEMANTIC_TYPE}
+#: A quantity/meter field (hours, km, units, days) stored as a number; a money
+#: value divided by one is a unit-typed rate the money contract allows.
+QUANTITY_SEMANTIC_TYPE = "quantity"
+_SEMANTIC_TYPES = {
+    "money": MONEY_SEMANTIC_TYPE,
+    "currency": MONEY_SEMANTIC_TYPE,
+    "quantity": QUANTITY_SEMANTIC_TYPE,
+    "meter": QUANTITY_SEMANTIC_TYPE,
+}
 
 
 def _semantic_field_type(raw: Any) -> Optional[str]:
