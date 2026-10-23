@@ -2,6 +2,7 @@
 # backend was tested against. Regenerate:  pip install -r requirements.txt && pip freeze > requirements.lock
 # Reproducible install:  pip install -r requirements.lock
 # requirements.txt is the direct manifest (pinned ==); this pins the graph.
+# py3.11 stack: numpy held at 2.4.x below (2.5+ requires Python>=3.12); manifest constrains numpy<2.5.
 
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
