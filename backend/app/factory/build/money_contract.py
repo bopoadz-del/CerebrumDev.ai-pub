@@ -27,6 +27,12 @@ The gate (writer_contract) decides on the syntax tree:
   code as a literal, or scales a money value by a numeric literal other than
   the identities 0 and 1 (a tax / fx / discount rate typed into code), or by
   any factor that is not taken from ``app.money_settings``.
+* declared -> a money value DIVIDED by a field the model declares as a quantity
+  (``QUANTITY_FIELDS`` -- hours, km, units, days) is a unit-typed rate (money
+  per quantity-unit), not a scaled amount, and PASSES (owner ruling 0825Z).
+  Only division, and only a declared quantity divisor: a literal or unsourced
+  divisor, money / money, and any multiplication of money stay measured as
+  above, so bare scalar factors are still refused.
 """
 
 from __future__ import annotations
@@ -247,6 +253,11 @@ def money_brief_lines(blueprint: Any) -> List[str]:
         f"(a fee, an fx rate, a discount -- the operator sets {RATE_ENV_PREFIX}<NAME>). "
         "Scale an amount only by a factor read from it; keep codes and rates "
         "out of the source.",
+        "- MONEY: a per-unit rate is a money amount DIVIDED by a field you "
+        "declared with type quantity (hours, km, units, days -- the emitted "
+        "model lists them in QUANTITY_FIELDS); declare the quantity field and "
+        "that division is allowed (its result is money per quantity-unit). "
+        f"Multiplying money by anything not read from {MONEY_SETTINGS_MODULE} is still refused.",
     ]
 
 
@@ -288,6 +299,27 @@ def declared_money_fields(workspace: Path) -> Set[str]:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "MONEY_FIELDS":
+                        names.update(_str_list(node.value))
+    return names
+
+
+def declared_quantity_fields(workspace: Path) -> Set[str]:
+    """Field names the product's models declare as a quantity (``QUANTITY_FIELDS``).
+
+    A money value divided by one of these is a unit-typed rate (owner ruling
+    0825Z). The gate reads this list, emitted from the field's declared type --
+    never a field's name.
+    """
+    names: Set[str] = set()
+    for path in sorted((workspace / "app").rglob("*.py")) if (workspace / "app").is_dir() else []:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "QUANTITY_FIELDS":
                         names.update(_str_list(node.value))
     return names
 
@@ -349,7 +381,7 @@ def _reads_settings(node: ast.AST, aliases: Set[str]) -> bool:
     return False
 
 
-def _module_findings(path: Path, rel: str, locale: Mapping[str, str], money: Set[str]) -> List[str]:
+def _module_findings(path: Path, rel: str, locale: Mapping[str, str], money: Set[str], quantity: Set[str]) -> List[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     except SyntaxError:
@@ -363,8 +395,21 @@ def _module_findings(path: Path, rel: str, locale: Mapping[str, str], money: Set
         return found
     aliases = _settings_aliases(tree)
     terms = set(money) | _money_locals(tree, money)
+    quantity_terms = set(quantity) | _money_locals(tree, quantity)
     for node in ast.walk(tree):
         if not isinstance(node, ast.BinOp) or not isinstance(node.op, (ast.Mult, ast.Div, ast.FloorDiv)):
+            continue
+        # money / a declared quantity field is a unit-typed rate (money per
+        # quantity-unit), allowed (owner ruling 0825Z). Only division, and only
+        # a declared quantity divisor that is not itself money; a literal or
+        # unsourced divisor, money / money, and any multiplication of money fall
+        # through to the measurement below and stay refused.
+        if (
+            isinstance(node.op, (ast.Div, ast.FloorDiv))
+            and _is_money_operand(node.left, terms)
+            and not _is_money_operand(node.right, terms)
+            and _is_money_operand(node.right, quantity_terms)
+        ):
             continue
         for amount, factor in ((node.left, node.right), (node.right, node.left)):
             if not _is_money_operand(amount, terms) or _is_money_operand(factor, terms):
@@ -399,6 +444,7 @@ def money_verdict(workspace: Path) -> MoneyVerdict:
     workspace = Path(workspace)
     locale = _read_declared(workspace)
     money = declared_money_fields(workspace)
+    quantity = declared_quantity_fields(workspace)
     if locale is None:
         if money:
             return MoneyVerdict("WITHHELD", WITHHELD_NO_CURRENCY)
@@ -410,7 +456,7 @@ def money_verdict(workspace: Path) -> MoneyVerdict:
         if path.resolve() == settings:
             continue
         rel = path.relative_to(workspace).as_posix()
-        findings.extend(_module_findings(path, rel, locale, money))
+        findings.extend(_module_findings(path, rel, locale, money, quantity))
     if findings:
         return MoneyVerdict("FAIL", MONEY_ASSUMED, findings)
     return MoneyVerdict("PASS", f"money reads the declared {locale['country']}/{locale['currency']}")
