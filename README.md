@@ -8,14 +8,18 @@ the factory drafts a blueprint. On the user's word — *approve* — the generat
 builds a brand-new, exportable platform from certified Cerebrum-Blocks kernels.
 The subscription plan decides how deep the factory builds.
 
-Live deployment (Render):
+Live deployment (AWS):
 
-- Frontend (Factory Floor): `https://cerebrum-dev.com` (`https://www.cerebrum-dev.com`)
+- Frontend (Factory Floor): `https://www.cerebrum-dev.com` (`https://cerebrum-dev.com`)
 - Backend API: `https://api.cerebrum-dev.com`
-- Live Render slugs (fallbacks, not the canonical hosts):
-  `https://cerebrumdev-frontend-kkz2.onrender.com`,
-  `https://cerebrumdev-backend-goia.onrender.com`
-- Block store: `https://cerebrum-blocks-10ug.onrender.com`
+- The backend runs as an ECS service (cluster `cerebrum`, service
+  `cerebrumdev-backend`). CI bakes the image to ECR and `deploy-aws.yml` rolls
+  the service on every push to `master`, waiting on the ECS rollout and the
+  live health check before it reports success; `deploy-aws-frontend.yml` ships
+  the frontend and `post-deploy-smoke.yml` verifies the live commit afterward.
+- Blocks come from the pinned Cerebrum-Blocks store, vendored and hash-locked
+  through `blocks.lock.json` (see **Store pin** below) — the factory never
+  ships an unlocked block.
 
 ## The flow (what a user experiences)
 
@@ -23,15 +27,14 @@ Live deployment (Render):
    (SMTP-configured deployments send mail; unconfigured ones surface a dev
    token honestly in the UI). Password reset is self-serve.
 2. **Factory Floor chat** — "Build me a multi-user platform for …". The
-   product architect drafts a blueprint (golden steward for estate briefs,
-   LLM drafting when enabled, deterministic keyword drafting always available
-   offline).
+   product architect drafts a blueprint (LLM drafting when enabled,
+   deterministic keyword drafting always available offline).
 3. **Approve & build** — the capability planner resolves every capability
    against the dual registry (fail-closed: unknown blocks → UNSUPPORTED), then
    the generator writes the platform.
 4. **Your Platforms** — download the export zip: a real, runnable platform
    tree (FastAPI app, vendored certified blocks, resident-engineer charter,
-   Dockerfile, render.yaml, README, factory plan).
+   Dockerfile, README, factory plan).
 5. **Subscription** — every account starts on a free trial (default 3 days,
    full access). Upgrade is Stripe checkout; the portal manages the
    subscription. On deployments where the owner has not linked Stripe, the UI
@@ -52,7 +55,9 @@ Error tracking and performance are wired on both tiers and activate by DSN:
 
 - Backend: set `SENTRY_DSN` (Sentry project platform *python/fastapi*).
   Initialization lives in `app/core/observability.py`, runs at package import,
-  and is inert without a DSN. Release is tagged from `RENDER_GIT_COMMIT`.
+  and is inert without a DSN. The release tag reads `RENDER_GIT_COMMIT`;
+  `deploy-aws.yml` injects the deployed commit as `GIT_COMMIT` (which
+  `/version` also reads).
 - Frontend: set `VITE_SENTRY_DSN` (platform *javascript-react*) on the
   frontend web service (build-time). The bundle loads Sentry lazily — zero
   cost when unset. Production serves `frontend/dist` via `node serve.mjs`,
@@ -79,15 +84,17 @@ Error tracking and performance are wired on both tiers and activate by DSN:
 ## Under the floor (how platforms are built)
 
 - **Dual registry + capability planner** — capabilities resolve to REUSE /
-  ADAPT / COMPOSE / GENERATE / STUB; anything unknown fails closed.
-- **Certified kernels** come from the Cerebrum-Blocks store (the 24-kit
-  universal kernel); the factory never ships unregistered blocks.
+  ADAPT / COMPOSE / GENERATE; a capability it cannot build that way fails
+  closed as UNSUPPORTED rather than shipping a placeholder.
+- **Certified kernels** come from the Cerebrum-Blocks store (the universal
+  kernel); the factory never ships unregistered blocks.
 - **Resident Engineer** — each generated platform carries its resident
   engineer charter (observe/diagnose/repair under human authority).
 - **Reasoning layer** — chain generation, rule injection.
 - **The acceptance floor** — every platform must pass
-  [21 measured checks](backend/app/factory/acceptance_floor.v2.json) before
-  export. The file is the single source: the coder's brief renders each
+  the measured checks in
+  [acceptance_floor.v2.json](backend/app/factory/acceptance_floor.v2.json)
+  before export. The file is the single source: the coder's brief renders each
   `requirement_text` verbatim, and the Store gate executes the same ids, so
   the agent builds toward the checklist instead of discovering it one
   rework round at a time. Neither side may keep its own copy — a test fails
@@ -95,7 +102,7 @@ Error tracking and performance are wired on both tiers and activate by DSN:
   [STORE_REGRADE_P.md](STORE_REGRADE_P.md); old builds keep the score they
   achieved and are never back-dated.
 
-  The nine checks added in v2 cost roughly 2–4 minutes of extra build time
+  The checks added in v2 cost roughly 2–4 minutes of extra build time
   and a few cents of coder time per build: the negative-case harness, the
   Postgres boot, one live connector delivery, a backup restored, a
   200-request bench and a dependency audit.
@@ -145,7 +152,7 @@ Leftover Kimi/Moonshot and Claude remain as opt-in HTTP providers.
 CURSOR_API_KEY=...              # or CURSOR_AGENT_API_KEY / FACTORY_CURSOR_API_KEY
 LLM_PROVIDER=cursor
 
-# HTTP Floor chat / architect — OpenAI-compatible host already on Render
+# HTTP Floor chat / architect — OpenAI-compatible host
 CEREBRUM_CHAT_LLM_API_KEY=...
 CEREBRUM_CHAT_LLM_BASE_URL=...
 CEREBRUM_CHAT_LLM_MODEL=...
@@ -216,8 +223,8 @@ or Moonshot `default_model` from `KIMI_CODE_MODEL` / `KIMI_CODE_MODEL_ID`
 not a bare `@docs/coder_brief.md` mention) with `deepseek-v4-pro`. A
 templated pilot zip after that skip is not a ≥2h CLI session. CLI
 credentials are `DEEPSEEK_API_KEY` or `KIMI_CODE_API_KEY` →
-`~/.kimi-code/config.toml`, not the in-app `CEREBRUM_LLM_API_KEY`. Render
-dashboard values stay owner-gated.
+`~/.kimi-code/config.toml`, not the in-app `CEREBRUM_LLM_API_KEY`. Deploy-time
+secrets stay owner-gated.
 
 ### Running the tests: the factory coder changes the results
 
@@ -229,8 +236,10 @@ had**. Read this before debugging a local-only failure.
 `CEREBRUM_LLM_API_KEY` is picked up by the whole pytest session. When that key
 is present the factory coder really calls the LLM for every `GENERATE`
 capability and writes a live module into the generated product. When it is
-absent — as on CI — the coder raises `CoderError` and an honest stub ships
-instead. Same command, two different products.
+absent — as on CI — the coder raises `CoderError` and never fabricates a
+handler; the generator records the capability as unfulfilled
+(`dependency_required`) so the UI reports exactly which capabilities still need
+a key, instead of inventing logic. Same command, two different products.
 
 **The one-command diagnostic.** If a test fails locally and you suspect the
 coder rather than your machine:
