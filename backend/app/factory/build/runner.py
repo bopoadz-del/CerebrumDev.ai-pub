@@ -122,7 +122,7 @@ SCOPED_REWORK_SHAPES = frozenset({"missing_route"})
 
 
 def _scoped_rework_findings(verdict: Any) -> List[Any]:
-    """Typed findings scoped to a capability (a missing route, a placeholder)."""
+    """Typed findings scoped to a single capability (a missing route)."""
     return [
         f
         for f in (getattr(verdict, "findings", None) or [])
