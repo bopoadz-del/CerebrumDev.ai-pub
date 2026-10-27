@@ -24,7 +24,13 @@ import json
 import sys
 from pathlib import Path
 
-from app.core import upload_processor
+# Make the backend package importable when run as a plain script (pytest adds
+# this via its rootdir; a bare `python scripts/...` invocation does not).
+_BACKEND = Path(__file__).resolve().parent.parent
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+from app.core import upload_processor  # noqa: E402  (after sys.path setup)
 
 # Frozen probe set -- the one source of these strings. The test reads them back
 # out of the emitted golden, so they are never duplicated as literals there.
