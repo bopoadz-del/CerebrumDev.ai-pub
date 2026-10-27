@@ -16,8 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OWNERSHIP_PATH = ROOT / "docs" / "REASONING_KERNEL_OWNERSHIP.md"
 V01_PATH = ROOT / "docs" / "REASONING_KERNEL_V01_MISSION.md"
-OWNERSHIP_SHA256 = "9589f6e6c723742409f0f9c11feee8e896a012d685e2af9b727de64e20350b6b"
-V01_SHA256 = "19784dea26a6c41fdb9e292c10c239e62a0f6ee34bd66d93cafc126837396d58"
+# Re-ratified 2026-10-27 (ORDERS_0400Z, owner delegation for scrub-only changes):
+# r4 scrub tokenised private names (Cerebrum-Steward->Projectsix,
+# Cerebrum-FinanceOps->Projecttwo). Diff vs pre-scrub gold (mirror b79721bc) is
+# name tokens only -- no semantic change.
+OWNERSHIP_SHA256 = "077a8bbd6ca7922ee38aefaaf334c32183d4c5d34d027070cad8f1d1bf31d342"
+V01_SHA256 = "fa7e274e124ffceeec44d3210c8d1421619d47233c41b763fe00ea36661ee4c0"
 
 
 def test_ownership_correction_is_immutable():

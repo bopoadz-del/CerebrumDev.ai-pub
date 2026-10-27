@@ -101,6 +101,12 @@ class TestDraftQuota:
         from app.routers import session_product
 
         monkeypatch.setenv("TRIAL_DRAFT_LIMIT", "2")
+        # Pin the stage-resume blueprint cache OFF for this test. It is ON by
+        # default (owner ruling, option B), which would serve the 2nd identical
+        # brief from cache and skip its drafter call -- masking the paid draft
+        # this quota test must count. The cache is covered by its own tests;
+        # here we isolate the quota so each request is a real draft.
+        monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
         calls = _count_drafts(monkeypatch, session_product)
 
         session_id = f"sess_{uuid.uuid4().hex[:10]}"

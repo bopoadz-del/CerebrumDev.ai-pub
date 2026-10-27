@@ -14,7 +14,10 @@ from app.factory import delivery_standard
 
 ROOT = Path(__file__).resolve().parents[2]
 GOLD_PATH = ROOT / "docs" / "UNIVERSAL_KERNEL.md"
-GOLD_SHA256 = "787ccf9671df0d3d3d5548d9cd37bdb86ba5ad1e3154d72d2ddb73c1e6ae596f"
+# Re-ratified 2026-10-27 (ORDERS_0400Z, owner delegation for scrub-only changes):
+# r4 scrub tokenised Cerebrum-FinanceOps->Projecttwo. Diff vs pre-scrub gold
+# (mirror b79721bc) is name tokens only -- no semantic change.
+GOLD_SHA256 = "8e42b92df752b77a130f3c9c3b47da93a01aadd29472fe1ee3c101e7ae42ffec"
 
 WAVE1_PLATFORM = {
     "product_repository": "bopoadz-del/Cerebrum-Blocks",

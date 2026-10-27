@@ -15,7 +15,11 @@ ROOT = Path(__file__).resolve().parents[2]
 GOLD_PATH = ROOT / "docs" / "REASONING_KERNEL.md"
 # Re-ratified 2026-09-17 (owner directive, commit bb0247ec): Kimi framing
 # removed, neutral kernel framing + Universal Kernel noted as in place.
-GOLD_SHA256 = "f75d5f532899f5e459e1b485abbe6c96b455c2357a95d8fefd370dd88e1da747"
+# Re-ratified 2026-10-27 (ORDERS_0400Z, owner delegation for scrub-only changes):
+# r4 scrub tokenised private product/client names (InsureOps->Projectfifteen,
+# StockWisePro->Projectten, Cerebrum-Steward->..., etc.). Diff vs the pre-scrub
+# gold (CerebrumDev.ai mirror b79721bc) is name tokens only -- no semantic change.
+GOLD_SHA256 = "cf1a0efc69eba65dd7e6d1ecf2ca47eb73ae63715cfe8f77370073cd29e94aa5"
 
 
 def test_reasoning_kernel_gold_is_immutable():
