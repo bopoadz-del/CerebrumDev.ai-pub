@@ -116,8 +116,9 @@ class GateDecision:
 #: Finding shapes that are scoped to ONE capability/route: a gate finding of
 #: this shape becomes one targeted writer task, and its rework budget is keyed
 #: per capability (not per phase), so one route failing twice stops THAT route
-#: while others still get their own scoped task (ORDERS 2026-10-27 #2).
-SCOPED_REWORK_SHAPES = frozenset({"missing_route", "placeholder"})
+#: while others still get their own scoped task (ORDERS 2026-10-27 #2). The
+#: placeholder shape joins this set with its own detector in a follow-up PR.
+SCOPED_REWORK_SHAPES = frozenset({"missing_route"})
 
 
 def _scoped_rework_findings(verdict: Any) -> List[Any]:
