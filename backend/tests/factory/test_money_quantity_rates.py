@@ -82,6 +82,14 @@ def handle(payload):
     return {"ok": True, "share": payload["part_cost"] / payload["labor_cost"]}
 '''
 
+MONEY_OVER_QUANTITY_PLUS_UNDECLARED = '''
+def handle(payload):
+    cost = payload["labor_cost"]
+    hours = payload["hours"]
+    fudge = payload["fudge"]
+    return {"ok": True, "bad": cost / (hours + fudge)}
+'''
+
 
 def test_money_divided_by_a_declared_quantity_is_a_rate(tmp_path):
     verdict = money_verdict(_product(tmp_path, MONEY_OVER_QUANTITY))
@@ -110,6 +118,13 @@ def test_money_divided_by_a_literal_is_still_red(tmp_path):
 def test_money_over_money_is_a_ratio_and_passes(tmp_path):
     verdict = money_verdict(_product(tmp_path, MONEY_OVER_MONEY))
     assert verdict.status == "PASS", verdict.findings
+
+
+def test_a_compound_divisor_mixing_a_quantity_and_an_undeclared_term_is_red(tmp_path):
+    # The allowance is a declared quantity FIELD, not any expression that merely
+    # mentions one: an unsourced term must not ride in on `hours`.
+    verdict = money_verdict(_product(tmp_path, MONEY_OVER_QUANTITY_PLUS_UNDECLARED))
+    assert verdict.status == "FAIL"
 
 
 def test_the_emitted_model_declares_quantity_fields_from_the_declared_type():

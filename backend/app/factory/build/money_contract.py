@@ -357,6 +357,13 @@ def _is_money_operand(node: ast.AST, money_terms: Set[str]) -> bool:
 
 
 def _is_quantity_operand(node: ast.AST, quantity_terms: Set[str]) -> bool:
+    """True only for a reference TO a declared quantity field -- a name, an
+    attribute access, or a subscript. A compound operand (e.g. ``hours + fx``)
+    is NOT a quantity: it must not let an unsourced term ride through on a
+    quantity name -- unsourced scalar factors stay refused (owner ruling 0825Z).
+    """
+    if not isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
+        return False
     return bool(_names_in(node) & quantity_terms)
 
 
