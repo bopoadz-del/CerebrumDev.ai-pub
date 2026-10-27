@@ -873,6 +873,18 @@ def _child_env(session_id: Optional[str], cli_home: Optional[str] = None) -> Dic
     CLI writes, and an invisible log makes a live writer look dead.
     """
     env = dict(os.environ)
+    # The CLI also reads its provider key from the environment, and prefers it
+    # over the --api-key flag. A stale DEEPSEEK_API_KEY left in os.environ (a
+    # rotated key) must not shadow the key worker_api_key() resolved -- that
+    # shadow stalled the live Fleet build at WRITER ("api key ****d0bd is
+    # invalid"). Stamp the resolved key onto the vars the CLI consults so the
+    # inherited stale value cannot win.
+    resolved_key = worker_api_key()
+    if resolved_key:
+        env["CODEWHALE_API_KEY"] = resolved_key
+        provider_var = f"{worker_provider().upper()}_API_KEY"
+        if provider_var.replace("_", "").isalnum():
+            env[provider_var] = resolved_key
     sid = str(session_id or "").strip()
     if sid:
         env["FACTORY_SESSION_ID"] = sid
