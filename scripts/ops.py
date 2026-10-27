@@ -752,7 +752,7 @@ def main(argv: Optional[Sequence[str]] = None, *, req: Req = http_req) -> int:
     ap.add_argument("--target", default="", help="session id, or an identifier its record carries")
     ap.add_argument("--branch", default="", help="gate-dispatch: the cerebrum-builds branch to gate")
     ap.add_argument("--repros", default="", help="a cycle's repros.json; --target may then be a run name")
-    ap.add_argument("--builds-repo", default=os.environ.get("BUILDS_REPO", "bopoadz-del/cerebrum-builds"))
+    ap.add_argument("--builds-repo", default=os.environ.get("BUILDS_REPO", "bopoadz-del/cerebrum-builds-pub"))
     ap.add_argument("--base", default=os.environ.get("FACTORY_BASE_URL") or DEFAULT_BASE)
     ap.add_argument("--out", default="ops-out")
     ap.add_argument("--wait-s", type=float, default=float(os.environ.get("OPS_WAIT_S") or 9000))

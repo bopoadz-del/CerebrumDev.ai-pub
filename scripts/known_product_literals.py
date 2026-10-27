@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.factory.build import product_literals as pl  # noqa: E402
 
-BUILDS_REPO = os.environ.get("CEREBRUM_BUILDS_REPO", "bopoadz-del/cerebrum-builds")
+BUILDS_REPO = os.environ.get("CEREBRUM_BUILDS_REPO", "bopoadz-del/cerebrum-builds-pub")
 _FILES = ("MANIFEST.json", "product-dna/product_blueprint.yaml", "product-dna/capability_resolution.json")
 
 
