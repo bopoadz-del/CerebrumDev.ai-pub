@@ -2150,6 +2150,13 @@ def _render_models(specs: Dict[str, Dict[str, Any]]) -> str:
                 f["name"] for f in spec["fields"]
                 if _semantic_field_type(f.get("type")) == MONEY_SEMANTIC_TYPE
             ]),
+            # Fields whose DECLARED type is a quantity (a count, a duration, a
+            # number of units). The money contract reads this to allow a unit
+            # rate -- money / a declared quantity -- never a field's name.
+            "    QUANTITY_FIELDS = " + repr([
+                f["name"] for f in spec["fields"]
+                if _semantic_field_type(f.get("type")) == QUANTITY_SEMANTIC_TYPE
+            ]),
             "    _FIELD_PY = " + repr(json_to_py),
             "    _FIELD_JSON = " + repr(py_to_json),
             "",
@@ -5560,6 +5567,16 @@ _TYPE_ALIASES = {
     "numeric": "float",
     "money": "float",
     "currency": "float",
+    # Quantity-typed fields: a count, a duration, a number of units. Declared
+    # so the money contract can allow a unit rate (money / a declared quantity)
+    # per owner ruling 0825Z. Stored as a plain number; the declaration -- not
+    # the field's name -- is what the gate reads. "count" is whole; the rest
+    # may be fractional (e.g. hours worked).
+    "quantity": "float",
+    "qty": "float",
+    "count": "int",
+    "duration": "float",
+    "units": "float",
 }
 
 _TEMPORAL_SAMPLES = {
@@ -5599,7 +5616,19 @@ def _resolve_known_field_type(raw: Any) -> Optional[str]:
 #: Declared types that carry meaning beyond their storage type. A money field
 #: is stored as float; its declaration is what the money contract reads.
 MONEY_SEMANTIC_TYPE = "money"
-_SEMANTIC_TYPES = {"money": MONEY_SEMANTIC_TYPE, "currency": MONEY_SEMANTIC_TYPE}
+#: A quantity (a count, a duration, a number of units) is data, not a rate.
+#: The money contract reads this to allow a unit rate -- a money field divided
+#: by a declared quantity field -- per owner ruling 0825Z.
+QUANTITY_SEMANTIC_TYPE = "quantity"
+_SEMANTIC_TYPES = {
+    "money": MONEY_SEMANTIC_TYPE,
+    "currency": MONEY_SEMANTIC_TYPE,
+    "quantity": QUANTITY_SEMANTIC_TYPE,
+    "qty": QUANTITY_SEMANTIC_TYPE,
+    "count": QUANTITY_SEMANTIC_TYPE,
+    "duration": QUANTITY_SEMANTIC_TYPE,
+    "units": QUANTITY_SEMANTIC_TYPE,
+}
 
 
 def _semantic_field_type(raw: Any) -> Optional[str]:
