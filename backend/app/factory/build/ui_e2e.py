@@ -38,10 +38,18 @@ from pathlib import Path
 
 findings = []
 advisory = []
+structured = []
 
 
-def finding(text):
+def finding(text, kind=None, route=None, capability_id=None, call_site=None):
     findings.append(text)
+    if kind:
+        structured.append({
+            "kind": kind,
+            "route": route,
+            "capability_id": capability_id,
+            "call_site": call_site,
+        })
 
 
 def _imports_formulas(path):
@@ -141,7 +149,19 @@ with TestClient(app) as client:
         # 405 is the route saying "not with that verb" -- it exists, and the
         # UI may well be POSTing to it. Only absence and failure count.
         if resp.status_code in (404, 500, 501, 502):
-            finding("the UI calls %s and the platform answers %s" % (path, resp.status_code))
+            # A declared capability's route is referenced by the UI but the
+            # backend has no (working) handler. Carry the route, the capability
+            # (routes are /v1/<capability_id> by convention) and the UI call
+            # site so the rework planner can scope ONE task to this route
+            # instead of re-running the whole phase.
+            _seg = [s for s in path.strip("/").split("/") if s]
+            _cap = _seg[1] if len(_seg) > 1 else (_seg[0] if _seg else "")
+            _idx = html.find(path)
+            _call = ("app/static/index.html:%d" % (html.count("\n", 0, _idx) + 1)) if _idx >= 0 else "app/static/index.html"
+            finding(
+                "the UI calls %s and the platform answers %s" % (path, resp.status_code),
+                kind="missing_route", route=path, capability_id=_cap, call_site=_call,
+            )
             continue
         if resp.status_code == 405:
             answered.append(path)
@@ -183,7 +203,7 @@ if Path("app/authority.py").is_file() and answered and not labelled:
         "layer ships and the UI cannot show which layer an answer came from"
     )
 
-print("UI_PROBE=" + json.dumps({"findings": findings, "advisory": advisory, "answered": answered, "ui_caps": ui_caps}))
+print("UI_PROBE=" + json.dumps({"findings": findings, "advisory": advisory, "answered": answered, "ui_caps": ui_caps, "structured": structured}))
 '''
 
 
@@ -403,6 +423,9 @@ def gate_ui_end_to_end(ctx: "GateContext") -> "GateResult":
     # routes to carry one. Both are owed; neither is the writer's to fix in
     # one pass, and failing on them today would stop every build.
     advisory: List[str] = list(payload.get("advisory") or [])
+    #: Structured findings {kind, route, capability_id, call_site} the rework
+    #: planner reads to scope one writer task per route (ORDERS 2026-10-27).
+    structured: List[dict] = list(payload.get("structured") or [])
     if findings:
         return GateResult(
             ok=False,
@@ -410,7 +433,11 @@ def gate_ui_end_to_end(ctx: "GateContext") -> "GateResult":
             reason=UI_NOT_WIRED,
             detail=findings[0],
             findings=findings + advisory,
-            payload={"answered": payload.get("answered") or [], "advisory": advisory},
+            payload={
+                "answered": payload.get("answered") or [],
+                "advisory": advisory,
+                "structured": structured,
+            },
         )
     return GateResult(
         ok=True,
