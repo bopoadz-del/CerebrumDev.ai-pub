@@ -1,0 +1,59 @@
+name: Capture embedding golden
+
+# Manual, on-demand capture of the embedding-probe golden fixture under the
+# SHIPPED stack (backend/requirements.lock: fastembed 0.9.1 + onnxruntime
+# 1.29.0 -- what the production image bakes). The golden cannot be captured on
+# a developer box: fastembed/onnxruntime embeddings are only bit-stable within
+# one identical stack. This job installs the lock, runs the real embedder, and
+# uploads the fixture as an artifact to commit into the PR.
+#
+# Not a required check and not on pull_request -- it produces an artifact, it
+# does not gate. Re-run only when the lock's embedding stack intentionally
+# changes. See backend/scripts/capture_embedding_golden.py.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  capture:
+    name: Capture golden (locked stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      ENV: test
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: Install the locked (shipped) stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Report the embedding stack
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          for pkg in ("fastembed", "onnxruntime", "tokenizers", "huggingface-hub", "numpy", "pillow"):
+              try:
+                  print(f"{pkg}=={md.version(pkg)}")
+              except md.PackageNotFoundError:
+                  print(f"{pkg}: not installed")
+          PY
+
+      - name: Capture the golden
+        run: python scripts/capture_embedding_golden.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: embedding-probe-golden
+          path: backend/tests/fixtures/embedding_probe_golden.json
+          if-no-files-found: error
