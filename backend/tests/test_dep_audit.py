@@ -120,17 +120,31 @@ def test_chromadb_note_covers_the_four_linux_ids():
     assert "fix_versions" in text
 
 
-def test_registry_lists_exactly_the_four_chromadb_ids():
+def test_registry_lists_exactly_chromadb_and_pillow_adjudications():
+    # Two adjudicated packages exist and only two; any third row is a rogue
+    # suppression and must fail here. chromadb = the four Linux-resolve ids
+    # (no fixed version). pillow = the time-boxed accept_risk from ORDERS_0400Z
+    # (fix 13.0.0 blocked by fastembed<13.0; hard 14-day expiry).
     rows = json.loads(REGISTRY.read_text(encoding="utf-8"))["adjudications"]
-    ids = sorted(r["id"] for r in rows)
-    assert ids == [
+    by_pkg: dict[str, list] = {}
+    for r in rows:
+        by_pkg.setdefault(r["package"], []).append(r)
+    assert set(by_pkg) == {"chromadb", "pillow"}, sorted(by_pkg)
+
+    assert sorted(r["id"] for r in by_pkg["chromadb"]) == [
         "PYSEC-2026-311",
         "PYSEC-2026-3813",
         "PYSEC-2026-3814",
         "PYSEC-2026-3815",
     ]
-    assert all(r["package"] == "chromadb" for r in rows)
-    assert all(r["date"] == "2026-09-11" for r in rows)
+    assert all(r["date"] == "2026-09-11" for r in by_pkg["chromadb"])
+
+    pill = by_pkg["pillow"]
+    assert pill, "pillow adjudication missing"
+    assert all(r["decision"] == "accept_risk" for r in pill)
+    assert all(r["date"] == "2026-10-27" for r in pill)
+    assert all(r["expires"] == "2026-11-10" for r in pill)
+    assert all(r["note"].endswith("2026-10-27-pillow.md") for r in pill)
 
 
 # -- adjudicate against declared metadata, not a scanner summary -----------
