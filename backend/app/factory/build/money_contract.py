@@ -247,6 +247,13 @@ def money_brief_lines(blueprint: Any) -> List[str]:
         f"(a fee, an fx rate, a discount -- the operator sets {RATE_ENV_PREFIX}<NAME>). "
         "Scale an amount only by a factor read from it; keep codes and rates "
         "out of the source.",
+        "- MONEY: a per-unit rate is a derivation, not a typed rate: a money "
+        "field divided by a QUANTITY is allowed, and a money field multiplied by "
+        "a QUANTITY is a total. Declare every such divisor/multiplier with type "
+        "quantity in its model spec (a count, a duration, a number of units -- "
+        "the emitted model lists them in QUANTITY_FIELDS). Dividing or "
+        "multiplying a money value by a plain number or an undeclared variable "
+        "is still refused.",
     ]
 
 
@@ -276,8 +283,9 @@ def _str_list(node: ast.AST) -> List[str]:
     return []
 
 
-def declared_money_fields(workspace: Path) -> Set[str]:
-    """Field names the product's models declare as money (``MONEY_FIELDS``)."""
+def _declared_fields(workspace: Path, marker: str) -> Set[str]:
+    """Field names a product model declares under ``marker`` (``MONEY_FIELDS``
+    or ``QUANTITY_FIELDS``) -- read from the declared type, never a name."""
     names: Set[str] = set()
     for path in sorted((workspace / "app").rglob("*.py")) if (workspace / "app").is_dir() else []:
         try:
@@ -287,9 +295,21 @@ def declared_money_fields(workspace: Path) -> Set[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "MONEY_FIELDS":
+                    if isinstance(target, ast.Name) and target.id == marker:
                         names.update(_str_list(node.value))
     return names
+
+
+def declared_money_fields(workspace: Path) -> Set[str]:
+    """Field names the product's models declare as money (``MONEY_FIELDS``)."""
+    return _declared_fields(workspace, "MONEY_FIELDS")
+
+
+def declared_quantity_fields(workspace: Path) -> Set[str]:
+    """Field names the product declares as a quantity (``QUANTITY_FIELDS``): a
+    count, a duration, a number of units. A money value divided by one of these
+    is a unit rate, and multiplied by one is a total (owner ruling 0825Z)."""
+    return _declared_fields(workspace, "QUANTITY_FIELDS")
 
 
 def _settings_aliases(tree: ast.AST) -> Set[str]:
@@ -336,6 +356,10 @@ def _is_money_operand(node: ast.AST, money_terms: Set[str]) -> bool:
     return bool(_names_in(node) & money_terms)
 
 
+def _is_quantity_operand(node: ast.AST, quantity_terms: Set[str]) -> bool:
+    return bool(_names_in(node) & quantity_terms)
+
+
 def _reads_settings(node: ast.AST, aliases: Set[str]) -> bool:
     for sub in ast.walk(node):
         if isinstance(sub, ast.Name) and sub.id in aliases:
@@ -349,7 +373,9 @@ def _reads_settings(node: ast.AST, aliases: Set[str]) -> bool:
     return False
 
 
-def _module_findings(path: Path, rel: str, locale: Mapping[str, str], money: Set[str]) -> List[str]:
+def _module_findings(
+    path: Path, rel: str, locale: Mapping[str, str], money: Set[str], quantity: Set[str]
+) -> List[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     except SyntaxError:
@@ -363,24 +389,38 @@ def _module_findings(path: Path, rel: str, locale: Mapping[str, str], money: Set
         return found
     aliases = _settings_aliases(tree)
     terms = set(money) | _money_locals(tree, money)
+    quantity_terms = set(quantity) | _money_locals(tree, quantity)
     for node in ast.walk(tree):
         if not isinstance(node, ast.BinOp) or not isinstance(node.op, (ast.Mult, ast.Div, ast.FloorDiv)):
             continue
-        for amount, factor in ((node.left, node.right), (node.right, node.left)):
-            if not _is_money_operand(amount, terms) or _is_money_operand(factor, terms):
+        left_money = _is_money_operand(node.left, terms)
+        right_money = _is_money_operand(node.right, terms)
+        if not (left_money or right_money):
+            continue
+        # The operand that is NOT the money amount is the thing it is scaled by.
+        other = node.right if left_money else node.left
+        # money / money is a dimensionless ratio (a proportion, a margin); it is
+        # not an amount scaled by a factor, so it is not read here.
+        if _is_money_operand(other, terms):
+            continue
+        # A declared quantity (a count, a duration) is data, not a rate: money /
+        # quantity is a unit rate and money * quantity is a total (owner ruling
+        # 0825Z). Allowed in either position, because the divisor/multiplier is
+        # typed -- never because of what the field is named.
+        if _is_quantity_operand(other, quantity_terms):
+            continue
+        factor = other
+        if isinstance(factor, ast.Constant) and isinstance(factor.value, (int, float)) and not isinstance(factor.value, bool):
+            if factor.value in _IDENTITY_FACTORS:
                 continue
-            if isinstance(factor, ast.Constant) and isinstance(factor.value, (int, float)) and not isinstance(factor.value, bool):
-                if factor.value in _IDENTITY_FACTORS:
-                    break
-                found.append(f"{rel}:{node.lineno}: a money value is scaled by the literal {factor.value!r} -- a rate is a setting ({MONEY_SETTINGS_MODULE}.tax_rate())")
-                break
-            if not _reads_settings(factor, aliases):
-                found.append(
-                    f"{rel}:{node.lineno}: a money value is scaled by a factor not taken from {MONEY_SETTINGS_MODULE}"
-                    f" -- `{_snippet(node)}` scales a money value by `{_snippet(factor)}`; read that factor from "
-                    f"{MONEY_SETTINGS_MODULE} (tax_rate(), or rate('<name>') for a rate the customer owns)"
-                )
-            break
+            found.append(f"{rel}:{node.lineno}: a money value is scaled by the literal {factor.value!r} -- a rate is a setting ({MONEY_SETTINGS_MODULE}.tax_rate())")
+            continue
+        if not _reads_settings(factor, aliases):
+            found.append(
+                f"{rel}:{node.lineno}: a money value is scaled by a factor not taken from {MONEY_SETTINGS_MODULE}"
+                f" -- `{_snippet(node)}` scales a money value by `{_snippet(factor)}`; read that factor from "
+                f"{MONEY_SETTINGS_MODULE} (tax_rate(), or rate('<name>') for a rate the customer owns)"
+            )
     # A nested expression (a * b / c) is visited once per operator on one line:
     # one finding per distinct line and text.
     return list(dict.fromkeys(found))
@@ -399,6 +439,7 @@ def money_verdict(workspace: Path) -> MoneyVerdict:
     workspace = Path(workspace)
     locale = _read_declared(workspace)
     money = declared_money_fields(workspace)
+    quantity = declared_quantity_fields(workspace)
     if locale is None:
         if money:
             return MoneyVerdict("WITHHELD", WITHHELD_NO_CURRENCY)
@@ -410,7 +451,7 @@ def money_verdict(workspace: Path) -> MoneyVerdict:
         if path.resolve() == settings:
             continue
         rel = path.relative_to(workspace).as_posix()
-        findings.extend(_module_findings(path, rel, locale, money))
+        findings.extend(_module_findings(path, rel, locale, money, quantity))
     if findings:
         return MoneyVerdict("FAIL", MONEY_ASSUMED, findings)
     return MoneyVerdict("PASS", f"money reads the declared {locale['country']}/{locale['currency']}")
