@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 SCHEMA = "factory.blocks.lock.v1"
-STORE_REPO = "https://github.com/bopoadz-del/Cerebrum-Blocks"
+STORE_REPO = "https://github.com/bopoadz-del/Cerebrum-Blocks-pub"
 LOCK_REGENERATE_HINT = (
     'Regenerate with: python -m app.factory.cli update-lock '
     '--blocks-root "$CEREBRUM_BLOCKS_ROOT"'

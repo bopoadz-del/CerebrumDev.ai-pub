@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 HARVEST_ID = "app.factory.build.harvest.evaluate_harvest"
-BLOCKS_REPO = "bopoadz-del/Cerebrum-Blocks"
+BLOCKS_REPO = "bopoadz-del/Cerebrum-Blocks-pub"
 
 # Factory-owned corrections that live only in CerebrumDev.ai emission until
 # an authorized harvest exists. Named so the BLOCK is about real files.

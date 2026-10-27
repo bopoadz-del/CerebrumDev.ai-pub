@@ -33,8 +33,8 @@ BRANCH = "build/sess_0123abcd-feed01"
 @pytest.mark.parametrize(
     "message",
     [
-        "https://github.com/bopoadz-del/cerebrum-builds/tree/build/sess_0123abcd-feed01",
-        "resume https://github.com/bopoadz-del/cerebrum-builds/tree/build/sess_0123abcd-feed01 please",
+        "https://github.com/bopoadz-del/cerebrum-builds-pub/tree/build/sess_0123abcd-feed01",
+        "resume https://github.com/bopoadz-del/cerebrum-builds-pub/tree/build/sess_0123abcd-feed01 please",
         "sess_0123abcd-feed01",
         "build/sess_0123abcd-feed01",
         # Live, 2026-09-29: the owner pasted the branch from a phone and the
@@ -74,8 +74,8 @@ def test_a_session_token_never_falls_through_to_chat(message):
     "message",
     [
         "https://github.com/someone/else/tree/build/sess_0123abcd-feed01",
-        "https://github.com/bopoadz-del/cerebrum-builds/tree/main",
-        "https://github.com/bopoadz-del/cerebrum-builds/tree/garbage!!",
+        "https://github.com/bopoadz-del/cerebrum-builds-pub/tree/main",
+        "https://github.com/bopoadz-del/cerebrum-builds-pub/tree/garbage!!",
     ],
 )
 def test_anything_else_that_looks_like_a_link_is_refused(message):

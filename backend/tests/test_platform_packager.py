@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.engine_discovery import CEREBRUM_BLOCKS_REPO
 from app.core.platform_packager import (
     MissingKitError,
     package_platform_session,
@@ -387,7 +388,9 @@ def test_package_build_metadata_records_vendored_engine(
     metadata = info["build_metadata"]["engine"]
 
     assert metadata["source"] == "local"
-    assert metadata["repo"] == "https://github.com/bopoadz-del/Cerebrum-Blocks.git"
+    # Bound to the constant (now the -pub mirror), not a literal, so a repoint
+    # of CEREBRUM_BLOCKS_REPO cannot leave this asserting a deleted repo.
+    assert metadata["repo"] == CEREBRUM_BLOCKS_REPO
     assert metadata["vendored"] is True
     assert metadata["vendored_path"] == "engine/"
     assert "commit_sha" in metadata

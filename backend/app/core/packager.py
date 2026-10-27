@@ -245,7 +245,7 @@ def package_session(state: SessionState, api_key: str = None) -> Dict[str, Any]:
 
     # 4. Dockerfile + deploy contract + bootstrap + probe
     engine_repo = os.getenv(
-        "CEREBRUM_BLOCKS_REPO", "https://github.com/bopoadz-del/Cerebrum-Blocks.git"
+        "CEREBRUM_BLOCKS_REPO", "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git"
     )
     # The Store commit this Factory is pinned to (store.pin), never a
     # floating "main": a packaged product builds from the Store it was

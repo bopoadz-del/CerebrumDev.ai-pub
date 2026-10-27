@@ -34,7 +34,7 @@ RECEIPT_NAMES = ("receipt.json", "docs/receipt.json", "docs/coder_receipt.json")
 
 BUILDS_TOKEN_ENV: Final = "CEREBRUM_BUILDS_GITHUB_TOKEN"
 BUILDS_REPO_ENV = "CEREBRUM_BUILDS_REPO"
-DEFAULT_BUILDS_REPO = "bopoadz-del/cerebrum-builds"
+DEFAULT_BUILDS_REPO = "bopoadz-del/cerebrum-builds-pub"
 GITHUB_API = "https://api.github.com"
 # Compare 404 is usually missing head/seed after BA rename or GitHub ref lag —
 # not an API outage. Retry briefly, then fail closed with a clear diagnosis.

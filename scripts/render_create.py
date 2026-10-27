@@ -13,7 +13,7 @@ import urllib.error
 
 RENDER_API_KEY = os.getenv("RENDER_API_KEY", "")
 OWNER_ID = os.getenv("RENDER_OWNER_ID", "")
-REPO = "https://github.com/bopoadz-del/CerebrumDev.ai"
+REPO = "https://github.com/bopoadz-del/CerebrumDev.ai-pub"
 
 if not OWNER_ID:
     print("ERROR: Set RENDER_OWNER_ID environment variable")

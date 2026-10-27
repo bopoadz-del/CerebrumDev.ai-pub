@@ -984,7 +984,7 @@ def _run_n3_reseed(
             builds_branch=builds_branch,
             cli_authored_ids=cli_authored_ids,
             builds_owner=builds_owner or "bopoadz-del",
-            builds_repo=builds_repo or "cerebrum-builds",
+            builds_repo=builds_repo or "cerebrum-builds-pub",
             triggered_by="product_n3_reseed",
         )
     except HandoffReseedError as exc:

@@ -212,7 +212,7 @@ services:
       #     network -- "Authorization is a committed file, not an env var."
       # It becomes required only if CEREBRUM_BLOCKS_REPO is made private.
       - key: CEREBRUM_BLOCKS_REPO
-        value: "https://github.com/bopoadz-del/Cerebrum-Blocks.git"
+        value: "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git"
       - key: GITHUB_TOKEN
         sync: false
       # Flip to true only AFTER mail + Stripe checkout are live AND the Floor
