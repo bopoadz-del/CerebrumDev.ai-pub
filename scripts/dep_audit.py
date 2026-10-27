@@ -152,6 +152,21 @@ def _note_ok(row: dict[str, Any], repo: Path = REPO_ROOT) -> list[str]:
             date.fromisoformat(dated)
         except ValueError:
             errors.append(f"{vid}: date {dated!r} is not ISO YYYY-MM-DD")
+    # A hard expiry turns a risk-acceptance back into a red gate when it
+    # lapses: a note that says "superseded by PR X" must not outlive X. An
+    # expired adjudication is a failure here, never a silent evergreen ignore.
+    expires = str(row.get("expires") or "")
+    if expires:
+        try:
+            exp = date.fromisoformat(expires)
+        except ValueError:
+            errors.append(f"{vid}: expires {expires!r} is not ISO YYYY-MM-DD")
+        else:
+            if date.today() > exp:
+                errors.append(
+                    f"{vid}: adjudication expired {expires} -- ship the fix or "
+                    "re-adjudicate with a fresh dated note; do not extend silently"
+                )
     if not note:
         errors.append(f"{vid}: registry row has no note path")
         return errors
