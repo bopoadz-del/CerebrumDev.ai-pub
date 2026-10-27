@@ -49,6 +49,7 @@ def finding(text, kind=None, route=None, capability_id=None, call_site=None):
             "route": route,
             "capability_id": capability_id,
             "call_site": call_site,
+            "detail": text,
         })
 
 
@@ -427,12 +428,37 @@ def gate_ui_end_to_end(ctx: "GateContext") -> "GateResult":
     #: planner reads to scope one writer task per route (ORDERS 2026-10-27).
     structured: List[dict] = list(payload.get("structured") or [])
     if findings:
+        from app.factory.build import findings as _findings
+
+        # A structured finding becomes a typed Finding (a str subclass), so its
+        # kind/capability/call-site travel with it: the rework planner keys the
+        # budget per route and scopes one writer task per missing route.
+        by_detail = {s.get("detail"): s for s in structured if s.get("detail")}
+        typed: List = []
+        for text in findings:
+            s = by_detail.get(text)
+            if not s:
+                typed.append(text)
+                continue
+            site = str(s.get("call_site") or "")
+            file_part, _, line_part = site.partition(":")
+            typed.append(
+                _findings.Finding(
+                    text,
+                    gate=GATE_NAME,
+                    check_id=GATE_NAME,
+                    capability_id=s.get("capability_id"),
+                    file=file_part or None,
+                    line=line_part if line_part.isdigit() else None,
+                    finding_shape=s.get("kind") or UI_NOT_WIRED,
+                )
+            )
         return GateResult(
             ok=False,
             gate=GATE_NAME,
             reason=UI_NOT_WIRED,
-            detail=findings[0],
-            findings=findings + advisory,
+            detail=str(typed[0]),
+            findings=typed + advisory,
             payload={
                 "answered": payload.get("answered") or [],
                 "advisory": advisory,
