@@ -31,8 +31,9 @@ from app.factory.build.tenant_bind import bind_tenant_store
 from app.factory.build.workspace import RoleWorkspace
 
 
-def test_worker_argv_puts_provider_and_api_key_before_exec(tmp_path):
-    """Global flags precede the `exec` subcommand (codewhale 0.9.13 usage)."""
+def test_worker_argv_puts_provider_before_exec_and_key_in_env(tmp_path):
+    """The provider flag precedes the `exec` subcommand (codewhale 0.9.13
+    usage); the KEY is env-only -- never on argv."""
     prompt = "write the platform"
     captured: dict = {}
 
@@ -97,12 +98,17 @@ def test_worker_argv_puts_provider_and_api_key_before_exec(tmp_path):
         "codewhale",
         "--provider",
         "deepseek",
-        "--api-key",
-        "sk-test",
         "exec",
         "--auto",
         "--json",
     ]
+    # Reversed with evidence: `--api-key <value>` used to sit between --provider
+    # and exec, putting the key on the process cmdline (G2 bar 7). ORDERS
+    # 2026-10-27: the key is env-only -- stamped into the child env, not argv.
+    assert "--api-key" not in captured["argv"]
+    assert "sk-test" not in captured["argv"]
+    assert captured["env"]["DEEPSEEK_API_KEY"] == "sk-test"
+    assert captured["env"]["CODEWHALE_API_KEY"] == "sk-test"
     assert "docs/writer_prompt.txt" in captured["argv"][-1]
     assert (
         tmp_path / "checkout" / "docs" / "writer_prompt.txt"

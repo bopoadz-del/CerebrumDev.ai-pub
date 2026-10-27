@@ -874,11 +874,10 @@ def _child_env(session_id: Optional[str], cli_home: Optional[str] = None) -> Dic
     """
     env = dict(os.environ)
     # The CLI also reads its provider key from the environment, and prefers it
-    # over the --api-key flag. A stale DEEPSEEK_API_KEY left in os.environ (a
-    # rotated key) must not shadow the key worker_api_key() resolved -- that
-    # shadow stalled the live Fleet build at WRITER ("api key ****d0bd is
-    # invalid"). Stamp the resolved key onto the vars the CLI consults so the
-    # inherited stale value cannot win.
+    # over any flag. A stale provider key left in os.environ (a rotated key)
+    # must not shadow the key worker_api_key() resolved -- that shadow stalled
+    # a live build at WRITER on an invalid-key auth error. Stamp the resolved
+    # key onto the vars the CLI consults so the inherited stale value cannot win.
     resolved_key = worker_api_key()
     if resolved_key:
         env["CODEWHALE_API_KEY"] = resolved_key
@@ -957,11 +956,14 @@ def run_worker_job(
         # ("--provider must be placed before `exec`") and the job dies in
         # under a second with zero authored artifacts.
         argv = [cli]
-        # Headless deployments pass credentials explicitly; local dev lets
-        # the CLI read its own stored config when the env key is absent.
+        # The provider is a flag; the KEY is NEVER passed on argv -- a value on
+        # the command line shows in the process cmdline. It is stamped into the
+        # child env (CODEWHALE_API_KEY / <PROVIDER>_API_KEY) by _child_env() and
+        # the CLI reads it from there. Local dev with no env key falls back to
+        # the CLI's own stored config.
         api_key = worker_api_key()
         if api_key:
-            argv += ["--provider", worker_provider(), "--api-key", api_key]
+            argv += ["--provider", worker_provider()]
         argv += ["exec", "--auto", "--json"]
 
         # The brief does NOT ride in argv. Linux caps one exec argument at
