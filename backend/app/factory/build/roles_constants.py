@@ -590,7 +590,7 @@ def _force_utf8_stdio() -> None:
     """F13: a checkmark/emoji print must not become a charmap crash.
 
     Windows cp1252 consoles encode print() with the console codepage. A
-    vendored block that prints one checkmark used to raise UnicodeEncodeError;
+    vendored block that prints one checkmark raised a UnicodeEncodeError on block stdout;
     execute() then swallowed that into a generic error envelope that looked
     like a domain refusal. Force UTF-8 on this process before the block runs.
     """

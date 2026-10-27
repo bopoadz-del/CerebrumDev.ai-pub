@@ -5,7 +5,12 @@ python-multipart==0.0.32
 httpx==0.28.1
 python-dotenv==1.2.4
 cryptography==50.0.2
-pypdf==6.20.1
+pypdf==6.21.2
+# Transitive (fastembed / pdfplumber / reportlab / python-pptx / pytesseract) but
+# pinned as a security floor: pillow 12.3.0 carried 37 pip advisories
+# (CVE-2026-112xxx / 96xxx / 114501), all fixed only in 13.0.0 (pip-audit 2026-10-27).
+# Do not drop below 13.0.0.
+pillow==13.0.0
 python-docx==1.2.0
 beautifulsoup4==4.15.0
 chromadb==1.5.9

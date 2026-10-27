@@ -12,7 +12,15 @@ def _estate_kit():
     from app.factory.kit_pack import store_kit_dir
 
     kit = store_kit_dir("private_estate_operations")
-    assert kit is not None, "Store estate kit not found -- set CEREBRUM_BLOCKS_ROOT"
+    if kit is None:
+        import pytest
+
+        pytest.skip(
+            "Store estate kit 'private_estate_operations' absent from the public Store "
+            "mirror (dropped in the scrub); gated to runs with the private kit present "
+            "(set CEREBRUM_BLOCKS_ROOT). Not removed.",
+            allow_module_level=True,
+        )
     return kit
 
 
