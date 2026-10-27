@@ -247,9 +247,19 @@ def worker_provider() -> str:
 
 def worker_api_key() -> str:
     """The CLI's API key from the deployment env. Empty when the CLI's own
-    stored config is the credential source (local dev)."""
+    stored config is the credential source (local dev).
+
+    The writer is the SAME LLM as Floor chat, so it shares the platform's
+    authoritative key -- ``CEREBRUM_CHAT_LLM_API_KEY`` -- rather than a separate
+    export. ``DEEPSEEK_API_KEY`` is only a legacy last resort: a stale one left
+    in the deploy env (a rotated key) must not shadow the working platform key,
+    which is what stalled the live Fleet build at WRITER. An explicit
+    ``CODEWHALE_API_KEY`` still overrides both when a deployment wants the
+    writer on a distinct credential.
+    """
     return (
         os.getenv("CODEWHALE_API_KEY", "").strip()
+        or os.getenv("CEREBRUM_CHAT_LLM_API_KEY", "").strip()
         or os.getenv("DEEPSEEK_API_KEY", "").strip()
     )
 
