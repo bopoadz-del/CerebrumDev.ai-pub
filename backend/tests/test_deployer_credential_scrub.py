@@ -18,7 +18,7 @@ TOKEN = "test-token-" + __import__("secrets").token_hex(10)
 def test_scrub_removes_embedded_token():
     dirty = (
         "fatal: unable to access "
-        f"'https://x-access-token:" + _GENERATED_PW_1 + "@github.com/acme/deploy.git/': "
+        "'https://x-access-token:" + _GENERATED_PW_1 + "@github.com/acme/deploy.git/': "
         "The requested URL returned error: 403"
     )
     clean = deployer._scrub_git_output(dirty)
@@ -47,7 +47,7 @@ def test_push_failure_reason_is_scrubbed(monkeypatch, tmp_path, caplog):
             return subprocess.CompletedProcess(
                 args, 1, stdout="",
                 stderr=("remote: Permission denied to "
-                        f"https://x-access-token:" + _GENERATED_PW_1 + "@github.com/acme/deploy.git"),
+                        "https://x-access-token:" + _GENERATED_PW_1 + "@github.com/acme/deploy.git"),
             )
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 

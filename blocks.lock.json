@@ -1170,6 +1170,12 @@
       "source": "cerebrum-blocks",
       "version": "1.0.0"
     },
+    "storage": {
+      "content_hash": "sha256:381fdbf13a60b81f0ad0daca3f5c15c46935a718fa4c14bdd7b5545860933e8a",
+      "id": "storage",
+      "source": "cerebrum-blocks",
+      "version": "1.0.0"
+    },
     "sub_agent_runtime": {
       "content_hash": "sha256:231647cf007274137403ae45cdc0a01b7e1b52e3894da847968c95d71a093818",
       "id": "sub_agent_runtime",
@@ -1378,6 +1384,6 @@
   "schema": "factory.blocks.lock.v1",
   "store": {
     "repo": "https://github.com/bopoadz-del/Cerebrum-Blocks",
-    "sha": "6320266e3ca0594fdda6b26078c1eac9d51f5e91"
+    "sha": "4e8324486a839957498462f2fb8b01276b879714"
   }
 }

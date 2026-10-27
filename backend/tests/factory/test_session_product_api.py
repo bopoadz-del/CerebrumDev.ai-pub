@@ -54,6 +54,13 @@ def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub
     and the build-status endpoint test below.
     """
     monkeypatch.setenv("FACTORY_BUILD_ENGINE", "template")
+    # Pin the stage-resume blueprint cache OFF. It is ON by default (owner
+    # option B); a cached blueprint for this brief -- from an earlier run or an
+    # earlier test in the same suite writing the shared on-disk cache -- would be
+    # served verbatim and skip the golden selection this flow asserts, yielding a
+    # fresh "estate" draft instead of the "projectsix" golden. The cache has its
+    # own tests; here we isolate golden selection so it is deterministic.
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
     # Goldens are chosen by structural overlap, not words. The deterministic
     # draft shares only its vertical with the golden, so this flow lowers
     # the configured threshold to let that unique overlap select it.

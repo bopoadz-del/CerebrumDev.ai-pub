@@ -11,7 +11,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC_PATH = ROOT / "docs" / "PHASE2_SCOUT_LAW.md"
-DOC_SHA256 = "40cd81e8e2bfff2bb3dd029049e1147c3fae420d27c4705f824b4fd99e518c93"
+# Re-ratified 2026-10-27 (ORDERS_0400Z, owner delegation for scrub-only changes):
+# r4 scrub tokenised donor-repo names (TEKsystems_GlobalRetailMNC->RetailOpsReference,
+# InsureOps->Projectfifteen, etc.). Diff vs pre-scrub gold (mirror b79721bc) is name
+# tokens only -- no semantic change.
+DOC_SHA256 = "59b52caaced9992cc2e6f41867ed935c26592a17369bacce02a09f09d36f41dd"
 
 
 def test_phase2_scout_law_is_immutable():

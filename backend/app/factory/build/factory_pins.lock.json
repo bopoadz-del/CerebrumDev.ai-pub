@@ -2,12 +2,12 @@
   "schema": "factory_pins.v1",
   "note": "The ONE pin set every Factory-built product installs against. dependency_pins reads it; constraints.txt, the base requirements and requirements-dev render from it. `distributions` is every distribution the stack resolves to on the product image's platform, with what each wheel declares, so a test proves the set is closed and resolution is fully determined by it. Change a version in `top_level_versions`, then run scripts/regenerate_factory_pins.py; never hand-edit one entry. Distributions a vendored block brings are never listed here: their bounds belong to the Store's block lock.",
   "top_level_versions": {
-    "fastapi": "0.141.1",
+    "fastapi": "0.143.2",
     "starlette": "1.7.0",
-    "uvicorn": "0.53.0",
-    "pydantic": "2.13.5",
+    "uvicorn": "0.54.0",
+    "pydantic": "2.14.1",
     "anyio": "4.15.1",
-    "sqlalchemy": "2.0.52",
+    "sqlalchemy": "2.1.4",
     "alembic": "1.20.0",
     "psycopg": "3.3.6",
     "pytest": "9.1.1",
@@ -20,13 +20,18 @@
   },
   "distributions": {
     "fastapi": {
-      "version": "0.141.1",
+      "version": "0.143.2",
       "requires_dist": [
         "starlette>=0.46.0",
         "pydantic>=2.9.0",
         "typing-extensions>=4.8.0",
         "typing-inspection>=0.4.2",
         "annotated-doc>=0.0.2",
+        "opentelemetry-api>=1.44.0",
+        "opentelemetry-sdk>=1.44.0; extra == \"opentelemetry\"",
+        "opentelemetry-exporter-otlp-proto-http>=1.44.0; extra == \"opentelemetry\"",
+        "opentelemetry-sdk>=1.44.0; extra == \"standard\"",
+        "opentelemetry-exporter-otlp-proto-http>=1.44.0; extra == \"standard\"",
         "fastapi-cli[standard]>=0.0.32; extra == \"standard\"",
         "fastar>=0.9.0; extra == \"standard\"",
         "httpx<1.0.0,>=0.23.0; extra == \"standard\"",
@@ -36,6 +41,8 @@
         "uvicorn[standard]>=0.12.0; extra == \"standard\"",
         "pydantic-settings>=2.0.0; extra == \"standard\"",
         "pydantic-extra-types>=2.0.0; extra == \"standard\"",
+        "opentelemetry-sdk>=1.44.0; extra == \"standard-no-fastapi-cloud-cli\"",
+        "opentelemetry-exporter-otlp-proto-http>=1.44.0; extra == \"standard-no-fastapi-cloud-cli\"",
         "fastapi-cli[standard-no-fastapi-cloud-cli]>=0.0.32; extra == \"standard-no-fastapi-cloud-cli\"",
         "httpx<1.0.0,>=0.23.0; extra == \"standard-no-fastapi-cloud-cli\"",
         "jinja2>=3.1.5; extra == \"standard-no-fastapi-cloud-cli\"",
@@ -44,6 +51,8 @@
         "uvicorn[standard]>=0.12.0; extra == \"standard-no-fastapi-cloud-cli\"",
         "pydantic-settings>=2.0.0; extra == \"standard-no-fastapi-cloud-cli\"",
         "pydantic-extra-types>=2.0.0; extra == \"standard-no-fastapi-cloud-cli\"",
+        "opentelemetry-sdk>=1.44.0; extra == \"all\"",
+        "opentelemetry-exporter-otlp-proto-http>=1.44.0; extra == \"all\"",
         "fastapi-cli[standard]>=0.0.32; extra == \"all\"",
         "httpx<1.0.0,>=0.23.0; extra == \"all\"",
         "jinja2>=3.1.5; extra == \"all\"",
@@ -71,7 +80,7 @@
       ]
     },
     "uvicorn": {
-      "version": "0.53.0",
+      "version": "0.54.0",
       "requires_dist": [
         "click>=7.0",
         "h11>=0.8",
@@ -85,14 +94,14 @@
       ]
     },
     "pydantic": {
-      "version": "2.13.5",
+      "version": "2.14.1",
       "requires_dist": [
         "annotated-types>=0.6.0",
-        "pydantic-core==2.46.5",
-        "typing-extensions>=4.14.1",
-        "typing-inspection>=0.4.2",
+        "pydantic-core==2.50.1",
+        "typing-extensions>=4.16.0",
+        "typing-inspection>=0.4.4",
         "email-validator>=2.0.0; extra == 'email'",
-        "tzdata; (python_version >= '3.9' and platform_system == 'Windows') and extra == 'timezone'"
+        "tzdata; (platform_system == 'Windows') and extra == 'timezone'"
       ]
     },
     "anyio": {
@@ -105,39 +114,40 @@
       ]
     },
     "sqlalchemy": {
-      "version": "2.0.52",
+      "version": "2.1.4",
       "requires_dist": [
-        "importlib-metadata; python_version < \"3.8\"",
-        "greenlet>=1; platform_machine == \"aarch64\" or (platform_machine == \"ppc64le\" or (platform_machine == \"x86_64\" or (platform_machine == \"amd64\" or (platform_machine == \"AMD64\" or (platform_machine == \"win32\" or platform_machine == \"WIN32\")))))",
         "typing-extensions>=4.6.0",
         "greenlet>=1; extra == \"asyncio\"",
-        "mypy>=0.910; extra == \"mypy\"",
+        "mypy>=2.4; extra == \"mypy\"",
+        "types-greenlet>=2; extra == \"mypy\"",
         "pyodbc; extra == \"mssql\"",
         "pymssql; extra == \"mssql-pymssql\"",
         "pyodbc; extra == \"mssql-pyodbc\"",
+        "mssql-python>=1.9.0; extra == \"mssql-python\"",
         "mysqlclient>=1.4.0; extra == \"mysql\"",
         "mysql-connector-python; extra == \"mysql-connector\"",
         "mariadb!=1.1.10,!=1.1.2,!=1.1.5,>=1.0.1; extra == \"mariadb-connector\"",
-        "cx_oracle>=8; extra == \"oracle\"",
-        "oracledb>=1.0.1; extra == \"oracle-oracledb\"",
-        "psycopg2>=2.7; extra == \"postgresql\"",
-        "pg8000>=1.29.1; extra == \"postgresql-pg8000\"",
-        "greenlet>=1; extra == \"postgresql-asyncpg\"",
+        "oracledb>=2.0.1; extra == \"oracle\"",
+        "cx_oracle>=8; extra == \"oracle-cxoracle\"",
+        "oracledb>=2.0.1; extra == \"oracle-oracledb\"",
+        "psycopg!=3.1.15,>=3.0.7; extra == \"postgresql\"",
+        "pg8000>=1.29.3; extra == \"postgresql-pg8000\"",
+        "sqlalchemy[asyncio]; extra == \"postgresql-asyncpg\"",
         "asyncpg; extra == \"postgresql-asyncpg\"",
         "psycopg2-binary; extra == \"postgresql-psycopg2binary\"",
         "psycopg2cffi; extra == \"postgresql-psycopg2cffi\"",
-        "psycopg>=3.0.7; extra == \"postgresql-psycopg\"",
-        "psycopg[binary]>=3.0.7; extra == \"postgresql-psycopgbinary\"",
+        "psycopg!=3.1.15,>=3.0.7; extra == \"postgresql-psycopg\"",
+        "psycopg[binary]!=3.1.15,>=3.0.7; extra == \"postgresql-psycopgbinary\"",
         "pymysql; extra == \"pymysql\"",
-        "greenlet>=1; extra == \"aiomysql\"",
-        "aiomysql>=0.2.0; extra == \"aiomysql\"",
-        "greenlet>=1; extra == \"aioodbc\"",
+        "cymysql; extra == \"cymysql\"",
+        "sqlalchemy[asyncio]; extra == \"aiomysql\"",
+        "aiomysql; extra == \"aiomysql\"",
+        "sqlalchemy[asyncio]; extra == \"aioodbc\"",
         "aioodbc; extra == \"aioodbc\"",
-        "greenlet>=1; extra == \"asyncmy\"",
+        "sqlalchemy[asyncio]; extra == \"asyncmy\"",
         "asyncmy>=0.2.12; extra == \"asyncmy\"",
-        "greenlet>=1; extra == \"aiosqlite\"",
+        "sqlalchemy[asyncio]; extra == \"aiosqlite\"",
         "aiosqlite; extra == \"aiosqlite\"",
-        "typing_extensions!=3.10.0.1; extra == \"aiosqlite\"",
         "sqlcipher3_binary; extra == \"sqlcipher\""
       ]
     },
@@ -229,7 +239,7 @@
       "requires_dist": []
     },
     "certifi": {
-      "version": "2026.7.22",
+      "version": "2026.10.23",
       "requires_dist": []
     },
     "click": {
@@ -239,16 +249,6 @@
     "colorama": {
       "version": "0.4.6",
       "requires_dist": []
-    },
-    "greenlet": {
-      "version": "3.5.6",
-      "requires_dist": [
-        "Sphinx; extra == \"docs\"",
-        "furo; extra == \"docs\"",
-        "objgraph; extra == \"test\"",
-        "psutil; extra == \"test\"",
-        "setuptools; extra == \"test\""
-      ]
     },
     "h11": {
       "version": "0.16.0",
@@ -293,28 +293,28 @@
       "version": "3.0.4",
       "requires_dist": []
     },
+    "opentelemetry-api": {
+      "version": "1.45.1",
+      "requires_dist": [
+        "typing-extensions>=4.5.0"
+      ]
+    },
     "packaging": {
       "version": "26.3",
       "requires_dist": []
     },
     "pluggy": {
-      "version": "1.6.0",
-      "requires_dist": [
-        "pre-commit; extra == \"dev\"",
-        "tox; extra == \"dev\"",
-        "pytest; extra == \"testing\"",
-        "pytest-benchmark; extra == \"testing\"",
-        "coverage; extra == \"testing\""
-      ]
+      "version": "1.7.0",
+      "requires_dist": []
     },
     "psycopg-binary": {
       "version": "3.3.6",
       "requires_dist": []
     },
     "pydantic-core": {
-      "version": "2.46.5",
+      "version": "2.50.1",
       "requires_dist": [
-        "typing-extensions>=4.14.1"
+        "typing-extensions>=4.16.0"
       ]
     },
     "pygments": {
