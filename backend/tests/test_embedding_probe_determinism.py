@@ -85,6 +85,9 @@ def test_probe_embeddings_preserve_retrieval_direction(golden: dict) -> None:
     assert meta["model"] == golden["model"]
     assert meta["dimensions"] == golden["dimensions"]
     assert len(embeddings) == len(probes)
+    # Pin both sides: a truncated golden must not let the zip below iterate
+    # fewer times and pass vacuously.
+    assert len(expected) == len(probes)
 
     for i, (got, want) in enumerate(zip(embeddings, expected)):
         assert len(got) == golden["dimensions"], f"probe {i}: wrong dimension"
