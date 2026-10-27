@@ -120,16 +120,19 @@ def test_chromadb_note_covers_the_four_linux_ids():
     assert "fix_versions" in text
 
 
-def test_registry_lists_exactly_chromadb_and_pillow_adjudications():
-    # Two adjudicated packages exist and only two; any third row is a rogue
+def test_registry_lists_exactly_chromadb_adjudications():
+    # Exactly one adjudicated package remains; any other row is a rogue
     # suppression and must fail here. chromadb = the four Linux-resolve ids
-    # (no fixed version). pillow = the time-boxed accept_risk from ORDERS_0400Z
-    # (fix 13.0.0 blocked by fastembed<13.0; hard 14-day expiry).
+    # (no fixed version). The pillow accept_risk from ORDERS_0400Z is GONE:
+    # fastembed 0.9.1 relaxes the transitive constraint to pillow<14, so
+    # pillow==13.0.0 ships and clears the 37 image-codec CVEs on merit. Its
+    # fix-on-merit is guarded by the probe-determinism test, not an adjudication.
     rows = json.loads(REGISTRY.read_text(encoding="utf-8"))["adjudications"]
     by_pkg: dict[str, list] = {}
     for r in rows:
         by_pkg.setdefault(r["package"], []).append(r)
-    assert set(by_pkg) == {"chromadb", "pillow"}, sorted(by_pkg)
+    assert set(by_pkg) == {"chromadb"}, sorted(by_pkg)
+    assert "pillow" not in by_pkg, "pillow must be fixed on merit, not adjudicated"
 
     assert sorted(r["id"] for r in by_pkg["chromadb"]) == [
         "PYSEC-2026-311",
@@ -138,13 +141,6 @@ def test_registry_lists_exactly_chromadb_and_pillow_adjudications():
         "PYSEC-2026-3815",
     ]
     assert all(r["date"] == "2026-09-11" for r in by_pkg["chromadb"])
-
-    pill = by_pkg["pillow"]
-    assert pill, "pillow adjudication missing"
-    assert all(r["decision"] == "accept_risk" for r in pill)
-    assert all(r["date"] == "2026-10-27" for r in pill)
-    assert all(r["expires"] == "2026-11-10" for r in pill)
-    assert all(r["note"].endswith("2026-10-27-pillow.md") for r in pill)
 
 
 # -- adjudicate against declared metadata, not a scanner summary -----------
