@@ -1114,7 +1114,7 @@ def reseed_and_ingest_n3(
     builds_branch: str,
     cli_authored_ids: Sequence[str],
     builds_owner: str = "bopoadz-del",
-    builds_repo: str = "cerebrum-builds",
+    builds_repo: str = "cerebrum-builds-pub",
     output_root: Optional[Path] = None,
     triggered_by: str = "n3_reseed",
 ) -> Dict[str, Any]:

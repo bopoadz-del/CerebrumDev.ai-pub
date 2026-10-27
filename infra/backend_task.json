@@ -4,6 +4,8 @@
   "cpu": "2048",
   "memory": "4096",
   "environment": {
-    "FACTORY_WORKER_PROFILE": "2c-4g"
+    "FACTORY_WORKER_PROFILE": "2c-4g",
+    "CEREBRUM_BUILDS_REPO": "bopoadz-del/cerebrum-builds-pub",
+    "CEREBRUM_BLOCKS_REPO": "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git"
   }
 }

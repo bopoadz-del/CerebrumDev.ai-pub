@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from app.factory.build import probe_set
 
-BLOCKS_REPO = "bopoadz-del/Cerebrum-Blocks"
+BLOCKS_REPO = "bopoadz-del/Cerebrum-Blocks-pub"
 PROTECTED_BRANCHES = frozenset({"main", "master"})
 BRANCH_PREFIX = "factory-harvest"
 

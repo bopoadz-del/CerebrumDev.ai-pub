@@ -1599,7 +1599,7 @@ def reseed_handoff_ledger(
     builds_branch: str,
     cli_authored_ids: Sequence[str],
     builds_owner: str = "bopoadz-del",
-    builds_repo: str = "cerebrum-builds",
+    builds_repo: str = "cerebrum-builds-pub",
     product_id: Optional[str] = None,
     inputs_hash: str = "n3_handoff_reseed",
 ) -> Dict[str, Any]:
@@ -1621,7 +1621,7 @@ def reseed_handoff_ledger(
     sha = str(builds_sha or "").strip()
     branch = str(builds_branch or "").strip()
     owner = str(builds_owner or "").strip() or "bopoadz-del"
-    repo = str(builds_repo or "").strip() or "cerebrum-builds"
+    repo = str(builds_repo or "").strip() or "cerebrum-builds-pub"
     ids = [str(item).strip() for item in (cli_authored_ids or []) if str(item).strip()]
     if not sha or not branch:
         raise HandoffReseedError(

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 CEREBRUM_BLOCKS_REPO = os.getenv(
     "CEREBRUM_BLOCKS_REPO",
-    "https://github.com/bopoadz-del/Cerebrum-Blocks.git",
+    "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git",
 )
 
 
