@@ -186,8 +186,9 @@ def test_worker_cli_missing_is_a_named_refusal(monkeypatch):
 
 
 def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_path):
-    """On Render the CLI authenticates with explicit flags; without the env
-    key the CLI falls back to its own stored config (local dev)."""
+    """On Render the CLI gets the provider as a flag and reads its KEY from the
+    child env (never argv); without any key it falls back to its stored config
+    (local dev)."""
     import io
     import subprocess
 
@@ -198,6 +199,7 @@ def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_pat
     class _FakePopen:
         def __init__(self, argv, **kwargs):
             captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
             self.stdout = io.StringIO(
                 '{"status": "completed", "termination_reason": "resolved"}\n'
             )
@@ -225,13 +227,17 @@ def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_pat
     # nothing (live-factory failure sess_d5a7f55b8a9c4dad).
     assert argv.index("--provider") < argv.index("exec")
     assert argv[argv.index("--provider") + 1] == "deepseek"
-    assert argv.index("--api-key") < argv.index("exec")
     assert argv[argv.index("exec") + 1 : argv.index("exec") + 3] == [
         "--auto",
         "--json",
     ]
     assert "--provider" in argv and "deepseek" in argv
-    assert "--api-key" in argv and "sk-deepseek-test" in argv
+    # Reversed with evidence: the key USED to ride on argv (--api-key <value>),
+    # which puts a secret on the process cmdline (G2 bar 7). ORDERS 2026-10-27:
+    # the key is env-only now -- never on argv, stamped into the child env.
+    assert "--api-key" not in argv
+    assert "sk-deepseek-test" not in argv
+    assert captured["env"]["DEEPSEEK_API_KEY"] == "sk-deepseek-test"
 
 
 def test_no_env_key_falls_back_to_cli_config(monkeypatch, tmp_path):
