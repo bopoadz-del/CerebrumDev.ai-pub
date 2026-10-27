@@ -39,9 +39,18 @@ redis==8.1.0
 # BAAI/bge-small-en-v1.5: ~67 MB ONNX weights, 384 dimensions.
 # 0.9.1 relaxes the transitive Pillow constraint to <14, permitting Pillow 13.x
 # (the branch that fixes the 37 image-codec CVEs); the ONNX text model and
-# dimensions are unchanged, so embedding outputs are identical (see the
-# byte-identical probe-set test in tests/test_embedding_probe_determinism.py).
+# dimensions are unchanged, so retrieval is unchanged (see the cosine-invariant
+# probe test in tests/test_embedding_probe_determinism.py).
 fastembed==0.9.1
+# Pin the ONNX runtime to the locked (shipped) version. Left unpinned it is a
+# transitive of chromadb (>=1.14.1) and fastembed, and CI's requirements.txt
+# resolve pulled onnxruntime 1.31.1 while the image bakes requirements.lock's
+# 1.29.0 -- so pytest exercised a DIFFERENT inference engine than production,
+# and the probe fixture (captured under the lock) drifted ~2.2e-4 per component
+# against it (direction preserved; cosine held). Pinning here makes the tested
+# runtime the shipped runtime and lets pip-audit audit the version we actually
+# run. Keep this equal to onnxruntime in requirements.lock.
+onnxruntime==1.29.0
 
 # High-quality PDF -> Markdown parsing is optional and local-only.
 # See requirements-marker.txt. It is NOT installed in production images
