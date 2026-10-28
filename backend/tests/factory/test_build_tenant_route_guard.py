@@ -270,12 +270,22 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
         pcf, "_compile_and_lint_approved", lambda *a, **k: {"lint": _Lint()}
     )
 
+    # /pilot and /n3-reseed hand the session to their downstream entry, which
+    # binds the per-tenant store from state.user_id (start_runner_build ->
+    # bind_tenant_store). Record the store the job actually gets by binding the
+    # same identity the downstream will, so the test asserts the BOUND tenant
+    # (the server-derived digest), not just that a string matched — the same
+    # strength as /generate's tenant_identity assertion.
+    from app.factory.build.tenant_bind import bind_tenant_store as _bind
+
     def _pilot(state, **k):
-        recorder["pilot_owner"] = state.user_id
+        b = _bind(state.user_id, owner=state.user_id)
+        recorder["pilot_bound_key"] = b.tenant_key if b else None
         return {"summary": "ok"}
 
     def _reseed(state, **k):
-        recorder["reseed_owner"] = state.user_id
+        b = _bind(state.user_id, owner=state.user_id)
+        recorder["reseed_bound_key"] = b.tenant_key if b else None
         return {"ok": True, "summary": "ok"}
 
     monkeypatch.setattr(pcf, "resume_pilot_cycle", _pilot)
@@ -397,7 +407,10 @@ def test_pilot_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_path
     _stub_build_path(routes.monkeypatch, tmp_path, recorder)
     r = _post(routes, "pilot", {"Authorization": f"Bearer {routes.tok_a}"})
     assert r.status_code == 200, r.text
-    assert recorder.get("pilot_owner") == routes.acct_a
+    # The job's bound store is the SESSION owner's tenant (its server-derived
+    # digest), not a caller value.
+    expected = bind_tenant_store(routes.acct_a).tenant_key
+    assert recorder.get("pilot_bound_key") == expected
 
 
 def test_n3_reseed_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_path):
@@ -405,4 +418,5 @@ def test_n3_reseed_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_
     _stub_build_path(routes.monkeypatch, tmp_path, recorder)
     r = _post(routes, "n3-reseed", {"Authorization": f"Bearer {routes.tok_a}"})
     assert r.status_code == 200, r.text
-    assert recorder.get("reseed_owner") == routes.acct_a
+    expected = bind_tenant_store(routes.acct_a).tenant_key
+    assert recorder.get("reseed_bound_key") == expected
