@@ -250,6 +250,7 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
 
     def _gen(bp, out, **kw):
         recorder["generate_tenant"] = kw.get("tenant_identity")
+        recorder["generate_quota"] = kw.get("quota_account_id")
         return {
             "output_dir": str(out),
             "inputs_hash": "h" * 12,
@@ -270,25 +271,52 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
         pcf, "_compile_and_lint_approved", lambda *a, **k: {"lint": _Lint()}
     )
 
-    # /pilot and /n3-reseed hand the session to their downstream entry, which
-    # binds the per-tenant store from state.user_id (start_runner_build ->
-    # bind_tenant_store). Record the store the job actually gets by binding the
-    # same identity the downstream will, so the test asserts the BOUND tenant
-    # (the server-derived digest), not just that a string matched — the same
-    # strength as /generate's tenant_identity assertion.
-    from app.factory.build.tenant_bind import bind_tenant_store as _bind
+    # /pilot runs for real down to the binding seam: resume_pilot_cycle is NOT
+    # stubbed — it derives tenant_identity from the session and hands it to
+    # generate_product -> start_runner_build -> bind_tenant_store. Only the
+    # pre-gates and generate_product are stubbed, so the test records the
+    # tenant the JOB'S OWN code passes (breaks if that derivation breaks), the
+    # same strength as /generate — not a digest the stub recomputes.
+    class _Bar:
+        reaches_pilot = True
 
-    def _pilot(state, **k):
-        b = _bind(state.user_id, owner=state.user_id)
-        recorder["pilot_bound_key"] = b.tenant_key if b else None
-        return {"summary": "ok"}
+    import app.factory.build.build_level as bl
 
+    monkeypatch.setattr(pcf, "is_pilot_ready", lambda *a, **k: False)
+    monkeypatch.setattr(pcf, "sync_blueprint_intake", lambda *a, **k: None)
+    monkeypatch.setattr(pcf, "ProductBlueprint", _BP)
+    monkeypatch.setattr(bl, "bar_for", lambda *a, **k: _Bar())
+    monkeypatch.setattr(pcf, "_blocks_root", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(
+        pcf, "_generation_output_dir", lambda *a, **k: tmp_path / "pilotout"
+    )
+    monkeypatch.setattr(pcf, "_live_build_thread", lambda *a, **k: None)
+    monkeypatch.setattr(pcf, "ensure_platform_id", lambda *a, **k: "plt_x")
+
+    def _gen_pilot(bp, out, **kw):
+        recorder["pilot_tenant"] = kw.get("tenant_identity")
+        recorder["pilot_quota"] = kw.get("quota_account_id")
+        return {
+            "output_dir": str(out),
+            "inputs_hash": "h" * 12,
+            "product_id": "p1",
+            "canonical_output": None,
+            "engine": "runner",
+            "build": {},
+        }
+
+    monkeypatch.setattr(pcf, "generate_product", _gen_pilot)
+
+    # /n3-reseed binds NO per-tenant store: reseed_and_ingest_n3 does store-gate
+    # ingest and never calls generate_product/start_runner_build/bind_tenant_store.
+    # Its tenant isolation is the route guard (the 403 tests) + the session's own
+    # workspace. Record that the same-tenant caller reaches the real reseed entry
+    # with the session owner's state. (There is no job-level "bound store" to
+    # observe for n3, unlike generate/pilot — surfaced to the orchestrator.)
     def _reseed(state, **k):
-        b = _bind(state.user_id, owner=state.user_id)
-        recorder["reseed_bound_key"] = b.tenant_key if b else None
+        recorder["reseed_owner"] = state.user_id
         return {"ok": True, "summary": "ok"}
 
-    monkeypatch.setattr(pcf, "resume_pilot_cycle", _pilot)
     monkeypatch.setattr(pcf, "reseed_and_ingest_n3", _reseed)
     monkeypatch.setattr(lc, "sync_blueprint_intake", lambda *a, **k: None)
     monkeypatch.setattr(pid, "ensure_platform_id", lambda *a, **k: "plt_x")
@@ -313,7 +341,7 @@ def routes(monkeypatch, tmp_path):
 
     from fastapi import Depends
 
-    from app.core.auth import require_api_key
+    from app.core.auth import DEV_LOCAL_TENANT, require_api_key
     from app.core.session_store import create_session, update_session
     from app.routers import accounts, session_product
 
@@ -345,6 +373,14 @@ def routes(monkeypatch, tmp_path):
     st.product_design.plan = {"ok": 1}
     update_session(sess, st)
 
+    # A session owned by the dev tenant, for the dev-principal generate path.
+    sess_dev = "sess_routeguard_dev"
+    sd = create_session(session_id=sess_dev, user_id=DEV_LOCAL_TENANT)
+    sd.product_design.blueprint = {"product_id": "p1"}
+    sd.product_design.blueprint_approved = True
+    sd.product_design.plan = {"ok": 1}
+    update_session(sess_dev, sd)
+
     # Registration left a session cookie on the client; drop it so a request
     # with no auth header is a genuinely credential-free caller (the dev
     # principal), not the last-registered user riding a cookie.
@@ -353,6 +389,7 @@ def routes(monkeypatch, tmp_path):
     return SimpleNamespace(
         client=client,
         sess=sess,
+        sess_dev=sess_dev,
         acct_a=acct_a,
         tok_a=tok_a,
         master=master,
@@ -407,16 +444,92 @@ def test_pilot_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_path
     _stub_build_path(routes.monkeypatch, tmp_path, recorder)
     r = _post(routes, "pilot", {"Authorization": f"Bearer {routes.tok_a}"})
     assert r.status_code == 200, r.text
-    # The job's bound store is the SESSION owner's tenant (its server-derived
-    # digest), not a caller value.
-    expected = bind_tenant_store(routes.acct_a).tenant_key
-    assert recorder.get("pilot_bound_key") == expected
+    # resume_pilot_cycle's own code handed the session owner's tenant to the
+    # build (both the isolation identity and the quota account).
+    assert recorder.get("pilot_tenant") == routes.acct_a
+    assert recorder.get("pilot_quota") == routes.acct_a
 
 
-def test_n3_reseed_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_path):
+def test_n3_reseed_same_tenant_reaches_the_job_with_the_owner_session(routes, tmp_path):
     recorder: dict = {}
     _stub_build_path(routes.monkeypatch, tmp_path, recorder)
     r = _post(routes, "n3-reseed", {"Authorization": f"Bearer {routes.tok_a}"})
     assert r.status_code == 200, r.text
-    expected = bind_tenant_store(routes.acct_a).tenant_key
-    assert recorder.get("reseed_bound_key") == expected
+    # n3-reseed binds no per-tenant store (store-gate ingest only); the
+    # same-tenant caller reaches the real reseed entry with the owner's session.
+    assert recorder.get("reseed_owner") == routes.acct_a
+
+
+# --- worker call-site pin (ORDERS_0630Z #1(a)) ------------------------------
+# The owner==identity check must be pinned at the REAL build call site
+# (build_jobs.start_runner_build -> bind_tenant_store(owner=quota_account_id)),
+# not only at the bind helper: dropping owner=quota_account_id there must fail.
+
+def test_start_runner_build_refuses_cross_tenant_at_the_call_site(tmp_path, monkeypatch):
+    from pathlib import Path as _Path
+
+    import app.factory.build_jobs as bj
+    from app.factory.blueprint import load_blueprint
+    from app.factory.build.tenant_bind import TenantMismatchError
+
+    smoke = (
+        _Path(__file__).resolve().parents[3]
+        / "blueprints"
+        / "examples"
+        / "runner_smoke.yaml"
+    )
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path))
+
+    def fake_run(*a, **k):
+        pass
+
+    class _InlineThread:
+        def __init__(self, *args, **kwargs):
+            self._kwargs = kwargs
+            self.name = kwargs.get("name", "inline")
+            self.daemon = True
+
+        def start(self):
+            self._kwargs.get("target", lambda *_: None)(*self._kwargs.get("args", ()))
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(bj, "_run", fake_run)
+    monkeypatch.setattr("threading.Thread", _InlineThread)
+    # The CLI-readiness probe runs before the bind in this environment; stub it
+    # so the test reaches the tenant bind (the behaviour under test).
+    monkeypatch.setattr(
+        "app.factory.build.coder_session.raise_if_cli_session_unready",
+        lambda *a, **k: None,
+    )
+
+    # The build would isolate on acct_a's store while owned/metered under
+    # acct_b: the worker refuses at the real call site, before the thread starts.
+    with pytest.raises(TenantMismatchError):
+        bj.start_runner_build(
+            load_blueprint(smoke),
+            tmp_path / "out",
+            tenant_identity="acct_a",
+            quota_account_id="acct_b",
+        )
+
+
+# --- dev-principal build is tenant-checked too (ORDERS_0630Z #1(b)) ---------
+
+def test_dev_principal_generate_binds_dev_local_quota_and_tenant(routes, tmp_path):
+    # A dev principal on a dev-owned session launches with quota_account_id and
+    # tenant_identity both = DEV_LOCAL_TENANT (never None), so the worker's
+    # owner==identity check is live for dev builds, not a no-op.
+    from app.core.auth import DEV_LOCAL_TENANT
+
+    recorder: dict = {}
+    _stub_build_path(routes.monkeypatch, tmp_path, recorder)
+    routes.monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    routes.client.cookies.clear()
+    r = routes.client.post(
+        f"/v1/sessions/{routes.sess_dev}/product/generate", json={}
+    )
+    assert r.status_code == 200, r.text
+    assert recorder.get("generate_quota") == DEV_LOCAL_TENANT
+    assert recorder.get("generate_tenant") == DEV_LOCAL_TENANT

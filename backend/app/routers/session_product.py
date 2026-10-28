@@ -1103,7 +1103,12 @@ def generate_approved_product(
     principal: Principal = Depends(require_entitled),
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
-    _require_build_tenant(state, principal)
+    # The guard returns the bound tenant: the session owner for a user, or the
+    # explicit DEV_LOCAL_TENANT for a dev principal. Use it for BOTH the build's
+    # tenant identity and its quota account, so quota_account_id is never None
+    # at build start and the worker's owner==identity check is live for dev
+    # builds too (ORDERS_0630Z #1(b)).
+    bound_tenant = _require_build_tenant(state, principal)
     body = body or GenerateBody()
     if body.n3_reseed:
         if not body.builds_sha or not body.builds_branch or not body.cli_authored_ids:
@@ -1217,13 +1222,12 @@ def generate_approved_product(
             out,
             blocks_root=blocks_root,
             cycle=body.cycle,
-            quota_account_id=principal.account_id,
-            # Bind the per-tenant store from the SESSION's recorded owner
-            # (server-controlled), never a caller-supplied value. The route
-            # guard above has already proven principal.account_id == owner, so
-            # this only hardens the source of the identity the worker isolates
-            # on.
-            tenant_identity=(getattr(state, "user_id", None) or principal.account_id),
+            quota_account_id=bound_tenant,
+            # Bind the per-tenant store from the guard's resolved tenant
+            # (server-controlled), never a caller-supplied value. It is the
+            # session owner for a user and DEV_LOCAL_TENANT for a dev principal,
+            # so the worker's owner==identity check is live for every build.
+            tenant_identity=bound_tenant,
             brief=str(state.product_design.brief or "").strip(),
             platform_id=ensure_platform_id(state.product_design),
         )
