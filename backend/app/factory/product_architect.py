@@ -50,15 +50,18 @@ def _repo_root() -> Path:
 
 
 def session_domain_from_blueprint(blueprint: Any) -> str:
-    """Session ``config.domain`` for a product draft.
+    """Session ``config.domain`` for a product draft, derived from the draft.
 
-    Kit sessions default to ``construction``. Product drafts must not keep
-    that default when the blueprint is residential-lettings (or any other
-    vertical). Prefer ``product_id`` (``residential-lettings``), then
-    ``vertical`` with underscores folded to hyphens.
+    The domain is DERIVED from the blueprint, never hardwired: prefer
+    ``product_id`` (``residential-lettings``), then ``vertical`` with
+    underscores folded to hyphens. When the blueprint names no vertical (or
+    there is no blueprint yet), fall back to the NEUTRAL sentinel
+    (``NO_VERTICAL``) -- never a baked-in customer vertical.
     """
+    from app.factory.store_kits import NO_VERTICAL
+
     if blueprint is None:
-        return "construction"
+        return NO_VERTICAL
     if isinstance(blueprint, dict):
         product_id = str(blueprint.get("product_id") or "").strip()
         vertical = str(blueprint.get("vertical") or "").strip()
@@ -69,7 +72,7 @@ def session_domain_from_blueprint(blueprint: Any) -> str:
         return product_id
     if vertical:
         return vertical.replace("_", "-")
-    return "construction"
+    return NO_VERTICAL
 
 
 # --- LLM drafting (gated, fail-safe) -----------------------------------------

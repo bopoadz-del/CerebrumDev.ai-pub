@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..factory.store_kits import NO_VERTICAL
 from ..models.session import SessionState
 from . import client_data
 from .chroma_store import load_chunks, collection_exists
@@ -547,7 +548,7 @@ def _drop_cli_artifacts(
         f'mode = "deployed"\n'
         f'base_url = "{base_url}"\n'
         f'api_key = "{env_vars.get("CEREBRUM_MASTER_KEY", "")}"\n'
-        f'domain = "{env_vars.get("CEREBRUM_DOMAIN_KITS", "construction")}"\n'
+        f'domain = "{env_vars.get("CEREBRUM_DOMAIN_KITS", NO_VERTICAL)}"\n'
         f'instance_name = "{service_name}"\n'
         f'session_id = ""\n',
         encoding="utf-8",

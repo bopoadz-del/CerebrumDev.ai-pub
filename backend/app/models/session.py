@@ -2,6 +2,8 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
 from datetime import datetime
 
+from app.factory.store_kits import NO_VERTICAL
+
 
 class AIConfig(BaseModel):
     base_model: str = "Llama-3.2-3B"
@@ -12,7 +14,12 @@ class AIConfig(BaseModel):
 
 
 class SessionConfig(BaseModel):
-    domain: str = "construction"
+    #: The product's vertical/domain. No vertical is hardwired: a fresh
+    #: session carries the NEUTRAL sentinel (``NO_VERTICAL``) until the user
+    #: picks a domain (kit mode, the typed ``/config`` POST) or a product
+    #: draft stamps its derived vertical (``session_domain_from_blueprint``).
+    #: The Factory never bakes in a customer's vertical as the default.
+    domain: str = NO_VERTICAL
     ai_config: AIConfig = Field(default_factory=AIConfig)
 
 
