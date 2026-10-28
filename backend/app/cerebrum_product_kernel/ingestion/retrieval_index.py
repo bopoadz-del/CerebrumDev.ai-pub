@@ -76,19 +76,13 @@ class IndexOutcome:
 EngineProvider = Callable[[str], Optional[RetrievalEngine]]
 
 
-def _no_engine(identity: str) -> Optional[RetrievalEngine]:
-    """Pre-install fallback only.
-
-    The SHIPPED behaviour installs a real per-tenant engine at host boot
-    (``engine_install.install_default_engine``). This remains the fallback
-    before that install runs, or after a test clears the provider; when it is
-    in effect the ingest path records a surfaced ``not_indexed`` state and the
-    answer path refuses — never a silent empty.
-    """
-    return None
-
-
-_ENGINE_PROVIDER: EngineProvider = _no_engine
+#: No provider until the host installs one. ``None`` means "no product
+#: retrieval backend configured here": the SHIPPED behaviour installs a real
+#: per-tenant engine at host boot (``engine_install.install_default_engine``);
+#: before that runs, or after a test clears the provider, ``tenant_engine``
+#: returns ``None`` so the ingest path records a surfaced ``not_indexed`` state
+#: and the answer path refuses — never a silent empty.
+_ENGINE_PROVIDER: Optional[EngineProvider] = None
 
 
 def set_engine_provider(provider: Optional[EngineProvider]) -> None:
@@ -97,10 +91,11 @@ def set_engine_provider(provider: Optional[EngineProvider]) -> None:
     The host kit calls this once at boot with a provider that builds the
     configured semantic embedder + per-tenant Chroma collection; tests use it
     to inject a fixture engine. Resetting to ``None`` restores the no-backend
-    default (ingest-on-parse becomes a logged no-op).
+    default: ``tenant_engine`` then returns ``None`` and ingest-on-parse records
+    a surfaced ``not_indexed`` state.
     """
     global _ENGINE_PROVIDER
-    _ENGINE_PROVIDER = provider or _no_engine
+    _ENGINE_PROVIDER = provider
 
 
 def tenant_collection(identity: str) -> str:
@@ -120,8 +115,15 @@ def tenant_collection(identity: str) -> str:
 
 
 def tenant_engine(identity: str) -> Optional[RetrievalEngine]:
-    """Resolve the per-tenant engine through the installed provider."""
-    return _ENGINE_PROVIDER(str(identity or "").strip())
+    """Resolve the per-tenant engine through the installed provider.
+
+    ``None`` when no provider is installed (no product retrieval backend
+    configured in this host) — the caller surfaces that, never a silent empty.
+    """
+    provider = _ENGINE_PROVIDER
+    if provider is None:
+        return None
+    return provider(str(identity or "").strip())
 
 
 def ingest_parsed_chunks(
