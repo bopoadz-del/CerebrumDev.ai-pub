@@ -36,10 +36,13 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import object_store, parse_job
+
+logger = logging.getLogger(__name__)
 from .chunker import chunk_document
 from .parse_job import ParseJob, ParseStatus
 
@@ -309,6 +312,21 @@ def parse_object(
             tenant_id=identity_value,
         )
         parse_job.write_chunks(identity_value, job.job_id, chunks)
+        # F-1c: the parsed chunks reach retrieval here — ingested (layer 2)
+        # into THIS tenant's own RetrievalEngine collection so retrieve() can
+        # return them with their file + location. Best-effort: a retrieval
+        # backend that is absent or raises must never flip a genuinely-parsed
+        # job to FAILED, so the index call is isolated from the parse verdict.
+        try:
+            from . import retrieval_index
+
+            retrieval_index.ingest_parsed_chunks(identity_value, chunks)
+        except Exception:  # noqa: BLE001 — indexing never fails the parse
+            logger.exception(
+                "ingest-on-parse failed for job %s; chunks persisted, parse "
+                "stands PARSED",
+                job.job_id,
+            )
         return parse_job.set_status(
             identity_value,
             job.job_id,
