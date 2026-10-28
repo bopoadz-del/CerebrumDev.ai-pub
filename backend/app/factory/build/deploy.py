@@ -462,25 +462,6 @@ def render_rollback_script() -> str:
 
 def render_main(product_name: str, vertical: str = "") -> str:
     from app.factory.build.network_posture import NETWORK_POSTURE, NETWORK_POSTURE_REASON
-    from app.factory.inventory import vertical_is_excluded
-
-    if vertical_is_excluded(vertical):
-        ingestion_mount = (
-            "# Client-ingestion surface NOT mounted: the product vertical is in\n"
-            "# the inventory exclusion set (medical, legal, veterinary, pharma) —\n"
-            "# a product with no certified content to back must not receive a\n"
-            "# client-ingestion surface (Phase 2 §1).\n"
-        )
-    else:
-        ingestion_mount = (
-            "# Phase 2 client ingestion (chunker + tenant-resolved routes).\n"
-            "try:\n"
-            "    from app.cerebrum_product_kernel.ingestion.router import router as product_ingestion_router\n"
-            "\n"
-            "    app.include_router(product_ingestion_router)\n"
-            "except ImportError:\n"
-            "    pass\n"
-        )
 
     return (
         '"""Entrypoint for the generated platform.\n'
@@ -542,7 +523,6 @@ def render_main(product_name: str, vertical: str = "") -> str:
         "    app.include_router(rag_router)\n"
         "except ImportError:\n"
         "    pass\n"
-        + ingestion_mount
         + "\n"
         "\n"
         '@app.get("/")\n'
