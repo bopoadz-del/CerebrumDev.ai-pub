@@ -27,9 +27,12 @@ production surface that answers 422 to every caller.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class PublishedKernelUnreadable(RuntimeError):
@@ -110,11 +113,16 @@ def _published_kernel_texts() -> List[str]:
     independent of stamp order, so a single build ships the package the kernel
     needs (a kernel ``UploadFile`` route 422s without ``python-multipart``).
     """
-    from app.factory.build.domain_acceptance import product_kernel_files
-
     try:
+        from app.factory.build.domain_acceptance import product_kernel_files
+
         return [text for _rel, text in product_kernel_files()]
     except Exception as exc:  # a broken/missing source must fail loudly, not drop deps
+        logger.warning(
+            "published kernel source unreadable; failing the requirements build "
+            "rather than silently dropping its framework dependencies: %s",
+            exc,
+        )
         raise PublishedKernelUnreadable(
             "could not read the Factory's published kernel source to derive the "
             "requirements framework block"
