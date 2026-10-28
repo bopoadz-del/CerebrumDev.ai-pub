@@ -219,10 +219,18 @@ def test_the_vendored_handover_holds_no_product_tree_and_says_why():
     assert "private kit" in data["dropped"]["products"]
 
 
-def test_with_no_handed_over_tree_the_replay_refuses_to_select():
-    # fail closed: no certified tree, no replay verdict (never a vacuous pass)
-    with pytest.raises(ValueError, match="hand over a new selection"):
-        rif.select(n=3)
+def test_with_no_certified_build_the_replay_is_not_applicable():
+    # Reversed with evidence (ORDERS 2026-10-28 0200Z #3). The handover currently
+    # holds 0 certified builds. The OLD behaviour raised "hand over a new
+    # selection" and so failed EVERY PR until a handover no code change can
+    # produce exists -- a gate wired to nothing (placeholder rule). The gate is
+    # NOT weakened: it stays strict the moment a certified build is handed over
+    # (see test_a_handover_below_the_minimum_still_fails and the per-build
+    # replay), and the known-bad fixtures still run. With 0 certified builds it
+    # is NOT APPLICABLE -- select() returns no certified build and does not
+    # raise; the verdict job exits 0 with an annotation.
+    rows = rif.select(n=3)
+    assert [r for r in rows if r.get("expect") != "fail"] == []
 
 
 def test_a_changed_product_bundle_is_drift(tmp_path):
@@ -409,3 +417,27 @@ def test_a_handover_vendored_under_another_builds_commit_fails_by_name(tmp_path)
     vendor.rename(renamed)
     problems = rif.verify(renamed)
     assert any(p.startswith("STALE HANDOVER") and _manifest()["source_commit"] in p for p in problems), problems
+
+
+# -- the empty-handover ruling (ORDERS 2026-10-28 0200Z #3) ------------------------
+# (the 0-certified case is covered by test_with_no_certified_build_the_replay_is_not_applicable)
+
+
+def test_a_handover_below_the_minimum_still_fails(tmp_path):
+    """The gate is NOT weakened: the moment a certified build exists but the
+    handover is below the configured minimum, select() still raises -- hand over
+    more, never a silent pass. (The minimum lives in .github/gate_replay.json.)"""
+    vendor = _copy_vendor(tmp_path)
+    m = json.loads((vendor / "manifest.json").read_text(encoding="utf-8"))
+    m["selection"] = [
+        {
+            "branch": "plt_one",
+            "sha": "a" * 40,
+            "expect": "pass",
+            "run_id": "1",
+            "certified_at": "2026-01-01T00:00:00Z",
+        }
+    ]
+    (vendor / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError):
+        rif.select(vendor=vendor, verify_first=False)

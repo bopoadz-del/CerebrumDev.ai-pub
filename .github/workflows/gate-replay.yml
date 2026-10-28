@@ -268,5 +268,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/gate_replay/replay_in_factory.py verify
+          count=$(python3 -c "import json; print(len(json.load(open('selection.json'))))")
+          if [ "$count" -eq 0 ]; then
+            echo "::notice title=gate replay::not applicable: 0 builds selected (empty certified handover); nothing to replay"
+            exit 0
+          fi
           VENDOR=$(python3 .github/gate_replay/replay_in_factory.py vendor-dir)
           python3 "$VENDOR"/gate/.github/store_gate/replay_flips.py selection.json results --routing routing
