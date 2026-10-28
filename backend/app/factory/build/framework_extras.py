@@ -27,9 +27,26 @@ production surface that answers 422 to every caller.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+class PublishedKernelUnreadable(RuntimeError):
+    """The Factory's own published kernel source could not be read.
+
+    The requirements block is derived from the FEATURE the shipped tree uses,
+    and the kernel the Factory vendors into every product is part of that tree.
+    If its source cannot be read the scan cannot know which backing packages it
+    needs -- and silently omitting them ships a product whose kernel routes fail
+    at the first request (an upload route 422s for want of python-multipart).
+    So a read failure fails the build loudly here rather than letting a broken
+    source quietly drop dependencies.
+    """
+
 
 #: distribution requirement, why it is needed, patterns that mean "needed".
 FRAMEWORK_EXTRAS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
@@ -82,8 +99,54 @@ def _sources(root: Path) -> List[Path]:
     return found
 
 
-def framework_extras(root: Path, sources: Sequence[Path] | None = None) -> Dict[str, str]:
-    """``{requirement line: why}`` for every framework feature the tree uses."""
+def _published_kernel_texts() -> List[str]:
+    """Source text of every kernel file the Factory publishes into a product.
+
+    The requirements block is derived from the FEATURE a file uses, not from an
+    import, and the kernel the Factory vendors into every product is part of the
+    tree it ships -- a kernel route that posts a form needs the same backing
+    package a product route does. But the kernel files are COPIED into the
+    product's ``app/`` by the kernel-publish stamp, which may run after this
+    scan: on the first pass the tree has no kernel yet, on the second it does,
+    and the block flips between passes. Scanning the Factory's own published
+    kernel source directly makes the feature detectable on the first pass,
+    independent of stamp order, so a single build ships the package the kernel
+    needs (a kernel ``UploadFile`` route 422s without ``python-multipart``).
+    """
+    try:
+        from app.factory.build.domain_acceptance import product_kernel_files
+
+        return [text for _rel, text in product_kernel_files()]
+    except Exception as exc:  # a broken/missing source must fail loudly, not drop deps
+        logger.warning(
+            "published kernel source unreadable; failing the requirements build "
+            "rather than silently dropping its framework dependencies: %s",
+            exc,
+        )
+        raise PublishedKernelUnreadable(
+            "could not read the Factory's published kernel source to derive the "
+            "requirements framework block"
+        ) from exc
+
+
+def framework_extras(
+    root: Path,
+    sources: Sequence[Path] | None = None,
+    *,
+    include_published_kernel: bool = False,
+) -> Dict[str, str]:
+    """``{requirement line: why}`` for every framework feature the tree uses.
+
+    By default the scan is the product tree alone (``app``/``scripts``/
+    ``tests``): a feature is declared because the product uses it, not because
+    some other tree might. ``include_published_kernel`` additionally scans the
+    kernel source the Factory vendors into every product. The requirements
+    build sets it so a feature the published kernel uses (its upload route needs
+    ``python-multipart``) is declared on the first pass, before the
+    kernel-publish stamp has copied the kernel into ``app/`` -- without it the
+    declaration depends on stamp order and the single-pass build ships a product
+    that 422s its own upload route (see ``_published_kernel_texts``).
+    """
     paths = list(sources) if sources is not None else _sources(root)
     text = []
     for path in paths:
@@ -91,6 +154,8 @@ def framework_extras(root: Path, sources: Sequence[Path] | None = None) -> Dict[
             text.append(path.read_bytes().decode("utf-8", "replace"))
         except OSError:  # a file that cannot be read cannot be scanned
             continue
+    if include_published_kernel:
+        text.extend(_published_kernel_texts())
     blob = "\n".join(text)
     needed: Dict[str, str] = {}
     for requirement, why, patterns in FRAMEWORK_EXTRAS:
@@ -99,9 +164,9 @@ def framework_extras(root: Path, sources: Sequence[Path] | None = None) -> Dict[
     return needed
 
 
-def framework_lines(root: Path) -> List[str]:
+def framework_lines(root: Path, *, include_published_kernel: bool = False) -> List[str]:
     """The requirements.txt block for the extras this tree needs (with reasons)."""
-    needed = framework_extras(root)
+    needed = framework_extras(root, include_published_kernel=include_published_kernel)
     if not needed:
         return []
     lines = ["# Framework features used by this product whose backing package", "# FastAPI does not declare."]

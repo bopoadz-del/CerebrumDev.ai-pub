@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -962,6 +962,41 @@ def approve_blueprint(
         "ok": True,
         "blueprint_approved": state.product_design.blueprint_approved,
     }
+
+
+@router.post("/{session_id}/product/ingestion/upload")
+async def pilot_ingestion_upload(
+    session_id: str,
+    files: Optional[list[UploadFile]] = File(None),
+    principal: Principal = Depends(require_api_key),
+) -> Dict[str, Any]:
+    """The pilot user's ``+`` attach on the Factory Floor.
+
+    Resolves the bound tenant, then reuses the SAME kernel helpers as the
+    generated-product route (validate 415/413/400, store in the tenant-bound
+    object store, create a genuinely-queued parse job). Returns the same shape.
+    """
+    state = _require_session(session_id, principal)
+    tenant_id = _require_build_tenant(state, principal)
+    from app.cerebrum_product_kernel.ingestion.router import ingest_uploads
+
+    return await ingest_uploads(tenant_id, files)
+
+
+@router.get("/{session_id}/product/ingestion/upload/{job_id}")
+def pilot_ingestion_status(
+    session_id: str,
+    job_id: str,
+    response: Response,
+    principal: Principal = Depends(require_api_key),
+) -> Dict[str, Any]:
+    """Real parse-job status for a pilot upload (no-store, like build-status)."""
+    response.headers["Cache-Control"] = "no-store"
+    state = _require_session(session_id, principal)
+    tenant_id = _require_build_tenant(state, principal)
+    from app.cerebrum_product_kernel.ingestion.router import job_status_payload
+
+    return job_status_payload(tenant_id, job_id)
 
 
 @router.post("/{session_id}/product/pilot")

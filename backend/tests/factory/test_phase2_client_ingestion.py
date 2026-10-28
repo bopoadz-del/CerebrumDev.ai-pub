@@ -141,8 +141,9 @@ def test_router_501s_honestly_until_drive_and_formulas_land(monkeypatch):
     client = TestClient(app)
     headers = {"Authorization": "Bearer good-token"}
 
+    # The upload path is REAL as of F-1a and is deliberately NOT in this list:
+    # only the Drive/formula handlers still refuse honestly with 501.
     for method, path in (
-        ("post", "/v1/product/ingestion/upload"),
         ("post", "/v1/product/ingestion/formulas"),
         ("get", "/v1/product/ingestion/formulas"),
         ("get", "/v1/product/ingestion/drive/files"),
@@ -152,3 +153,106 @@ def test_router_501s_honestly_until_drive_and_formulas_land(monkeypatch):
         assert resp.json()["detail"] == (
             "phase2_ingestion_scaffold_not_implemented"
         ), (method, path)
+
+
+# ── F-1a: the upload path is real (store + queued parse job), not a 501 ──────
+
+_PDF_BYTES = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+# A minimal real .xlsx is a zip; the allowlist is the primary control and the
+# content-type cross-check accepts application/zip for .xlsx.
+_XLSX_BYTES = b"PK\x03\x04minimal-xlsx-zip-container-bytes"
+
+
+def _ingestion_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    return TestClient(app)
+
+
+def test_upload_route_is_real_pdf_and_xlsx_distinct(monkeypatch, tmp_path):
+    client = _ingestion_client(monkeypatch, tmp_path)
+    headers = {"Authorization": "Bearer good-token"}
+
+    pdf = client.post(
+        "/v1/product/ingestion/upload",
+        headers=headers,
+        files={"files": ("spec.pdf", _PDF_BYTES, "application/pdf")},
+    )
+    assert pdf.status_code == 200, pdf.text
+    pdf_body = pdf.json()
+    assert pdf_body["status"] == "queued"
+    assert pdf_body["source_name"] == "spec.pdf"
+    assert pdf_body["bytes"] == len(_PDF_BYTES)
+
+    xlsx = client.post(
+        "/v1/product/ingestion/upload",
+        headers=headers,
+        files={"files": ("book.xlsx", _XLSX_BYTES, "application/zip")},
+    )
+    assert xlsx.status_code == 200, xlsx.text
+    xlsx_body = xlsx.json()
+    assert xlsx_body["status"] == "queued"
+
+    # Two inputs -> two distinct object_ids and job_ids.
+    assert pdf_body["object_id"] != xlsx_body["object_id"]
+    assert pdf_body["job_id"] != xlsx_body["job_id"]
+
+    # GET status returns the real, queued parse job (no-store).
+    status = client.get(
+        f"/v1/product/ingestion/upload/{pdf_body['job_id']}", headers=headers
+    )
+    assert status.status_code == 200, status.text
+    assert status.json()["status"] == "queued"
+    assert status.json()["object_id"] == pdf_body["object_id"]
+    assert status.headers["cache-control"] == "no-store"
+
+
+def test_upload_route_rejects_photo_and_archive_415(monkeypatch, tmp_path):
+    client = _ingestion_client(monkeypatch, tmp_path)
+    headers = {"Authorization": "Bearer good-token"}
+
+    png = client.post(
+        "/v1/product/ingestion/upload",
+        headers=headers,
+        files={"files": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+    )
+    assert png.status_code == 415, png.text
+
+    zipped = client.post(
+        "/v1/product/ingestion/upload",
+        headers=headers,
+        files={"files": ("bundle.zip", b"PK\x03\x04zip", "application/zip")},
+    )
+    assert zipped.status_code == 415, zipped.text
+
+
+def test_upload_route_rejects_oversize_413(monkeypatch, tmp_path):
+    monkeypatch.setenv("MAX_UPLOAD_FILE_BYTES", "16")
+    client = _ingestion_client(monkeypatch, tmp_path)
+    headers = {"Authorization": "Bearer good-token"}
+
+    big = client.post(
+        "/v1/product/ingestion/upload",
+        headers=headers,
+        files={"files": ("spec.pdf", b"x" * 64, "application/pdf")},
+    )
+    assert big.status_code == 413, big.text
+
+
+def test_upload_route_no_file_400(monkeypatch, tmp_path):
+    client = _ingestion_client(monkeypatch, tmp_path)
+    headers = {"Authorization": "Bearer good-token"}
+    resp = client.post("/v1/product/ingestion/upload", headers=headers)
+    assert resp.status_code == 400, resp.text
+
+
+def test_upload_status_unknown_job_404(monkeypatch, tmp_path):
+    client = _ingestion_client(monkeypatch, tmp_path)
+    headers = {"Authorization": "Bearer good-token"}
+    resp = client.get(
+        "/v1/product/ingestion/upload/does-not-exist", headers=headers
+    )
+    assert resp.status_code == 404, resp.text
