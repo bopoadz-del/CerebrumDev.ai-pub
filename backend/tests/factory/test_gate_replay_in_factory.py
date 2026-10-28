@@ -579,11 +579,23 @@ def test_cli_exits_1_wrong_prefix(tmp_path, monkeypatch):
     assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
 
 
-def test_cli_exits_1_tree_missing(tmp_path, monkeypatch):
+def test_cli_exits_1_tree_missing_at_verify(tmp_path, monkeypatch, capsys):
+    # VERIFY-EXIT test (ORDERS_28OCT_0515Z #1). A tree-missing handover (a selected
+    # sha with no product) is caught by verify() BEFORE select() runs, so the CLI
+    # exits 1 at the integrity check and never reaches the 0-certified guard. By
+    # construction the guard is UNREACHABLE for this case: verify() and
+    # certified().exists() both key on `products`, so a row is verify-valid iff its
+    # product is present and dropped-by-exists() iff absent (infeasibility confirmed
+    # independently by Factory, G2 and G6). The 0-certified guard stays pinned by
+    # the select()-level tree-missing test and by the all-revoked + wrong-prefix CLI
+    # tests; the delete-the-guard mutation does not apply here.
     vendor = _synthetic_vendor(tmp_path)
     _tree_missing_certified(vendor)
     monkeypatch.setattr(rif, "vendor_dir", lambda: vendor)
-    assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
+    rc = rif.main(["select", "--out", str(tmp_path / "selection.json")])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "selected, no product handed over" in out
 
 
 def test_cli_exits_0_with_notice_on_empty_handover(tmp_path, capsys):
