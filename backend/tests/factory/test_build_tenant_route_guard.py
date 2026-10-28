@@ -340,6 +340,13 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
     class _InlineThread:
         def __init__(self, *args, **kwargs):
             self._kwargs = kwargs
+            # i-d: CAPTURE the args the runner Thread is constructed with so the
+            # pilot test can assert the tenant_store HANDED TO THE THREAD is the
+            # SAME binding the bind produced (build_jobs passes it as args index
+            # 4). A store swapped between the bind (build_jobs.py:1847) and this
+            # Thread construction is then caught, which the spy-only assert on
+            # the bind's return value cannot see.
+            recorder["pilot_thread_args"] = kwargs.get("args")
 
         def start(self):
             # No-op: the runner body (_run) is stubbed and the bind has already
@@ -514,6 +521,17 @@ def test_pilot_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_path
     ).tenant_key
     assert recorder.get("pilot_bind_identity") == routes.acct_a
     assert recorder.get("pilot_bind_owner") == routes.acct_a
+    # i-d: the runner Thread received the SAME store the bind produced. The
+    # build_jobs call site passes tenant_store as args index 4 of the Thread's
+    # target args; its tenant_key must equal the key the spy recorded for the
+    # bind. A store reassigned between the bind and the Thread construction
+    # (build_jobs.py:1847) is caught here, where the spy-on-the-bind assert
+    # above is blind to it.
+    thread_args = recorder.get("pilot_thread_args")
+    assert thread_args is not None, "runner Thread args were not captured"
+    handed_store = thread_args[4]
+    assert handed_store is not None, "no tenant_store handed to the runner Thread"
+    assert handed_store.tenant_key == recorder.get("pilot_bound_tenant_key")
 
 
 def test_n3_reseed_same_tenant_reaches_the_job_with_the_owner_session(routes, tmp_path):
@@ -601,6 +619,44 @@ def test_dev_principal_generate_binds_dev_local_quota_and_tenant(routes, tmp_pat
     assert recorder.get("generate_tenant") == DEV_LOCAL_TENANT
 
 
+def test_dev_principal_generate_real_bind_binds_dev_local_tenant(routes, tmp_path):
+    # (d) dev-path REAL bind: a dev principal (ALLOW_ANONYMOUS_DEV, cookies
+    # cleared) drives the REAL generate build path on a DEV_LOCAL_TENANT-owned
+    # session. Unlike test_dev_principal_generate_binds_dev_local_quota_and_tenant
+    # (which stubs generate_product ABOVE the bind), this RESTORES the real
+    # generate_product so start_runner_build -> bind_tenant_store runs, and the
+    # spy BELOW the bind records the actually-bound key — the dev analogue of
+    # the pilot same-tenant real-bind test.
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.factory.build.tenant_bind import bind_tenant_store
+    import app.factory.product_architect as product_architect
+    import app.routers.session_product as sp
+
+    recorder: dict = {}
+    _stub_build_path(routes.monkeypatch, tmp_path, recorder)
+    # _stub_build_path stubbed sp.generate_product ABOVE the bind; put the REAL
+    # one back so the dev generate path reaches the real start_runner_build bind
+    # (everything downstream — CLI probe, _run, Thread, compliance — stays
+    # stubbed, so no real build runs; only the bind is observed).
+    routes.monkeypatch.setattr(
+        sp, "generate_product", product_architect.generate_product
+    )
+    routes.monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    routes.client.cookies.clear()
+    r = routes.client.post(
+        f"/v1/sessions/{routes.sess_dev}/product/generate", json={}
+    )
+    assert r.status_code == 200, r.text
+    # The REAL bind ran for the dev path: the bound tenant_key is the dev
+    # tenant's digest, and owner==identity==DEV_LOCAL_TENANT (never None), so a
+    # constant swapped in for the guard's dev-branch derivation is caught.
+    assert recorder.get("pilot_bound_tenant_key") == bind_tenant_store(
+        DEV_LOCAL_TENANT
+    ).tenant_key
+    assert recorder.get("pilot_bind_identity") == DEV_LOCAL_TENANT
+    assert recorder.get("pilot_bind_owner") == DEV_LOCAL_TENANT
+
+
 # --- n3-reseed stamps the bound tenant into the HANDOFF ledger NOTE ----------
 # DELIVERABLE 2: an n3-reseed as a same-tenant user threads the guard's bound
 # tenant (the session owner) into reseed_handoff_ledger, which stamps it into
@@ -668,6 +724,31 @@ def test_n3_reseed_same_tenant_stamps_bound_tenant_into_handoff_note(routes, tmp
     assert found, "no HANDOFF_TO_N3 NOTE on the stamped ledger"
     # The bound tenant the route guard resolved is the session owner (acct_a),
     # and reseed_handoff_ledger stamped exactly that into the NOTE.
+    assert tenant == routes.acct_a
+
+
+def test_generate_n3_reseed_same_tenant_stamps_bound_tenant_into_handoff_note(
+    routes, tmp_path
+):
+    # (b) caller-B: the /generate route with body.n3_reseed=True fans into the
+    # SAME _run_n3_reseed -> reseed_and_ingest_n3 -> reseed_handoff_ledger as the
+    # direct /product/n3-reseed route, so it must stamp the bound tenant (the
+    # session owner) into the HANDOFF_TO_N3 NOTE exactly the same. Mirrors
+    # test_n3_reseed_same_tenant_stamps_bound_tenant_into_handoff_note but drives
+    # it through POST /product/generate with an n3_reseed body.
+    out = tmp_path / "n3out_generate"
+    _stub_n3_reseed_no_network(routes.monkeypatch, out)
+
+    r = routes.client.post(
+        f"/v1/sessions/{routes.sess}/product/generate",
+        headers={"Authorization": f"Bearer {routes.tok_a}"},
+        json={"n3_reseed": True, **_N3_BODY},
+    )
+    assert r.status_code == 200, r.text
+
+    tenant, found = _handoff_note_tenant(out)
+    assert found, "no HANDOFF_TO_N3 NOTE on the stamped ledger"
+    # Dropping the stamp (n3_store_gate.py "tenant": tenant -> None) fails this.
     assert tenant == routes.acct_a
 
 
@@ -762,7 +843,30 @@ def test_chat_build_action_refuses_dev_on_real_session_403(chat_routes):
         f"/v1/sessions/{chat_routes.sess}/chat", json=_APPROVE_BODY
     )
     assert r.status_code == 403, r.text
+    # (e) the 403 is a non-streaming JSON error (stands in for "zero stream
+    # bytes"): JSON content-type and the error code carried in the JSON body,
+    # never an SSE stream that 200s and then fails deep.
+    assert r.headers["content-type"].startswith("application/json")
     assert r.json()["detail"]["error"] == "tenant_mismatch"
+
+
+def test_chat_build_action_refuses_no_tenant_admin_403(chat_routes):
+    # (c) an ADMIN principal (master key, CEREBRUM_DEV_API_KEY set) POSTing a
+    # build-starting chat action (approve on a pending blueprint) owns no tenant
+    # store. require_owned_session lets admin reach the handler (its kind!="user"
+    # branch), and the chat _require_build_tenant guard refuses with 403
+    # no_tenant before the SSE stream opens — the admin analogue of the existing
+    # dev->tenant_mismatch chat case. Deleting the guard call makes THIS fail.
+    chat_routes.monkeypatch.setenv("CEREBRUM_DEV_API_KEY", "master-test-key")
+    r = chat_routes.client.post(
+        f"/v1/sessions/{chat_routes.sess}/chat",
+        json=_APPROVE_BODY,
+        headers={"X-API-Key": "master-test-key"},
+    )
+    assert r.status_code == 403, r.text
+    # (e) non-streaming JSON error: JSON content-type and the error code in body.
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json()["detail"]["error"] == "no_tenant"
 
 
 def test_chat_build_action_same_tenant_user_proceeds(chat_routes):
