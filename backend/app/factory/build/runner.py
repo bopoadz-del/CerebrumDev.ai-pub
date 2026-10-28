@@ -113,6 +113,25 @@ class GateDecision:
     record: Dict[str, Any] = field(default_factory=dict)
 
 
+#: Finding shapes that are scoped to ONE capability/route: a gate finding of
+#: this shape becomes one targeted writer task, and its rework budget is keyed
+#: per capability (not per phase), so one route failing twice stops THAT route
+#: while others still get their own scoped task (ORDERS 2026-10-27 #2). The
+#: placeholder shape joins this set with its own detector in a follow-up PR.
+SCOPED_REWORK_SHAPES = frozenset({"missing_route"})
+
+
+def _scoped_rework_findings(verdict: Any) -> List[Any]:
+    """Typed findings scoped to a single capability (a missing route)."""
+    return [
+        f
+        for f in (getattr(verdict, "findings", None) or [])
+        if isinstance(f, _findings.Finding)
+        and f.capability_id
+        and f.finding_shape in SCOPED_REWORK_SHAPES
+    ]
+
+
 def _failure_keys(verdict: Any, exclude: Sequence[str] = ()) -> List[str]:
     """Same-failure-twice keys -- check id + finding SHAPE, never the gate.
 
@@ -137,6 +156,17 @@ def _failure_keys(verdict: Any, exclude: Sequence[str] = ()) -> List[str]:
     # locked_block_loaded_elsewhere stopped the build unheard.
     shape = str(payload.get("finding_shape") or getattr(verdict, "reason", "") or "failed")
     checks = sorted({check for check, _ in brief_gates.failure_checks(verdict) if check})
+    # Per-task keys: a capability-scoped finding (a missing route) keys on its
+    # capability, so it is "the same failure" only when the SAME route fails
+    # again -- a different missing route is a different task. Any non-scoped
+    # finding of this gate keeps one generic key per check.
+    scoped_findings = _scoped_rework_findings(verdict)
+    if scoped_findings:
+        scoped = {f"{f.check_id}:{f.finding_shape}:{f.capability_id}" for f in scoped_findings}
+        scoped_set = set(scoped_findings)
+        non_scoped = any(f not in scoped_set for f in (getattr(verdict, "findings", None) or []))
+        generic = {f"{check}:{shape}" for check in checks} if non_scoped else set()
+        return sorted(scoped | generic)
     return [f"{check}:{shape}" for check in checks] or keys
 REWORK_TARGET = BuildRole.WRITER
 
@@ -168,21 +198,45 @@ def _test_defect_items(defects: Sequence[Dict[str, Any]]) -> list:
     ]
 
 
+def _scoped_route_task(check: str, finding: Any) -> Any:
+    """A missing-route finding becomes ONE targeted writer task: implement that
+    capability's backend route per the blueprint contract -- not a re-run of the
+    whole phase (ORDERS 2026-10-27 #2). The capability and call site travel in
+    the finding's typed fields; the text is generic, never a product literal."""
+    cap = finding.capability_id or ""
+    route = f"/v1/{cap}" if cap else "the route the UI calls"
+    site = f" (the UI calls it at {finding.file}:{finding.line})" if finding.file else ""
+    text = (
+        f"[{check}] implement the backend route {route} for capability "
+        f"'{cap}' that the UI already calls{site}: add the handler (reading and "
+        "writing the capability's own store), its request/response schema, and a "
+        "test that exercises it end to end. The route must answer, never 404, "
+        "and must not return canned or empty data."
+    )
+    return finding.with_fields(detail=text)
+
+
 def _writer_gate_items(verdict: Any) -> tuple:
     """The WRITER's rework list after its OWN gate failed: one item per
     finding, named by the check it measures (brief_gates), then the command
-    that runs the gate's probe so the writer can confirm the fix itself."""
+    that runs the gate's probe so the writer can confirm the fix itself.
+
+    A ``missing_route`` finding is rewritten into one scoped "implement route X"
+    task so the writer adds the one missing route, instead of re-running the
+    whole phase on the raw finding (ORDERS 2026-10-27 #2)."""
     from app.factory.build import brief_gates
     from app.factory.build.writer_behaviour import SELF_CHECK_COMMAND
 
-    items = [
-        # The bracket names the check for the coder; the typed fields travel
-        # with the item (capability_id drives the ratchet, never this text).
-        finding.with_fields(detail=f"[{check}] {finding.detail}")
-        if isinstance(finding, _findings.Finding)
-        else f"[{check}] {finding}"
-        for check, finding in brief_gates.failure_checks(verdict)
-    ]
+    items = []
+    for check, finding in brief_gates.failure_checks(verdict):
+        if isinstance(finding, _findings.Finding) and finding.finding_shape == "missing_route":
+            items.append(_scoped_route_task(check, finding))
+        elif isinstance(finding, _findings.Finding):
+            # The bracket names the check for the coder; the typed fields travel
+            # with the item (capability_id drives the ratchet, never this text).
+            items.append(finding.with_fields(detail=f"[{check}] {finding.detail}"))
+        else:
+            items.append(f"[{check}] {finding}")
     items.append(
         f"[{brief_gates.WRITER_BEHAVIOUR_CHECK}] before declaring done, run "
         f"`{SELF_CHECK_COMMAND}` (the WRITER gate's own probe) and fix every "
