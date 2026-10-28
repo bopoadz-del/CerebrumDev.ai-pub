@@ -148,6 +148,86 @@ def test_floor_answer_route_reaches_answer_query(eng, monkeypatch):
     assert "0.99" not in body["text"]
 
 
+# ── item 1: egress error -> 503 on BOTH routes, BOTH cases ─────────────────────
+
+
+import app.core.llm_embeddings as llm_embeddings  # noqa: E402
+from app.cerebrum_product_kernel.ingestion import engine_install  # noqa: E402
+
+
+@pytest.fixture
+def real_engine(tmp_path, monkeypatch):
+    """Install the REAL engine provider (LLM_SEMANTIC_V1 + Chroma) at a tmp dir.
+
+    The embedder calls the LLM egress; the tests below break that egress to
+    prove the route surfaces a 503 by exception TYPE, not by message text.
+    """
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
+    monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)  # default provider
+    engine_install.install_default_engine()
+    yield
+    retrieval_index.set_engine_provider(None)
+
+
+def _break_egress(monkeypatch, mode: str) -> None:
+    if mode == "unconfigured":
+        # llm_embeddings.py:72 — no base_url/key/model resolved.
+        monkeypatch.setattr(
+            llm_embeddings, "get_llm_config",
+            lambda: {"base_url": "", "api_key": "", "model": ""},
+        )
+    else:  # "failing" — configured, but the egress call itself fails (:85)
+        monkeypatch.setattr(
+            llm_embeddings, "get_llm_config",
+            lambda: {"base_url": "https://egress.test/v1", "api_key": "k", "model": "m"},
+        )
+
+        def _boom(url, headers, payload, timeout):
+            raise RuntimeError("provider 500")
+
+        monkeypatch.setattr(llm_embeddings, "_request_embeddings", _boom)
+
+
+@pytest.mark.parametrize("mode", ["unconfigured", "failing"])
+def test_generated_product_route_egress_error_is_503(real_engine, monkeypatch, mode):
+    """Engine installed, but the egress is unconfigured/failing -> computed 503,
+    never 200 'missing inputs', never 500."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    _break_egress(monkeypatch, mode)
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+
+
+@pytest.mark.parametrize("mode", ["unconfigured", "failing"])
+def test_floor_route_egress_error_is_503(real_engine, monkeypatch, mode):
+    """Same on the Floor route: an egress failure is a 503, matched by type."""
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    _break_egress(monkeypatch, mode)
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session
+    from app.main import app
+
+    create_session(f"sess_egress_{mode}", DEV_LOCAL_TENANT)
+    client = TestClient(app)  # bare: lifespan not run; real_engine fixture holds
+    resp = client.post(
+        f"/v1/sessions/sess_egress_{mode}/product/ingestion/answer",
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+
+
 def test_floor_answer_route_surfaces_no_engine(tmp_path, monkeypatch):
     """With no retrieval backend, the route surfaces 503 'retrieval backend not
     configured' rather than a silent empty."""

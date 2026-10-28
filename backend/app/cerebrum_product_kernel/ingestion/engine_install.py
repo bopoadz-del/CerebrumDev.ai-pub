@@ -23,11 +23,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from app.cerebrum_product_kernel.retrieval_engine import (
-    Embedder,
-    RetrievalEngine,
-    RetrievalEngineError,
-)
+from app.cerebrum_product_kernel.retrieval_engine import Embedder, RetrievalEngine
 
 from . import retrieval_index
 from .chroma_vector_store import ChromaVectorStore
@@ -74,19 +70,19 @@ def resolve_embedder() -> Optional[Embedder]:
 def build_tenant_engine(identity: str) -> Optional[RetrievalEngine]:
     """Build the per-tenant engine (embedder + per-tenant Chroma collection).
 
-    Returns ``None`` only when no embedder provider resolves or the resolved
-    provider is not semantic (the engine refuses it) — both of which the
-    ingestion/answer paths surface rather than hide.
+    Returns ``None`` only when the named provider is ABSENT (an unconfigured
+    host — the generic "retrieval backend not configured" path). A provider that
+    IS present but is NOT semantic is a different failure: the engine REFUSES it
+    by name (``keyword_embedder_not_retrieval``), and that named refusal is
+    propagated — never flattened to the generic "not configured" message, and
+    never silently accepted as retrieval.
     """
     embedder = resolve_embedder()
     if embedder is None:
         return None
-    try:
-        return RetrievalEngine(embedder=embedder, store=ChromaVectorStore())
-    except RetrievalEngineError:
-        # A non-semantic provider was named: not retrieval. Surface as "no
-        # engine" so the upload/answer paths report it, not a 500 at boot.
-        return None
+    # A non-semantic provider raises RetrievalEngineError(keyword_embedder_not_retrieval)
+    # here; it is deliberately NOT caught — the named refusal must surface.
+    return RetrievalEngine(embedder=embedder, store=ChromaVectorStore())
 
 
 def install_default_engine() -> None:

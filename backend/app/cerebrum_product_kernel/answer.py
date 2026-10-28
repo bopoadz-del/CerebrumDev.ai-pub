@@ -298,12 +298,12 @@ def _kernel_answer(
 
     required = free_names(expression)
     # Ground the inputs: retrieve with the query AND the input names so the
-    # figures that feed the formula are in the retrieved excerpts.
+    # figures that feed the formula are in the retrieved excerpts. A retrieval
+    # error is NOT swallowed — an egress failure here (EmbeddingEgressError)
+    # must propagate so the route surfaces a 503, never a 200 "missing inputs"
+    # that hides a broken backend behind a fabricated refusal.
     grounding_query = " ".join([query, *required]).strip()
-    try:
-        hits = engine.retrieve(collection, grounding_query)
-    except Exception:  # noqa: BLE001 — a retrieval error grounds nothing
-        hits = []
+    hits = engine.retrieve(collection, grounding_query)
     corpus = "\n\n".join(h.text for h in hits)
     citations = [
         Citation(file=str(h.file), location=dict(h.location or {}))

@@ -155,3 +155,117 @@ def test_no_boot_install_records_surfaced_not_indexed(boot_env):
     )
     assert outcome.state == retrieval_index.INDEX_STATE_NOT_INDEXED
     assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED in outcome.index_state
+
+
+# ── M5: the engine is installed via the APP LIFESPAN, not only the direct helper ──
+
+
+def test_engine_installed_via_app_lifespan(tmp_path, monkeypatch):
+    """`with TestClient(app)` runs app.main's lifespan -> install_default_engine
+    (main.py). The engine is then LIVE and an ingest INDEXES. Removing the
+    lifespan install call reddens this (engine stays None inside the context)."""
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
+    register_provider(_DeterministicProvider())
+    monkeypatch.setenv(engine_install.EMBEDDER_ENV, "test_deterministic_semantic_v1")
+    # Start from a clean slate so only the lifespan can install the engine.
+    retrieval_index.set_engine_provider(None)
+    assert retrieval_index.tenant_engine("tenant-a") is None
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    try:
+        with TestClient(app):  # context manager -> lifespan startup runs
+            engine = retrieval_index.tenant_engine("tenant-a")
+            assert engine is not None, "app lifespan did not install the engine"
+            outcome = retrieval_index.ingest_parsed_chunks(
+                "tenant-a",
+                [{
+                    "id": "c1", "text": "Revenue is 100. COGS is 60.", "layer": 2,
+                    "tenant_id": "tenant-a", "object_id": "o", "file": "finance.md",
+                    "location": {"paragraph": 1},
+                }],
+            )
+            assert outcome.state == retrieval_index.INDEX_STATE_INDEXED
+    finally:
+        retrieval_index.set_engine_provider(None)
+
+
+# ── M8: default provider = LLM_SEMANTIC_V1 when the env is unset ────────────────
+
+
+def test_default_provider_is_llm_semantic_when_env_unset(monkeypatch):
+    """A mutant defaulting to 'none' or the hash provider reddens this."""
+    monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)
+    assert engine_install._default_provider_id() == LLM_SEMANTIC_V1
+    embedder = engine_install.resolve_embedder()
+    assert embedder is not None
+    assert embedder._provider.provider_id == LLM_SEMANTIC_V1
+    assert embedder.semantic is True
+
+
+# ── M9: a NON-SEMANTIC provider named via the env is REFUSED, by NAME ──────────
+
+
+def test_non_semantic_provider_named_is_refused_by_name(monkeypatch):
+    """Naming the (non-semantic) feature-hash provider is refused with the NAMED
+    refusal (keyword_embedder_not_retrieval), NOT the generic 'retrieval backend
+    not configured'. A mutant that accepts it (or flattens the message) reddens."""
+    from app.core.rag_embedding_providers import LOCAL_FEATURE_HASH_V1
+    from app.cerebrum_product_kernel.retrieval_engine import RetrievalEngineError
+
+    monkeypatch.setenv(engine_install.EMBEDDER_ENV, LOCAL_FEATURE_HASH_V1)
+    # The resolved embedder is present but NOT semantic.
+    embedder = engine_install.resolve_embedder()
+    assert embedder is not None
+    assert embedder.semantic is False
+    with pytest.raises(RetrievalEngineError) as exc:
+        engine_install.build_tenant_engine("tenant-a")
+    assert "keyword_embedder_not_retrieval" in str(exc.value)
+    assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED not in str(exc.value)
+
+
+# ── index_state PINNED on the job AND the status payload ───────────────────────
+
+
+def _parse_md(identity, body):
+    from app.cerebrum_product_kernel.ingestion import object_store, parse_job
+    from app.cerebrum_product_kernel.ingestion.parsers import parse_object
+
+    stored = object_store.save_object(identity, "finance.md", body)
+    job = parse_job.create_job(
+        identity, object_id=stored.object_id, source_name=stored.source_name
+    )
+    final = parse_object(identity, stored.object_id, job_id=job.job_id)
+    return final
+
+
+def test_index_state_pinned_indexed(boot_env):
+    """After a parse with a live engine, the job carries index_state='indexed'
+    and job_status_payload returns it. Dropping index_state reddens this."""
+    from app.cerebrum_product_kernel.ingestion import parse_job
+    from app.cerebrum_product_kernel.ingestion.router import job_status_payload
+
+    engine_install.install_default_engine()
+    final = _parse_md("tenant-a", b"Liquidity.\n\nRevenue is 100. COGS is 60.\n")
+    assert final.status is parse_job.ParseStatus.PARSED
+    assert final.index_state == "indexed"
+    payload = job_status_payload("tenant-a", final.job_id)
+    assert payload["index_state"] == "indexed"
+
+
+def test_index_state_pinned_not_indexed(boot_env):
+    """With no engine, the job carries a SURFACED not_indexed state and the
+    payload returns it — never a missing/silent field."""
+    from app.cerebrum_product_kernel.ingestion import parse_job
+    from app.cerebrum_product_kernel.ingestion.router import job_status_payload
+
+    retrieval_index.set_engine_provider(None)
+    final = _parse_md("tenant-a", b"Liquidity.\n\nRevenue is 100. COGS is 60.\n")
+    assert final.status is parse_job.ParseStatus.PARSED
+    assert final.index_state.startswith("not_indexed")
+    assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED in final.index_state
+    payload = job_status_payload("tenant-a", final.job_id)
+    assert payload["index_state"] == final.index_state

@@ -219,26 +219,41 @@ def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
 
     Mirrors how ``ingest_uploads`` backs both ``/upload`` routes: the caller
     resolves the tenant and passes it in; this never reads headers. It calls the
-    kernel's :func:`answer_query` and maps its refusals to surfaced HTTP errors
-    — 503 when no retrieval backend is configured, 422 when the answer cannot be
-    grounded. The returned dict is ``ProductAnswer.to_dict()``.
+    kernel's :func:`answer_query` and maps its refusals to surfaced HTTP errors:
+
+    * 503 when retrieval cannot run — either no engine is installed
+      (``RETRIEVAL_BACKEND_NOT_CONFIGURED``) OR the embeddings egress itself is
+      unconfigured / failing (``EmbeddingEgressError``). This is mapped by
+      EXCEPTION TYPE, not by message text, so both an unconfigured egress and a
+      configured-but-failing egress surface a 503 — never a 200 that hides the
+      broken backend behind a fabricated "missing inputs", and never a 500.
+    * 422 when retrieval ran but the answer cannot be grounded
+      (``RetrievalEngineError`` — e.g. "not in the retrieved excerpts", or a
+      non-semantic embedder refused by name).
+
+    The returned dict is ``ProductAnswer.to_dict()``.
     """
     from app.cerebrum_product_kernel.answer import answer_query
     from app.cerebrum_product_kernel.ingestion.retrieval_index import (
         RETRIEVAL_BACKEND_NOT_CONFIGURED,
     )
     from app.cerebrum_product_kernel.retrieval_engine import RetrievalEngineError
+    from app.core.llm_embeddings import EmbeddingEgressError
 
     try:
         answer = answer_query(tenant_id, body.query, body.answer_text)
+    except EmbeddingEgressError as exc:
+        # The embeddings egress is unconfigured or failed — a computed 503,
+        # matched by TYPE (not message), on both answer routes.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
         message = str(exc)
         if RETRIEVAL_BACKEND_NOT_CONFIGURED in message:
             raise HTTPException(status_code=503, detail=message) from exc
         raise
     except RetrievalEngineError as exc:
-        # Grounding refused (nothing retrieved supports the claim): a surfaced
-        # 422, not a 500 — the client sees the honest "not in the retrieved
-        # excerpts" message rather than an opaque failure.
+        # Grounding refused (nothing retrieved supports the claim, or a
+        # non-semantic embedder was refused by name): a surfaced 422 carrying
+        # the named refusal, not an opaque 500.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return answer.to_dict()

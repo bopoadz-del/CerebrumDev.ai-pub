@@ -40,13 +40,17 @@ from app.cerebrum_product_kernel.retrieval_engine import InMemoryVectorStore, Re
 # to one axis, leave-policy words to another, so a finance query retrieves the
 # finance doc (and its revenue/cogs figures) with zero lexical tricks.
 _VECTORS = {
-    # finance / margin axis — includes the gross_margin_ratio inputs
+    # finance / margin axis — includes the gross_margin_ratio AND current_ratio
+    # inputs, so a finance query retrieves the figures either formula needs.
     "gross": [1.0, 0.0, 0.0],
     "margin": [1.0, 0.0, 0.0],
     "ratio": [1.0, 0.0, 0.0],
     "revenue": [1.0, 0.0, 0.0],
     "cogs": [1.0, 0.0, 0.0],
     "profit": [1.0, 0.0, 0.0],
+    "current": [1.0, 0.0, 0.0],
+    "assets": [1.0, 0.0, 0.0],
+    "liabilities": [1.0, 0.0, 0.0],
     # leave-policy axis
     "sabbatical": [0.0, 1.0, 0.0],
     "leave": [0.0, 1.0, 0.0],
@@ -97,13 +101,22 @@ def _attach(identity, source_name, data):
 # ── kernel compute path ────────────────────────────────────────────────────────
 
 
-def test_kernel_covered_query_number_is_computed_not_prose(engine):
-    """BAR 3 + its mutation: the kernel-covered answer's number is COMPUTED from
-    grounded inputs (0.40), NEVER the prose number (0.99). Restoring the prose
-    pass-through turns this red."""
+@pytest.mark.parametrize(
+    "revenue,cogs,expected",
+    [
+        (100, 60, 0.40),   # (100 - 60) / 100
+        (200, 50, 0.75),   # (200 - 50) / 200 — a DIFFERENT result: the number
+                           # TRACKS the grounded inputs, so a constant-0.4 mutant
+                           # (computed = 0.4) dies here.
+    ],
+)
+def test_kernel_number_tracks_grounded_inputs_not_prose(engine, revenue, cogs, expected):
+    """BAR 3 (two-input): the kernel number is COMPUTED from the grounded inputs
+    and MOVES with them, NEVER the prose number (0.99). Kills M1 (constant 0.4)
+    and the prose-pass-through mutant."""
     _attach(
         "tenant-a", "finance.md",
-        b"Gross margin inputs.\n\nRevenue is 100. COGS is 60.\n",
+        f"Gross margin inputs.\n\nRevenue is {revenue}. COGS is {cogs}.\n".encode(),
     )
     ans = answer_query(
         "tenant-a",
@@ -115,17 +128,47 @@ def test_kernel_covered_query_number_is_computed_not_prose(engine):
     assert ans.kind == KIND_KERNEL
     assert ans.improvised is False
     assert ans.unknown is False
-    # The kernel computed (100 - 60) / 100 = 0.40 from the grounded inputs.
-    assert ans.kernel_value == pytest.approx(0.40)
-    assert "0.4" in ans.text
-    # The prose number is GONE — this is the line the prose-pass-through mutation
-    # turns red.
+    # Item 4 (restored): a plain kernel answer carries NO improvisation label,
+    # and names the kernel definition it answered from.
+    assert ans.label == ""
+    assert ans.kernel["id"] == "gross_margin_ratio"
+    # The number is COMPUTED and tracks the inputs (0.40 vs 0.75).
+    assert ans.kernel_value == pytest.approx(expected)
+    assert str(expected) in ans.text or f"{expected:.2f}" in ans.text
+    # The prose number is GONE — the prose-pass-through mutation turns this red.
     assert "0.99" not in ans.text
+    # M4: a kernel answer carries its grounding citations (the finance doc).
+    assert ans.citations
+    assert any(c.file == "finance.md" for c in ans.citations)
     # The number moves with the kernel definition (it is the kernel's own).
     assert ans.kernel["expression"] == "(revenue - cogs) / revenue"
     assert ans.kernel["expression"] == answer_definition("gross_margin_ratio")["expression"]
     # A kernel answer logs no new-domain candidate.
     assert read_new_domain_candidates("tenant-a") == []
+
+
+def test_second_definition_uses_its_own_inputs(engine):
+    """BAR 3: a DIFFERENT kernel definition (current_ratio) is computed from ITS
+    OWN inputs (current_assets / current_liabilities), not a hardwired
+    [revenue, cogs] list. Kills M3 (hardwired input list at answer.py)."""
+    _attach(
+        "tenant-a", "balance.md",
+        b"Liquidity.\n\nCurrent assets is 500. Current liabilities is 250.\n",
+    )
+    ans = answer_query(
+        "tenant-a",
+        "what is the current ratio",
+        "The current ratio is 0.99.",
+        engine=engine,
+    )
+    assert ans.kind == KIND_KERNEL
+    assert ans.unknown is False
+    assert ans.kernel["id"] == "current_ratio"
+    assert ans.kernel["expression"] == "current_assets / current_liabilities"
+    # 500 / 250 = 2.0 — a hardwired [revenue, cogs] list would refuse this as
+    # "missing inputs" instead of computing 2.0.
+    assert ans.kernel_value == pytest.approx(2.0)
+    assert "0.99" not in ans.text
 
 
 def test_kernel_covered_query_refuses_when_inputs_missing(engine):
