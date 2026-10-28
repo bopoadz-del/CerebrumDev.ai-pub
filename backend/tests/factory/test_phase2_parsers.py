@@ -18,6 +18,7 @@ the parser itself, two genuine inputs):
 
 from __future__ import annotations
 
+import datetime as _dt
 import io
 
 import pytest
@@ -376,3 +377,130 @@ def test_parsing_tenant_a_never_touches_tenant_b():
     # A's object is not even readable under B's digest.
     with pytest.raises(object_store.ObjectStoreError):
         object_store.read_object("tenant-b", job.object_id)
+
+
+# ── pinning tests for the four previously-untested rules (F-1b rework) ─────────
+#
+# Each test below is written to FAIL under one specific one-line mutation of the
+# rule it pins, so the rule is covered by behaviour rather than by inspection.
+
+
+def test_text_line_location_true_across_multiple_in_loop_paragraphs():
+    """TXT line location is the real start line for EVERY paragraph, exercising
+    both the in-loop append (a paragraph closed by a blank line) and the
+    trailing append (the last paragraph).
+
+    Mutant: forcing the in-loop ``{"line": para_start}`` to ``{"line": 1}`` makes
+    the SECOND in-loop paragraph (true start line 3) report 1 -> this FAILS.
+    """
+    # p1 -> line 1 (in-loop, closed by the blank line 2)
+    # p2 -> line 3 (in-loop, closed by the blank line 4)
+    # p3 -> line 5 (trailing, appended after the loop)
+    data = b"First para here.\n\nSecond para here.\n\nThird para here.\n"
+    _, job = _upload_and_parse("tenant-a", "multi.txt", data)
+    assert job.status is ParseStatus.PARSED
+
+    chunks = read_chunks("tenant-a", job.job_id)
+    first = [c for c in chunks if "First para" in c["text"]]
+    second = [c for c in chunks if "Second para" in c["text"]]
+    third = [c for c in chunks if "Third para" in c["text"]]
+    assert first and second and third
+    # The true start line of each paragraph, not a constant.
+    assert first[0]["location"]["line"] == 1
+    assert second[0]["location"]["line"] == 3  # in-loop, != 1 -> kills the mutant
+    assert third[0]["location"]["line"] == 5
+
+
+def test_parse_refuses_job_id_belonging_to_a_different_object():
+    """A job_id that belongs to a DIFFERENT object is refused: the parser never
+    parses an object under another object's job.
+
+    Mutant: weakening ``job is None or job.object_id != object_id`` in
+    ``_resolve_job`` to just ``job is None`` lets the wrong job through and no
+    error is raised -> this FAILS.
+    """
+    stored_a = object_store.save_object("tenant-a", "a.md", b"Alpha body.\n")
+    stored_b = object_store.save_object("tenant-a", "b.md", b"Bravo body.\n")
+    job_a = create_job(
+        "tenant-a", object_id=stored_a.object_id, source_name=stored_a.source_name
+    )
+    job_b = create_job(
+        "tenant-a", object_id=stored_b.object_id, source_name=stored_b.source_name
+    )
+    assert job_a.object_id != job_b.object_id
+
+    # Ask to parse object A but hand it B's job -> refusal (ValueError).
+    with pytest.raises(ValueError):
+        parse_object("tenant-a", stored_a.object_id, job_id=job_b.job_id)
+
+
+def test_parse_prefers_the_pending_job_for_an_object():
+    """With two jobs for one object — one still pending, one already done — the
+    parser (given no explicit job_id) picks the PENDING one, even when the done
+    job is the most recent.
+
+    Mutant: changing ``pool = pending or candidates`` to ``pool = candidates`` in
+    ``_resolve_job`` makes it pick the most-recent (done) job instead -> FAILS.
+    """
+    stored = object_store.save_object("tenant-a", "doc.md", b"Body text here.\n")
+
+    job_pending = create_job(
+        "tenant-a",
+        object_id=stored.object_id,
+        source_name=stored.source_name,
+        status=ParseStatus.QUEUED,
+    )
+    job_done = create_job(
+        "tenant-a",
+        object_id=stored.object_id,
+        source_name=stored.source_name,
+        status=ParseStatus.PARSED,
+    )
+
+    # Make the DONE job strictly the most recent, so "most recent" and "pending"
+    # point at different jobs and the preference is what decides.
+    pj = get_job("tenant-a", job_pending.job_id)
+    pj.created_at = _dt.datetime(2020, 1, 1)
+    parse_job._write("tenant-a", pj)
+    dj = get_job("tenant-a", job_done.job_id)
+    dj.created_at = _dt.datetime(2030, 1, 1)
+    parse_job._write("tenant-a", dj)
+
+    final = parse_object("tenant-a", stored.object_id)
+    # The pending job is the one that got parsed, not the newer done job.
+    assert final.job_id == job_pending.job_id
+    assert get_job("tenant-a", job_pending.job_id).status is ParseStatus.PARSED
+
+
+def _make_xlsx_with_blank_row():
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Inventory"
+    ws.append(["name", "qty"])   # row 1
+    ws.append(["widget", 5])      # row 2
+    ws.append([None, None])       # row 3 — blank
+    ws.append(["gadget", 9])      # row 4
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_xlsx_blank_row_is_skipped():
+    """A blank row is skipped: the row count excludes it and no chunk is tagged
+    with the blank row's position.
+
+    Mutant: removing the blank-row ``continue`` in ``parse_xlsx`` counts the
+    blank row (``rows`` becomes 4) -> this FAILS.
+    """
+    _, job = _upload_and_parse("tenant-a", "book.xlsx", _make_xlsx_with_blank_row())
+    assert job.status is ParseStatus.PARSED
+    assert job.sheets == 1
+    # Three non-blank rows (1, 2, 4); the blank row 3 is not counted.
+    assert job.rows == 3
+
+    chunks = read_chunks("tenant-a", job.job_id)
+    rows_seen = {c["location"]["row"] for c in chunks}
+    assert rows_seen == {1, 2, 4}
+    assert 3 not in rows_seen

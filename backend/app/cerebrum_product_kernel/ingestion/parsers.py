@@ -107,6 +107,35 @@ def parse_pdf(data: bytes, *, source_name: str, object_id: str, tenant_id: str):
     return chunks, {"pages": len(reader.pages)}
 
 
+#: python-docx's own built-in style ids for the heading/title styles (the
+#: ``w:styleId`` Word assigns, stable across locales and display names):
+#: ``Title`` and ``Heading1``..``Heading9``. A paragraph is a heading when its
+#: style is a built-in style (``style.builtin``) whose structural id is one of
+#: these -- read from the style's identity, never matched against the lower-
+#: cased display name. ``WD_BUILTIN_STYLE`` enumerates the same set; the ids
+#: here are that enum's ``style_id`` values.
+_HEADING_STYLE_IDS = frozenset(
+    {"Title"} | {f"Heading{level}" for level in range(1, 10)}
+)
+
+
+def _is_heading_paragraph(paragraph) -> bool:
+    """True when the paragraph's style is a built-in Word heading/title style.
+
+    Decided structurally from python-docx: the style must report
+    ``builtin`` True and carry one of the built-in heading/title ``style_id``
+    values -- the ``w:styleId`` in the document's style part, not a substring
+    of the human-facing style name.
+    """
+    style = getattr(paragraph, "style", None)
+    if style is None:
+        return False
+    if not bool(getattr(style, "builtin", False)):
+        return False
+    style_id = getattr(style, "style_id", None)
+    return style_id in _HEADING_STYLE_IDS
+
+
 def parse_docx(data: bytes, *, source_name: str, object_id: str, tenant_id: str):
     """DOCX -> one unit per paragraph, tagged by paragraph index and the
     nearest preceding heading (mirrors ``_parse_docx_local``; no page concept)."""
@@ -117,8 +146,7 @@ def parse_docx(data: bytes, *, source_name: str, object_id: str, tenant_id: str)
     heading: Optional[str] = None
     for index, paragraph in enumerate(document.paragraphs):
         text = paragraph.text or ""
-        style = (paragraph.style.name if paragraph.style else "") or ""
-        is_heading = style.lower().startswith("heading") or style.lower() == "title"
+        is_heading = _is_heading_paragraph(paragraph)
         if is_heading and text.strip():
             heading = text.strip()
         if not text.strip():
