@@ -207,7 +207,7 @@ The production `Dockerfile` installs official Kimi Code at `/usr/local/bin/kimi`
 (pin `KIMI_CODE_VERSION`). Official Claude Code may still be planted at
 `/usr/local/bin/claude` as leftover unused binary. A keyed Floor without the
 selected binary fail-closes as `FACTORY_CODE_CLI_UNAVAILABLE`. A Moonshot
-Kimi binary without `~/.kimi-code/config.toml` fail-closes as
+Kimi binary without its credentials file fail-closes as
 `FACTORY_CODE_CLI_CREDENTIALS_MISSING` when Cursor executor keys are
 absent. When `CURSOR_API_KEY` (or sibling Cursor BA keys) is present,
 Generate/Continue uses Cursor BA — Kimi CLI credentials are unused and
