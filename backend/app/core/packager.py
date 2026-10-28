@@ -244,9 +244,9 @@ def package_session(state: SessionState, api_key: str = None) -> Dict[str, Any]:
                 shutil.copy2(f, docs_dir / f.name)
 
     # 4. Dockerfile + deploy contract + bootstrap + probe
-    engine_repo = os.getenv(
-        "CEREBRUM_BLOCKS_REPO", "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git"
-    )
+    from app.factory import repo_coords
+
+    engine_repo = os.getenv("CEREBRUM_BLOCKS_REPO") or repo_coords.store_git_url()
     # The Store commit this Factory is pinned to (store.pin), never a
     # floating "main": a packaged product builds from the Store it was
     # verified against.

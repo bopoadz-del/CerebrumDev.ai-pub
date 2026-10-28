@@ -14,6 +14,12 @@ from tests.factory.coder_stub_bodies import invoking_handler_body
 # below or collection fails.
 os.environ.setdefault("ALLOW_ANONYMOUS_DEV", "1")
 
+# Repo coordinates have no defaults in product code (they fail closed); the
+# suite supplies fixture values so build/store code paths resolve.
+os.environ.setdefault("FACTORY_STORE_REPO", "example-org/blocks")
+os.environ.setdefault("FACTORY_BUILDS_REPO", "example-org/builds")
+os.environ.setdefault("FACTORY_SELF_REPO", "example-org/factory")
+
 # TestClient fires startup events; without this every test app would arm the
 # nightly backup scheduler and take a bootstrap snapshot into ./storage.
 # Scheduler tests opt back in explicitly with monkeypatch.

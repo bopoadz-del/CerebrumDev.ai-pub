@@ -29,10 +29,11 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-CEREBRUM_BLOCKS_REPO = os.getenv(
-    "CEREBRUM_BLOCKS_REPO",
-    "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git",
-)
+def cerebrum_blocks_repo() -> str:
+    """Clone URL of the block store: the env override, else the configured coordinate."""
+    from app.factory import repo_coords
+
+    return os.getenv("CEREBRUM_BLOCKS_REPO") or repo_coords.store_git_url()
 
 
 # Last-resort ref for an environment that cannot reach the Store at all: no
@@ -241,7 +242,7 @@ def find_engine_root(anchor: Optional[Path] = None) -> Path:
         return local
 
     ref = _effective_ref()
-    return _fetch_engine_checkout(CEREBRUM_BLOCKS_REPO, ref)
+    return _fetch_engine_checkout(cerebrum_blocks_repo(), ref)
 
 
 def _find_engine_root(anchor: Optional[Path] = None) -> Path:
@@ -265,7 +266,7 @@ def resolve_engine_source() -> Tuple[Path, dict]:
             commit_sha = "unknown"
         return local, {
             "source": "local",
-            "repo": CEREBRUM_BLOCKS_REPO,
+            "repo": cerebrum_blocks_repo(),
             "ref": os.getenv("CEREBRUM_BLOCKS_REF")
             or (commit_sha if commit_sha != "unknown" else DEFAULT_CEREBRUM_BLOCKS_REF),
             "path": str(local),
@@ -273,11 +274,11 @@ def resolve_engine_source() -> Tuple[Path, dict]:
         }
 
     ref = _effective_ref()
-    fetched = _fetch_engine_checkout(CEREBRUM_BLOCKS_REPO, ref)
+    fetched = _fetch_engine_checkout(cerebrum_blocks_repo(), ref)
     commit_sha = _git_rev_parse(fetched)
     return fetched, {
         "source": "fetched",
-        "repo": CEREBRUM_BLOCKS_REPO,
+        "repo": cerebrum_blocks_repo(),
         "ref": ref,
         "commit_sha": commit_sha,
     }
