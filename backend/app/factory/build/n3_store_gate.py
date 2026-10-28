@@ -1350,8 +1350,15 @@ def ingest_n3_store_gate(
     poll_s: Optional[float] = None,
     wall_s: Optional[float] = None,
     session_id: Optional[str] = None,
+    tenant_identity: Optional[str] = None,
 ) -> IngestResult:
-    """Fetch or poll store-gate and apply the ledger stamp. Never starts a BA."""
+    """Fetch or poll store-gate and apply the ledger stamp. Never starts a BA.
+
+    ``tenant_identity`` is the bound tenant the route guard resolved for this
+    reseed (the session owner). The HANDOFF NOTE that ``reseed_handoff_ledger``
+    already stamped carries it; it is accepted here so the single reseed entry
+    threads one tenant identity through both the stamp and the ingest.
+    """
     root = Path(output_dir)
     if not handoff_awaiting_n3(root):
         ledger_path = root / "build_ledger.jsonl"
@@ -1598,10 +1605,11 @@ def reseed_handoff_ledger(
     builds_sha: str,
     builds_branch: str,
     cli_authored_ids: Sequence[str],
-    builds_owner: str = "bopoadz-del",
-    builds_repo: str = "cerebrum-builds-pub",
+    builds_owner: Optional[str] = None,
+    builds_repo: Optional[str] = None,
     product_id: Optional[str] = None,
     inputs_hash: str = "n3_handoff_reseed",
+    tenant_identity: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Stamp a minimal HANDOFF_TO_N3 ledger for one-time N3 ingest.
 
@@ -1620,8 +1628,10 @@ def reseed_handoff_ledger(
     root = Path(output_dir)
     sha = str(builds_sha or "").strip()
     branch = str(builds_branch or "").strip()
-    owner = str(builds_owner or "").strip() or "bopoadz-del"
-    repo = str(builds_repo or "").strip() or "cerebrum-builds-pub"
+    from app.factory import repo_coords
+
+    owner = str(builds_owner or "").strip() or repo_coords.builds_owner()
+    repo = str(builds_repo or "").strip() or repo_coords.builds_name()
     ids = [str(item).strip() for item in (cli_authored_ids or []) if str(item).strip()]
     if not sha or not branch:
         raise HandoffReseedError(
@@ -1662,6 +1672,12 @@ def reseed_handoff_ledger(
             pass
 
     pid = str(product_id or root.name or "product").strip() or "product"
+    # The bound tenant the route guard resolved for this reseed (the session's
+    # owner account). Stamped into the HANDOFF NOTE so the ingest ledger
+    # records WHOSE tenant store this store-gate handoff isolates under — the
+    # same tenant identity a generate/pilot build binds, surfaced here for an
+    # n3-reseed that binds no per-tenant store of its own.
+    tenant = str(tenant_identity or "").strip() or None
     from app.factory.build.authority import BuildRole
 
     if not ledger.exists():
@@ -1685,6 +1701,7 @@ def reseed_handoff_ledger(
         "builds_branch": branch,
         "builds_owner": owner,
         "builds_repo": repo,
+        "tenant": tenant,
         "via": "n3_handoff_reseed",
     }
     ledger.append(

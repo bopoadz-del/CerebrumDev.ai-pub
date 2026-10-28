@@ -34,7 +34,10 @@ RECEIPT_NAMES = ("receipt.json", "docs/receipt.json", "docs/coder_receipt.json")
 
 BUILDS_TOKEN_ENV: Final = "CEREBRUM_BUILDS_GITHUB_TOKEN"
 BUILDS_REPO_ENV = "CEREBRUM_BUILDS_REPO"
-DEFAULT_BUILDS_REPO = "bopoadz-del/cerebrum-builds-pub"
+def _default_builds_repo() -> str:
+    from app.factory import repo_coords
+
+    return repo_coords.builds_repo()
 GITHUB_API = "https://api.github.com"
 # Compare 404 is usually missing head/seed after BA rename or GitHub ref lag —
 # not an API outage. Retry briefly, then fail closed with a clear diagnosis.
@@ -186,7 +189,7 @@ def make_branch_name(session_id: str, *, suffix: Optional[str] = None) -> str:
 
 
 def parse_builds_repo(env: Mapping[str, str]) -> Tuple[str, str, str]:
-    raw = str(env.get(BUILDS_REPO_ENV) or "").strip() or DEFAULT_BUILDS_REPO
+    raw = str(env.get(BUILDS_REPO_ENV) or "").strip() or _default_builds_repo()
     if raw.startswith("https://") or raw.startswith("http://"):
         clean = raw.rstrip("/").removesuffix(".git")
         parts = [p for p in clean.split("/") if p]

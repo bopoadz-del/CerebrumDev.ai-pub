@@ -4,7 +4,7 @@ WHY THIS LIVES IN THE KERNEL
 
 Generated products receive this package via ``ProductGenerator._write_app``
 (``shutil.copytree`` of ``cerebrum_product_kernel``). An isolation helper that
-lived only in The_Fork's document indexer would be re-invented — and the
+lived only in the reference document indexer would be re-invented — and the
 absolute-ceiling form of the bug would ship again. The kernel is the Factory
 path that every product already inherits.
 
@@ -15,8 +15,8 @@ the parent's entire mapping. With torch / embeddings resident, parent VmSize
 is already multiple GB, so an ABSOLUTE ceiling of 1536 MB was breached the
 instant the child started. The first allocation raised MemoryError; extraction
 swallowed it as a successful empty document; every file >= 1 MB indexed as
-ZERO_CHUNK with nothing logged. That shipped (The_Fork, after the isolation
-change).
+ZERO_CHUNK with nothing logged. That shipped in the reference application,
+after the isolation change.
 
 The child's limit is therefore ``parent VmSize + budget``. If the parent's
 size cannot be read, no limit is set: isolation still contains a runaway,

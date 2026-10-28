@@ -563,6 +563,7 @@ def test_generate_n3_reseed_flag_skips_generate_product(tmp_path, monkeypatch):
     """POST /product/generate {n3_reseed:true} must not call generate_product."""
     from fastapi.testclient import TestClient
 
+    from app.core.auth import DEV_LOCAL_TENANT
     from app.core.session_store import create_session, get_session, update_session
     from app.main import app
     from app.factory.build.n3_store_gate import ingest_n3_store_gate as real_ingest
@@ -576,7 +577,7 @@ def test_generate_n3_reseed_flag_skips_generate_product(tmp_path, monkeypatch):
     monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
 
     sid = "sess_n3_reseed_api"
-    create_session(sid, "tester")
+    create_session(sid, DEV_LOCAL_TENANT)
     state = get_session(sid)
     assert state is not None
     out = tmp_path / "factory_outputs" / "sessions" / sid / "finance-ops"

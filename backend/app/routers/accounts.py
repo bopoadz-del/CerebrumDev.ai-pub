@@ -47,6 +47,11 @@ class KeyBody(BaseModel):
     label: str = ""
 
 
+class AdminTenantKeyBody(BaseModel):
+    account_id: str
+    label: str = ""
+
+
 class ForgotBody(BaseModel):
     email: str
 
@@ -453,6 +458,55 @@ async def delete_key(key_id: str, principal: Principal = Depends(require_api_key
     if not accounts_store.revoke_api_key(principal.account_id or "", key_id):
         raise HTTPException(status_code=404, detail="Key not found or already revoked")
     return {"ok": True, "key_id": key_id, "revoked": True}
+
+
+@router.post("/admin/keys", status_code=201)
+async def admin_issue_tenant_key(
+    body: AdminTenantKeyBody, principal: Principal = Depends(require_api_key)
+):
+    """Admin-issued, tenant-scoped API key for a specific account (tenant user).
+
+    A programmatic caller (a fleet lane) that must run one tenant's own
+    isolated build cannot use the master/admin key — that key owns no tenant
+    and is refused at the build route (``no_tenant``). This mints a normal
+    account API key (``cdk_…``) for the named account, so the token resolves
+    to a ``kind="user"`` principal bound to that account_id and passes the
+    build route's tenant guard for that tenant and no other. It is a real
+    account credential, subject to every ownership check — never a bypass —
+    and is revocable like any other key.
+    """
+    if principal.kind != "admin":
+        raise HTTPException(status_code=403, detail="admin key required")
+    target = (body.account_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="account_id required")
+    if accounts_store.get_account(target) is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    issued = accounts_store.issue_api_key(
+        target, body.label or "tenant-scoped (admin-issued)"
+    )
+    return {
+        "ok": True,
+        "account_id": target,
+        "key_id": issued["key_id"],
+        "api_key": issued["api_key"],
+        "note": (
+            "Tenant-scoped; shown once; revoke with "
+            "DELETE /accounts/admin/keys/{account_id}/{key_id}."
+        ),
+    }
+
+
+@router.delete("/admin/keys/{account_id}/{key_id}")
+async def admin_revoke_tenant_key(
+    account_id: str, key_id: str, principal: Principal = Depends(require_api_key)
+):
+    """Revoke an admin-issued tenant-scoped key (admin only)."""
+    if principal.kind != "admin":
+        raise HTTPException(status_code=403, detail="admin key required")
+    if not accounts_store.revoke_api_key(account_id, key_id):
+        raise HTTPException(status_code=404, detail="Key not found or already revoked")
+    return {"ok": True, "account_id": account_id, "key_id": key_id, "revoked": True}
 
 
 @router.get("/export")
