@@ -18,9 +18,12 @@ over the computed manifest (live 9de69276 vineyard repro, 8 POSTs 404).
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Dict
+
+import pytest
 
 from app.factory.build.factory_block import outside
 from app.factory.build.factory_receipt import factory_stamped_paths
@@ -173,6 +176,98 @@ def test_every_registered_stamp_is_idempotent_and_never_rewrites_product_bytes(t
     assert ns["CAPABILITIES"] == [{"id": "tank_log", "entity": "tank_reading", "source": "agent"}]
     assert ns["product_helper"]() == 1
     assert ns["JOBS"] and ns["CATALOG"]["kernel"] and ns["GATES"]["kernel"]
+
+
+def _single_pass_requirements(root: Path) -> str:
+    """requirements.txt after ONE application of the stamps to a fresh product."""
+    _write(root)
+    _apply_all(root)  # ONE pass only
+    return (root / "requirements.txt").read_text(encoding="utf-8")
+
+
+def _real_kernel_feature_dists() -> set:
+    """Distribution names the ACTUAL published kernel source demands, derived
+    from the scan's own pattern table matched against ``product_kernel_files``
+    unpatched -- so the test names no package by literal and tracks whatever the
+    real kernel happens to use (today its ingestion route uses UploadFile/File).
+    """
+    import re as _re
+
+    from app.factory.build.domain_acceptance import product_kernel_files
+    from app.factory.build.framework_extras import FRAMEWORK_EXTRAS
+
+    blob = "\n".join(text for _rel, text in product_kernel_files())
+    dists = set()
+    for requirement, _why, patterns in FRAMEWORK_EXTRAS:
+        if any(_re.search(pattern, blob) for pattern in patterns):
+            dists.add(requirement.split(">")[0].split("=")[0].split("[")[0].strip())
+    return dists
+
+
+def test_one_pass_declares_the_package_iff_the_published_kernel_uses_the_feature(tmp_path, monkeypatch):
+    """Two inputs, a SINGLE stamp pass each, same feature -- driven off the
+    published-kernel SOURCE.
+
+    The requirements stamp runs BEFORE kernel-publish copies the kernel into
+    ``app/``, so after one pass ``app/`` holds no kernel yet: the only thing that
+    can declare a kernel feature's backing package on that pass is a scan of the
+    Factory's own published kernel source. So the backing package is present
+    after one pass IFF the kernel source itself uses the feature.
+
+    Input (i) is the REAL published kernel (``product_kernel_files`` unpatched);
+    the expected distributions are DERIVED from the scan's pattern table matched
+    against that real source, so no package is named by literal. Input (ii)
+    monkeypatches the seam the scan reads to a feature-free source. One test,
+    two mutants dead:
+      * (A) a scan that ignores the kernel source -> input (i) loses the package
+        and reddens;
+      * (B) a scan that adds the extra whenever the flag is on regardless of the
+        source -> input (ii) gains the package and reddens.
+    """
+    import app.factory.build.domain_acceptance as da
+
+    needed = _real_kernel_feature_dists()
+    assert needed, "the real published kernel uses no scanned framework feature -- test is vacuous"
+
+    # (i) the REAL published kernel uses the feature -> its backing package PRESENT
+    req_real = _single_pass_requirements(tmp_path / "real")
+    missing = sorted(d for d in needed if d not in req_real)
+    assert not missing, f"after one pass over the real kernel, requirements.txt is missing: {missing}"
+
+    # (ii) a feature-free published kernel source -> that package ABSENT
+    rel = "app/cerebrum_product_kernel/ingestion/router.py"
+    monkeypatch.setattr(
+        da, "product_kernel_files", lambda: [(rel, "def read(payload: dict):\n    return payload\n")]
+    )
+    req_plain = _single_pass_requirements(tmp_path / "plain")
+    leaked = sorted(d for d in needed if d in req_plain)
+    assert not leaked, f"feature-free kernel still declared: {leaked}"
+
+
+def test_an_unreadable_published_kernel_fails_the_requirements_render_loudly(tmp_path, monkeypatch, caplog):
+    """A broken/missing published-kernel source must fail the requirements render
+    loudly -- a typed error plus a WARNING -- never silently omit the deps that
+    ship the product broken (the 422-at-first-request defect the scan prevents).
+
+    Driven through the real render path (``_render_requirements`` with a tree),
+    not a bare helper call, so the failure is the one a build would hit."""
+    import app.factory.build.domain_acceptance as da
+    from app.factory.build.framework_extras import PublishedKernelUnreadable
+    from app.factory.build.roles_handlers import _render_requirements
+
+    def _boom():
+        raise OSError("published kernel source unreadable")
+
+    monkeypatch.setattr(da, "product_kernel_files", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="app.factory.build.framework_extras"):
+        with pytest.raises(PublishedKernelUnreadable):
+            _render_requirements({}, root=tmp_path)
+
+    assert any(
+        rec.levelno == logging.WARNING and "published kernel source unreadable" in rec.getMessage()
+        for rec in caplog.records
+    ), [(r.levelname, r.getMessage()) for r in caplog.records]
 
 
 def test_control_678s_whole_file_roster_stamp_fails_the_same_check(tmp_path):

@@ -2672,7 +2672,7 @@ def _render_requirements(
     from app.factory.build.framework_extras import framework_lines
     from app.factory.build.network_posture import POSTURE_ID
 
-    extras = framework_lines(Path(root)) if root is not None else []
+    extras = framework_lines(Path(root), include_published_kernel=True) if root is not None else []
     extra_block = ("\n".join(extras) + "\n") if extras else ""
     already = _RUNTIME_DISTRIBUTIONS + tuple(
         _requirement_name(line) for line in extras if not line.startswith("#")
