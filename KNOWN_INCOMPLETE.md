@@ -4,8 +4,7 @@ Honest register of functions `scripts/audit_stubs.py` flags as hollow in the
 shipping `backend/app/` tree. Every entry below is either a `Protocol`
 interface declaration (structural typing — a `...` body is correct; the real
 implementation lives in the same module) or a benign, guarded fallback. There
-are **no** unimplemented functions on a user/demo path; the Phase 2 ingestion
-scaffold stubs below sit behind 501 routes and land in Phase 2 §2/§3.
+are **no** unimplemented functions on a user/demo path.
 
 Format: `- <path> :: <name>  — <reason>`
 
@@ -24,13 +23,6 @@ and `HashEmbedder` / FastEmbed provide the real bodies. These entries are the
 ## Benign guarded fallback
 - backend/app/resident_engineer/router.py :: _resolve_principal  — the `else` (non-estate, no steward-auth module) branch returns None; every state-changing resident route fails closed (401) when the principal is None, so a None here authorizes nothing.
 
-## Phase 2 ingestion scaffold — §2/§3 land later (501-gated)
-- backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: begin_oauth  — Phase 2 §2 scaffold; contract in ingestion/__init__.py; the mounted router returns 501 until the Drive connector lands.
-- backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: oauth_callback  — Phase 2 §2 scaffold; 501-gated.
-- backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: list_files  — Phase 2 §2 scaffold; 501-gated.
-- backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: sync_file  — Phase 2 §2 scaffold; 501-gated.
-- backend/app/cerebrum_product_kernel/ingestion/formula_intake.py :: submit_overlay  — Phase 2 §3 scaffold; 501-gated.
-- backend/app/cerebrum_product_kernel/ingestion/formula_intake.py :: list_overlays  — Phase 2 §3 scaffold; 501-gated.
 ## Deliberate no-op by policy
 - backend/alembic/versions/0001_baseline.py :: downgrade  — the baseline migration's reverse would be `DROP TABLE` on every accounts table; destroying user/account data is never an acceptable automated rollback. Schema rollback below the baseline is a manual, operator-decided act (restore from backup).
 - backend/app/factory/build/roles_handlers.py :: _coder_route_body  — U12/U5: returning None keeps capability HTTP on kernel execute_action; an LLM-authored body would displace the kernel. The public import remains ``app.factory.build.roles``.
