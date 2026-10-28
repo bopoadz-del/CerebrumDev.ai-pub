@@ -45,6 +45,13 @@ Tests re-pointed:
   default). `test_upload_route_does_not_500_on_corrupt_autoparsed_file` still
   asserts `"failed"`; `test_autoparse_reaches_parsed_through_the_route` still
   asserts `"parsed"`.
+- `tests/factory/test_phase2_client_ingestion.py::test_upload_route_is_real_pdf_and_xlsx_distinct`:
+  the three post-upload status assertions (the PDF response, the XLSX response,
+  and the GET) were re-pointed `"queued"` -> `"failed"`. These fixtures are
+  deliberately minimal non-parseable bytes (`_PDF_BYTES`, `_XLSX_BYTES`), so the
+  real terminal state is `failed`; the test's purpose (two inputs -> two distinct
+  `object_id`/`job_id`) is unchanged. This completes the re-point flagged on the
+  5cb6738 grade and missed by the e76924e rework.
 
 Unchanged (still unit tests of the job record, not post-upload):
 `tests/factory/test_phase2_upload_object_store.py::test_parse_job_is_real_queued_record`

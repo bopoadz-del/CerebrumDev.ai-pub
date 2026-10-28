@@ -183,7 +183,10 @@ def test_upload_route_is_real_pdf_and_xlsx_distinct(monkeypatch, tmp_path):
     )
     assert pdf.status_code == 200, pdf.text
     pdf_body = pdf.json()
-    assert pdf_body["status"] == "queued"
+    # Parse runs inline on upload (ORDERS_1030Z/1330Z), so the status is the
+    # real terminal state. These minimal fixture bytes are not a parseable
+    # document, so the terminal state is "failed" -- never the old "queued".
+    assert pdf_body["status"] == "failed"
     assert pdf_body["source_name"] == "spec.pdf"
     assert pdf_body["bytes"] == len(_PDF_BYTES)
 
@@ -194,18 +197,18 @@ def test_upload_route_is_real_pdf_and_xlsx_distinct(monkeypatch, tmp_path):
     )
     assert xlsx.status_code == 200, xlsx.text
     xlsx_body = xlsx.json()
-    assert xlsx_body["status"] == "queued"
+    assert xlsx_body["status"] == "failed"
 
     # Two inputs -> two distinct object_ids and job_ids.
     assert pdf_body["object_id"] != xlsx_body["object_id"]
     assert pdf_body["job_id"] != xlsx_body["job_id"]
 
-    # GET status returns the real, queued parse job (no-store).
+    # GET status returns the real parse job, at its terminal state (no-store).
     status = client.get(
         f"/v1/product/ingestion/upload/{pdf_body['job_id']}", headers=headers
     )
     assert status.status_code == 200, status.text
-    assert status.json()["status"] == "queued"
+    assert status.json()["status"] == "failed"
     assert status.json()["object_id"] == pdf_body["object_id"]
     assert status.headers["cache-control"] == "no-store"
 
