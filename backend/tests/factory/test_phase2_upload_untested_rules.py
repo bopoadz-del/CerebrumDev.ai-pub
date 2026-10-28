@@ -5,7 +5,8 @@ proved on BOTH surfaces — the generated product's kernel route
 (``/v1/product/ingestion/upload``) and the pilot's Factory-floor route
 (``/v1/sessions/{id}/product/ingestion/upload``):
 
-1. The status GET reflects the job's REAL state (not a hardwired "queued").
+1. The status reflects the job's REAL post-parse state (not a hardwired
+   "queued"): upload parses inline, so a valid file is "parsed".
 2. A job is reachable ONLY under the tenant that created it (cross-tenant 404).
 3. An allowed extension carried by a MISMATCHED content-type is refused 415.
 
@@ -14,17 +15,77 @@ Each test has a documented mutant (noted in-line) that it is designed to catch.
 
 from __future__ import annotations
 
+import io
 import sys
 import types
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.cerebrum_product_kernel.ingestion import parse_job
-from app.cerebrum_product_kernel.ingestion.parse_job import ParseStatus
 from app.cerebrum_product_kernel.ingestion.router import router as ingestion_router
 
+# An accepted-type blob whose bytes are NOT a real document. It is enough for
+# the rules that never parse (415 mismatch, cross-tenant 404, validate-all-
+# before-store); the upload route returns 200 and the inline parser lands it at
+# "failed" without raising, which those rules do not assert on.
 _PDF_BYTES = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
+def _make_pdf(pages_text):
+    """A minimal multi-page PDF whose pages carry extractable text (pypdf)."""
+    n_pages = len(pages_text)
+    parts = {}
+    next_id = 3
+    kids_ids = []
+    page_to_content = {}
+    content_text = {}
+    for text in pages_text:
+        page_id = next_id
+        next_id += 1
+        content_id = next_id
+        next_id += 1
+        kids_ids.append(page_id)
+        page_to_content[page_id] = content_id
+        content_text[content_id] = text
+
+    parts[1] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    kids = " ".join(f"{k} 0 R" for k in kids_ids).encode()
+    parts[2] = (
+        b"<< /Type /Pages /Kids [" + kids + b"] /Count "
+        + str(n_pages).encode() + b" >>"
+    )
+    for page_id, content_id in page_to_content.items():
+        parts[page_id] = (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 "
+            b"/BaseFont /Helvetica >> >> >> /Contents "
+            + str(content_id).encode() + b" 0 R >>"
+        )
+    for content_id, text in content_text.items():
+        stream = b"BT /F1 24 Tf 72 700 Td (" + text.encode() + b") Tj ET"
+        parts[content_id] = (
+            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"
+        )
+
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = {}
+    for i in range(1, next_id):
+        offsets[i] = out.tell()
+        out.write(str(i).encode() + b" 0 obj\n" + parts[i] + b"\nendobj\n")
+    xref_pos = out.tell()
+    out.write(b"xref\n0 " + str(next_id).encode() + b"\n")
+    out.write(b"0000000000 65535 f \n")
+    for i in range(1, next_id):
+        out.write(f"{offsets[i]:010d} 00000 n \n".encode())
+    out.write(b"trailer\n<< /Size " + str(next_id).encode() + b" /Root 1 0 R >>\n")
+    out.write(b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF\n")
+    return out.getvalue()
+
+
+# A real, parseable PDF: a valid upload now parses inline to "parsed".
+_VALID_PDF_BYTES = _make_pdf(["RulesPageOne", "RulesPageTwo"])
 
 
 # ── kernel surface (stubbed app.tenancy, like test_phase2_client_ingestion) ──
@@ -93,32 +154,35 @@ def _register_user(email):
     return body["account_id"], {"Authorization": f"Bearer {body['login_token']}"}
 
 
-# ── Rule 1: status GET reflects the REAL job state, not a hardwired queued ───
+# ── Rule 1: status reflects the REAL post-parse state, not a hardwired queued ─
 #
-# MUTANT caught: hardwiring ``"status": "queued"`` in
-# router.job_status_payload (shared by both surfaces) -> both asserts below
-# fail, because the advanced job reads back queued instead of parsing/parsed.
+# Upload parses inline by default, so a valid file is "parsed" on BOTH the
+# upload response and the status GET (no set_status dance needed).
+#
+# MUTANT caught: hardwiring ``"status": "queued"`` in EITHER payload — the
+# upload response (router.ingest_uploads) or the status GET
+# (router.job_status_payload), both shared by the two surfaces -> the asserts
+# below fail, because the real job is parsed, not queued.
 
 
 def test_status_reflects_real_state_both_surfaces(monkeypatch, tmp_path):
-    # Kernel surface: upload, advance to PARSING, GET shows parsing.
+    # Kernel surface: a valid PDF parses on upload -> response AND GET "parsed".
     kc = _kernel_client(monkeypatch, tmp_path / "k", {"tok-a": "tenant-a"})
     headers = {"Authorization": "Bearer tok-a"}
     up = kc.post(
         "/v1/product/ingestion/upload",
         headers=headers,
-        files={"files": ("spec.pdf", _PDF_BYTES, "application/pdf")},
+        files={"files": ("spec.pdf", _VALID_PDF_BYTES, "application/pdf")},
     )
     assert up.status_code == 200, up.text
     job_id = up.json()["job_id"]
-    assert up.json()["status"] == "queued"  # baseline before we advance it
+    assert up.json()["status"] == "parsed", "upload parses inline by default"
 
-    parse_job.set_status("tenant-a", job_id, ParseStatus.PARSING)
     got = kc.get(f"/v1/product/ingestion/upload/{job_id}", headers=headers)
     assert got.status_code == 200, got.text
-    assert got.json()["status"] == "parsing", "kernel status must be the REAL state"
+    assert got.json()["status"] == "parsed", "kernel status must be the REAL state"
 
-    # Floor surface: upload (dev-local), advance to PARSED, GET shows parsed.
+    # Floor surface: a valid PDF parses on upload -> response AND GET "parsed".
     _floor_env(monkeypatch, tmp_path / "f")
     from app.core.session_store import create_session
     from app.main import app
@@ -127,13 +191,12 @@ def test_status_reflects_real_state_both_surfaces(monkeypatch, tmp_path):
     fc = TestClient(app)
     fup = fc.post(
         "/v1/sessions/sess_rule1/product/ingestion/upload",
-        files={"files": ("plan.pdf", _PDF_BYTES, "application/pdf")},
+        files={"files": ("plan.pdf", _VALID_PDF_BYTES, "application/pdf")},
     )
     assert fup.status_code == 200, fup.text
     fjob = fup.json()["job_id"]
-    assert fup.json()["status"] == "queued"
+    assert fup.json()["status"] == "parsed", "upload parses inline by default"
 
-    parse_job.set_status("dev-local", fjob, ParseStatus.PARSED)
     fgot = fc.get(f"/v1/sessions/sess_rule1/product/ingestion/upload/{fjob}")
     assert fgot.status_code == 200, fgot.text
     assert fgot.json()["status"] == "parsed", "floor status must be the REAL state"

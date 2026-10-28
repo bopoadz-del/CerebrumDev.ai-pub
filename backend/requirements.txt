@@ -7,6 +7,11 @@ python-dotenv==1.2.4
 cryptography==50.0.2
 pypdf==6.21.2
 python-docx==1.2.0
+# XLSX parsing for the Phase 2 client ingestion "+" attach (F-1b). openpyxl is
+# net-new per the F-1 scope (xlsx was not parsed before); it is pure-Python
+# (only transitive is et-xmlfile), so it carries no native-wheel risk. Pinned
+# equal to requirements.lock.
+openpyxl==3.1.5
 beautifulsoup4==4.15.0
 chromadb==1.5.9
 
