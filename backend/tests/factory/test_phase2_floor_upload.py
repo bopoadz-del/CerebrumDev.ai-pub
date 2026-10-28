@@ -52,6 +52,14 @@ def test_floor_upload_queues_a_real_job(client):
     assert status.headers["cache-control"] == "no-store"
 
 
+def test_floor_upload_no_file_400(client):
+    # A ``+`` attach with no file selected is a client error, not a 200 with an
+    # empty job: the Floor route must answer 400 (mirrors app.routers.upload and
+    # the generated-product route), before any object is stored.
+    resp = client.post("/v1/sessions/sess_floor_upload/product/ingestion/upload")
+    assert resp.status_code == 400, resp.text
+
+
 def test_floor_upload_wrong_type_415(client):
     resp = _upload(
         client, "sess_floor_upload", "clip.mp4", b"\x00\x00\x00video", "video/mp4"
