@@ -48,7 +48,24 @@ ABSENCE_WORDING = "not in the retrieved excerpts"
 
 
 class RetrievalEngineError(ValueError):
-    """A named refusal from the retrieval engine."""
+    """A named refusal from the retrieval engine.
+
+    Two kinds of refusal share this base, and callers distinguish them by TYPE:
+
+    * a plain ``RetrievalEngineError`` is a CLIENT-side grounding refusal — the
+      retrieved excerpts do not support the claim (``grounded_fact_absent``). An
+      HTTP surface maps it to 422.
+    * a :class:`RetrievalBackendMisconfigured` is a SERVER-side configuration
+      error — the host NAMED a non-retrieval (keyword) embedder, so retrieval
+      cannot run at all. An HTTP surface maps it to 503, like the other
+      backend-not-configured cases.
+    """
+
+
+class RetrievalBackendMisconfigured(RetrievalEngineError):
+    """The host's retrieval backend is misconfigured (e.g. a keyword embedder
+    was named where a semantic one is required). A server-config error, not a
+    client grounding refusal — surfaced as 503, carrying the named reason."""
 
 
 class Embedder(Protocol):

@@ -23,7 +23,12 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from app.cerebrum_product_kernel.retrieval_engine import Embedder, RetrievalEngine
+from app.cerebrum_product_kernel.retrieval_engine import (
+    Embedder,
+    RetrievalBackendMisconfigured,
+    RetrievalEngine,
+    RetrievalEngineError,
+)
 
 from . import retrieval_index
 from .chroma_vector_store import ChromaVectorStore
@@ -80,9 +85,18 @@ def build_tenant_engine(identity: str) -> Optional[RetrievalEngine]:
     embedder = resolve_embedder()
     if embedder is None:
         return None
-    # A non-semantic provider raises RetrievalEngineError(keyword_embedder_not_retrieval)
-    # here; it is deliberately NOT caught — the named refusal must surface.
-    return RetrievalEngine(embedder=embedder, store=ChromaVectorStore())
+    # A non-semantic provider makes RetrievalEngine raise
+    # RetrievalEngineError(keyword_embedder_not_retrieval). That is a SERVER
+    # CONFIG error (the host named a keyword embedder), not a client grounding
+    # refusal, so it is re-raised as the distinct RetrievalBackendMisconfigured
+    # type — carrying the same named text — which the HTTP surface maps to 503
+    # (not the 422 a plain grounding RetrievalEngineError gets).
+    try:
+        return RetrievalEngine(embedder=embedder, store=ChromaVectorStore())
+    except RetrievalBackendMisconfigured:
+        raise
+    except RetrievalEngineError as exc:
+        raise RetrievalBackendMisconfigured(str(exc)) from exc
 
 
 def install_default_engine() -> None:

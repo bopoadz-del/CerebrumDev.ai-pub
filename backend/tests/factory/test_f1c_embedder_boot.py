@@ -214,7 +214,10 @@ def test_non_semantic_provider_named_is_refused_by_name(monkeypatch):
     refusal (keyword_embedder_not_retrieval), NOT the generic 'retrieval backend
     not configured'. A mutant that accepts it (or flattens the message) reddens."""
     from app.core.rag_embedding_providers import LOCAL_FEATURE_HASH_V1
-    from app.cerebrum_product_kernel.retrieval_engine import RetrievalEngineError
+    from app.cerebrum_product_kernel.retrieval_engine import (
+        RetrievalBackendMisconfigured,
+        RetrievalEngineError,
+    )
 
     monkeypatch.setenv(engine_install.EMBEDDER_ENV, LOCAL_FEATURE_HASH_V1)
     # The resolved embedder is present but NOT semantic.
@@ -223,6 +226,9 @@ def test_non_semantic_provider_named_is_refused_by_name(monkeypatch):
     assert embedder.semantic is False
     with pytest.raises(RetrievalEngineError) as exc:
         engine_install.build_tenant_engine("tenant-a")
+    # It is the SERVER-CONFIG subtype (-> 503 at the route), not a plain
+    # grounding refusal (-> 422), and it carries the NAMED reason.
+    assert isinstance(exc.value, RetrievalBackendMisconfigured)
     assert "keyword_embedder_not_retrieval" in str(exc.value)
     assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED not in str(exc.value)
 

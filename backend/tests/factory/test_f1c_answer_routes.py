@@ -250,3 +250,73 @@ def test_floor_answer_route_surfaces_no_engine(tmp_path, monkeypatch):
     )
     assert resp.status_code == 503, resp.text
     assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED in resp.json()["detail"]
+
+
+# ── correction: a NAMED non-semantic provider is a SERVER-CONFIG error -> 503 ──
+
+
+@pytest.fixture
+def named_non_semantic(tmp_path, monkeypatch):
+    """Install the engine provider with a NON-SEMANTIC embedder NAMED via env."""
+    from app.core.rag_embedding_providers import LOCAL_FEATURE_HASH_V1
+
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
+    monkeypatch.setenv(engine_install.EMBEDDER_ENV, LOCAL_FEATURE_HASH_V1)
+    engine_install.install_default_engine()
+    yield
+    retrieval_index.set_engine_provider(None)
+
+
+def test_generated_product_route_non_semantic_is_503(named_non_semantic, monkeypatch):
+    """A NAMED keyword embedder is a server-config error: 503 carrying the named
+    refusal, NOT the 422 a client grounding refusal gets."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+    assert "keyword_embedder_not_retrieval" in resp.json()["detail"]
+
+
+def test_floor_route_non_semantic_is_503(named_non_semantic, monkeypatch):
+    """Same server-config 503 on the Floor route."""
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session
+    from app.main import app
+
+    create_session("sess_nonsem", DEV_LOCAL_TENANT)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/sessions/sess_nonsem/product/ingestion/answer",
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+    assert "keyword_embedder_not_retrieval" in resp.json()["detail"]
+
+
+def test_grounding_refusal_stays_422(eng, monkeypatch):
+    """The SPLIT holds: a CLIENT grounding refusal (nothing retrieved supports
+    the out-of-kernel claim) is still 422 — only the server-config error is 503."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    # No documents attached: an out-of-kernel query grounds to nothing.
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={"query": "what is our sabbatical leave policy", "answer_text": "x"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "retrieved excerpts" in resp.json()["detail"]

@@ -227,9 +227,14 @@ def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
       EXCEPTION TYPE, not by message text, so both an unconfigured egress and a
       configured-but-failing egress surface a 503 — never a 200 that hides the
       broken backend behind a fabricated "missing inputs", and never a 500.
-    * 422 when retrieval ran but the answer cannot be grounded
-      (``RetrievalEngineError`` — e.g. "not in the retrieved excerpts", or a
-      non-semantic embedder refused by name).
+    * 503 ALSO when the host NAMED a non-semantic (keyword) embedder — a
+      SERVER-config error raised as ``RetrievalBackendMisconfigured`` carrying
+      the named refusal ("keyword_embedder_not_retrieval: ..."). Matched by
+      TYPE, BEFORE the plain-grounding handler, so a misconfigured backend is a
+      503, never a 422.
+    * 422 ONLY when retrieval ran but the answer cannot be grounded (a plain
+      ``RetrievalEngineError`` — e.g. "not in the retrieved excerpts"). That is
+      the CLIENT's grounding refusal, the one case that is 422.
 
     The returned dict is ``ProductAnswer.to_dict()``.
     """
@@ -237,7 +242,10 @@ def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
     from app.cerebrum_product_kernel.ingestion.retrieval_index import (
         RETRIEVAL_BACKEND_NOT_CONFIGURED,
     )
-    from app.cerebrum_product_kernel.retrieval_engine import RetrievalEngineError
+    from app.cerebrum_product_kernel.retrieval_engine import (
+        RetrievalBackendMisconfigured,
+        RetrievalEngineError,
+    )
     from app.core.llm_embeddings import EmbeddingEgressError
 
     try:
@@ -246,14 +254,17 @@ def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
         # The embeddings egress is unconfigured or failed — a computed 503,
         # matched by TYPE (not message), on both answer routes.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RetrievalBackendMisconfigured as exc:
+        # SERVER-config error (a keyword embedder was NAMED): 503 carrying the
+        # named refusal, matched by TYPE before the plain-grounding handler.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
         message = str(exc)
         if RETRIEVAL_BACKEND_NOT_CONFIGURED in message:
             raise HTTPException(status_code=503, detail=message) from exc
         raise
     except RetrievalEngineError as exc:
-        # Grounding refused (nothing retrieved supports the claim, or a
-        # non-semantic embedder was refused by name): a surfaced 422 carrying
-        # the named refusal, not an opaque 500.
+        # CLIENT grounding refusal (nothing retrieved supports the claim): the
+        # one 422 case — a surfaced "not in the retrieved excerpts", not a 500.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return answer.to_dict()
