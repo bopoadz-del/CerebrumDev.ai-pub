@@ -175,6 +175,81 @@ def test_every_registered_stamp_is_idempotent_and_never_rewrites_product_bytes(t
     assert ns["JOBS"] and ns["CATALOG"]["kernel"] and ns["GATES"]["kernel"]
 
 
+def _kernel_feature_requirements(used: bool) -> set:
+    """Framework requirements whose feature the PUBLISHED kernel source does
+    (``used=True``) or does not (``used=False``) use.
+
+    Derived from the scan's own pattern table against the Factory's real kernel
+    source, so the contrast tracks the FEATURE, not a hardwired package name:
+    today the kernel's ingestion route uses ``UploadFile``/``File`` so the
+    multipart requirement is in the ``used`` set, but the test states no package
+    by name and follows whatever the kernel actually uses.
+    """
+    import re as _re
+
+    from app.factory.build.domain_acceptance import product_kernel_files
+    from app.factory.build.framework_extras import FRAMEWORK_EXTRAS
+
+    blob = "\n".join(text for _rel, text in product_kernel_files())
+    return {
+        requirement
+        for requirement, _why, patterns in FRAMEWORK_EXTRAS
+        if any(_re.search(pattern, blob) for pattern in patterns) is used
+    }
+
+
+def _dist_of(requirement: str) -> str:
+    return requirement.split(">")[0].split("=")[0].split("[")[0].strip()
+
+
+def test_one_pass_declares_the_package_the_published_kernel_feature_needs(tmp_path):
+    """A SINGLE application of the stamps -- one pass, not two -- already carries
+    the backing package for a framework feature the PUBLISHED kernel uses.
+
+    The kernel is copied into ``app/`` by the kernel-publish stamp; the
+    requirements stamp may run before that copy, so on a single pass ``app/``
+    holds no kernel yet. The declaration therefore has to come from the
+    Factory's own kernel source, not from waiting for a second pass to see the
+    copied files. Without that (the live defect) a one-pass build ships a
+    product whose own published upload route 422s for want of python-multipart.
+
+    Generic: the package asserted is whatever the kernel's features demand per
+    the scan's pattern table, not a literal."""
+    needed = _kernel_feature_requirements(used=True)
+    assert needed, "no published-kernel feature is scanned -- the test would be vacuous"
+
+    _write(tmp_path)
+    _apply_all(tmp_path)  # ONE pass only
+    requirements = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
+
+    missing = [_dist_of(r) for r in needed if _dist_of(r) not in requirements]
+    assert not missing, f"after one pass, requirements.txt is missing: {missing}"
+
+
+def test_the_published_kernel_source_is_what_adds_its_feature_package(tmp_path):
+    """The two-input contrast, same feature, scan toggled: the declaration comes
+    from scanning the published kernel source, not from the kernel merely being
+    shipped. A product tree that uses no framework feature of its own declares
+    nothing when the kernel source is not scanned; the kernel's own features
+    appear only when it is -- which is exactly what the one-pass build needs and
+    what reverting the fix removes."""
+    from app.factory.build.framework_extras import framework_extras
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "routes.py").write_text(
+        "def read(payload: dict):\n    return payload\n", encoding="utf-8"
+    )
+
+    kernel_feature_reqs = _kernel_feature_requirements(used=True)
+    assert kernel_feature_reqs, "no published-kernel feature is scanned -- the test would be vacuous"
+
+    without_kernel = set(framework_extras(tmp_path, include_published_kernel=False))
+    with_kernel = set(framework_extras(tmp_path, include_published_kernel=True))
+
+    assert without_kernel == set(), without_kernel  # the product itself uses nothing
+    assert kernel_feature_reqs <= with_kernel  # the kernel's features, present only when scanned
+
+
 def test_control_678s_whole_file_roster_stamp_fails_the_same_check(tmp_path):
     _write(tmp_path)
     before = _snapshot(tmp_path)
