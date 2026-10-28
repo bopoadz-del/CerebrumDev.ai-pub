@@ -204,6 +204,57 @@ def _require_session(session_id: str, principal: Principal):
     return owned_session_or_404(session_id, principal)
 
 
+def _require_build_tenant(state, principal: Principal) -> str:
+    """Fail closed AT THE ROUTE before a build job or workspace is created.
+
+    A build binds a per-tenant isolated store (app.factory.build.tenant_bind)
+    from the authenticated *account*; a principal with no account — the
+    master/admin key or an open-dev principal — owns no tenant store. The
+    old behaviour let such a caller 200 here and then fail deep in the worker
+    with ``no_authenticated_tenant``. Instead refuse now, with a typed reason,
+    before any job starts. The session's own recorded owner (``state.user_id``)
+    is the tenant; a user whose account is not that owner never reaches a build
+    route (``owned_session_or_404`` already returns a non-leaking 404), and the
+    explicit check here closes the gap for a principal that passed the owner
+    guard without an account. Returns the bound tenant account id.
+    """
+    if principal.kind == "user" and principal.account_id:
+        owner = getattr(state, "user_id", None)
+        if owner and principal.account_id != owner:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "tenant_mismatch",
+                    "message": "the credential's tenant does not own this session",
+                },
+            )
+        return principal.account_id
+    if principal.kind == "dev":
+        # Open-dev (ALLOW_ANONYMOUS_DEV) is a single implicit tenant for local
+        # and test use only: the process refuses to boot in production without
+        # a master key or that explicit opt-in (see app/core/auth.py), so a dev
+        # principal can never arise in production and poses no cross-tenant
+        # risk. It is allowed through, preserving the existing local build
+        # path; a real isolated build still needs an account, which the worker
+        # enforces.
+        return principal.account_id or ""
+    # A master/admin principal (or a user credential with no account) owns no
+    # tenant store and cannot run an isolated build — refused at the route,
+    # before any job or workspace is created, instead of 200-ing and failing
+    # deep in the worker with no_authenticated_tenant.
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "no_tenant",
+            "message": (
+                "a build requires a tenant-scoped account credential; a "
+                "master/admin key owns no tenant store and cannot run an "
+                "isolated build"
+            ),
+        },
+    )
+
+
 def _session_output(session_id: str, product_id: str) -> Path:
     return factory_outputs_root() / "sessions" / session_id / product_id
 
@@ -914,6 +965,7 @@ def run_pilot_cycle(
     from app.factory.platform_chat_flow import resume_pilot_cycle
 
     state = _require_session(session_id, principal)
+    _require_build_tenant(state, principal)
     _refuse_without_build_level(state)
     require_remaining(principal.account_id, "generation")
     require_llm_rate(principal, "generate")
@@ -1016,6 +1068,7 @@ def n3_reseed_product(
 ) -> Dict[str, Any]:
     """Safe HANDOFF reseed + store-gate ingest. Does not launch WRITER/BA."""
     state = _require_session(session_id, principal)
+    _require_build_tenant(state, principal)
     try:
         return _run_n3_reseed(
             session_id,
@@ -1039,6 +1092,7 @@ def generate_approved_product(
     principal: Principal = Depends(require_entitled),
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    _require_build_tenant(state, principal)
     body = body or GenerateBody()
     if body.n3_reseed:
         if not body.builds_sha or not body.builds_branch or not body.cli_authored_ids:
@@ -1153,7 +1207,12 @@ def generate_approved_product(
             blocks_root=blocks_root,
             cycle=body.cycle,
             quota_account_id=principal.account_id,
-            tenant_identity=principal.account_id,
+            # Bind the per-tenant store from the SESSION's recorded owner
+            # (server-controlled), never a caller-supplied value. The route
+            # guard above has already proven principal.account_id == owner, so
+            # this only hardens the source of the identity the worker isolates
+            # on.
+            tenant_identity=(getattr(state, "user_id", None) or principal.account_id),
             brief=str(state.product_design.brief or "").strip(),
             platform_id=ensure_platform_id(state.product_design),
         )
