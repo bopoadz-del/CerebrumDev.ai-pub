@@ -260,12 +260,11 @@ def test_corrupt_accepted_type_fails_without_raising():
 
 
 def test_upload_route_does_not_500_on_corrupt_autoparsed_file(monkeypatch):
-    """With auto-parse on, a corrupt accepted-type upload still answers 200 and
-    the job is observably ``failed`` (never a 500)."""
+    """Upload parses by default: a corrupt accepted-type upload still answers
+    200 and the job is observably ``failed`` (never a 500)."""
     import sys
     import types
 
-    monkeypatch.setenv("INGESTION_AUTO_PARSE", "1")
     mod = types.ModuleType("app.tenancy")
 
     class TenantRefused(Exception):
@@ -309,11 +308,10 @@ def test_upload_route_does_not_500_on_corrupt_autoparsed_file(monkeypatch):
 
 
 def test_autoparse_reaches_parsed_through_the_route(monkeypatch):
-    """A real multi-page PDF uploaded with auto-parse on reaches ``parsed``."""
+    """A real multi-page PDF uploaded reaches ``parsed`` (parse-on-upload)."""
     import sys
     import types
 
-    monkeypatch.setenv("INGESTION_AUTO_PARSE", "1")
     mod = types.ModuleType("app.tenancy")
 
     class TenantRefused(Exception):

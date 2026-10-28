@@ -9,10 +9,12 @@ Tenant resolution is the product's single path (app.tenancy.resolve_tenant
 — §0.2): a missing, unknown, or client-named tenant is refused with 401 by
 name, never mapped to a default.
 
-The ``/upload`` path is REAL as of F-1a: it validates (415/413/400), stores the
-blob in the tenant-bound object store, and creates a genuinely-queued parse job
-for the F-1b parser. The Drive/formula handlers land in §2/§3 and until then
-refuse honestly with 501 — only the upload path is implemented.
+The ``/upload`` path is REAL: it validates (415/413/400), stores the blob in the
+tenant-bound object store, and parses each stored object inline and by default
+(the F-1b parser runs on upload), so the response status reflects the real
+post-parse state (``parsed`` / ``failed``). The Drive/formula handlers land in
+§2/§3 and until then refuse honestly with 501 — only the upload path is
+implemented.
 """
 
 from __future__ import annotations
@@ -106,44 +108,29 @@ def list_formula_overlays(request: Request) -> None:
 # caller resolves the tenant id and passes it in; these never read headers.
 
 
-def _autoparse_enabled() -> bool:
-    """Whether a successful upload should run the F-1b parser inline.
-
-    Off by default so the upload boundary stays exactly where F-1a fixed it
-    (store + a genuinely-``queued`` job). A deployment (or the Floor worker)
-    sets ``INGESTION_AUTO_PARSE=1`` to have each upload drive ``parse_object``
-    synchronously — deterministic enough that a caller can observe ``parsed``.
-    """
-    import os
-
-    return os.getenv("INGESTION_AUTO_PARSE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 async def ingest_uploads(
     tenant_id: str, files: Optional[List["UploadFile"]]
 ) -> dict:
-    """Validate, store, and queue a parse job for each uploaded file.
+    """Validate, store, and parse each uploaded file inline.
 
     Returns the flat single-file shape for one file, or ``{items, count}`` for
-    several. 400 when no file was sent (mirrors ``app.routers.upload``). When
-    ``INGESTION_AUTO_PARSE`` is set, each stored object is parsed inline (the
-    reported status then reflects the real post-parse state); the parser never
-    raises out, so a parse failure lands the job at ``failed``, not a 500.
+    several. 400 when no file was sent (mirrors ``app.routers.upload``). Parsing
+    runs by default: after the validate-all-before-store pass, each stored
+    object is parsed inline and UNCONDITIONALLY, so the reported status reflects
+    the real post-parse state (``parsed`` / ``failed``). The parser never raises
+    out, so a parse failure lands the job at ``failed``, not a 500. ``queued``
+    survives only if the request is interrupted before this parse runs — it is
+    never the normal post-upload response state.
     """
     from .object_store import save_object
     from .parse_job import ParseStatus, create_job
+    from .parsers import parse_object
     from .upload_validation import validate_and_read
 
     uploads = [f for f in (files or []) if f is not None]
     if not uploads:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    auto = _autoparse_enabled()
     # Validate and read EVERY file before storing ANY. A later file that fails
     # (415/413/400) must not leave an earlier file already stored with a queued
     # job, so all validation happens in this first pass and raises before the
@@ -162,12 +149,8 @@ async def ingest_uploads(
             source_name=stored.source_name,
             status=ParseStatus.QUEUED,
         )
-        status_value = job.status.value
-        if auto:
-            from .parsers import parse_object
-
-            parsed = parse_object(tenant_id, stored.object_id, job_id=job.job_id)
-            status_value = parsed.status.value
+        parsed = parse_object(tenant_id, stored.object_id, job_id=job.job_id)
+        status_value = parsed.status.value
         items.append(
             {
                 "object_id": stored.object_id,
