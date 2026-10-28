@@ -236,3 +236,44 @@ def test_content_type_mismatch_415_both_surfaces(monkeypatch, tmp_path):
         files={"files": ("plan.pdf", _PDF_BYTES, "image/png")},
     )
     assert f_resp.status_code == 415, f_resp.text
+
+
+# ── Rule 4: ALL files are validated before ANY is stored (no partial store) ──
+#
+# MUTANT caught: storing each file as the loop validates it (the pre-rework
+# single-pass loop) -> the valid first file is already stored when the second
+# file 415s, so the tenant's object store is non-empty after the 415.
+
+
+def test_multi_file_all_validated_before_store_both_surfaces(monkeypatch, tmp_path):
+    from app.cerebrum_product_kernel.ingestion.object_store import list_objects
+
+    # Kernel surface: [valid.pdf, bad.zip] -> 415, and NOTHING stored.
+    kc = _kernel_client(monkeypatch, tmp_path / "k", {"tok-a": "tenant-a"})
+    resp = kc.post(
+        "/v1/product/ingestion/upload",
+        headers={"Authorization": "Bearer tok-a"},
+        files=[
+            ("files", ("good.pdf", _PDF_BYTES, "application/pdf")),
+            ("files", ("bad.zip", b"PK\x03\x04bad", "application/zip")),
+        ],
+    )
+    assert resp.status_code == 415, resp.text
+    assert list_objects("tenant-a") == [], "a rejected batch must store nothing"
+
+    # Floor surface: same batch on the pilot route -> 415, nothing stored.
+    _floor_env(monkeypatch, tmp_path / "f")
+    from app.core.session_store import create_session
+    from app.main import app
+
+    create_session("sess_rule4", "dev-local")
+    fc = TestClient(app)
+    f_resp = fc.post(
+        "/v1/sessions/sess_rule4/product/ingestion/upload",
+        files=[
+            ("files", ("good.pdf", _PDF_BYTES, "application/pdf")),
+            ("files", ("bad.zip", b"PK\x03\x04bad", "application/zip")),
+        ],
+    )
+    assert f_resp.status_code == 415, f_resp.text
+    assert list_objects("dev-local") == [], "a rejected batch must store nothing"

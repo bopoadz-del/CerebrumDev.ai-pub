@@ -122,9 +122,17 @@ async def ingest_uploads(
     if not uploads:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    items = []
+    # Validate and read EVERY file before storing ANY. A later file that fails
+    # (415/413/400) must not leave an earlier file already stored with a queued
+    # job, so all validation happens in this first pass and raises before the
+    # first save_object.
+    validated: List[tuple] = []
     for file in uploads:
         safe_name, data = await validate_and_read(file)
+        validated.append((safe_name, data))
+
+    items = []
+    for safe_name, data in validated:
         stored = save_object(tenant_id, safe_name, data)
         job = create_job(
             tenant_id,
