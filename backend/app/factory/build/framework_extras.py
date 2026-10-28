@@ -31,6 +31,20 @@ import re
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
+
+class PublishedKernelUnreadable(RuntimeError):
+    """The Factory's own published kernel source could not be read.
+
+    The requirements block is derived from the FEATURE the shipped tree uses,
+    and the kernel the Factory vendors into every product is part of that tree.
+    If its source cannot be read the scan cannot know which backing packages it
+    needs -- and silently omitting them ships a product whose kernel routes fail
+    at the first request (an upload route 422s for want of python-multipart).
+    So a read failure fails the build loudly here rather than letting a broken
+    source quietly drop dependencies.
+    """
+
+
 #: distribution requirement, why it is needed, patterns that mean "needed".
 FRAMEWORK_EXTRAS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     (
@@ -96,14 +110,15 @@ def _published_kernel_texts() -> List[str]:
     independent of stamp order, so a single build ships the package the kernel
     needs (a kernel ``UploadFile`` route 422s without ``python-multipart``).
     """
-    try:
-        from app.factory.build.domain_acceptance import product_kernel_files
-    except Exception:  # never let the scan fail over the kernel source
-        return []
+    from app.factory.build.domain_acceptance import product_kernel_files
+
     try:
         return [text for _rel, text in product_kernel_files()]
-    except Exception:
-        return []
+    except Exception as exc:  # a broken/missing source must fail loudly, not drop deps
+        raise PublishedKernelUnreadable(
+            "could not read the Factory's published kernel source to derive the "
+            "requirements framework block"
+        ) from exc
 
 
 def framework_extras(

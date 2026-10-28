@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Dict
 
+import pytest
+
 from app.factory.build.factory_block import outside
 from app.factory.build.factory_receipt import factory_stamped_paths
 from app.factory.build.kernel_publish import JOBS_REL, declared_capabilities, render_roster
@@ -175,79 +177,68 @@ def test_every_registered_stamp_is_idempotent_and_never_rewrites_product_bytes(t
     assert ns["JOBS"] and ns["CATALOG"]["kernel"] and ns["GATES"]["kernel"]
 
 
-def _kernel_feature_requirements(used: bool) -> set:
-    """Framework requirements whose feature the PUBLISHED kernel source does
-    (``used=True``) or does not (``used=False``) use.
+def _single_pass_requirements(root: Path) -> str:
+    """requirements.txt after ONE application of the stamps to a fresh product."""
+    _write(root)
+    _apply_all(root)  # ONE pass only
+    return (root / "requirements.txt").read_text(encoding="utf-8")
 
-    Derived from the scan's own pattern table against the Factory's real kernel
-    source, so the contrast tracks the FEATURE, not a hardwired package name:
-    today the kernel's ingestion route uses ``UploadFile``/``File`` so the
-    multipart requirement is in the ``used`` set, but the test states no package
-    by name and follows whatever the kernel actually uses.
+
+def test_one_pass_declares_the_package_iff_the_published_kernel_uses_the_feature(tmp_path, monkeypatch):
+    """Two inputs, a SINGLE stamp pass each, same feature -- driven off the
+    published-kernel SOURCE.
+
+    The requirements stamp runs BEFORE kernel-publish copies the kernel into
+    ``app/``, so after one pass ``app/`` holds no kernel yet: the only thing that
+    can declare a kernel feature's backing package on that pass is a scan of the
+    Factory's own published kernel source. So the backing package is present
+    after one pass IFF the kernel source itself uses the feature.
+
+    The seam patched is the source the scan reads (``product_kernel_files``,
+    which kernel-publish also vendors from), NOT the scan function, so the one
+    test kills both mutants:
+      * (A) a scan that ignores the kernel source / returns no texts -> the
+        'uses it' input (i) loses the package and reddens;
+      * (B) a scan that adds the extra whenever the flag is on regardless of the
+        source -> the 'does not use it' input (ii) gains the package and reddens.
+
+    Generic: the feature is expressed as source that matches the scan's own
+    pattern table (``UploadFile``/``File(``), not a package name.
     """
-    import re as _re
+    import app.factory.build.domain_acceptance as da
 
-    from app.factory.build.domain_acceptance import product_kernel_files
-    from app.factory.build.framework_extras import FRAMEWORK_EXTRAS
+    rel = "app/cerebrum_product_kernel/ingestion/router.py"
+    uses_feature = (
+        "from fastapi import File, UploadFile\n\n\n"
+        "async def upload(f: UploadFile = File(None)):\n    return f\n"
+    )
+    no_feature = "def read(payload: dict):\n    return payload\n"
 
-    blob = "\n".join(text for _rel, text in product_kernel_files())
-    return {
-        requirement
-        for requirement, _why, patterns in FRAMEWORK_EXTRAS
-        if any(_re.search(pattern, blob) for pattern in patterns) is used
-    }
+    # (i) the published kernel source USES the feature -> backing package PRESENT
+    monkeypatch.setattr(da, "product_kernel_files", lambda: [(rel, uses_feature)])
+    assert "python-multipart" in _single_pass_requirements(tmp_path / "uses")
 
-
-def _dist_of(requirement: str) -> str:
-    return requirement.split(">")[0].split("=")[0].split("[")[0].strip()
-
-
-def test_one_pass_declares_the_package_the_published_kernel_feature_needs(tmp_path):
-    """A SINGLE application of the stamps -- one pass, not two -- already carries
-    the backing package for a framework feature the PUBLISHED kernel uses.
-
-    The kernel is copied into ``app/`` by the kernel-publish stamp; the
-    requirements stamp may run before that copy, so on a single pass ``app/``
-    holds no kernel yet. The declaration therefore has to come from the
-    Factory's own kernel source, not from waiting for a second pass to see the
-    copied files. Without that (the live defect) a one-pass build ships a
-    product whose own published upload route 422s for want of python-multipart.
-
-    Generic: the package asserted is whatever the kernel's features demand per
-    the scan's pattern table, not a literal."""
-    needed = _kernel_feature_requirements(used=True)
-    assert needed, "no published-kernel feature is scanned -- the test would be vacuous"
-
-    _write(tmp_path)
-    _apply_all(tmp_path)  # ONE pass only
-    requirements = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
-
-    missing = [_dist_of(r) for r in needed if _dist_of(r) not in requirements]
-    assert not missing, f"after one pass, requirements.txt is missing: {missing}"
+    # (ii) the published kernel source uses NO feature -> backing package ABSENT
+    monkeypatch.setattr(da, "product_kernel_files", lambda: [(rel, no_feature)])
+    assert "python-multipart" not in _single_pass_requirements(tmp_path / "plain")
 
 
-def test_the_published_kernel_source_is_what_adds_its_feature_package(tmp_path):
-    """The two-input contrast, same feature, scan toggled: the declaration comes
-    from scanning the published kernel source, not from the kernel merely being
-    shipped. A product tree that uses no framework feature of its own declares
-    nothing when the kernel source is not scanned; the kernel's own features
-    appear only when it is -- which is exactly what the one-pass build needs and
-    what reverting the fix removes."""
-    from app.factory.build.framework_extras import framework_extras
-
-    (tmp_path / "app").mkdir()
-    (tmp_path / "app" / "routes.py").write_text(
-        "def read(payload: dict):\n    return payload\n", encoding="utf-8"
+def test_a_published_kernel_source_that_cannot_be_read_fails_loudly(monkeypatch):
+    """A broken/missing published-kernel source must fail the build, not silently
+    omit the dependencies that ship the product -- a silent drop is exactly the
+    422-at-first-request defect the scan exists to prevent."""
+    import app.factory.build.domain_acceptance as da
+    from app.factory.build.framework_extras import (
+        PublishedKernelUnreadable,
+        _published_kernel_texts,
     )
 
-    kernel_feature_reqs = _kernel_feature_requirements(used=True)
-    assert kernel_feature_reqs, "no published-kernel feature is scanned -- the test would be vacuous"
+    def _boom():
+        raise OSError("published kernel source unreadable")
 
-    without_kernel = set(framework_extras(tmp_path, include_published_kernel=False))
-    with_kernel = set(framework_extras(tmp_path, include_published_kernel=True))
-
-    assert without_kernel == set(), without_kernel  # the product itself uses nothing
-    assert kernel_feature_reqs <= with_kernel  # the kernel's features, present only when scanned
+    monkeypatch.setattr(da, "product_kernel_files", _boom)
+    with pytest.raises(PublishedKernelUnreadable):
+        _published_kernel_texts()
 
 
 def test_control_678s_whole_file_roster_stamp_fails_the_same_check(tmp_path):
