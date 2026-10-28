@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.core.auth import Principal, require_api_key
+from app.core.auth import DEV_LOCAL_TENANT, Principal, require_api_key
 from app.core.billing import require_entitled
 from app.core.llm_throttle import require_llm_rate
 from app.core.session_guard import owned_session_or_404
@@ -202,6 +202,68 @@ def _refuse_without_build_level(state: Any) -> None:
 def _require_session(session_id: str, principal: Principal):
     """Same ownership rule as every other session-scoped router."""
     return owned_session_or_404(session_id, principal)
+
+
+def _require_build_tenant(state, principal: Principal) -> str:
+    """Fail closed AT THE ROUTE before a build job or workspace is created.
+
+    A build binds a per-tenant isolated store (app.factory.build.tenant_bind)
+    from the authenticated *account*; a principal with no account — the
+    master/admin key or an open-dev principal — owns no tenant store. The
+    old behaviour let such a caller 200 here and then fail deep in the worker
+    with ``no_authenticated_tenant``. Instead refuse now, with a typed reason,
+    before any job starts. The session's own recorded owner (``state.user_id``)
+    is the tenant; a user whose account is not that owner never reaches a build
+    route (``owned_session_or_404`` already returns a non-leaking 404), and the
+    explicit check here closes the gap for a principal that passed the owner
+    guard without an account. Returns the bound tenant account id.
+    """
+    if principal.kind == "user" and principal.account_id:
+        owner = getattr(state, "user_id", None)
+        if owner and principal.account_id != owner:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "tenant_mismatch",
+                    "message": "the credential's tenant does not own this session",
+                },
+            )
+        return principal.account_id
+    if principal.kind == "dev":
+        # Open-dev (ALLOW_ANONYMOUS_DEV) binds an EXPLICIT dev tenant — the
+        # same ``dev-local`` owner routers/sessions.py assigns a credential-free
+        # caller — never "". The SAME cross-tenant check as a real user runs
+        # here, so dev is not a hole in the guard: a dev principal may build
+        # only a session owned by the dev tenant, and is refused (tenant_mismatch)
+        # for any real account's session. The process refuses to boot in
+        # production with ALLOW_ANONYMOUS_DEV (app/core/auth.verify_production_auth),
+        # so this tenant can never arise in production; the dev build still
+        # isolates on the dev tenant's own store.
+        owner = getattr(state, "user_id", None)
+        if owner and owner != DEV_LOCAL_TENANT:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "tenant_mismatch",
+                    "message": "the dev principal does not own this session",
+                },
+            )
+        return DEV_LOCAL_TENANT
+    # A master/admin principal (or a user credential with no account) owns no
+    # tenant store and cannot run an isolated build — refused at the route,
+    # before any job or workspace is created, instead of 200-ing and failing
+    # deep in the worker with no_authenticated_tenant.
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "no_tenant",
+            "message": (
+                "a build requires a tenant-scoped account credential; a "
+                "master/admin key owns no tenant store and cannot run an "
+                "isolated build"
+            ),
+        },
+    )
 
 
 def _session_output(session_id: str, product_id: str) -> Path:
@@ -914,6 +976,7 @@ def run_pilot_cycle(
     from app.factory.platform_chat_flow import resume_pilot_cycle
 
     state = _require_session(session_id, principal)
+    _require_build_tenant(state, principal)
     _refuse_without_build_level(state)
     require_remaining(principal.account_id, "generation")
     require_llm_rate(principal, "generate")
@@ -950,8 +1013,16 @@ def _run_n3_reseed(
     builds_repo: Optional[str] = None,
     output_dir: Optional[str] = None,
     principal: Principal,
+    tenant_identity: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Stamp HANDOFF then ingest store-gate. Never calls generate_product."""
+    """Stamp HANDOFF then ingest store-gate. Never calls generate_product.
+
+    ``tenant_identity`` is the bound tenant the route guard resolved (the
+    session owner). It is forwarded into the HANDOFF ledger stamp so the n3
+    ingest records whose tenant this reseed isolates under — the same identity
+    a generate/pilot build binds, even though n3-reseed binds no per-tenant
+    store of its own.
+    """
     from app.factory.build.n3_store_gate import HandoffReseedError
     from app.factory.platform_chat_flow import has_running_build, reseed_and_ingest_n3
 
@@ -988,6 +1059,7 @@ def _run_n3_reseed(
             builds_owner=builds_owner or repo_coords.builds_owner(),
             builds_repo=builds_repo or repo_coords.builds_name(),
             triggered_by="product_n3_reseed",
+            tenant_identity=tenant_identity,
         )
     except HandoffReseedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1018,6 +1090,9 @@ def n3_reseed_product(
 ) -> Dict[str, Any]:
     """Safe HANDOFF reseed + store-gate ingest. Does not launch WRITER/BA."""
     state = _require_session(session_id, principal)
+    # Capture the guard's bound tenant (the session owner) and thread it into
+    # the HANDOFF ledger stamp, the same as the /generate n3_reseed caller.
+    bound_tenant = _require_build_tenant(state, principal)
     try:
         return _run_n3_reseed(
             session_id,
@@ -1029,6 +1104,7 @@ def n3_reseed_product(
             builds_repo=body.builds_repo,
             output_dir=body.output_dir,
             principal=principal,
+            tenant_identity=bound_tenant,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_product_error(session_id, state, exc)
@@ -1041,6 +1117,12 @@ def generate_approved_product(
     principal: Principal = Depends(require_entitled),
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    # The guard returns the bound tenant: the session owner for a user, or the
+    # explicit DEV_LOCAL_TENANT for a dev principal. Use it for BOTH the build's
+    # tenant identity and its quota account, so quota_account_id is never None
+    # at build start and the worker's owner==identity check is live for dev
+    # builds too (ORDERS_0630Z #1(b)).
+    bound_tenant = _require_build_tenant(state, principal)
     body = body or GenerateBody()
     if body.n3_reseed:
         if not body.builds_sha or not body.builds_branch or not body.cli_authored_ids:
@@ -1062,6 +1144,7 @@ def generate_approved_product(
                 builds_repo=body.builds_repo,
                 output_dir=body.output_dir,
                 principal=principal,
+                tenant_identity=bound_tenant,
             )
         except Exception as exc:  # noqa: BLE001
             _raise_product_error(session_id, state, exc)
@@ -1154,8 +1237,12 @@ def generate_approved_product(
             out,
             blocks_root=blocks_root,
             cycle=body.cycle,
-            quota_account_id=principal.account_id,
-            tenant_identity=principal.account_id,
+            quota_account_id=bound_tenant,
+            # Bind the per-tenant store from the guard's resolved tenant
+            # (server-controlled), never a caller-supplied value. It is the
+            # session owner for a user and DEV_LOCAL_TENANT for a dev principal,
+            # so the worker's owner==identity check is live for every build.
+            tenant_identity=bound_tenant,
             brief=str(state.product_design.brief or "").strip(),
             platform_id=ensure_platform_id(state.product_design),
         )

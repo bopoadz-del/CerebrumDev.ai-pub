@@ -60,6 +60,14 @@ def _env_is_production() -> bool:
     return _env_name() in {"production", "prod"}
 
 
+#: The owner id a credential-free local/dev caller's sessions are created
+#: under (routers/sessions.py). A dev build binds THIS explicit tenant, never
+#: an empty string, so the same cross-tenant check runs in dev as for a real
+#: account. It can never arise in production: verify_production_auth refuses to
+#: boot when ALLOW_ANONYMOUS_DEV is set with ENV=production/prod.
+DEV_LOCAL_TENANT = "dev-local"
+
+
 @dataclass(frozen=True)
 class Principal:
     """Who is calling. ``kind``: admin (master key) | user (account) | dev (open)."""
