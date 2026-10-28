@@ -268,5 +268,17 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/gate_replay/replay_in_factory.py verify
+          count=$(python3 -c "import json; print(len(json.load(open('selection.json'))))")
+          if [ "$count" -eq 0 ]; then
+            # Not-applicable ONLY when the handover is truly empty (0 entries).
+            # A non-empty handover that selected 0 certified builds is a failure.
+            total=$(python3 -c "import sys; sys.path.insert(0, '.github/gate_replay'); import replay_in_factory as r; print(len(r.manifest().get('selection') or []))")
+            if [ "$total" -eq 0 ]; then
+              echo "::notice title=gate replay::not applicable: the certified handover is empty (0 entries); nothing to replay"
+              exit 0
+            fi
+            echo "::error title=gate replay::non-empty handover selected 0 certified builds; the gate stays strict"
+            exit 1
+          fi
           VENDOR=$(python3 .github/gate_replay/replay_in_factory.py vendor-dir)
           python3 "$VENDOR"/gate/.github/store_gate/replay_flips.py selection.json results --routing routing
