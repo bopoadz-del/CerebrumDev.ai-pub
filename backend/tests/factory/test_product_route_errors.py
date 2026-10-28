@@ -35,10 +35,11 @@ def product_client(tmp_path, monkeypatch):
     monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
     monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
     monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    from app.core.auth import DEV_LOCAL_TENANT
     from app.core.session_store import create_session, get_session, update_session
 
     session_id = "sess_product_errors"
-    create_session(session_id, "tester")
+    create_session(session_id, DEV_LOCAL_TENANT)
     state = get_session(session_id)
     assert state is not None
     state.product_design.blueprint = _bp().model_dump(mode="json")

@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.core.auth import DEV_LOCAL_TENANT
 from app.core.session_store import create_session, get_session, update_session
 from tests.factory.blocks_root import real_blocks_root
 
@@ -65,7 +66,7 @@ def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub
     # draft shares only its vertical with the golden, so this flow lowers
     # the configured threshold to let that unique overlap select it.
     monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
-    create_session("sess_product_1", "tester")
+    create_session("sess_product_1", DEV_LOCAL_TENANT)
     out = tmp_path / "gen"
     # draft
     r = client.post(
@@ -123,7 +124,7 @@ def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub
 
 
 def test_generate_requires_approval(client):
-    create_session("sess_product_2", "tester")
+    create_session("sess_product_2", DEV_LOCAL_TENANT)
     client.post(
         "/v1/sessions/sess_product_2/product/draft",
         json={"brief": "Build steward estate platform"},
@@ -141,7 +142,7 @@ def test_runner_build_reports_progress_and_gates_the_download(client, monkeypatc
     """
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "0")
     monkeypatch.delenv("FACTORY_BUILD_ENGINE", raising=False)
-    create_session("sess_runner_1", "tester")
+    create_session("sess_runner_1", DEV_LOCAL_TENANT)
 
     r = client.post(
         "/v1/sessions/sess_runner_1/product/draft",
