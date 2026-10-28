@@ -2,7 +2,7 @@
 
 Unlike the lightweight packager, this produces a multi-stage Docker build with
 Postgres/pgvector support, alembic migrations, and a hardened entrypoint. The
-runtime is still Cerebrum-Blocks, but the packaging follows The_Fork's
+runtime is still Cerebrum-Blocks, but the packaging follows the reference implementation's
 production patterns and is fully domain-neutral.
 """
 
@@ -66,7 +66,7 @@ class MissingKitError(PlatformPackagerError):
 
 
 class MissingForkTemplateError(PlatformPackagerError):
-    """Raised when The_Fork template files are not available."""
+    """Raised when the reference template files are not available."""
 
 
 def _package_dir(session_id: str) -> Path:
@@ -189,7 +189,7 @@ def _copy_engine(engine_root: Path, package_root: Path) -> None:
 
 
 def _write_dockerfile(package_root: Path) -> None:
-    """Write a multi-stage, production-hardened Dockerfile based on The_Fork."""
+    """Write a multi-stage, production-hardened Dockerfile based on the reference implementation."""
     dockerfile = package_root / "Dockerfile"
     dockerfile.write_text(
         '''# Production-hardened Cerebrum-Blocks platform (Fork-class).

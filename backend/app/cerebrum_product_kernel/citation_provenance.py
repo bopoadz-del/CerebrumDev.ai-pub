@@ -1,14 +1,14 @@
 """Claim provenance — the attribution an answer cannot back is not shipped.
 
-Phase 3 of the governed-layers build. This is the PORT of The_Fork's
-``app/agents/citation_provenance.py`` (EvidenceRecord / Evidence /
+Phase 3 of the governed-layers build. This ports the reference
+implementation's citation-provenance module (EvidenceRecord / Evidence /
 build_evidence) into the product kernel, so every generated platform
 inherits the same mechanism instead of hand-rolling a second one.
 
 PORT NOTES (what changed, why, honestly):
-- The Fork's module polices CONSTRUCTION-domain attribution shapes
-  (contract-id regexes, BOQ fragments). Those stay in The_Fork; this port
-  carries the domain-neutral core: evidence records (retrieval / tool_run /
+- The reference module polices CONSTRUCTION-domain attribution shapes
+  (contract-id regexes, BOQ fragments). Those stay in that application; this
+  port carries the domain-neutral core: evidence records (retrieval / tool_run /
   user), the citable-class rule, and the claim->evidence mapping.
 - Identifiers are extracted generically (word-shaped ids the record's own
   text actually contains), not with the contract-id pattern, because the
@@ -159,7 +159,7 @@ def build_evidence(
     told — nothing else may back an attribution.
 
     ``rag_sys_msg`` carries the retrieval/system context; ``messages`` the
-    turn's message list. Records are rebuilt the same way The_Fork's gate
+    turn's message list. Records are rebuilt the same way the reference gate
     rebuilds them: retrieval context becomes retrieval records, tool-call
     messages become tool_run records, and the user's own turns become user
     records.

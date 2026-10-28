@@ -34,12 +34,12 @@ client uploads a formula sheet" into a call against the engines above. That
 missing glue is this package. Every module here is a STUB: real docstrings
 and exact signatures, ``raise NotImplementedError`` bodies. No logic. Not
 wired into any router or into app/main.py. Zero behaviour change while this
-package exists — same discipline The_Fork uses for RAG_LAYERED (flag off =
-byte-for-byte unchanged) and pilot-doc-control-plan.md ("Prepare-only now").
+package exists — same discipline the reference implementation uses for its
+layered-RAG flag (flag off = byte-for-byte unchanged) and a prepare-only plan.
 
-REFERENCE ARCHITECTURE — bopoadz-del/The_Fork, app/core/rag/
+REFERENCE ARCHITECTURE — the reference RAG implementation
 ---------------------------------------------------------------
-The Fork's RAG pipeline is the most mature, incident-tested version of this
+The reference RAG pipeline is the most mature, incident-tested version of this
 shape in either codebase (layered RAG go-live, 2026-09; STEP 0 structural
 isolation, retriever.py:964; source_class.py's project_corpus/knowledge_base/
 template/master_corpus taxonomy, driven by two named Sev-1 incidents G1/A5).
@@ -49,7 +49,7 @@ not necessarily its exact module boundaries, since CerebrumDev's kernel
 already has a comparable (and in one respect stronger: divergence-logged
 formula-shadow records) precedence engine of its own.
 
-DOC-CURRENCY WARNING for whoever does the heavy lifting: The Fork's docs/
+DOC-CURRENCY WARNING for whoever does the heavy lifting: the reference docs/
 directory is NOT uniformly current. Trustworthy as of 2026-09-16:
 ``docs/layered-rag-golive.md`` (2 weeks old, describes what's live today),
 ``docs/rag-reranker.md`` (2 weeks old, a measured decision record),

@@ -1605,8 +1605,8 @@ def reseed_handoff_ledger(
     builds_sha: str,
     builds_branch: str,
     cli_authored_ids: Sequence[str],
-    builds_owner: str = "bopoadz-del",
-    builds_repo: str = "cerebrum-builds-pub",
+    builds_owner: Optional[str] = None,
+    builds_repo: Optional[str] = None,
     product_id: Optional[str] = None,
     inputs_hash: str = "n3_handoff_reseed",
     tenant_identity: Optional[str] = None,
@@ -1628,8 +1628,10 @@ def reseed_handoff_ledger(
     root = Path(output_dir)
     sha = str(builds_sha or "").strip()
     branch = str(builds_branch or "").strip()
-    owner = str(builds_owner or "").strip() or "bopoadz-del"
-    repo = str(builds_repo or "").strip() or "cerebrum-builds-pub"
+    from app.factory import repo_coords
+
+    owner = str(builds_owner or "").strip() or repo_coords.builds_owner()
+    repo = str(builds_repo or "").strip() or repo_coords.builds_name()
     ids = [str(item).strip() for item in (cli_authored_ids or []) if str(item).strip()]
     if not sha or not branch:
         raise HandoffReseedError(

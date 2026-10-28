@@ -1049,13 +1049,15 @@ def _run_n3_reseed(
         gen.setdefault("engine", "runner")
         state.product_design.generation = gen
     try:
+        from app.factory import repo_coords
+
         result = reseed_and_ingest_n3(
             state,
             builds_sha=builds_sha,
             builds_branch=builds_branch,
             cli_authored_ids=cli_authored_ids,
-            builds_owner=builds_owner or "bopoadz-del",
-            builds_repo=builds_repo or "cerebrum-builds-pub",
+            builds_owner=builds_owner or repo_coords.builds_owner(),
+            builds_repo=builds_repo or repo_coords.builds_name(),
             triggered_by="product_n3_reseed",
             tenant_identity=tenant_identity,
         )

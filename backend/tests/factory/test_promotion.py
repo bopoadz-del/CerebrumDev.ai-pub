@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from app.factory.build.harvest import (
-    BLOCKS_REPO,
     CONSEQUENCE,
+    _blocks_repo,
     _store_write_authorized,
     evaluate_harvest,
 )
@@ -295,7 +295,7 @@ def test_authorization_alone_does_not_copy(tmp_path, monkeypatch):
     stages = tmp_path / "build" / "stages"
     stages.mkdir(parents=True)
     (stages / "HARVEST_AUTHORIZED.json").write_text(
-        json.dumps({"authorized": True, "blocks_repo": BLOCKS_REPO}),
+        json.dumps({"authorized": True, "blocks_repo": _blocks_repo()}),
         encoding="utf-8",
     )
     monkeypatch.setattr("app.factory.build.harvest._repo_root", lambda: tmp_path)
