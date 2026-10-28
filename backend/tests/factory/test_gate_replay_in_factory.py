@@ -487,3 +487,99 @@ def test_a_handover_below_the_minimum_still_fails(tmp_path):
     (vendor / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
     with pytest.raises(ValueError):
         rif.select(vendor=vendor, verify_first=False)
+
+
+# -- 0345Z #4 named set: a NON-EMPTY handover that selects 0 certified FAILS ------
+# (all revoked / wrong prefix / tree missing); only a 0-entry handover is
+# not-applicable. select() raises (CLI returns 1); the empty handover exits 0.
+
+def _revoke_all_certified(vendor: Path) -> None:
+    """Revoke the synthetic certified rows' run ids in the vendored record, so
+    certified() drops every one (the 'all revoked' case)."""
+    rec = vendor / "gate" / ".github" / "store_gate" / "revoked_certifications.json"
+    data = json.loads(rec.read_text(encoding="utf-8"))
+    for i in range(3):
+        branch = f"build/plt_synthetic{i}"
+        data.setdefault("revoked", []).append({
+            "branch": branch,
+            "sha": hashlib.sha1(branch.encode("utf-8")).hexdigest(),
+            "run_id": 1000 + i,
+            "reason": "test: revoked certification",
+            "evidence": f"https://example.test/runs/{1000 + i} -- test revocation (synthetic)",
+            "revoked_at": "2026-10-28",
+        })
+    rec.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _wrong_prefix_certified(vendor: Path) -> None:
+    """Move the certified rows' branches off the build/ prefix, so certified()
+    drops them (the 'wrong prefix' case)."""
+    mp = vendor / "manifest.json"
+    data = json.loads(mp.read_text(encoding="utf-8"))
+    for row in data["selection"]:
+        if row.get("expect") != "fail":
+            row["branch"] = "x" + row["branch"]  # 'xbuild/...' no longer startswith 'build/'
+    mp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _tree_missing_certified(vendor: Path) -> None:
+    """Drop the certified rows' trees from products (keep the known-bad trees),
+    so exists()/certified() drops them all (the 'tree missing' case)."""
+    mp = vendor / "manifest.json"
+    data = json.loads(mp.read_text(encoding="utf-8"))
+    bad = {r["sha"] for r in data["selection"] if r.get("expect") == "fail"}
+    data["products"] = {s: p for s, p in data["products"].items() if s in bad}
+    mp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_select_all_revoked_fails(tmp_path):
+    vendor = _synthetic_vendor(tmp_path)
+    _revoke_all_certified(vendor)
+    with pytest.raises(ValueError, match="0 certified"):
+        rif.select(vendor=vendor, n=3, verify_first=False)
+
+
+def test_select_wrong_prefix_fails(tmp_path):
+    vendor = _synthetic_vendor(tmp_path)
+    _wrong_prefix_certified(vendor)
+    with pytest.raises(ValueError, match="0 certified"):
+        rif.select(vendor=vendor, n=3, verify_first=False)
+
+
+# tree-missing at select() level is also covered by
+# test_a_non_empty_handover_with_all_certified_dropped_fails above.
+
+
+def test_cli_exits_1_all_revoked(tmp_path, monkeypatch):
+    # main() verifies first, so the tampered revocation record may fail the
+    # vendored-file integrity check; either way a non-empty handover that cannot
+    # be verified-and-selected returns 1 (never exit 0). Not faked: exit 1 is
+    # correct at verify OR at the 0-certified guard.
+    vendor = _synthetic_vendor(tmp_path)
+    _revoke_all_certified(vendor)
+    monkeypatch.setattr(rif, "vendor_dir", lambda: vendor)
+    assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
+
+
+def test_cli_exits_1_wrong_prefix(tmp_path, monkeypatch):
+    vendor = _synthetic_vendor(tmp_path)
+    _wrong_prefix_certified(vendor)
+    monkeypatch.setattr(rif, "vendor_dir", lambda: vendor)
+    assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
+
+
+def test_cli_exits_1_tree_missing(tmp_path, monkeypatch):
+    vendor = _synthetic_vendor(tmp_path)
+    _tree_missing_certified(vendor)
+    monkeypatch.setattr(rif, "vendor_dir", lambda: vendor)
+    assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
+
+
+def test_cli_exits_0_with_notice_on_empty_handover(tmp_path, capsys):
+    # total == 0: the real vendored handover is empty (selection == []). The CLI
+    # returns 0 and prints the not-applicable notice.
+    assert _manifest()["selection"] == []
+    rc = rif.main(["select", "--out", str(tmp_path / "selection.json")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "not applicable" in out and "empty" in out
