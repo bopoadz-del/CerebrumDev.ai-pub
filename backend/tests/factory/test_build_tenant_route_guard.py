@@ -12,7 +12,6 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.core import accounts_store
 from app.core.auth import Principal, _resolve_user_principal
 from app.routers.session_product import _require_build_tenant
 
