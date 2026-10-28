@@ -16,6 +16,7 @@ Its role: the Factory assembles certified Store blocks into brand-new, exportabl
 
 Deployment (AWS):
 
+- Live: Factory Floor `https://www.cerebrum-dev.com` (`https://cerebrum-dev.com`); API `https://api.cerebrum-dev.com`.
 - The backend runs as an ECS service (cluster `cerebrum`, service
   `cerebrumdev-backend`). CI bakes the image to ECR and `deploy-aws.yml` rolls
   the service on every push to `master`, waiting on the ECS rollout and the
@@ -64,7 +65,7 @@ Error tracking and performance are wired on both tiers and activate by DSN:
 - Frontend: set `VITE_SENTRY_DSN` (platform *javascript-react*) on the
   frontend web service (build-time). The bundle loads Sentry lazily — zero
   cost when unset. Production serves `frontend/dist` via `node serve.mjs`,
-  which stamps the five smoke security headers.
+  which stamps the smoke security headers checked by the tests.
 
 ## Platform status
 
@@ -188,37 +189,10 @@ an OpenAI-shaped port silently gets wrong, so they are asserted by a
 request-shape test.
 
 **Agentic coding CLI.** Production Floor C-BRIEF hands the one compiled brief
-to this CLI. The seam is shallow — run a command, read its result:
-
-```bash
-FACTORY_CODE_CLI=kimi      # Kimi Code → DeepSeek V4 Pro when DEEPSEEK_API_KEY is set
-FACTORY_CODE_PROVIDER=kimi # historical Moonshot when KIMI_CODE_API_KEY is set
-```
-
-`KIMI_CODE_CLI` is still honoured; `FACTORY_CODE_CLI` wins. When
-`DEEPSEEK_API_KEY` is set, DeepSeek is the default Factory coding path
-(`kimi` + official OpenAI-compat `https://api.deepseek.com` on the
-**subprocess only**). Leftover `FACTORY_CODE_CLI=claude` remaps to `kimi`.
-Claude Code is not the DeepSeek vehicle. Floor / architect chat stays on
-OpenRouter — do not burn DeepSeek for chat. See
-`docs/factory/DEEPSEEK_ENV_SETUP.md` and `docs/factory/KIMI_ENV_SETUP.md`.
-
-The production `Dockerfile` installs official Kimi Code at `/usr/local/bin/kimi`
-(pin `KIMI_CODE_VERSION`). Official Claude Code may still be planted at
-`/usr/local/bin/claude` as leftover unused binary. A keyed Floor without the
-selected binary fail-closes as `FACTORY_CODE_CLI_UNAVAILABLE`. A Moonshot
-Kimi binary without its credentials file fail-closes as
-`FACTORY_CODE_CLI_CREDENTIALS_MISSING` when Cursor executor keys are
-absent. When `CURSOR_API_KEY` (or sibling Cursor BA keys) is present,
-Generate/Continue uses Cursor BA — Kimi CLI credentials are unused and
-`/health` must not surface that class as a Floor blocker. DeepSeek selected without
-`DEEPSEEK_API_KEY` is the same named class. A credentials file without a usable `default_model` / `[models]` entry
-fail-closes as `FACTORY_CODE_CLI_NO_MODEL` before WRITER takeover (still
-`FACTORY_CODE_CLI_FAILED` honesty — no HTTP oneshot, no fake WRITER
-takeover). A CLI exit of `No model configured` is the same named class
-and stops the coding-agent takeover (no perpetual "still working"). A 404 / Permission
-denied on the configured model fail-closes as
-`FACTORY_CODE_CLI_MODEL_DENIED`. Deploy-time secrets stay owner-gated.
+to the coding CLI — the seam is shallow (run a command, read its result). The
+CLI binary, its provider keys and its model config are deploy-time,
+owner-gated secrets; see `docs/factory/KIMI_ENV_SETUP.md` and
+`docs/factory/DEEPSEEK_ENV_SETUP.md`.
 
 ### Running the tests: the factory coder changes the results
 
