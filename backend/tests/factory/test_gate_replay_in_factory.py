@@ -508,7 +508,15 @@ def _revoke_all_certified(vendor: Path) -> None:
             "evidence": f"https://example.test/runs/{1000 + i} -- test revocation (synthetic)",
             "revoked_at": "2026-10-28",
         })
-    rec.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    body = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+    rec.write_bytes(body)
+    # Rewrite the revocation record's gate_files digest so verify() passes and
+    # main() reaches the 0-certified guard rather than stopping at the vendored-
+    # file integrity check (ORDERS_28OCT_0430Z #3).
+    mp = vendor / "manifest.json"
+    man = json.loads(mp.read_text(encoding="utf-8"))
+    man["gate_files"][".github/store_gate/revoked_certifications.json"] = hashlib.sha256(body).hexdigest()
+    mp.write_text(json.dumps(man, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _wrong_prefix_certified(vendor: Path) -> None:
@@ -550,15 +558,18 @@ def test_select_wrong_prefix_fails(tmp_path):
 # test_a_non_empty_handover_with_all_certified_dropped_fails above.
 
 
-def test_cli_exits_1_all_revoked(tmp_path, monkeypatch):
-    # main() verifies first, so the tampered revocation record may fail the
-    # vendored-file integrity check; either way a non-empty handover that cannot
-    # be verified-and-selected returns 1 (never exit 0). Not faked: exit 1 is
-    # correct at verify OR at the 0-certified guard.
+def test_cli_exits_1_all_revoked(tmp_path, monkeypatch, capsys):
+    # _revoke_all_certified rewrites the revocation record's gate_files digest, so
+    # verify() PASSES and main() reaches the 0-certified guard (not the integrity
+    # check): a non-empty handover whose certified rows are all revoked returns 1
+    # from the guard, proving the fix (ORDERS_28OCT_0430Z #3).
     vendor = _synthetic_vendor(tmp_path)
     _revoke_all_certified(vendor)
     monkeypatch.setattr(rif, "vendor_dir", lambda: vendor)
-    assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
+    rc = rif.main(["select", "--out", str(tmp_path / "selection.json")])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "0 certified" in out
 
 
 def test_cli_exits_1_wrong_prefix(tmp_path, monkeypatch):
