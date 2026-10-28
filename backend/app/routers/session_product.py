@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.core.auth import Principal, require_api_key
+from app.core.auth import DEV_LOCAL_TENANT, Principal, require_api_key
 from app.core.billing import require_entitled
 from app.core.llm_throttle import require_llm_rate
 from app.core.session_guard import owned_session_or_404
@@ -230,14 +230,25 @@ def _require_build_tenant(state, principal: Principal) -> str:
             )
         return principal.account_id
     if principal.kind == "dev":
-        # Open-dev (ALLOW_ANONYMOUS_DEV) is a single implicit tenant for local
-        # and test use only: the process refuses to boot in production without
-        # a master key or that explicit opt-in (see app/core/auth.py), so a dev
-        # principal can never arise in production and poses no cross-tenant
-        # risk. It is allowed through, preserving the existing local build
-        # path; a real isolated build still needs an account, which the worker
-        # enforces.
-        return principal.account_id or ""
+        # Open-dev (ALLOW_ANONYMOUS_DEV) binds an EXPLICIT dev tenant — the
+        # same ``dev-local`` owner routers/sessions.py assigns a credential-free
+        # caller — never "". The SAME cross-tenant check as a real user runs
+        # here, so dev is not a hole in the guard: a dev principal may build
+        # only a session owned by the dev tenant, and is refused (tenant_mismatch)
+        # for any real account's session. The process refuses to boot in
+        # production with ALLOW_ANONYMOUS_DEV (app/core/auth.verify_production_auth),
+        # so this tenant can never arise in production; the dev build still
+        # isolates on the dev tenant's own store.
+        owner = getattr(state, "user_id", None)
+        if owner and owner != DEV_LOCAL_TENANT:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "tenant_mismatch",
+                    "message": "the dev principal does not own this session",
+                },
+            )
+        return DEV_LOCAL_TENANT
     # A master/admin principal (or a user credential with no account) owns no
     # tenant store and cannot run an isolated build — refused at the route,
     # before any job or workspace is created, instead of 200-ing and failing

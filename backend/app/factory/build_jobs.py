@@ -1837,7 +1837,14 @@ def start_runner_build(
     from app.factory.build.tenant_bind import bind_tenant_store
 
     identity = tenant_identity if tenant_identity is not None else quota_account_id
-    tenant_store = bind_tenant_store(identity)
+    # Worker-side tenant check (independent of the route guard): the store we
+    # isolate on (``identity``) must be the account the build is owned/metered
+    # under (``quota_account_id``). A job whose bound tenant is not that owner
+    # is refused (TenantMismatchError) instead of isolating one tenant's store
+    # under another's build. When the build carries only a single identity
+    # (resume: tenant_identity is None and quota_account_id drives both) the
+    # two agree by construction and the check is a no-op.
+    tenant_store = bind_tenant_store(identity, owner=quota_account_id)
 
     thread = threading.Thread(
         target=_run,
