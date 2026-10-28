@@ -1,5 +1,5 @@
 ﻿# PINNED COPY of Cerebrum-Blocks app/reasoning_kernel/schemas.py
-# Source: bopoadz-del/Cerebrum-Blocks, branch feat/cerebrum-reasoning-kernel @ f9d61f60
+# Source: the Cerebrum-Blocks reasoning kernel, branch feat/cerebrum-reasoning-kernel @ f9d61f60
 # The Domain Pack standard lives in the kernel; the compiler validates against
 # this pinned snapshot so validation works without a store checkout. Prefer the
 # live checkout when present (CEREBRUM_BLOCKS_PATH); refresh this copy when the

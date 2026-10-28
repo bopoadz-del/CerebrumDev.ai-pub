@@ -26,7 +26,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 HARVEST_ID = "app.factory.build.harvest.evaluate_harvest"
-BLOCKS_REPO = "bopoadz-del/Cerebrum-Blocks-pub"
+def _blocks_repo() -> str:
+    from app.factory import repo_coords
+
+    return repo_coords.store_repo()
 
 # Factory-owned corrections that live only in CerebrumDev.ai emission until
 # an authorized harvest exists. Named so the BLOCK is about real files.
@@ -73,7 +76,7 @@ def _store_write_authorized() -> bool:
         except (OSError, json.JSONDecodeError):
             data = {}
         has_marker = (
-            data.get("authorized") is True and data.get("blocks_repo") == BLOCKS_REPO
+            data.get("authorized") is True and data.get("blocks_repo") == _blocks_repo()
         )
     # U6: a write path now exists (app.factory.build.store_write). It writes
     # to a fresh branch in a Cerebrum-Blocks checkout and never pushes, so
@@ -122,7 +125,7 @@ def evaluate_harvest(blocks_root: Optional[Path] = None) -> Dict[str, Any]:
             reason = (
                 "harvest write is NOT authorized. A committed "
                 "build/stages/HARVEST_AUTHORIZED.json naming "
-                f"{BLOCKS_REPO} is required; an environment flag is not "
+                f"{_blocks_repo()} is required; an environment flag is not "
                 "authorization. The write path itself now exists (U6, "
                 "app.factory.build.store_write)."
             )
@@ -139,7 +142,7 @@ def evaluate_harvest(blocks_root: Optional[Path] = None) -> Dict[str, Any]:
         "copied": copied,
         "copied_count": 0,
         "authorized_write_path": authorized,
-        "blocks_repo": BLOCKS_REPO,
+        "blocks_repo": _blocks_repo(),
         "blocks_checkout": str(checkout) if checkout else None,
         "checkout_writable": writable["writable"],
         "write_path": "app.factory.build.store_write",
