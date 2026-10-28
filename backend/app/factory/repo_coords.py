@@ -23,6 +23,10 @@ def _require(name: str) -> str:
             f"{name} is not set; the Factory needs the <owner>/<repo> coordinate "
             f"in the environment (no default)."
         )
+    if "/" not in value:
+        raise RepoCoordError(
+            f"{name}={value!r} is not a <owner>/<repo> coordinate (missing '/')."
+        )
     return value
 
 

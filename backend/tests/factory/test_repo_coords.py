@@ -48,3 +48,21 @@ def test_resolvers_return_two_distinct_configured_coordinates(monkeypatch):
     assert repo_coords.builds_owner() == "org-b"
     assert repo_coords.builds_name() == "builds"
     assert repo_coords.store_git_url() == "https://github.com/org-a/blocks.git"
+
+
+def test_the_error_names_the_missing_variable(monkeypatch):
+    # A fail-closed error must say WHICH variable to set.
+    _clear(monkeypatch)
+    with pytest.raises(repo_coords.RepoCoordError) as exc:
+        repo_coords.builds_repo()
+    assert "FACTORY_BUILDS_REPO" in str(exc.value)
+
+
+def test_a_value_without_a_slash_fails_closed(monkeypatch):
+    # A coordinate must be <owner>/<repo>; a value with no "/" is malformed
+    # and fails closed, naming the variable.
+    _clear(monkeypatch)
+    monkeypatch.setenv("FACTORY_STORE_REPO", "nobar")
+    with pytest.raises(repo_coords.RepoCoordError) as exc:
+        repo_coords.store_repo()
+    assert "FACTORY_STORE_REPO" in str(exc.value)
