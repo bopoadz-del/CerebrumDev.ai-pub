@@ -318,6 +318,17 @@ def select(n: Optional[int] = None, vendor: Optional[Path] = None, *, verify_fir
     for row in bad:
         if row["sha"] not in products:
             raise ValueError(f"known-bad fixture {row['branch']} @ {row['sha']}: that tree was not handed over")
+    if not picked and total_handed > 0:
+        # A NON-EMPTY handover that yields 0 certified builds -- every certified
+        # row revoked, its tree missing, or the branch prefix wrong, so
+        # certified() dropped them all -- is a real failure, NOT not-applicable.
+        # Only an EMPTY handover (total_handed == 0, handled at the top) is
+        # not-applicable. (ORDERS 2026-10-28 0300Z #4 / 0340Z.)
+        raise ValueError(
+            f"the handover holds {total_handed} entr(y/ies) but 0 certified builds "
+            "were selected (revoked, tree missing, or wrong branch prefix): the gate "
+            "stays strict"
+        )
     return picked + bad
 
 
@@ -480,6 +491,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         # empty (or known-bad-only) selection and exits 0 with a visible
         # annotation. The replay runs strict the moment builds are handed over.
         if not good:
+            total = len(data.get("selection") or [])
+            if total != 0:
+                # Defensive mirror of select(): a NON-EMPTY handover that selected
+                # 0 certified builds is a failure, NOT not-applicable.
+                print(
+                    f"the handover holds {total} entr(y/ies) but selected 0 certified "
+                    "builds: the gate stays strict"
+                )
+                return 1
             print(
                 "::notice title=gate replay::not applicable: the certified handover is empty "
                 "(0 entries); the replay runs strict the moment any build is handed over "

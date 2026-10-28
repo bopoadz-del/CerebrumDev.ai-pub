@@ -259,6 +259,26 @@ def test_the_cli_exits_1_on_a_non_empty_handover_with_zero_certified(tmp_path, m
     assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
 
 
+def test_a_non_empty_handover_with_all_certified_dropped_fails(tmp_path):
+    # ORDERS 0300Z #4 / 0340Z named cases: a handover of >= n certified-MARKED
+    # rows that certified() drops (revoked / tree missing / wrong prefix) selects
+    # 0 certified builds from a NON-EMPTY handover -> FAIL, not not-applicable.
+    # Here the certified rows' trees are removed from products, so exists() is
+    # False for each and certified() drops them all.
+    vendor = _synthetic_vendor(tmp_path)
+    data = json.loads((vendor / "manifest.json").read_text(encoding="utf-8"))
+    bad_shas = {r["sha"] for r in data["selection"] if r.get("expect") == "fail"}
+    # Keep the known-bad fixtures' trees (so that check passes and we reach the
+    # 0-certified guard); drop the certified builds' trees.
+    data["products"] = {sha: p for sha, p in data["products"].items() if sha in bad_shas}
+    (vendor / "manifest.json").write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    assert len([r for r in data["selection"] if r.get("expect") != "fail"]) >= 3
+    with pytest.raises(ValueError, match="0 certified"):
+        rif.select(vendor=vendor, n=3, verify_first=False)
+
+
 def test_a_changed_product_bundle_is_drift(tmp_path):
     vendor = _synthetic_vendor(tmp_path)
     sha, item = next(iter(rif.manifest(vendor)["products"].items()))
