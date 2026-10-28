@@ -38,8 +38,11 @@ def _load_planted_router(path: Path):
     return module
 
 
-def test_planted_ingest_accepts_body_and_query_returns_hits(tmp_path, monkeypatch):
-    """Keep-path handlers are callable: plant a paragraph, query hits it."""
+def test_planted_ingest_stores_and_query_is_repointed_to_real_answer(tmp_path, monkeypatch):
+    """Ingest persists; the query path is RE-POINTED (F-1d) to the real answer
+    path, so it is tenant-scoped — an unbound caller is refused by name (401),
+    never served an open keyword match. The behavioural citation proof is in
+    tests/factory/test_f1d_golden_citation.py."""
     compiled = _compiled_steward_dual_rag()
     planted = emit_factory_grounded_rag_surface(tmp_path, compiled)
     assert planted == ["rag_ingest", "rag_query"]
@@ -66,20 +69,50 @@ def test_planted_ingest_accepts_body_and_query_returns_hits(tmp_path, monkeypatc
     assert payload["stored"] is True
     assert payload["document_id"]
     assert payload["source"] == FACTORY_GROUNDED_RAG_SOURCE
-    query = client.get("/v1/rag/query", params={"q": "copper kettle ordinance"})
-    assert query.status_code == 200, query.text
-    body = query.json()
-    assert body["ok"] is True
-    assert body["hit_count"] >= 1
-    assert body["hits"]
-    blob = (query.text or "").lower()
-    assert "copper kettle" in blob
-    posted = client.post(
+    # The re-pointed query is tenant-scoped and reaches the REAL answer path.
+    import sys
+    import types
+
+    from app.cerebrum_product_kernel.ingestion import retrieval_index
+
+    tenancy = types.ModuleType("app.tenancy")
+
+    class _TenantRefused(Exception):
+        pass
+
+    class _Tenant:
+        def __init__(self, tid):
+            self.tenant_id = tid
+
+    def _resolve(headers):
+        auth = (headers or {}).get("authorization", "")
+        token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+        if token != "good-token":
+            raise _TenantRefused(token)
+        return _Tenant("tenant-a")
+
+    tenancy.TenantRefused = _TenantRefused
+    tenancy.resolve_tenant = _resolve
+    monkeypatch.setitem(sys.modules, "app.tenancy", tenancy)
+    retrieval_index.set_engine_provider(None)  # no engine installed here
+
+    # No auth -> 401 by name. The old keyword matcher answered 200 with open
+    # "hits"; a tenant-scoped refusal proves the open matcher is retired.
+    unbound = client.get("/v1/rag/query", params={"q": "copper kettle ordinance"})
+    assert unbound.status_code == 401, unbound.text
+    assert unbound.json()["detail"] == "authentication_required"
+    # Bound, but no retrieval engine installed -> the REAL answer path's
+    # computed 503 "retrieval backend not configured" (never a keyword 200).
+    bound = client.get(
         "/v1/rag/query",
-        json={"q": "copper kettle ordinance", "query": "copper kettle ordinance"},
+        params={"q": "copper kettle ordinance"},
+        headers={"Authorization": "Bearer good-token"},
     )
-    assert posted.status_code == 200, posted.text
-    assert posted.json()["hits"]
+    assert bound.status_code == 503, bound.text
+    assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED in bound.json()["detail"]
+    # The re-pointed module no longer ships the keyword-overlap matcher.
+    assert not hasattr(module, "search_documents")
+    assert not hasattr(module, "score_document")
 
 
 def test_planted_ingest_rejects_empty_body(tmp_path, monkeypatch):

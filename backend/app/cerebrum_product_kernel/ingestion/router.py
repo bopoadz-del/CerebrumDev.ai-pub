@@ -24,7 +24,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/v1/product/ingestion", tags=["ingestion-scaffold"])
+# The REAL product-facing routes (upload, status, answer). This is the ONLY
+# router the deploy renderer mounts into a GENERATED product — the 501
+# drive/formula placeholders live on ``_scaffold_router`` below and are NOT
+# shipped into products (F-1d §2: no 501 route ships in a generated product).
+product_router = APIRouter(prefix="/v1/product/ingestion", tags=["ingestion"])
+
+# The out-of-scope Drive/formula placeholders. They still refuse honestly with
+# 501 on the Factory host (where the combined ``router`` is used) and in the
+# full-router tests, but the product renderer never mounts them.
+_scaffold_router = APIRouter(
+    prefix="/v1/product/ingestion", tags=["ingestion-scaffold"]
+)
 
 
 class AnswerRequest(BaseModel):
@@ -52,31 +63,31 @@ def _require_product_tenant(request: Request) -> str:
     return tenant.tenant_id
 
 
-@router.post("/drive/connect")
+@_scaffold_router.post("/drive/connect")
 def drive_connect(request: Request) -> None:
     _require_product_tenant(request)
     raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
 
 
-@router.get("/drive/callback")
+@_scaffold_router.get("/drive/callback")
 def drive_callback(request: Request) -> None:
     _require_product_tenant(request)
     raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
 
 
-@router.get("/drive/files")
+@_scaffold_router.get("/drive/files")
 def drive_files(request: Request) -> None:
     _require_product_tenant(request)
     raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
 
 
-@router.post("/drive/sync/{file_id}")
+@_scaffold_router.post("/drive/sync/{file_id}")
 def drive_sync(file_id: str, request: Request) -> None:
     _require_product_tenant(request)
     raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
 
 
-@router.post("/upload")
+@product_router.post("/upload")
 async def upload_document(
     request: Request,
     files: Optional[List[UploadFile]] = File(None),
@@ -92,7 +103,7 @@ async def upload_document(
     return await ingest_uploads(tenant_id, files)
 
 
-@router.get("/upload/{job_id}")
+@product_router.get("/upload/{job_id}")
 def upload_status(job_id: str, request: Request, response: Response) -> dict:
     """The real parse-job status for ``job_id`` under the resolved tenant."""
     tenant_id = _require_product_tenant(request)
@@ -100,7 +111,7 @@ def upload_status(job_id: str, request: Request, response: Response) -> dict:
     return job_status_payload(tenant_id, job_id)
 
 
-@router.post("/answer")
+@product_router.post("/answer")
 def answer_product_question(request: Request, body: AnswerRequest) -> dict:
     """Answer a product question kernel-first, else grounded in attached chunks.
 
@@ -115,16 +126,24 @@ def answer_product_question(request: Request, body: AnswerRequest) -> dict:
     return answer_question(tenant_id, body)
 
 
-@router.post("/formulas")
+@_scaffold_router.post("/formulas")
 def submit_formula_overlay(request: Request) -> None:
     _require_product_tenant(request)
     raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
 
 
-@router.get("/formulas")
+@_scaffold_router.get("/formulas")
 def list_formula_overlays(request: Request) -> None:
     _require_product_tenant(request)
     raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
+
+
+# The combined router: the REAL routes plus the 501 placeholders. Used on the
+# Factory host and by the full-router tests. The deploy renderer imports
+# ``product_router`` (real routes ONLY) so no 501 route ships into a product.
+router = APIRouter()
+router.include_router(product_router)
+router.include_router(_scaffold_router)
 
 
 # ── shared ingest helpers (reused by the Factory-floor session route) ───────

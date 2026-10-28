@@ -489,7 +489,11 @@ def test_live_miss_sess_5782f226_run6_keep_path_plants_callable_routes(tmp_path)
     assert '"/v1/rag/query"' in body
     assert "def rag_ingest(" in body
     assert "RagIngestRequest" in body
-    assert "hits" in body
+    # F-1d: the query/answer surface is RE-POINTED to the real answer path
+    # (the shared answer_question -> answer_query helper), NOT the retired
+    # keyword-overlap matcher.
+    assert "answer_question" in body
+    assert "search_documents" not in body
     assert rag_ingest_route_present(root)
     assert rag_query_route_present(root)
     accept_writer_phase(ctx, WRITER_PHASE_FRONTEND_RAG, compiled)
