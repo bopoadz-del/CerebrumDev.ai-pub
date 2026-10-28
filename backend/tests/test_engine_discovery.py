@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.core.engine_discovery import (
-    CEREBRUM_BLOCKS_REPO,
+    cerebrum_blocks_repo,
     DEFAULT_CEREBRUM_BLOCKS_REF,
     FALLBACK_CEREBRUM_BLOCKS_REF,
     EngineDiscoveryError,
@@ -111,7 +111,7 @@ def test_resolve_engine_source_records_metadata_for_fetched_engine(
     monkeypatch.setenv("CEREBRUM_BLOCKS_REF", "main")
 
     def _run(args: List[str], **kwargs: Dict[str, Any]):
-        return _fake_fetch(tmp_path, "main", CEREBRUM_BLOCKS_REPO)(
+        return _fake_fetch(tmp_path, "main", cerebrum_blocks_repo())(
             args, **kwargs
         )
 
@@ -120,10 +120,12 @@ def test_resolve_engine_source_records_metadata_for_fetched_engine(
     root, metadata = resolve_engine_source()
 
     assert metadata["source"] == "fetched"
-    # Against the CONSTANT, never a literal copy of it: the repo URL follows
-    # CEREBRUM_BLOCKS_REPO (now the -pub mirror), so a repoint cannot silently
-    # leave this test asserting a dead repo.
-    assert metadata["repo"] == CEREBRUM_BLOCKS_REPO
+    # Against the ACCESSOR, never a literal copy of it: the repo URL follows
+    # cerebrum_blocks_repo() (env override, else the configured coordinate), so a
+    # repoint cannot silently leave this test asserting a dead repo.
+    # Reversed with evidence: the removed CEREBRUM_BLOCKS_REPO constant is now the
+    # cerebrum_blocks_repo() accessor; same value, same guarantee.
+    assert metadata["repo"] == cerebrum_blocks_repo()
     assert metadata["ref"] == "main"
     assert "commit_sha" in metadata
     assert root.is_dir()
@@ -145,7 +147,7 @@ def test_resolve_engine_source_uses_default_ref_when_unset(
     def _run(args: List[str], **kwargs: Dict[str, Any]):
         return _fake_fetch(
             tmp_path, FALLBACK_CEREBRUM_BLOCKS_REF,
-            CEREBRUM_BLOCKS_REPO,
+            cerebrum_blocks_repo(),
         )(args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _run)
@@ -155,8 +157,8 @@ def test_resolve_engine_source_uses_default_ref_when_unset(
     root, metadata = resolve_engine_source()
 
     assert metadata["source"] == "fetched"
-    assert metadata["repo"] == CEREBRUM_BLOCKS_REPO
-    # Against the CONSTANT, never a literal copy of it. A second copy of the SHA
+    assert metadata["repo"] == cerebrum_blocks_repo()
+    # Against the ACCESSOR, never a literal copy of it. A second copy of the SHA
     # lived here and made this test fail the moment the constant was moved to
     # follow the Store -- which is the same "the constant is the pin" defect
     # test_the_fallback_ref_is_a_full_commit_sha below was written to remove.

@@ -15,7 +15,7 @@ import pytest
 
 from app.factory.build.harvest import evaluate_harvest
 from app.factory.build.store_write import (
-    BLOCKS_REPO,
+    _blocks_repo,
     PROTECTED_BRANCHES,
     StoreWriteError,
     checkout_is_writable,
@@ -50,7 +50,7 @@ def _blocks_checkout(tmp_path: Path, *, diverging: bool = True) -> Path:
     )
 
     _git(root, "init", "-q", "-b", "main")
-    _git(root, "remote", "add", "origin", f"https://github.com/{BLOCKS_REPO}.git")
+    _git(root, "remote", "add", "origin", f"https://github.com/{_blocks_repo()}.git")
     _git(root, "add", "-A")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
     return root
@@ -87,7 +87,7 @@ def test_a_checkout_pointing_elsewhere_is_refused(tmp_path):
 
     state = checkout_is_writable(root)
     assert state["writable"] is False
-    assert BLOCKS_REPO in state["reason"]
+    assert _blocks_repo() in state["reason"]
 
 
 def test_a_missing_checkout_is_refused():
