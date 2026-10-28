@@ -632,6 +632,16 @@ async def chat(
     except FloorActionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if _chat_starts_generation(state, action):
+        # Same tenant guard as the product build routes, fired at the chat
+        # door before the SSE stream opens: a principal that owns the session
+        # (require_owned_session passed) but is not its tenant — an admin
+        # (no_tenant) or a dev principal on a real-owned session
+        # (tenant_mismatch) — is refused 403 here, rather than 200-ing into a
+        # stream that would later fail deep in the worker. A cross-tenant USER
+        # already 404s at require_owned_session; this closes the admin/dev gap.
+        from .session_product import _require_build_tenant
+
+        _require_build_tenant(state, principal)
         assert_entitled(principal)
     return StreamingResponse(
         _stream_response(state.session_id, body.message, action, body.value),

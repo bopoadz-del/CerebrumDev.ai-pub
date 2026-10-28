@@ -246,6 +246,16 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
         def model_validate(cls, raw):
             return cls()
 
+        # The /pilot path runs the REAL generate_product -> start_runner_build,
+        # which freezes and hashes the blueprint (model_copy / model_dump). A
+        # fake carrying only product_id is enough for the hash; the build tree
+        # is never produced (the runner thread and _run are stubbed below).
+        def model_dump(self, *a, **k):
+            return {"product_id": "p1"}
+
+        def model_copy(self, *a, **k):
+            return self
+
     monkeypatch.setattr(sp, "ProductBlueprint", _BP)
 
     def _gen(bp, out, **kw):
@@ -271,16 +281,25 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
         pcf, "_compile_and_lint_approved", lambda *a, **k: {"lint": _Lint()}
     )
 
-    # /pilot runs for real down to the binding seam: resume_pilot_cycle is NOT
-    # stubbed — it derives tenant_identity from the session and hands it to
-    # generate_product -> start_runner_build -> bind_tenant_store. Only the
-    # pre-gates and generate_product are stubbed, so the test records the
-    # tenant the JOB'S OWN code passes (breaks if that derivation breaks), the
-    # same strength as /generate — not a digest the stub recomputes.
+    # /pilot observes the REAL tenant binding (G6). resume_pilot_cycle and the
+    # REAL generate_product are NOT stubbed: resume_pilot_cycle derives
+    # tenant_identity/quota from the session (state.user_id) and hands them to
+    # generate_product -> build_jobs.start_runner_build -> bind_tenant_store.
+    # We SPY on bind_tenant_store at its source (build_jobs imports it locally
+    # from app.factory.build.tenant_bind, so the module attribute is what the
+    # call-site resolves): the spy records the (identity, owner) it is called
+    # with and the REAL binding's tenant_key, and returns the real binding by
+    # calling the original. The pilot test then asserts the bound tenant_key is
+    # the SESSION OWNER's digest — observing the job's own derivation and the
+    # real bind, not a digest the stub recomputes. This is exactly the seam
+    # that failed twice when the stub sat ABOVE the bind.
     class _Bar:
         reaches_pilot = True
 
     import app.factory.build.build_level as bl
+    import app.factory.build.tenant_bind as tenant_bind
+    import app.factory.compliance_gate as compliance_gate
+    import app.factory.product_architect as product_architect
 
     monkeypatch.setattr(pcf, "is_pilot_ready", lambda *a, **k: False)
     monkeypatch.setattr(pcf, "sync_blueprint_intake", lambda *a, **k: None)
@@ -293,19 +312,58 @@ def _stub_build_path(monkeypatch, tmp_path, recorder):
     monkeypatch.setattr(pcf, "_live_build_thread", lambda *a, **k: None)
     monkeypatch.setattr(pcf, "ensure_platform_id", lambda *a, **k: "plt_x")
 
-    def _gen_pilot(bp, out, **kw):
-        recorder["pilot_tenant"] = kw.get("tenant_identity")
-        recorder["pilot_quota"] = kw.get("quota_account_id")
-        return {
-            "output_dir": str(out),
-            "inputs_hash": "h" * 12,
-            "product_id": "p1",
-            "canonical_output": None,
-            "engine": "runner",
-            "build": {},
-        }
+    # The compliance gate inside the REAL generate_product needs the Store
+    # block shelf and a full blueprint — neither exists in a unit test — so it
+    # is stubbed to a no-op. It is build plumbing ABOVE the tenant seam; the
+    # bind is downstream of it, so stubbing it does not weaken the assertion.
+    monkeypatch.setattr(compliance_gate, "assert_compliant", lambda *a, **k: None)
 
-    monkeypatch.setattr(pcf, "generate_product", _gen_pilot)
+    class _NoopPlanner:
+        def __init__(self, *a, **k):
+            pass
+
+        def plan(self, *a, **k):
+            return {}
+
+    monkeypatch.setattr(product_architect, "CapabilityPlanner", _NoopPlanner)
+
+    # Stub only what avoids a real build/CLI, so the bind is still reached:
+    # the CLI-readiness probe, the runner body, and the background thread.
+    monkeypatch.setattr(
+        "app.factory.build.coder_session.raise_if_cli_session_unready",
+        lambda *a, **k: None,
+    )
+    import app.factory.build_jobs as bj
+
+    monkeypatch.setattr(bj, "_run", lambda *a, **k: None)
+
+    class _InlineThread:
+        def __init__(self, *args, **kwargs):
+            self._kwargs = kwargs
+
+        def start(self):
+            # No-op: the runner body (_run) is stubbed and the bind has already
+            # happened on the calling thread before start() is reached.
+            return None
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr("threading.Thread", _InlineThread)
+
+    # SPY on the real bind at the build_jobs import site (its source module).
+    _real_bind = tenant_bind.bind_tenant_store
+
+    def _spy_bind(account_id, *, owner=None):
+        binding = _real_bind(account_id, owner=owner)  # the REAL binding
+        recorder["pilot_bind_identity"] = account_id
+        recorder["pilot_bind_owner"] = owner
+        recorder["pilot_bound_tenant_key"] = (
+            binding.tenant_key if binding is not None else None
+        )
+        return binding
+
+    monkeypatch.setattr(tenant_bind, "bind_tenant_store", _spy_bind)
 
     # /n3-reseed binds NO per-tenant store: reseed_and_ingest_n3 does store-gate
     # ingest and never calls generate_product/start_runner_build/bind_tenant_store.
@@ -440,14 +498,22 @@ def test_generate_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_p
 
 
 def test_pilot_same_tenant_launches_bound_to_the_session_tenant(routes, tmp_path):
+    from app.factory.build.tenant_bind import bind_tenant_store
+
     recorder: dict = {}
     _stub_build_path(routes.monkeypatch, tmp_path, recorder)
     r = _post(routes, "pilot", {"Authorization": f"Bearer {routes.tok_a}"})
     assert r.status_code == 200, r.text
-    # resume_pilot_cycle's own code handed the session owner's tenant to the
-    # build (both the isolation identity and the quota account).
-    assert recorder.get("pilot_tenant") == routes.acct_a
-    assert recorder.get("pilot_quota") == routes.acct_a
+    # The REAL bind ran: resume_pilot_cycle derived the tenant from the session
+    # owner and generate_product -> start_runner_build -> bind_tenant_store
+    # bound the store to the SESSION OWNER's digest. Assert the actually-bound
+    # tenant_key is that digest (not a value the test recomputes above the
+    # bind). The owner==identity the worker checks is the same account too.
+    assert recorder.get("pilot_bound_tenant_key") == bind_tenant_store(
+        routes.acct_a
+    ).tenant_key
+    assert recorder.get("pilot_bind_identity") == routes.acct_a
+    assert recorder.get("pilot_bind_owner") == routes.acct_a
 
 
 def test_n3_reseed_same_tenant_reaches_the_job_with_the_owner_session(routes, tmp_path):
@@ -533,3 +599,178 @@ def test_dev_principal_generate_binds_dev_local_quota_and_tenant(routes, tmp_pat
     assert r.status_code == 200, r.text
     assert recorder.get("generate_quota") == DEV_LOCAL_TENANT
     assert recorder.get("generate_tenant") == DEV_LOCAL_TENANT
+
+
+# --- n3-reseed stamps the bound tenant into the HANDOFF ledger NOTE ----------
+# DELIVERABLE 2: an n3-reseed as a same-tenant user threads the guard's bound
+# tenant (the session owner) into reseed_handoff_ledger, which stamps it into
+# the HANDOFF_TO_N3 NOTE payload as a "tenant" field. The HANDOFF stamp runs
+# for REAL here (only the store-gate network ingest is stubbed), so the test
+# reads the tenant off the actual ledger the reseed wrote.
+
+import json as _json
+
+
+def _stub_n3_reseed_no_network(monkeypatch, out):
+    """Let reseed_handoff_ledger run for real; stub only the store-gate ingest
+    (network / background waiter) and the blueprint/intake pre-gates."""
+    import app.factory.build.n3_store_gate as n3
+    import app.factory.platform_chat_flow as pcf
+    from app.factory.build.n3_store_gate import IngestResult, HANDOFF_TO_N3
+
+    class _BP:
+        product_id = "p1"
+
+        @classmethod
+        def model_validate(cls, raw):
+            return cls()
+
+    monkeypatch.setattr(pcf, "ProductBlueprint", _BP)
+    monkeypatch.setattr(pcf, "sync_blueprint_intake", lambda *a, **k: None)
+    monkeypatch.setattr(pcf, "has_running_build", lambda *a, **k: False)
+    monkeypatch.setattr(pcf, "_generation_output_dir", lambda *a, **k: out)
+
+    # No GitHub / no background waiter: the reseed still STAMPS the ledger,
+    # which is the behaviour under test; ingest just reports "pending".
+    monkeypatch.setattr(
+        n3,
+        "ingest_n3_store_gate",
+        lambda *a, **k: IngestResult(honesty=HANDOFF_TO_N3, ok=False, pending=True),
+    )
+    monkeypatch.setattr(n3, "n3_ingest_live", lambda *a, **k: True)
+    monkeypatch.setattr(n3, "start_n3_ingest_job", lambda *a, **k: False)
+
+
+def _handoff_note_tenant(out):
+    """The ``tenant`` field on the HANDOFF_TO_N3 NOTE the reseed stamped."""
+    from app.factory.build.n3_store_gate import HANDOFF_TO_N3
+
+    ledger = out / "build_ledger.jsonl"
+    assert ledger.is_file(), "reseed did not stamp a ledger"
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = _json.loads(line)
+        payload = event.get("payload") or {}
+        if event.get("kind") == "NOTE" and payload.get("honesty") == HANDOFF_TO_N3:
+            return payload.get("tenant"), True
+    return None, False
+
+
+def test_n3_reseed_same_tenant_stamps_bound_tenant_into_handoff_note(routes, tmp_path):
+    out = tmp_path / "n3out"
+    _stub_n3_reseed_no_network(routes.monkeypatch, out)
+
+    r = _post(routes, "n3-reseed", {"Authorization": f"Bearer {routes.tok_a}"})
+    assert r.status_code == 200, r.text
+
+    tenant, found = _handoff_note_tenant(out)
+    assert found, "no HANDOFF_TO_N3 NOTE on the stamped ledger"
+    # The bound tenant the route guard resolved is the session owner (acct_a),
+    # and reseed_handoff_ledger stamped exactly that into the NOTE.
+    assert tenant == routes.acct_a
+
+
+# --- chat-path tenant guard (DELIVERABLE 3) ---------------------------------
+# A build-starting chat action is guarded by the SAME _require_build_tenant as
+# the product routes, fired before the SSE stream opens: a dev principal on a
+# REAL-owned session -> 403 tenant_mismatch; a same-tenant user token -> no
+# 403 (it proceeds to the stream). Deleting the guard call makes the 403 fail.
+
+
+@pytest.fixture()
+def chat_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("ACCOUNTS_DB_PATH", str(tmp_path / "accounts.db"))
+    monkeypatch.delenv("ACCOUNTS_DATABASE_URL", raising=False)
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.setenv("ACCOUNTS_EXPOSE_DEV_TOKENS", "1")
+    monkeypatch.delenv("BILLING_ENFORCEMENT", raising=False)
+    monkeypatch.delenv("ACCOUNTS_REQUIRE_VERIFIED_EMAIL", raising=False)
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("AUTH_RATE_LIMIT_MAX", raising=False)
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    from app.core.rate_limit import reset_rate_limits
+
+    reset_rate_limits()
+
+    from fastapi import Depends
+
+    from app.core.auth import require_api_key
+    from app.core.session_store import create_session, update_session
+    from app.routers import accounts, chat
+
+    # The chat handler starts a real build when a same-tenant caller passes the
+    # guard; stub the SSE body, rate gate and entitlement so the test isolates
+    # the tenant guard (the behaviour under test), not the downstream build.
+    async def _noop_stream(*a, **k):
+        if False:
+            yield b""  # pragma: no cover -- makes this an async generator
+
+    monkeypatch.setattr(chat, "_stream_response", _noop_stream)
+    monkeypatch.setattr(chat, "require_llm_rate", lambda *a, **k: None)
+    monkeypatch.setattr(chat, "assert_entitled", lambda *a, **k: None)
+
+    app = FastAPI()
+    app.include_router(accounts.router, prefix="/v1/auth")
+    app.include_router(
+        chat.router,
+        prefix="/v1/sessions",
+        dependencies=[Depends(require_api_key)],
+    )
+    client = TestClient(app)
+
+    acct_a = _make_account(client, "chatowner@example.com")
+
+    monkeypatch.setenv("CEREBRUM_DEV_API_KEY", "master-test-key")
+    master = {"X-API-Key": "master-test-key"}
+    minted = client.post(
+        "/v1/auth/admin/keys", headers=master, json={"account_id": acct_a}
+    )
+    assert minted.status_code == 201, minted.text
+    tok_a = minted.json()["api_key"]
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+
+    # A session owned by acct_a with a PENDING blueprint (drafted, not yet
+    # approved) and a chosen build level, so APPROVE is a build-starting action
+    # (_chat_starts_generation -> has_pending_blueprint == True).
+    sess = "sess_chatguard0000"
+    st = create_session(session_id=sess, user_id=acct_a)
+    st.product_design.blueprint = {"product_id": "p1"}
+    st.product_design.blueprint_approved = False
+    st.product_design.build_level = "pilot"
+    update_session(sess, st)
+
+    # Registration left a session cookie on the client; drop it so a header-less
+    # request is a genuine credential-free dev principal, not a cookie ride.
+    client.cookies.clear()
+
+    return SimpleNamespace(
+        client=client, sess=sess, acct_a=acct_a, tok_a=tok_a, monkeypatch=monkeypatch
+    )
+
+
+_APPROVE_BODY = {"message": "approve", "action": "approve"}
+
+
+def test_chat_build_action_refuses_dev_on_real_session_403(chat_routes):
+    # No credential + ALLOW_ANONYMOUS_DEV -> dev principal, whose tenant is
+    # dev-local, not the session's real owner -> 403 tenant_mismatch, before
+    # the SSE stream opens. (require_owned_session lets the dev principal reach
+    # the handler; the chat tenant guard is what refuses.)
+    r = chat_routes.client.post(
+        f"/v1/sessions/{chat_routes.sess}/chat", json=_APPROVE_BODY
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["error"] == "tenant_mismatch"
+
+
+def test_chat_build_action_same_tenant_user_proceeds(chat_routes):
+    # The session owner's own token passes the guard and proceeds to the stream
+    # (200), never 403.
+    r = chat_routes.client.post(
+        f"/v1/sessions/{chat_routes.sess}/chat",
+        json=_APPROVE_BODY,
+        headers={"Authorization": f"Bearer {chat_routes.tok_a}"},
+    )
+    assert r.status_code == 200, r.text

@@ -1013,8 +1013,16 @@ def _run_n3_reseed(
     builds_repo: Optional[str] = None,
     output_dir: Optional[str] = None,
     principal: Principal,
+    tenant_identity: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Stamp HANDOFF then ingest store-gate. Never calls generate_product."""
+    """Stamp HANDOFF then ingest store-gate. Never calls generate_product.
+
+    ``tenant_identity`` is the bound tenant the route guard resolved (the
+    session owner). It is forwarded into the HANDOFF ledger stamp so the n3
+    ingest records whose tenant this reseed isolates under — the same identity
+    a generate/pilot build binds, even though n3-reseed binds no per-tenant
+    store of its own.
+    """
     from app.factory.build.n3_store_gate import HandoffReseedError
     from app.factory.platform_chat_flow import has_running_build, reseed_and_ingest_n3
 
@@ -1049,6 +1057,7 @@ def _run_n3_reseed(
             builds_owner=builds_owner or "bopoadz-del",
             builds_repo=builds_repo or "cerebrum-builds-pub",
             triggered_by="product_n3_reseed",
+            tenant_identity=tenant_identity,
         )
     except HandoffReseedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1079,7 +1088,9 @@ def n3_reseed_product(
 ) -> Dict[str, Any]:
     """Safe HANDOFF reseed + store-gate ingest. Does not launch WRITER/BA."""
     state = _require_session(session_id, principal)
-    _require_build_tenant(state, principal)
+    # Capture the guard's bound tenant (the session owner) and thread it into
+    # the HANDOFF ledger stamp, the same as the /generate n3_reseed caller.
+    bound_tenant = _require_build_tenant(state, principal)
     try:
         return _run_n3_reseed(
             session_id,
@@ -1091,6 +1102,7 @@ def n3_reseed_product(
             builds_repo=body.builds_repo,
             output_dir=body.output_dir,
             principal=principal,
+            tenant_identity=bound_tenant,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_product_error(session_id, state, exc)
@@ -1130,6 +1142,7 @@ def generate_approved_product(
                 builds_repo=body.builds_repo,
                 output_dir=body.output_dir,
                 principal=principal,
+                tenant_identity=bound_tenant,
             )
         except Exception as exc:  # noqa: BLE001
             _raise_product_error(session_id, state, exc)

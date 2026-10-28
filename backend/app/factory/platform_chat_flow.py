@@ -1117,6 +1117,7 @@ def reseed_and_ingest_n3(
     builds_repo: str = "cerebrum-builds-pub",
     output_root: Optional[Path] = None,
     triggered_by: str = "n3_reseed",
+    tenant_identity: Optional[str] = None,
 ) -> Dict[str, Any]:
     """One-time HANDOFF reseed then store-gate ingest. Never calls generate_product.
 
@@ -1155,11 +1156,14 @@ def reseed_and_ingest_n3(
             builds_repo=builds_repo,
             product_id=bp.product_id,
             inputs_hash=inputs_hash,
+            tenant_identity=tenant_identity,
         )
     except HandoffReseedError:
         raise
 
-    result = ingest_n3_store_gate(out, wait=False, session_id=state.session_id)
+    result = ingest_n3_store_gate(
+        out, wait=False, session_id=state.session_id, tenant_identity=tenant_identity
+    )
     if result.pending and not n3_ingest_live(out):
         start_n3_ingest_job(out, session_id=state.session_id)
 
