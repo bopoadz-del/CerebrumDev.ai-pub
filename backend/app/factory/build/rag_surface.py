@@ -37,23 +37,27 @@ RAG_WIRE_MARK = "from app.rag_routes import router as rag_router"
 #: Ingest takes the document text in writer_phases.RAG_INGEST_TEXT_FIELDS
 #: (the body fields the brief declares); test_declared_contract_sweep pins it.
 #: Query GET+POST returns structured hits with excerpt/score.
-_RAG_ROUTES_PY = '''"""Factory-grounded dual-RAG ingest/query (PHASE 2 keep-path).
+_RAG_ROUTES_PY = '''"""Factory-grounded dual-RAG surface (PHASE 2 keep-path).
 
-Authorship: factory-grounded rag surface. Not a CLI template and not an
-empty stub. Ingest stores a document; query returns structured hits.
+Authorship: factory-grounded rag surface. Not a CLI template and not an empty
+stub. Ingest stores a document. The query/answer surface is RE-POINTED (F-1d)
+to the product's REAL answer path — the shared kernel helper (answer_question
+-> answer_query): kernel-first, retrieval through the installed engine, real
+citations, and the 503/422 split. The old keyword-overlap matcher is RETIRED:
+/v1/rag/query is now a tenant-scoped alias of the real /answer verb, never a
+placeholder and never a 501.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["rag-surface"])
@@ -70,68 +74,12 @@ def _index_path() -> Path:
     return _storage_root() / "rag_index.jsonl"
 
 
-def _tokens(text: str) -> List[str]:
-    return [part for part in re.findall(r"[a-z0-9]+", (text or "").lower()) if part]
-
-
-def load_documents() -> List[Dict[str, Any]]:
-    path = _index_path()
-    if not path.is_file():
-        return []
-    out: List[Dict[str, Any]] = []
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict) and row.get("text"):
-                out.append(row)
-    return out
-
-
 def persist_document(record: Dict[str, Any]) -> Dict[str, Any]:
     path = _index_path()
     with _LOCK:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\\n")
     return record
-
-
-def score_document(query: str, text: str) -> float:
-    q_tokens = set(_tokens(query))
-    if not q_tokens:
-        return 0.0
-    d_tokens = set(_tokens(text))
-    if not d_tokens:
-        return 0.0
-    overlap = q_tokens & d_tokens
-    return len(overlap) / float(len(q_tokens))
-
-
-def search_documents(query: str, *, top_k: int = 5) -> List[Dict[str, Any]]:
-    hits: List[Dict[str, Any]] = []
-    for row in load_documents():
-        text = str(row.get("text") or "")
-        score = score_document(query, text)
-        if score <= 0:
-            continue
-        excerpt = text if len(text) <= 280 else text[:277] + "..."
-        hits.append(
-            {
-                "doc_id": row.get("doc_id"),
-                "title": row.get("title") or row.get("doc_id"),
-                "excerpt": excerpt,
-                "score": round(score, 6),
-                "layer": row.get("layer") or 1,
-                "property_id": row.get("property_id"),
-            }
-        )
-    hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
-    return hits[: max(1, min(int(top_k or 5), 20))]
 
 
 class RagIngestRequest(BaseModel):
@@ -149,6 +97,7 @@ class RagQueryRequest(BaseModel):
     q: Optional[str] = None
     query: Optional[str] = None
     text: Optional[str] = None
+    answer_text: str = ""
     top_k: int = Field(5, ge=1, le=20)
 
 
@@ -197,31 +146,61 @@ def rag_ingest(body: RagIngestRequest) -> Dict[str, Any]:
     }
 
 
-def _query_payload(query: str, top_k: int) -> Dict[str, Any]:
-    if not query:
-        return {"ok": False, "error": "query is required", "hits": [], "hit_count": 0}
-    hits = search_documents(query, top_k=top_k)
-    return {
-        "ok": True,
-        "query": query,
-        "hit_count": len(hits),
-        "hits": hits,
-        "insufficiency": len(hits) == 0,
-        "source": "factory-grounded rag surface",
-    }
+def _resolve_tenant(request: Request) -> str:
+    """Resolve the bound tenant through the product's single tenancy path.
+
+    The answer-over-corpus surface is tenant-scoped exactly like the kernel
+    ingestion routes: a missing / unknown / client-named tenant is refused by
+    name with 401, never mapped to a default.
+    """
+    import app.tenancy as tenancy
+
+    try:
+        tenant = tenancy.resolve_tenant(request.headers)
+    except tenancy.TenantRefused:
+        raise HTTPException(status_code=401, detail="authentication_required")
+    return tenant.tenant_id
+
+
+def _real_answer(tenant_id: str, query: str, answer_text: str) -> Dict[str, Any]:
+    """Route the query through the product's REAL answer path (F-1d re-point).
+
+    The SAME shared helper the kernel ingestion /answer verb uses: kernel-first,
+    retrieval through the installed engine, real citations, and the 503/422
+    split. There is NO keyword-overlap fallback — an unconfigured retrieval
+    backend fails closed with the computed "retrieval backend not configured",
+    never a silent keyword match.
+    """
+    try:
+        from app.cerebrum_product_kernel.ingestion.router import (
+            AnswerRequest,
+            answer_question,
+        )
+    except ImportError as exc:  # pragma: no cover - a product always vendors the kernel
+        raise HTTPException(
+            status_code=503,
+            detail="retrieval backend not configured: product kernel not available",
+        ) from exc
+    return answer_question(
+        tenant_id, AnswerRequest(query=query, answer_text=answer_text or "")
+    )
 
 
 @router.get("/v1/rag/query")
 def rag_query_get(
+    request: Request,
     q: str = Query(..., min_length=1),
-    top_k: int = Query(5, ge=1, le=20),
+    answer_text: str = Query(""),
 ) -> Dict[str, Any]:
-    return _query_payload(q, top_k)
+    return _real_answer(_resolve_tenant(request), q, answer_text)
 
 
 @router.post("/v1/rag/query")
-def rag_query_post(body: RagQueryRequest) -> Dict[str, Any]:
-    return _query_payload(_query_text(None, body), body.top_k)
+def rag_query_post(request: Request, body: RagQueryRequest) -> Dict[str, Any]:
+    query = _query_text(None, body)
+    if not query:
+        raise HTTPException(status_code=422, detail="query is required")
+    return _real_answer(_resolve_tenant(request), query, body.answer_text)
 '''
 
 

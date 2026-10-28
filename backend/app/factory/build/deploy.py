@@ -471,15 +471,42 @@ def render_main(product_name: str, vertical: str = "") -> str:
             "# a product with no certified content to back must not receive a\n"
             "# client-ingestion surface (Phase 2 §1).\n"
         )
+        # No retrieval surface ships for an excluded vertical, so its boot does
+        # not install a retrieval engine either.
+        boot_engine_install = ""
     else:
+        # Mount the REAL product routes ONLY (upload, status, answer). The
+        # Drive/formula 501 placeholders live on the kernel's _scaffold_router
+        # and are deliberately NOT imported here, so no 501 route ships in a
+        # generated product (F-1d §2).
         ingestion_mount = (
             "# Phase 2 client ingestion (chunker + tenant-resolved routes).\n"
             "try:\n"
-            "    from app.cerebrum_product_kernel.ingestion.router import router as product_ingestion_router\n"
+            "    from app.cerebrum_product_kernel.ingestion.router import product_router as product_ingestion_router\n"
             "\n"
             "    app.include_router(product_ingestion_router)\n"
             "except ImportError:\n"
             "    pass\n"
+        )
+        # F-1d §1: install the REAL per-tenant retrieval engine in the PRODUCT's
+        # own boot (same provider the Factory host installs), so retrieval runs
+        # in a built product and not only in the Factory. A product with no
+        # embedder config still fails closed on the answer path with the
+        # computed "retrieval backend not configured" (ruling C), never a silent
+        # empty. Guarded: a missing kernel or an install failure never kills boot.
+        boot_engine_install = (
+            "    try:\n"
+            "        from app.cerebrum_product_kernel.ingestion.engine_install import (\n"
+            "            install_default_engine,\n"
+            "        )\n"
+            "\n"
+            "        install_default_engine()\n"
+            "    except Exception:  # noqa: BLE001 - a retrieval-install failure never blocks boot\n"
+            "        import logging\n"
+            "\n"
+            "        logging.getLogger(__name__).exception(\n"
+            "            'retrieval engine provider not installed at boot'\n"
+            "        )\n"
         )
 
     return (
@@ -528,7 +555,8 @@ def render_main(product_name: str, vertical: str = "") -> str:
         "        logging.getLogger(__name__).exception(\n"
         "            'platform preconditions did not run'\n"
         "        )\n"
-        "    # Uvicorn configures logging after import; win it back for JSON lines.\n"
+        + boot_engine_install
+        + "    # Uvicorn configures logging after import; win it back for JSON lines.\n"
         "    configure_logging()\n"
         "    yield\n"
         "\n"
