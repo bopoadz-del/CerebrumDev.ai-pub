@@ -19,11 +19,22 @@ implemented.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/v1/product/ingestion", tags=["ingestion-scaffold"])
+
+
+class AnswerRequest(BaseModel):
+    """A product/Floor question. ``answer_text`` is the model's prose from the
+    host's single LLM egress; on a kernel-covered query the kernel ignores it
+    and computes the number itself, so a wrong number in the prose can never
+    reach the client."""
+
+    query: str = Field(..., min_length=1)
+    answer_text: str = ""
 
 
 def _require_product_tenant(request: Request) -> str:
@@ -87,6 +98,21 @@ def upload_status(job_id: str, request: Request, response: Response) -> dict:
     tenant_id = _require_product_tenant(request)
     response.headers["Cache-Control"] = "no-store"
     return job_status_payload(tenant_id, job_id)
+
+
+@router.post("/answer")
+def answer_product_question(request: Request, body: AnswerRequest) -> dict:
+    """Answer a product question kernel-first, else grounded in attached chunks.
+
+    This is where ``answer_query`` actually runs for a GENERATED product: the
+    tenant is resolved from the authenticated principal, and the shared helper
+    (reused by the Floor route) calls the kernel answer path. A kernel-covered
+    question returns the kernel's COMPUTED number; an out-of-kernel one returns
+    a labelled, cited improvisation; no retrieval backend returns a surfaced
+    503 "retrieval backend not configured".
+    """
+    tenant_id = _require_product_tenant(request)
+    return answer_question(tenant_id, body)
 
 
 @router.post("/formulas")
@@ -183,4 +209,62 @@ def job_status_payload(tenant_id: str, job_id: str) -> dict:
         "pages": job.pages,
         "sheets": job.sheets,
         "rows": job.rows,
+        # Whether the parsed chunks reached retrieval (F-1c), SURFACED.
+        "index_state": job.index_state,
     }
+
+
+def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
+    """Shared answer helper for BOTH product surfaces (kernel route + Floor route).
+
+    Mirrors how ``ingest_uploads`` backs both ``/upload`` routes: the caller
+    resolves the tenant and passes it in; this never reads headers. It calls the
+    kernel's :func:`answer_query` and maps its refusals to surfaced HTTP errors:
+
+    * 503 when retrieval cannot run — either no engine is installed
+      (``RETRIEVAL_BACKEND_NOT_CONFIGURED``) OR the embeddings egress itself is
+      unconfigured / failing (``EmbeddingEgressError``). This is mapped by
+      EXCEPTION TYPE, not by message text, so both an unconfigured egress and a
+      configured-but-failing egress surface a 503 — never a 200 that hides the
+      broken backend behind a fabricated "missing inputs", and never a 500.
+    * 503 ALSO when the host NAMED a non-semantic (keyword) embedder — a
+      SERVER-config error raised as ``RetrievalBackendMisconfigured`` carrying
+      the named refusal ("keyword_embedder_not_retrieval: ..."). Matched by
+      TYPE, BEFORE the plain-grounding handler, so a misconfigured backend is a
+      503, never a 422.
+    * 422 ONLY when retrieval ran but the answer cannot be grounded (a plain
+      ``RetrievalEngineError`` — e.g. "not in the retrieved excerpts"). That is
+      the CLIENT's grounding refusal, the one case that is 422.
+
+    The returned dict is ``ProductAnswer.to_dict()``.
+    """
+    from app.cerebrum_product_kernel.answer import answer_query
+    from app.cerebrum_product_kernel.ingestion.retrieval_index import (
+        RETRIEVAL_BACKEND_NOT_CONFIGURED,
+    )
+    from app.cerebrum_product_kernel.retrieval_engine import (
+        RetrievalBackendMisconfigured,
+        RetrievalEngineError,
+    )
+    from app.core.llm_embeddings import EmbeddingEgressError
+
+    try:
+        answer = answer_query(tenant_id, body.query, body.answer_text)
+    except EmbeddingEgressError as exc:
+        # The embeddings egress is unconfigured or failed — a computed 503,
+        # matched by TYPE (not message), on both answer routes.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RetrievalBackendMisconfigured as exc:
+        # SERVER-config error (a keyword embedder was NAMED): 503 carrying the
+        # named refusal, matched by TYPE before the plain-grounding handler.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        message = str(exc)
+        if RETRIEVAL_BACKEND_NOT_CONFIGURED in message:
+            raise HTTPException(status_code=503, detail=message) from exc
+        raise
+    except RetrievalEngineError as exc:
+        # CLIENT grounding refusal (nothing retrieved supports the claim): the
+        # one 422 case — a surfaced "not in the retrieved excerpts", not a 500.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return answer.to_dict()

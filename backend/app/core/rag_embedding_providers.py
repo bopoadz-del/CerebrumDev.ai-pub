@@ -1,6 +1,10 @@
-"""Model-independent embedding provider contract and validation-only providers.
+"""Embedding provider contract: the validation-only local provider, and the
+ONE real semantic provider backed by this repo's single LLM egress.
 
-No external APIs, no model downloads, no vector-store operations.
+The local feature-hash provider stays model-independent (no external API). The
+real provider (:data:`LLM_SEMANTIC_V1`) embeds through
+``app.core.llm_embeddings`` — the same OpenAI-compatible host the Floor chat
+already uses — so it adds no new SDK, native wheel, or network door.
 """
 
 from __future__ import annotations
@@ -13,6 +17,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 LOCAL_FEATURE_HASH_V1 = "local_feature_hash_v1"
+#: The one REAL semantic provider. It embeds through THIS repo's single LLM
+#: egress (app.core.llm_embeddings -> the provider's /embeddings endpoint). It
+#: is ``semantic``, which is what lets it drive the RetrievalEngine — a keyword
+#: matcher is refused there.
+LLM_SEMANTIC_V1 = "llm_semantic_v1"
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*", re.UNICODE)
 
@@ -92,8 +101,49 @@ class _LocalFeatureHashProviderV1(RagEmbeddingProvider):
         return [round(v / rounded_norm, self._precision) for v in vector]
 
 
+class _LlmSemanticProviderV1(RagEmbeddingProvider):
+    """A REAL semantic embedder: vectors come from the LLM provider's own
+    embeddings endpoint via this repo's single egress.
+
+    ``semantic = True`` marks it as retrieval-grade (the RetrievalEngine
+    refuses a non-semantic embedder). ``production_approved = True`` because it
+    computes genuine model embeddings, not a feature hash. The egress is lazy
+    (imported at call time) so importing this module pulls in no network code.
+    """
+
+    semantic = True
+
+    _VERSION = "1"
+    #: Dimensionality is provider/model-defined and discovered from the first
+    #: response; this is a declared upper bound for the contract fields only.
+    _DIMENSIONS = 4096
+    _MAX_CHARS = 200_000
+    _MAX_BATCH = 64
+
+    def __init__(self) -> None:
+        super().__init__(
+            provider_id=LLM_SEMANTIC_V1,
+            provider_version=self._VERSION,
+            algorithm="llm-embeddings-openai-compatible",
+            dimensions=self._DIMENSIONS,
+            distance_metric="cosine",
+            normalization="none",
+            maximum_batch_size=self._MAX_BATCH,
+            maximum_input_characters=self._MAX_CHARS,
+            production_approved=True,
+        )
+
+    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        # Lazy import keeps this module free of a hard egress dependency and
+        # lets a test stub app.core.llm_embeddings._request_embeddings.
+        from app.core.llm_embeddings import embed_texts as _embed
+
+        return _embed(list(texts or []))
+
+
 _PROVIDERS: Dict[str, RagEmbeddingProvider] = {
     LOCAL_FEATURE_HASH_V1: _LocalFeatureHashProviderV1(),
+    LLM_SEMANTIC_V1: _LlmSemanticProviderV1(),
 }
 
 

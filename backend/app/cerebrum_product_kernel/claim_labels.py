@@ -86,15 +86,48 @@ class Claim:
 
 
 @dataclass(frozen=True)
+class Citation:
+    """Where one supporting chunk came from (F-1c).
+
+    An attached-document answer cannot cite a page it did not retrieve: the
+    ``file`` and ``location`` here are copied VERBATIM from the retrieved
+    chunk's own metadata (the ``file`` + ``location`` F-1b's parser tagged),
+    never composed by the model. A chunk that carries no location cites no
+    location — the field stays empty rather than being invented.
+    """
+
+    file: str
+    location: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"file": self.file, "location": dict(self.location or {})}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Citation":
+        return cls(
+            file=str((data or {}).get("file") or ""),
+            location=dict((data or {}).get("location") or {}),
+        )
+
+
+@dataclass(frozen=True)
 class LabeledAnswer:
-    """An answer whose every claim carries its own layer + precedence."""
+    """An answer whose every claim carries its own layer + precedence.
+
+    ``citations`` (F-1c) carries, for each supporting retrieved chunk, the
+    file + location it came from, so the answer surface can name the page /
+    sheet+row / paragraph behind a cited span. It defaults empty — a kernel
+    answer with no retrieved chunk cites nothing from documents.
+    """
 
     claims: List[Claim] = field(default_factory=list)
+    citations: List[Citation] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "precedence_version": PRECEDENCE_VERSION,
             "claims": [claim.to_dict() for claim in self.claims],
+            "citations": [c.to_dict() for c in self.citations],
         }
 
     @classmethod
@@ -104,7 +137,10 @@ class LabeledAnswer:
             raise ClaimLabelError(
                 f"{UNLABELED_CLAIM}: answer record has no claims section"
             )
-        return cls(claims=[Claim.from_dict(c) for c in raw])
+        return cls(
+            claims=[Claim.from_dict(c) for c in raw],
+            citations=[Citation.from_dict(c) for c in (data.get("citations") or [])],
+        )
 
 
 def enforce_claim_labels(claims: List[Claim]) -> None:

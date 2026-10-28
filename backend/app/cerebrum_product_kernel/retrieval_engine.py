@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from app.cerebrum_product_kernel.claim_labels import (
+    Citation,
     Claim,
     LabeledAnswer,
 )
@@ -47,7 +48,24 @@ ABSENCE_WORDING = "not in the retrieved excerpts"
 
 
 class RetrievalEngineError(ValueError):
-    """A named refusal from the retrieval engine."""
+    """A named refusal from the retrieval engine.
+
+    Two kinds of refusal share this base, and callers distinguish them by TYPE:
+
+    * a plain ``RetrievalEngineError`` is a CLIENT-side grounding refusal — the
+      retrieved excerpts do not support the claim (``grounded_fact_absent``). An
+      HTTP surface maps it to 422.
+    * a :class:`RetrievalBackendMisconfigured` is a SERVER-side configuration
+      error — the host NAMED a non-retrieval (keyword) embedder, so retrieval
+      cannot run at all. An HTTP surface maps it to 503, like the other
+      backend-not-configured cases.
+    """
+
+
+class RetrievalBackendMisconfigured(RetrievalEngineError):
+    """The host's retrieval backend is misconfigured (e.g. a keyword embedder
+    was named where a semantic one is required). A server-config error, not a
+    client grounding refusal — surfaced as 503, carrying the named reason."""
 
 
 class Embedder(Protocol):
@@ -86,13 +104,20 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 @dataclass
 class RetrievalHit:
-    """One retrieved chunk with its similarity score and layer metadata."""
+    """One retrieved chunk with its similarity score and layer metadata.
+
+    ``file`` and ``location`` (F-1c) are the attach provenance F-1b's parser
+    tagged onto the chunk; they ride the metadata unchanged so retrieval can
+    cite the page / sheet+row / paragraph a span came from.
+    """
 
     chunk_id: str
     text: str
     score: float
     layer: int
     tenant_id: Optional[str] = None
+    file: Optional[str] = None
+    location: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -129,6 +154,10 @@ class RetrievalEngine:
                 "layer": int(c.get("layer", 2)),
                 "tenant_id": c.get("tenant_id"),
                 "object_id": c.get("object_id", ""),
+                # F-1b tagged each chunk with where it came from; carry it
+                # verbatim so a retrieved hit can cite its file + location.
+                "file": c.get("file"),
+                "location": c.get("location"),
             }
             for c in chunks
         ]
@@ -151,6 +180,8 @@ class RetrievalEngine:
                     score=score,
                     layer=int(meta.get("layer") or 2),
                     tenant_id=meta.get("tenant_id"),
+                    file=meta.get("file"),
+                    location=meta.get("location"),
                 )
             )
         return hits
@@ -175,6 +206,15 @@ class RetrievalEngine:
                 "state the fact"
             )
         verdict = _layer_verdict(hits)
+        # One citation per supporting chunk that carries attach provenance
+        # (F-1c). The file + location are copied verbatim from the retrieved
+        # hit's metadata — the model never writes a source line. A hit with no
+        # file (e.g. a layer-1 certified definition) contributes no citation.
+        citations = [
+            Citation(file=str(hit.file), location=dict(hit.location or {}))
+            for hit in hits
+            if hit.file
+        ]
         return LabeledAnswer(
             claims=[
                 Claim(
@@ -185,7 +225,8 @@ class RetrievalEngine:
                         verdict.records[0] if verdict.records else None
                     ),
                 )
-            ]
+            ],
+            citations=citations,
         )
 
 

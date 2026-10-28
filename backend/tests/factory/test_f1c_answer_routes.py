@@ -1,0 +1,322 @@
+"""F-1c BAR 2: answer_query has a REAL product caller on BOTH surfaces.
+
+The answer verb is wired symmetrically with the upload verb:
+
+* GENERATED PRODUCT: POST /v1/product/ingestion/answer on the kernel ingestion
+  router (mounted into every product).
+* FACTORY FLOOR:      POST /v1/sessions/{id}/product/ingestion/answer.
+
+Both go through ONE shared helper (``answer_question`` -> ``answer_query``). A
+kernel-covered question returns the kernel's COMPUTED number (never the prose
+"0.99"). MUTATION: removing either route's wiring reddens that route's test
+(the POST 404s / stops returning the kernel result).
+"""
+
+from __future__ import annotations
+
+from typing import List
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.cerebrum_product_kernel.ingestion import object_store, parse_job, retrieval_index
+from app.cerebrum_product_kernel.ingestion.parsers import parse_object
+from app.cerebrum_product_kernel.ingestion.router import router as ingestion_router
+from app.cerebrum_product_kernel.retrieval_engine import InMemoryVectorStore, RetrievalEngine
+
+_FINANCE = {"gross", "margin", "ratio", "revenue", "cogs", "profit"}
+
+
+class _FinanceEmbedder:
+    semantic = True
+
+    def __call__(self, text: str) -> List[float]:
+        vec = [0.0, 0.0]
+        for word in text.lower().replace(".", " ").split():
+            if any(k in word for k in _FINANCE):
+                vec[0] += 1.0
+            else:
+                vec[1] += 0.0
+        norm = sum(x * x for x in vec) ** 0.5
+        return [x / norm for x in vec] if norm else vec
+
+
+@pytest.fixture
+def eng(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    engine = RetrievalEngine(embedder=_FinanceEmbedder(), store=InMemoryVectorStore())
+    retrieval_index.set_engine_provider(lambda identity: engine)
+    yield engine
+    retrieval_index.set_engine_provider(None)
+
+
+def _attach(identity):
+    data = b"Gross margin inputs.\n\nRevenue is 100. COGS is 60.\n"
+    stored = object_store.save_object(identity, "finance.md", data)
+    job = parse_job.create_job(
+        identity, object_id=stored.object_id, source_name=stored.source_name
+    )
+    final = parse_object(identity, stored.object_id, job_id=job.job_id)
+    assert final.status is parse_job.ParseStatus.PARSED
+
+
+def _stub_tenancy(monkeypatch, token_to_tenant):
+    import sys
+    import types
+
+    mod = types.ModuleType("app.tenancy")
+
+    class TenantRefused(Exception):
+        pass
+
+    class _Tenant:
+        def __init__(self, tid):
+            self.tenant_id = tid
+            self.roles = []
+
+    def resolve_tenant(headers):
+        auth = (headers or {}).get("authorization", "")
+        token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+        tid = token_to_tenant.get(token)
+        if tid is None:
+            raise TenantRefused(token)
+        return _Tenant(tid)
+
+    mod.TenantRefused = TenantRefused
+    mod.resolve_tenant = resolve_tenant
+    monkeypatch.setitem(sys.modules, "app.tenancy", mod)
+
+
+def test_generated_product_answer_route_reaches_answer_query(eng, monkeypatch):
+    """The kernel ingestion router's /answer runs answer_query for a product."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    _attach("tenant-a")
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={
+            "query": "what is the gross margin ratio",
+            "answer_text": "The gross margin ratio is 0.99.",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "kernel"
+    assert body["kernel_value"] == pytest.approx(0.40)
+    assert "0.99" not in body["text"]
+
+    # Unbound caller is refused by name (same guard as /upload).
+    unbound = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer nope"},
+        json={"query": "x"},
+    )
+    assert unbound.status_code == 401
+
+
+def test_floor_answer_route_reaches_answer_query(eng, monkeypatch):
+    """The Floor's /product/ingestion/answer runs answer_query via the shared helper."""
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session
+    from app.main import app
+
+    _attach(DEV_LOCAL_TENANT)
+    create_session("sess_answer", DEV_LOCAL_TENANT)
+    client = TestClient(app)  # bare: lifespan not run, fixture provider holds
+
+    resp = client.post(
+        "/v1/sessions/sess_answer/product/ingestion/answer",
+        json={
+            "query": "what is the gross margin ratio",
+            "answer_text": "The gross margin ratio is 0.99.",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "kernel"
+    assert body["kernel_value"] == pytest.approx(0.40)
+    assert "0.99" not in body["text"]
+
+
+# ── item 1: egress error -> 503 on BOTH routes, BOTH cases ─────────────────────
+
+
+import app.core.llm_embeddings as llm_embeddings  # noqa: E402
+from app.cerebrum_product_kernel.ingestion import engine_install  # noqa: E402
+
+
+@pytest.fixture
+def real_engine(tmp_path, monkeypatch):
+    """Install the REAL engine provider (LLM_SEMANTIC_V1 + Chroma) at a tmp dir.
+
+    The embedder calls the LLM egress; the tests below break that egress to
+    prove the route surfaces a 503 by exception TYPE, not by message text.
+    """
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
+    monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)  # default provider
+    engine_install.install_default_engine()
+    yield
+    retrieval_index.set_engine_provider(None)
+
+
+def _break_egress(monkeypatch, mode: str) -> None:
+    if mode == "unconfigured":
+        # llm_embeddings.py:72 — no base_url/key/model resolved.
+        monkeypatch.setattr(
+            llm_embeddings, "get_llm_config",
+            lambda: {"base_url": "", "api_key": "", "model": ""},
+        )
+    else:  # "failing" — configured, but the egress call itself fails (:85)
+        monkeypatch.setattr(
+            llm_embeddings, "get_llm_config",
+            lambda: {"base_url": "https://egress.test/v1", "api_key": "k", "model": "m"},
+        )
+
+        def _boom(url, headers, payload, timeout):
+            raise RuntimeError("provider 500")
+
+        monkeypatch.setattr(llm_embeddings, "_request_embeddings", _boom)
+
+
+@pytest.mark.parametrize("mode", ["unconfigured", "failing"])
+def test_generated_product_route_egress_error_is_503(real_engine, monkeypatch, mode):
+    """Engine installed, but the egress is unconfigured/failing -> computed 503,
+    never 200 'missing inputs', never 500."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    _break_egress(monkeypatch, mode)
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+
+
+@pytest.mark.parametrize("mode", ["unconfigured", "failing"])
+def test_floor_route_egress_error_is_503(real_engine, monkeypatch, mode):
+    """Same on the Floor route: an egress failure is a 503, matched by type."""
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    _break_egress(monkeypatch, mode)
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session
+    from app.main import app
+
+    create_session(f"sess_egress_{mode}", DEV_LOCAL_TENANT)
+    client = TestClient(app)  # bare: lifespan not run; real_engine fixture holds
+    resp = client.post(
+        f"/v1/sessions/sess_egress_{mode}/product/ingestion/answer",
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+
+
+def test_floor_answer_route_surfaces_no_engine(tmp_path, monkeypatch):
+    """With no retrieval backend, the route surfaces 503 'retrieval backend not
+    configured' rather than a silent empty."""
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    retrieval_index.set_engine_provider(None)
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session
+    from app.main import app
+
+    create_session("sess_noeng", DEV_LOCAL_TENANT)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/sessions/sess_noeng/product/ingestion/answer",
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+    assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED in resp.json()["detail"]
+
+
+# ── correction: a NAMED non-semantic provider is a SERVER-CONFIG error -> 503 ──
+
+
+@pytest.fixture
+def named_non_semantic(tmp_path, monkeypatch):
+    """Install the engine provider with a NON-SEMANTIC embedder NAMED via env."""
+    from app.core.rag_embedding_providers import LOCAL_FEATURE_HASH_V1
+
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
+    monkeypatch.setenv(engine_install.EMBEDDER_ENV, LOCAL_FEATURE_HASH_V1)
+    engine_install.install_default_engine()
+    yield
+    retrieval_index.set_engine_provider(None)
+
+
+def test_generated_product_route_non_semantic_is_503(named_non_semantic, monkeypatch):
+    """A NAMED keyword embedder is a server-config error: 503 carrying the named
+    refusal, NOT the 422 a client grounding refusal gets."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+    assert "keyword_embedder_not_retrieval" in resp.json()["detail"]
+
+
+def test_floor_route_non_semantic_is_503(named_non_semantic, monkeypatch):
+    """Same server-config 503 on the Floor route."""
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session
+    from app.main import app
+
+    create_session("sess_nonsem", DEV_LOCAL_TENANT)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/sessions/sess_nonsem/product/ingestion/answer",
+        json={"query": "what is the gross margin ratio", "answer_text": "0.99"},
+    )
+    assert resp.status_code == 503, resp.text
+    assert "keyword_embedder_not_retrieval" in resp.json()["detail"]
+
+
+def test_grounding_refusal_stays_422(eng, monkeypatch):
+    """The SPLIT holds: a CLIENT grounding refusal (nothing retrieved supports
+    the out-of-kernel claim) is still 422 — only the server-config error is 503."""
+    _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
+    # No documents attached: an out-of-kernel query grounds to nothing.
+    app = FastAPI()
+    app.include_router(ingestion_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/product/ingestion/answer",
+        headers={"Authorization": "Bearer good-token"},
+        json={"query": "what is our sabbatical leave policy", "answer_text": "x"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "retrieved excerpts" in resp.json()["detail"]
