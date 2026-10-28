@@ -30,8 +30,8 @@ CONTRACT
 - ``list_files(tenant_id)`` lists the connected Drive's files for the
   client to pick from — do not auto-ingest everything the client's Drive
   can see; the client must select what becomes part of their platform's
-  corpus (informed-consent parallel to The_Fork's "labeled 'Your upload'"
-  disclosure in layered-rag-golive.md).
+  corpus (informed-consent parallel to the reference implementation's
+  "labeled 'Your upload'" disclosure).
 - ``sync_file(tenant_id, file_id)`` fetches one selected file, hands its
   text to ``chunker.chunk_document`` with ``layer=2`` (documents), then
   calls ``RetrievalEngine.ingest()`` with the resulting chunks. This is the

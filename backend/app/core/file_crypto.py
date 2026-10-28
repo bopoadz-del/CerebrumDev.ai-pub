@@ -1,6 +1,6 @@
 """Encryption at rest for uploaded documents and OAuth tokens.
 
-This module is copied from The_Fork's proven implementation so that
+This module is copied from the reference implementation so that
 CerebrumDev.ai and generated platforms share one token-storage contract.
 
 The feature is opt-in via ``DATA_ENCRYPTION_KEY``. If the variable is unset,

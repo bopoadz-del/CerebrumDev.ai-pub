@@ -26,6 +26,19 @@ class TenantBindingError(RuntimeError):
     """A tenant store handle could not be resolved."""
 
 
+class TenantMismatchError(TenantBindingError):
+    """The identity to isolate on is not the account the build runs under.
+
+    Fail-closed, worker-side: even if a caller reached the build layer with a
+    ``tenant_identity`` that is not the account the build is owned/metered
+    under (``owner``), the worker refuses rather than isolate one tenant's
+    store under another tenant's build. The route guard
+    (``session_product._require_build_tenant``) already proves these agree for
+    every HTTP caller; this is the independent second boundary that holds even
+    if that guard is bypassed.
+    """
+
+
 @dataclass(frozen=True)
 class TenantStoreBinding:
     """A bound tenant store handle.
@@ -55,17 +68,34 @@ def tenant_stores_root() -> Path:
     return factory_outputs_root().parent / "tenant_stores"
 
 
-def bind_tenant_store(account_id: Optional[str]) -> Optional[TenantStoreBinding]:
+def bind_tenant_store(
+    account_id: Optional[str], *, owner: Optional[str] = None
+) -> Optional[TenantStoreBinding]:
     """Resolve the per-tenant store handle from the authenticated identity.
 
     Returns None when no authenticated account is available — the worker
     then fails closed with ``no_authenticated_tenant`` instead of running
     unbound. The digest is derived server-side from the identity: the
     caller can never choose another tenant's store by naming it.
+
+    ``owner`` is the account the build is owned/metered under (the session's
+    recorded owner). When it is present and differs from the identity to
+    isolate on, the worker refuses with :class:`TenantMismatchError` rather
+    than bind one tenant's store under another tenant's build — the
+    independent, worker-side half of the route guard's tenant check. ``owner``
+    left unset (resume / internal callers that pass a single identity) keeps
+    the original single-identity behaviour.
     """
     identity = str(account_id or "").strip()
     if not identity:
         return None
+    expected = str(owner or "").strip()
+    if expected and expected != identity:
+        raise TenantMismatchError(
+            f"cross_tenant_build: the build's bound tenant {identity!r} is not "
+            f"the account it is owned/metered under {expected!r} — refusing to "
+            "isolate one tenant's store under another tenant's build"
+        )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
     store_dir = tenant_stores_root() / digest
     from app.core.trial_limits import is_reserved_smoke_account

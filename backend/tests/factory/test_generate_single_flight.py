@@ -51,6 +51,7 @@ def test_start_runner_build_refuses_second_start(tmp_path, monkeypatch):
 def test_http_generate_409_when_already_building(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
+    from app.core.auth import DEV_LOCAL_TENANT
     from app.core.session_store import create_session, get_session, update_session
     from app.main import app
 
@@ -62,7 +63,7 @@ def test_http_generate_409_when_already_building(tmp_path, monkeypatch):
     monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
 
     session_id = "sess_single_flight"
-    create_session(session_id, "tester")
+    create_session(session_id, DEV_LOCAL_TENANT)
     state = get_session(session_id)
     assert state is not None
     state.product_design.blueprint = _bp().model_dump(mode="json")

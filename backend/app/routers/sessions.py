@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends
 
 from ..core import accounts_store
-from ..core.auth import Principal, require_api_key
+from ..core.auth import DEV_LOCAL_TENANT, Principal, require_api_key
 from ..core.billing import require_entitled
 from ..core.session_guard import owned_session_or_404
 from ..core.session_store import _session_store, create_session, get_session
@@ -20,7 +20,7 @@ async def create_new_session(
 ):
     # Creating a session is a paid action: require_entitled blocks expired
     # trials / canceled subscriptions with 402 when BILLING_ENFORCEMENT is on.
-    owner = principal.account_id or "dev-local"
+    owner = principal.account_id or DEV_LOCAL_TENANT
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
     state = create_session(session_id=session_id, user_id=owner)
     # Honor a requested domain instead of silently defaulting: a caller who

@@ -33,8 +33,6 @@ BRANCH = "build/sess_0123abcd-feed01"
 @pytest.mark.parametrize(
     "message",
     [
-        "https://github.com/bopoadz-del/cerebrum-builds-pub/tree/build/sess_0123abcd-feed01",
-        "resume https://github.com/bopoadz-del/cerebrum-builds-pub/tree/build/sess_0123abcd-feed01 please",
         "sess_0123abcd-feed01",
         "build/sess_0123abcd-feed01",
         # Live, 2026-09-29: the owner pasted the branch from a phone and the
@@ -53,6 +51,21 @@ BRANCH = "build/sess_0123abcd-feed01"
 )
 def test_a_session_link_resolves_to_its_branch(message):
     assert parse_build_link(message, env={}) == (BRANCH, None)
+
+
+def test_a_full_builds_repo_url_resolves_to_its_branch():
+    # Reversed with evidence: parse_build_link is now scoped to the CONFIGURED
+    # builds repo (app.factory.repo_coords, set by conftest) rather than a
+    # hard-coded owner/repo. Build the full URL from that coordinate so the
+    # case follows configuration instead of a baked-in literal.
+    from app.factory import repo_coords
+
+    repo = repo_coords.builds_repo()
+    for message in (
+        f"https://github.com/{repo}/tree/{BRANCH}",
+        f"resume https://github.com/{repo}/tree/{BRANCH} please",
+    ):
+        assert parse_build_link(message, env={}) == (BRANCH, None)
 
 
 @pytest.mark.parametrize(

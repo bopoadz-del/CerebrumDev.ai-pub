@@ -38,7 +38,10 @@ from typing import Any, Dict, List, Optional
 
 from app.factory.build import probe_set
 
-BLOCKS_REPO = "bopoadz-del/Cerebrum-Blocks-pub"
+def _blocks_repo() -> str:
+    from app.factory import repo_coords
+
+    return repo_coords.store_repo()
 PROTECTED_BRANCHES = frozenset({"main", "master"})
 BRANCH_PREFIX = "factory-harvest"
 
@@ -101,8 +104,8 @@ def checkout_is_writable(checkout: Optional[Path]) -> Dict[str, Any]:
         # Factory harvest commit and attribute them to it.
         out["reason"] = "checkout has uncommitted changes; harvest refuses to write over them"
         return out
-    if not out["remote"] or BLOCKS_REPO.lower() not in out["remote"].lower():
-        out["reason"] = f"origin does not point at {BLOCKS_REPO}"
+    if not out["remote"] or _blocks_repo().lower() not in out["remote"].lower():
+        out["reason"] = f"origin does not point at {_blocks_repo()}"
         return out
     out["writable"] = True
     return out
@@ -139,7 +142,7 @@ def plan_harvest(blocks_root: Path) -> Dict[str, Any]:
             }
         )
     return {
-        "blocks_repo": BLOCKS_REPO,
+        "blocks_repo": _blocks_repo(),
         "blocks_checkout": str(blocks_root),
         "finding": probe_set.code_for("ui_schema_unused"),
         "edits": edits,
@@ -242,7 +245,7 @@ def execute_harvest(
             message = (
                 f"fix(blocks): publish ui_schema fields the classes already declare "
                 f"({plan['finding']})\n\n"
-                f"Harvested from {BLOCKS_REPO} consumer CerebrumDev.ai. Each block "
+                f"Harvested from {_blocks_repo()} consumer CerebrumDev.ai. Each block "
                 "below declares these fields on its class while its published "
                 "block.json omits them, so a generator reading the published "
                 "contract renders a surface missing them.\n\n"
