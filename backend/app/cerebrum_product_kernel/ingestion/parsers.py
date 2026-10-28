@@ -317,15 +317,21 @@ def parse_object(
         # return them with their file + location. Best-effort: a retrieval
         # backend that is absent or raises must never flip a genuinely-parsed
         # job to FAILED, so the index call is isolated from the parse verdict.
-        try:
-            from . import retrieval_index
+        from . import retrieval_index
 
-            retrieval_index.ingest_parsed_chunks(identity_value, chunks)
-        except Exception:  # noqa: BLE001 — indexing never fails the parse
+        try:
+            outcome = retrieval_index.ingest_parsed_chunks(identity_value, chunks)
+            index_state = outcome.index_state
+        except Exception as exc:  # noqa: BLE001 — indexing never fails the parse
             logger.exception(
                 "ingest-on-parse failed for job %s; chunks persisted, parse "
                 "stands PARSED",
                 job.job_id,
+            )
+            # Still SURFACED on the job, never a silent swallow.
+            index_state = (
+                f"{retrieval_index.INDEX_STATE_NOT_INDEXED}: "
+                f"{type(exc).__name__}: {exc}"
             )
         return parse_job.set_status(
             identity_value,
@@ -334,6 +340,7 @@ def parse_object(
             pages=counts.get("pages"),
             sheets=counts.get("sheets"),
             rows=counts.get("rows"),
+            index_state=index_state,
         )
     except Exception as exc:  # never crash the caller/route
         return parse_job.set_status(

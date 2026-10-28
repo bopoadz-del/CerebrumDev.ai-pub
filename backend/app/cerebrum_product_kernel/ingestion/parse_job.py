@@ -55,6 +55,11 @@ class ParseJob(BaseModel):
     pages: Optional[int] = None
     sheets: Optional[int] = None
     rows: Optional[int] = None
+    #: Whether the parsed chunks reached retrieval (F-1c). ``None`` until the
+    #: parser runs ingest-on-parse; then ``"indexed"`` or
+    #: ``"not_indexed: <reason>"`` (e.g. "retrieval backend not configured").
+    #: A SURFACED state — never a silent debug no-op.
+    index_state: Optional[str] = None
 
 
 def _jobs_dir(identity: str) -> Path:
@@ -149,6 +154,7 @@ def set_status(
     pages: Optional[int] = None,
     sheets: Optional[int] = None,
     rows: Optional[int] = None,
+    index_state: Optional[str] = None,
 ) -> ParseJob:
     """Advance a job's status (used by F-1b); refuses an unknown job by name."""
     job = get_job(identity, job_id)
@@ -164,4 +170,6 @@ def set_status(
         job.sheets = sheets
     if rows is not None:
         job.rows = rows
+    if index_state is not None:
+        job.index_state = index_state
     return _write(identity, job)

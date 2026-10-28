@@ -1,14 +1,20 @@
-"""F-1c: kernel-first answering with labelled out-of-kernel improvisation.
+"""F-1c: kernel-first answering — the NUMBER is the kernel's, or it refuses.
 
-The 0725Z rule, and the S-7 pattern, pinned here:
+The 0725Z rule plus BAR 3 (ORDERS_28OCT_1530Z), pinned here:
 
-* KERNEL-DETECTION: a kernel-covered query is answered by the KERNEL path — its
-  number is the certified definition's expression, so mutating the definition
-  moves the answer. A covered query carries NO improvisation label and logs no
-  new-domain candidate.
+* KERNEL COMPUTE: a kernel-covered query is answered by the KERNEL path — its
+  number is the certified definition's ``expression`` COMPUTED over inputs
+  grounded from the tenant's retrieved chunks. The model's prose number is
+  NEVER passed through (prose "0.99" vs a kernel that computes 0.40 -> the
+  answer shows 0.40, never 0.99). Restoring the prose pass-through reddens the
+  mutation test.
+* UNKNOWN REFUSAL: a kernel-covered query whose inputs are NOT in the retrieved
+  chunks is refused, naming the missing inputs — never a fabricated number.
 * OUT-OF-KERNEL: a query no kernel covers is answered as a LABELLED improvisation
   (the visible "no kernel covers ..." banner + cited sources), through the
   grounding gate, and appends exactly ONE tenant-scoped new-domain-candidate row.
+* NO ENGINE: with no retrieval backend, answer_query refuses with the surfaced
+  "retrieval backend not configured" message.
 """
 
 from __future__ import annotations
@@ -30,11 +36,22 @@ from app.cerebrum_product_kernel.ingestion.parsers import parse_object
 from app.cerebrum_product_kernel.retrieval_engine import InMemoryVectorStore, RetrievalEngine
 
 
+# A miniature SEMANTIC embedder: finance words (incl. the formula inputs) embed
+# to one axis, leave-policy words to another, so a finance query retrieves the
+# finance doc (and its revenue/cogs figures) with zero lexical tricks.
 _VECTORS = {
-    "sabbatical": [1.0, 0.0, 0.0],
-    "leave": [1.0, 0.0, 0.0],
-    "policy": [1.0, 0.0, 0.0],
-    "eligible": [1.0, 0.0, 0.0],
+    # finance / margin axis — includes the gross_margin_ratio inputs
+    "gross": [1.0, 0.0, 0.0],
+    "margin": [1.0, 0.0, 0.0],
+    "ratio": [1.0, 0.0, 0.0],
+    "revenue": [1.0, 0.0, 0.0],
+    "cogs": [1.0, 0.0, 0.0],
+    "profit": [1.0, 0.0, 0.0],
+    # leave-policy axis
+    "sabbatical": [0.0, 1.0, 0.0],
+    "leave": [0.0, 1.0, 0.0],
+    "policy": [0.0, 1.0, 0.0],
+    "eligible": [0.0, 1.0, 0.0],
 }
 
 
@@ -43,7 +60,7 @@ class _Embedder:
 
     def __call__(self, text: str) -> List[float]:
         vec = [0.0, 0.0, 0.0]
-        for word in text.lower().split():
+        for word in text.lower().replace(".", " ").replace(",", " ").split():
             for key, v in _VECTORS.items():
                 if key in word:
                     vec = [vec[i] + v[i] for i in range(3)]
@@ -77,37 +94,72 @@ def _attach(identity, source_name, data):
     assert final.status is parse_job.ParseStatus.PARSED
 
 
-# ── kernel path ──────────────────────────────────────────────────────────────
+# ── kernel compute path ────────────────────────────────────────────────────────
 
 
-def test_kernel_covered_query_is_answered_by_the_kernel(engine):
-    """A query naming a kernel definition is answered by the kernel: the
-    number is the definition's expression (mutate the kernel -> it moves), and
-    there is no improvisation label and no candidate logged."""
+def test_kernel_covered_query_number_is_computed_not_prose(engine):
+    """BAR 3 + its mutation: the kernel-covered answer's number is COMPUTED from
+    grounded inputs (0.40), NEVER the prose number (0.99). Restoring the prose
+    pass-through turns this red."""
+    _attach(
+        "tenant-a", "finance.md",
+        b"Gross margin inputs.\n\nRevenue is 100. COGS is 60.\n",
+    )
     ans = answer_query(
         "tenant-a",
         "what is the gross margin ratio",
-        "The gross margin ratio is revenue minus cogs over revenue.",
+        # The model's prose carries a WRONG number — it must never surface.
+        "The gross margin ratio is 0.99.",
         engine=engine,
     )
     assert ans.kind == KIND_KERNEL
     assert ans.improvised is False
-    assert ans.label == ""
-    # The number/expression is the kernel's own — the answer MOVES if the
-    # definition is mutated (the verifier edits universal_definitions.json and
-    # this equality breaks).
-    assert ans.kernel is not None
-    assert ans.kernel["id"] == "gross_margin_ratio"
+    assert ans.unknown is False
+    # The kernel computed (100 - 60) / 100 = 0.40 from the grounded inputs.
+    assert ans.kernel_value == pytest.approx(0.40)
+    assert "0.4" in ans.text
+    # The prose number is GONE — this is the line the prose-pass-through mutation
+    # turns red.
+    assert "0.99" not in ans.text
+    # The number moves with the kernel definition (it is the kernel's own).
     assert ans.kernel["expression"] == "(revenue - cogs) / revenue"
     assert ans.kernel["expression"] == answer_definition("gross_margin_ratio")["expression"]
     # A kernel answer logs no new-domain candidate.
     assert read_new_domain_candidates("tenant-a") == []
 
 
+def test_kernel_covered_query_refuses_when_inputs_missing(engine):
+    """A kernel-covered query whose inputs are not in the retrieved chunks is
+    refused, NAMING the missing inputs — never a fabricated number."""
+    # A finance doc that is retrievable but carries no revenue/cogs figures.
+    _attach("tenant-a", "note.md", b"Gross margin ratio is an important metric.\n")
+    ans = answer_query(
+        "tenant-a",
+        "what is the gross margin ratio",
+        "The gross margin ratio is 0.99.",
+        engine=engine,
+    )
+    assert ans.kind == KIND_KERNEL
+    assert ans.unknown is True
+    assert ans.kernel_value is None
+    assert "revenue" in ans.missing_inputs and "cogs" in ans.missing_inputs
+    assert "0.99" not in ans.text
+    assert "revenue" in ans.text and "cogs" in ans.text
+
+
 def test_kernel_coverage_detects_known_and_rejects_unknown():
     assert kernel_coverage("compute the gross margin ratio please") is not None
     assert kernel_coverage("gross_margin_ratio") is not None
     assert kernel_coverage("what is our sabbatical leave policy") is None
+
+
+def test_no_engine_answer_refuses_with_surfaced_message():
+    """With no retrieval backend installed, answer_query refuses with the
+    surfaced "retrieval backend not configured" message."""
+    retrieval_index.set_engine_provider(None)
+    with pytest.raises(RuntimeError) as exc:
+        answer_query("tenant-a", "what is the gross margin ratio", "0.99")
+    assert retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED in str(exc.value)
 
 
 # ── out-of-kernel improvisation ───────────────────────────────────────────────

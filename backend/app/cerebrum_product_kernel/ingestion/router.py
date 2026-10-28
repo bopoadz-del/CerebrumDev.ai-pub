@@ -19,11 +19,22 @@ implemented.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/v1/product/ingestion", tags=["ingestion-scaffold"])
+
+
+class AnswerRequest(BaseModel):
+    """A product/Floor question. ``answer_text`` is the model's prose from the
+    host's single LLM egress; on a kernel-covered query the kernel ignores it
+    and computes the number itself, so a wrong number in the prose can never
+    reach the client."""
+
+    query: str = Field(..., min_length=1)
+    answer_text: str = ""
 
 
 def _require_product_tenant(request: Request) -> str:
@@ -87,6 +98,21 @@ def upload_status(job_id: str, request: Request, response: Response) -> dict:
     tenant_id = _require_product_tenant(request)
     response.headers["Cache-Control"] = "no-store"
     return job_status_payload(tenant_id, job_id)
+
+
+@router.post("/answer")
+def answer_product_question(request: Request, body: AnswerRequest) -> dict:
+    """Answer a product question kernel-first, else grounded in attached chunks.
+
+    This is where ``answer_query`` actually runs for a GENERATED product: the
+    tenant is resolved from the authenticated principal, and the shared helper
+    (reused by the Floor route) calls the kernel answer path. A kernel-covered
+    question returns the kernel's COMPUTED number; an out-of-kernel one returns
+    a labelled, cited improvisation; no retrieval backend returns a surfaced
+    503 "retrieval backend not configured".
+    """
+    tenant_id = _require_product_tenant(request)
+    return answer_question(tenant_id, body)
 
 
 @router.post("/formulas")
@@ -183,4 +209,36 @@ def job_status_payload(tenant_id: str, job_id: str) -> dict:
         "pages": job.pages,
         "sheets": job.sheets,
         "rows": job.rows,
+        # Whether the parsed chunks reached retrieval (F-1c), SURFACED.
+        "index_state": job.index_state,
     }
+
+
+def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
+    """Shared answer helper for BOTH product surfaces (kernel route + Floor route).
+
+    Mirrors how ``ingest_uploads`` backs both ``/upload`` routes: the caller
+    resolves the tenant and passes it in; this never reads headers. It calls the
+    kernel's :func:`answer_query` and maps its refusals to surfaced HTTP errors
+    — 503 when no retrieval backend is configured, 422 when the answer cannot be
+    grounded. The returned dict is ``ProductAnswer.to_dict()``.
+    """
+    from app.cerebrum_product_kernel.answer import answer_query
+    from app.cerebrum_product_kernel.ingestion.retrieval_index import (
+        RETRIEVAL_BACKEND_NOT_CONFIGURED,
+    )
+    from app.cerebrum_product_kernel.retrieval_engine import RetrievalEngineError
+
+    try:
+        answer = answer_query(tenant_id, body.query, body.answer_text)
+    except RuntimeError as exc:
+        message = str(exc)
+        if RETRIEVAL_BACKEND_NOT_CONFIGURED in message:
+            raise HTTPException(status_code=503, detail=message) from exc
+        raise
+    except RetrievalEngineError as exc:
+        # Grounding refused (nothing retrieved supports the claim): a surfaced
+        # 422, not a 500 — the client sees the honest "not in the retrieved
+        # excerpts" message rather than an opaque failure.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return answer.to_dict()

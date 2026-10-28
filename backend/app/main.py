@@ -194,6 +194,22 @@ class ProductionHttpSurfaceMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Arm in-process nightly backup (+ stale factory_outputs sweep)."""
+    # F-1c BAR 1: install the REAL per-tenant retrieval engine at host boot —
+    # no off-by-default seam. The provider builds a RetrievalEngine from the
+    # configured semantic embedder + a per-tenant Chroma collection. Whether an
+    # upload actually indexes depends on the embeddings egress being configured;
+    # when it is not, the ingest path records a SURFACED "not_indexed" state and
+    # the answer path refuses — never a silent no-op. Boot must not die here.
+    try:
+        from app.cerebrum_product_kernel.ingestion.engine_install import (
+            install_default_engine,
+        )
+
+        install_default_engine()
+    except Exception:  # noqa: BLE001 — a retrieval-install failure never blocks boot
+        logging.getLogger("cerebrumdev.retrieval").exception(
+            "retrieval engine provider not installed at boot"
+        )
     # Nightly backups run in-process: Render cron jobs cannot mount persistent
     # disks and a disk belongs to exactly one service, so this process is the
     # only one that can read /app/storage at all. See core/backup_scheduler.py.

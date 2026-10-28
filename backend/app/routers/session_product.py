@@ -31,6 +31,7 @@ from app.core.session_store import update_session
 from app.core.trial_limits import require_remaining, require_within_limit
 
 logger = logging.getLogger(__name__)
+from app.cerebrum_product_kernel.ingestion.router import AnswerRequest
 from app.factory.build.builds_push import (
     EXPORT_SKIP_DIR_NAMES,
     EXPORT_SKIP_SUFFIXES,
@@ -997,6 +998,27 @@ def pilot_ingestion_status(
     from app.cerebrum_product_kernel.ingestion.router import job_status_payload
 
     return job_status_payload(tenant_id, job_id)
+
+
+@router.post("/{session_id}/product/ingestion/answer")
+def pilot_ingestion_answer(
+    session_id: str,
+    body: AnswerRequest,
+    principal: Principal = Depends(require_api_key),
+) -> Dict[str, Any]:
+    """The pilot user's product question on the Factory Floor.
+
+    Resolves the bound tenant, then reuses the SAME kernel helper as the
+    generated-product route (``answer_question`` -> ``answer_query``): a
+    kernel-covered question returns the kernel's COMPUTED number, an
+    out-of-kernel one a labelled, cited improvisation, and no retrieval backend
+    a surfaced 503. This is the Floor caller for ``answer_query``.
+    """
+    state = _require_session(session_id, principal)
+    tenant_id = _require_build_tenant(state, principal)
+    from app.cerebrum_product_kernel.ingestion.router import answer_question
+
+    return answer_question(tenant_id, body)
 
 
 @router.post("/{session_id}/product/pilot")

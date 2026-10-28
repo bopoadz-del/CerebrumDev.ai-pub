@@ -31,6 +31,13 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.cerebrum_product_kernel.claim_labels import Citation, LabeledAnswer
 from app.cerebrum_product_kernel.formulas import definition_index, resolve_definitions
+from app.cerebrum_product_kernel.formulas.evaluator import (
+    MissingInput,
+    UnsafeExpression,
+    extract_grounded_inputs,
+    free_names,
+    safe_eval,
+)
 from app.cerebrum_product_kernel.ingestion import retrieval_index
 from app.cerebrum_product_kernel.ingestion.object_store import tenant_uploads_dir
 from app.cerebrum_product_kernel.retrieval_engine import RetrievalEngine
@@ -49,6 +56,14 @@ CANDIDATE_LOG_NAME = "new_domain_candidates.jsonl"
 KIND_KERNEL = "kernel"
 KIND_IMPROVISED = "improvised"
 
+#: The refusal an UNKNOWN kernel answer carries when the grounded chunks do not
+#: supply every input the definition needs (S-1 UNKNOWN pattern). It NAMES the
+#: missing inputs and carries no number — the kernel will not invent one.
+UNKNOWN_LABEL = (
+    "unknown: {subject} needs grounded input(s) {inputs}, "
+    "not in the retrieved excerpts"
+)
+
 
 @dataclass
 class ProductAnswer:
@@ -58,7 +73,13 @@ class ProductAnswer:
     number is the kernel's, not the model's) or ``"improvised"`` (no kernel
     covered it; answered as a labelled, cited improvisation). ``improvised``
     is the boolean the UI gates its banner on, and ``label`` is the banner
-    text — empty for a kernel answer, the ``IMPROVISED_LABEL`` for the other.
+    text — empty for a plain kernel answer, the ``IMPROVISED_LABEL`` for the
+    improvised path, the ``UNKNOWN_LABEL`` when a kernel-covered query lacks a
+    grounded input.
+
+    ``kernel_value`` is the number the KERNEL computed from grounded inputs —
+    the only number a kernel answer may state. ``missing_inputs`` names the
+    grounded inputs that were absent (non-empty only on an UNKNOWN refusal).
     """
 
     query: str
@@ -69,6 +90,9 @@ class ProductAnswer:
     kernel: Optional[Dict[str, Any]] = None
     labeled_answer: Optional[LabeledAnswer] = None
     citations: List[Citation] = field(default_factory=list)
+    kernel_value: Optional[float] = None
+    missing_inputs: List[str] = field(default_factory=list)
+    unknown: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -82,6 +106,9 @@ class ProductAnswer:
                 self.labeled_answer.to_dict() if self.labeled_answer else None
             ),
             "citations": [c.to_dict() for c in self.citations],
+            "kernel_value": self.kernel_value,
+            "missing_inputs": list(self.missing_inputs),
+            "unknown": self.unknown,
         }
 
 
@@ -183,34 +210,37 @@ def answer_query(
 ) -> ProductAnswer:
     """Answer ``query`` kernel-first, else as a labelled improvisation.
 
-    Kernel-first: when :func:`kernel_coverage` finds a definition, the answer is
-    the kernel's — its expression/number, tier-labelled, with NO improvisation
-    banner. Otherwise the retrieval path grounds the answer against the tenant's
-    attached chunks (:meth:`RetrievalEngine.labeled_answer`, which refuses an
-    ungrounded claim), attaches the visible ``IMPROVISED_LABEL`` + the chunks'
-    citations, and appends one new-domain-candidate row. ``answer_text`` is the
-    model's prose (single egress, supplied by the caller); the kernel number and
-    the cited spans are not model-invented.
-    """
-    covered = kernel_coverage(query, overlays=overlays, resolved=resolved)
-    if covered is not None:
-        return ProductAnswer(
-            query=query,
-            kind=KIND_KERNEL,
-            text=answer_text,
-            improvised=False,
-            label="",
-            kernel=covered,
-            citations=[],
-        )
+    Kernel-first: when :func:`kernel_coverage` finds a definition, the answer's
+    NUMBER is the kernel's own — the definition's ``expression`` COMPUTED over
+    inputs grounded from the tenant's retrieved chunks (:func:`_kernel_answer`),
+    never a number the model's ``answer_text`` carried. When a grounded input is
+    missing, the kernel REFUSES naming the missing inputs (the S-1 UNKNOWN
+    pattern) rather than invent one. Otherwise the retrieval path grounds the
+    answer against the attached chunks (:meth:`RetrievalEngine.labeled_answer`,
+    which refuses an ungrounded claim), attaches the visible ``IMPROVISED_LABEL``
+    + the chunks' citations, and appends one new-domain-candidate row.
 
+    ``answer_text`` is the model's prose (single egress, supplied by the
+    caller). On the kernel path it is DISCARDED: the kernel authors its own
+    sentence around the computed number, so a wrong number in the prose can
+    never reach the client.
+    """
     engine = engine if engine is not None else retrieval_index.tenant_engine(identity)
     if engine is None:
+        # No retrieval backend: a kernel number must be GROUNDED in retrieved
+        # inputs, and an improvisation needs retrieval — either way we refuse
+        # with the surfaced message rather than pass the model's prose through.
         raise RuntimeError(
-            "no retrieval engine configured: an out-of-kernel query can only be "
-            "answered as a grounded improvisation, which needs retrieval"
+            f"{retrieval_index.RETRIEVAL_BACKEND_NOT_CONFIGURED}: an answer "
+            "needs retrieval (a kernel number is computed from grounded inputs; "
+            "an out-of-kernel answer is a grounded improvisation)"
         )
     collection = retrieval_index.tenant_collection(identity)
+
+    covered = kernel_coverage(query, overlays=overlays, resolved=resolved)
+    if covered is not None:
+        return _kernel_answer(engine, collection, query, covered)
+
     labeled = engine.labeled_answer(collection, query, answer_text)
     label = IMPROVISED_LABEL.format(subject=query)
     log_new_domain_candidate(
@@ -224,4 +254,104 @@ def answer_query(
         label=label,
         labeled_answer=labeled,
         citations=list(labeled.citations),
+    )
+
+
+def _format_kernel_number(value: float) -> str:
+    """A stable string for the computed number (trims float noise, keeps it)."""
+    rounded = round(float(value), 6)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return f"{rounded:.6f}".rstrip("0").rstrip(".")
+
+
+def _kernel_answer(
+    engine: RetrievalEngine,
+    collection: str,
+    query: str,
+    covered: Dict[str, Any],
+) -> ProductAnswer:
+    """Compute the kernel's number from grounded inputs, or refuse (UNKNOWN).
+
+    The definition's ``expression`` names its inputs; each input's value is read
+    from the chunks retrieved for this tenant (grounded, with the input names
+    folded into the retrieval query so the figures are found). The number in the
+    answer IS :func:`safe_eval` of the expression — the model's prose never
+    carries a number the kernel did not compute. A missing input → an UNKNOWN
+    refusal naming it; a zero divisor / unsafe expression → the same honest
+    refusal, never a fabricated figure.
+    """
+    expression = str(covered.get("expression") or "").strip()
+    subject = str(covered.get("id") or query).replace("_", " ")
+    citations: List[Citation] = []
+    if not expression:
+        # A covered definition with no expression (e.g. a convention) — we can
+        # name it but will not invent arithmetic for it.
+        return ProductAnswer(
+            query=query,
+            kind=KIND_KERNEL,
+            text=f"{subject}: {covered.get('reason') or 'defined by the kernel'}.",
+            improvised=False,
+            kernel=covered,
+            citations=citations,
+        )
+
+    required = free_names(expression)
+    # Ground the inputs: retrieve with the query AND the input names so the
+    # figures that feed the formula are in the retrieved excerpts.
+    grounding_query = " ".join([query, *required]).strip()
+    try:
+        hits = engine.retrieve(collection, grounding_query)
+    except Exception:  # noqa: BLE001 — a retrieval error grounds nothing
+        hits = []
+    corpus = "\n\n".join(h.text for h in hits)
+    citations = [
+        Citation(file=str(h.file), location=dict(h.location or {}))
+        for h in hits
+        if h.file
+    ]
+
+    values, missing = extract_grounded_inputs(required, corpus)
+    if missing:
+        return ProductAnswer(
+            query=query,
+            kind=KIND_KERNEL,
+            text=UNKNOWN_LABEL.format(subject=subject, inputs=", ".join(missing)),
+            improvised=False,
+            label=UNKNOWN_LABEL.format(subject=subject, inputs=", ".join(missing)),
+            kernel=covered,
+            citations=citations,
+            missing_inputs=list(missing),
+            unknown=True,
+        )
+
+    try:
+        computed = float(safe_eval(expression, values))
+    except (MissingInput, UnsafeExpression, ZeroDivisionError, ArithmeticError) as exc:
+        # Still a refusal, never a number the kernel could not compute.
+        return ProductAnswer(
+            query=query,
+            kind=KIND_KERNEL,
+            text=(
+                f"unknown: {subject} could not be computed from the grounded "
+                f"inputs ({type(exc).__name__})"
+            ),
+            improvised=False,
+            label=f"unknown: {subject} could not be computed",
+            kernel=covered,
+            citations=citations,
+            unknown=True,
+        )
+
+    number = _format_kernel_number(computed)
+    grounded = ", ".join(f"{k}={_format_kernel_number(v)}" for k, v in values.items())
+    text = f"{subject} = {number} (kernel-computed from {grounded})."
+    return ProductAnswer(
+        query=query,
+        kind=KIND_KERNEL,
+        text=text,
+        improvised=False,
+        kernel=covered,
+        citations=citations,
+        kernel_value=computed,
     )
