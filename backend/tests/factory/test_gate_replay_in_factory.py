@@ -220,17 +220,43 @@ def test_the_vendored_handover_holds_no_product_tree_and_says_why():
 
 
 def test_with_no_certified_build_the_replay_is_not_applicable():
-    # Reversed with evidence (ORDERS 2026-10-28 0200Z #3). The handover currently
-    # holds 0 certified builds. The OLD behaviour raised "hand over a new
-    # selection" and so failed EVERY PR until a handover no code change can
-    # produce exists -- a gate wired to nothing (placeholder rule). The gate is
-    # NOT weakened: it stays strict the moment a certified build is handed over
-    # (see test_a_handover_below_the_minimum_still_fails and the per-build
-    # replay), and the known-bad fixtures still run. With 0 certified builds it
-    # is NOT APPLICABLE -- select() returns no certified build and does not
-    # raise; the verdict job exits 0 with an annotation.
+    # Reversed with evidence (ORDERS 2026-10-28 0200Z #3 / 0314Z). ONLY an EMPTY
+    # handover is not-applicable: the vendored handover is empty (selection == [],
+    # 0 entries -- see test_the_vendored_handover_holds_no_product_tree_and_says_why),
+    # so select() returns [] and does not raise; the verdict job exits 0 with an
+    # annotation. This is not a gate weakening -- a NON-EMPTY handover with 0
+    # certified builds is a real failure (see the next test), and the gate stays
+    # strict the moment a certified build is handed over.
+    assert _manifest()["selection"] == []
     rows = rif.select(n=3)
-    assert [r for r in rows if r.get("expect") != "fail"] == []
+    assert rows == []
+
+
+def test_a_non_empty_handover_with_zero_certified_fails(tmp_path):
+    # A handover of >= n entries that are ALL expect=='fail' (0 certified) must
+    # FAIL -- it is NOT not-applicable (ORDERS 2026-10-28 0300Z #4 / 0314Z).
+    vendor = _synthetic_vendor(tmp_path)
+    data = json.loads((vendor / "manifest.json").read_text(encoding="utf-8"))
+    for row in data["selection"]:
+        row["expect"] = "fail"
+    (vendor / "manifest.json").write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    assert len(data["selection"]) >= 3 and [r for r in data["selection"] if r.get("expect") != "fail"] == []
+    with pytest.raises(ValueError, match="0 are certified"):
+        rif.select(vendor=vendor, n=3)
+
+
+def test_the_cli_exits_1_on_a_non_empty_handover_with_zero_certified(tmp_path, monkeypatch):
+    vendor = _synthetic_vendor(tmp_path)
+    data = json.loads((vendor / "manifest.json").read_text(encoding="utf-8"))
+    for row in data["selection"]:
+        row["expect"] = "fail"
+    (vendor / "manifest.json").write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(rif, "vendor_dir", lambda: vendor)
+    assert rif.main(["select", "--out", str(tmp_path / "selection.json")]) == 1
 
 
 def test_a_changed_product_bundle_is_drift(tmp_path):

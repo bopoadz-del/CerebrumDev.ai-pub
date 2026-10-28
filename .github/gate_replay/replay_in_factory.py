@@ -266,6 +266,7 @@ def select(n: Optional[int] = None, vendor: Optional[Path] = None, *, verify_fir
     data = manifest(vendor)
     products = data.get("products") or {}
     handed = [row for row in data.get("selection") or [] if row.get("expect") != "fail"]
+    total_handed = len(data.get("selection") or [])
     handed_branches = {str(row.get("branch")): str(row.get("sha")) for row in data.get("selection") or []}
     if n is None:
         n = rs.configured_n(env={}, config=CONFIG)
@@ -273,17 +274,23 @@ def select(n: Optional[int] = None, vendor: Optional[Path] = None, *, verify_fir
         return branch in handed_branches and handed_branches[branch] in products
 
     if len(handed) == 0:
-        # NOT APPLICABLE: the handover holds no certified build to replay, and an
-        # empty handover hands over no tree at all -- neither certified builds
-        # nor the known-bad fixtures' trees -- so there is nothing to replay.
-        # Return an empty selection; the CLI reports exit-0-with-annotation and
-        # the verdict job exits 0. This is NOT a gate weakening: the gate stays
-        # strict the moment a build is handed over -- the len(handed) < n check,
-        # the per-build replay and the known-bad fixtures below all run once
-        # handed >= 1. (ORDERS 2026-10-28 0200Z #3: a gate that fails every PR
-        # until a count no code change can produce exists is a gate wired to
-        # nothing; the minimum stays configured in .github/gate_replay.json.)
-        return []
+        if total_handed == 0:
+            # NOT APPLICABLE -- and ONLY this case: the handover is EMPTY (0
+            # entries), so it hands over no tree at all and there is nothing to
+            # replay. The CLI writes an empty selection and exits 0 with a
+            # visible annotation; the verdict job exits 0. This is NOT a gate
+            # weakening: the gate stays strict the moment any build is handed
+            # over. (ORDERS 2026-10-28 0200Z #3 / 0300Z #4 / 0314Z: the minimum
+            # stays configured in .github/gate_replay.json.)
+            return []
+        # A NON-EMPTY handover with 0 CERTIFIED builds is a real failure: builds
+        # were handed over but none is certified (every row is expect==fail).
+        # This returns 1 -- it is NOT not-applicable.
+        raise ValueError(
+            f"the handover holds {total_handed} build(s) but 0 are certified "
+            "(every entry is expect=='fail'): hand over a certified selection "
+            "from cerebrum-builds"
+        )
     if len(handed) < n:
         raise ValueError(
             f"the handover holds {len(handed)} certified build(s); the replay asks for {n}: "
@@ -474,8 +481,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         # annotation. The replay runs strict the moment builds are handed over.
         if not good:
             print(
-                "::notice title=gate replay::not applicable: 0 certified builds in the handover; "
-                "the replay runs strict once builds are handed over from cerebrum-builds"
+                "::notice title=gate replay::not applicable: the certified handover is empty "
+                "(0 entries); the replay runs strict the moment any build is handed over "
+                "from cerebrum-builds"
             )
         Path(args.out).write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
         out = os.environ.get("GITHUB_OUTPUT")
