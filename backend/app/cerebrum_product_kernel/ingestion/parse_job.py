@@ -65,6 +65,38 @@ def _job_path(identity: str, job_id: str) -> Path:
     return _jobs_dir(identity) / f"{job_id}.json"
 
 
+def chunks_path(identity: str, job_id: str) -> Path:
+    """Where the F-1b parser persists a job's produced chunks.
+
+    ``jobs/<job_id>/chunks.json`` sits under the SAME tenant digest dir the job
+    record uses, so parsed chunks share the blob/job isolation boundary and are
+    reachable only under the digest of the identity that uploaded the object.
+    The job record itself is ``jobs/<job_id>.json``; the per-job subdirectory
+    never collides with it, and :func:`list_jobs` (which globs ``*.json``) steps
+    over the subdirectory cleanly.
+    """
+    return _jobs_dir(identity) / str(job_id or "").strip() / "chunks.json"
+
+
+def write_chunks(identity: str, job_id: str, chunks: List[dict]) -> Path:
+    """Persist a job's parsed chunks (tenant-scoped); returns the written path."""
+    path = chunks_path(identity, job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(list(chunks)), encoding="utf-8")
+    return path
+
+
+def read_chunks(identity: str, job_id: str) -> List[dict]:
+    """Load a job's persisted chunks for ``identity``, or ``[]`` if none."""
+    path = chunks_path(identity, job_id)
+    if not path.is_file():
+        return []
+    try:
+        return list(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
 def _write(identity: str, job: ParseJob) -> ParseJob:
     jobs = _jobs_dir(identity)
     jobs.mkdir(parents=True, exist_ok=True)

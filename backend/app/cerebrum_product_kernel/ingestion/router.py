@@ -106,13 +106,34 @@ def list_formula_overlays(request: Request) -> None:
 # caller resolves the tenant id and passes it in; these never read headers.
 
 
+def _autoparse_enabled() -> bool:
+    """Whether a successful upload should run the F-1b parser inline.
+
+    Off by default so the upload boundary stays exactly where F-1a fixed it
+    (store + a genuinely-``queued`` job). A deployment (or the Floor worker)
+    sets ``INGESTION_AUTO_PARSE=1`` to have each upload drive ``parse_object``
+    synchronously — deterministic enough that a caller can observe ``parsed``.
+    """
+    import os
+
+    return os.getenv("INGESTION_AUTO_PARSE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 async def ingest_uploads(
     tenant_id: str, files: Optional[List["UploadFile"]]
 ) -> dict:
     """Validate, store, and queue a parse job for each uploaded file.
 
     Returns the flat single-file shape for one file, or ``{items, count}`` for
-    several. 400 when no file was sent (mirrors ``app.routers.upload``).
+    several. 400 when no file was sent (mirrors ``app.routers.upload``). When
+    ``INGESTION_AUTO_PARSE`` is set, each stored object is parsed inline (the
+    reported status then reflects the real post-parse state); the parser never
+    raises out, so a parse failure lands the job at ``failed``, not a 500.
     """
     from .object_store import save_object
     from .parse_job import ParseStatus, create_job
@@ -122,6 +143,7 @@ async def ingest_uploads(
     if not uploads:
         raise HTTPException(status_code=400, detail="No files provided")
 
+    auto = _autoparse_enabled()
     items = []
     for file in uploads:
         safe_name, data = await validate_and_read(file)
@@ -132,11 +154,17 @@ async def ingest_uploads(
             source_name=stored.source_name,
             status=ParseStatus.QUEUED,
         )
+        status_value = job.status.value
+        if auto:
+            from .parsers import parse_object
+
+            parsed = parse_object(tenant_id, stored.object_id, job_id=job.job_id)
+            status_value = parsed.status.value
         items.append(
             {
                 "object_id": stored.object_id,
                 "job_id": job.job_id,
-                "status": job.status.value,
+                "status": status_value,
                 "source_name": stored.source_name,
                 "bytes": stored.size_bytes,
             }
