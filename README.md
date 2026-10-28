@@ -8,10 +8,14 @@ the factory drafts a blueprint. On the user's word — *approve* — the generat
 builds a brand-new, exportable platform from certified Cerebrum-Blocks kernels.
 The subscription plan decides how deep the factory builds.
 
-Live deployment (AWS):
+## Where this sits
 
-- Frontend (Factory Floor): `https://www.cerebrum-dev.com` (`https://cerebrum-dev.com`)
-- Backend API: `https://api.cerebrum-dev.com`
+The Fork (the-shovel) was built first, by hand, from block code; its blocks were extracted to create the Store (cerebrum-blocks); the Factory (CerebrumDev.ai) was built on the Store afterwards. The Fork is not a Factory product.
+
+Its role: the Factory assembles certified Store blocks into brand-new, exportable vertical platforms.
+
+Deployment (AWS):
+
 - The backend runs as an ECS service (cluster `cerebrum`, service
   `cerebrumdev-backend`). CI bakes the image to ECR and `deploy-aws.yml` rolls
   the service on every push to `master`, waiting on the ECS rollout and the
@@ -55,9 +59,8 @@ Error tracking and performance are wired on both tiers and activate by DSN:
 
 - Backend: set `SENTRY_DSN` (Sentry project platform *python/fastapi*).
   Initialization lives in `app/core/observability.py`, runs at package import,
-  and is inert without a DSN. The release tag reads `RENDER_GIT_COMMIT`;
-  `deploy-aws.yml` injects the deployed commit as `GIT_COMMIT` (which
-  `/version` also reads).
+  and is inert without a DSN. The release tag is the deployed commit
+  (`GIT_COMMIT`, which `deploy-aws.yml` injects and `/version` also reads).
 - Frontend: set `VITE_SENTRY_DSN` (platform *javascript-react*) on the
   frontend web service (build-time). The bundle loads Sentry lazily — zero
   cost when unset. Production serves `frontend/dist` via `node serve.mjs`,
@@ -215,16 +218,7 @@ fail-closes as `FACTORY_CODE_CLI_NO_MODEL` before WRITER takeover (still
 takeover). A CLI exit of `No model configured` is the same named class
 and stops the coding-agent takeover (no perpetual "still working"). A 404 / Permission
 denied on the configured model fail-closes as
-`FACTORY_CODE_CLI_MODEL_DENIED`. Boot writes DeepSeek
-`[providers.deepseek]` from `DEEPSEEK_API_KEY` (model `deepseek-v4-pro`)
-or Moonshot `default_model` from `KIMI_CODE_MODEL` / `KIMI_CODE_MODEL_ID`
-(default `kimi-k3`) so headless `kimi --prompt` does not need TTY
-`/login`. DeepSeek uses `kimi --prompt "<coder_brief.md>"` (prompt + stdin,
-not a bare `@docs/coder_brief.md` mention) with `deepseek-v4-pro`. A
-templated pilot zip after that skip is not a ≥2h CLI session. CLI
-credentials are `DEEPSEEK_API_KEY` or `KIMI_CODE_API_KEY` →
-`~/.kimi-code/config.toml`, not the in-app `CEREBRUM_LLM_API_KEY`. Deploy-time
-secrets stay owner-gated.
+`FACTORY_CODE_CLI_MODEL_DENIED`. Deploy-time secrets stay owner-gated.
 
 ### Running the tests: the factory coder changes the results
 
@@ -293,7 +287,7 @@ See [`docs/factory/BLOCKS_LOCK.md`](docs/factory/BLOCKS_LOCK.md).
 
 **Dev dependencies are not optional.** `requirements-dev.txt` pins
 `pgvector`, which the Steward kit's SQLAlchemy models import at module scope.
-A venv built from `requirements.txt` alone fails ~7 tests with
+A venv built from `requirements.txt` alone fails tests with
 `ModuleNotFoundError: No module named 'pgvector'`.
 
 Admin-gated routes (e.g. the automotive-core foundation pack) require
