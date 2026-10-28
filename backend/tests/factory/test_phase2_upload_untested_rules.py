@@ -17,7 +17,6 @@ from __future__ import annotations
 import sys
 import types
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

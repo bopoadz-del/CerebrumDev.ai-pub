@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.cerebrum_product_kernel.ingestion import object_store
 from app.cerebrum_product_kernel.ingestion.object_store import (
     ObjectStoreError,
     list_objects,
