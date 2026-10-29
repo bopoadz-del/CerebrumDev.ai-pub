@@ -135,3 +135,47 @@ def test_certified_value_is_grounded_even_when_the_override_drops_its_inputs():
     rec = ans.labeled_answer.claims[0].precedence
     assert rec.winner_result == pytest.approx(float(safe_eval(expr, vals)))
     assert rec.loser_result == pytest.approx(float(safe_eval(d["expression"], vals)))
+
+
+# ---- repair 1 (G2 M9 / M9b / M17) ----
+@pytest.mark.parametrize("seed", [2, 5])
+def test_kernel_labeled_answer_carries_the_retrieved_citations(seed):
+    set_id, d = _base()
+    _, text = _corpus(free_names(d["expression"]), seed)
+    src = f"ledger_{seed}.xlsx"
+    eng = _Engine(text)
+    eng.file = src
+    orig = eng.retrieve
+    eng.retrieve = lambda c, q: [_Hit(h.text, file=src, location={"sheet": "S", "row": seed})
+                                 for h in orig(c, q)]
+    ans = answer_query("t-a", d["id"].replace("_", " "), "p", engine=eng)
+    cites = [c.to_dict() for c in ans.labeled_answer.citations]
+    assert cites == [{"file": src, "location": {"sheet": "S", "row": seed}}]
+    assert ans.labeled_answer.to_dict()["citations"] == cites == [c.to_dict() for c in ans.citations]
+
+
+def _divisor_base():
+    base = load_base_definitions()
+    for d in base["definitions"]:
+        expr = d.get("expression") or ""
+        if "/" in expr and len(free_names(expr)) >= 2:
+            divisor = free_names(expr.split("/", 1)[1].strip().strip("()"))[0]
+            return base["set_id"], d, divisor
+    raise AssertionError("no divisor base definition")
+
+
+@pytest.mark.parametrize("seed", [2, 5])
+def test_certified_divide_by_zero_is_not_invented_and_does_not_crash(seed):
+    set_id, d, divisor = _divisor_base()
+    names = free_names(d["expression"])
+    expr = " + ".join(names)  # the tenant rule has no division
+    row = dict(d, expression=expr, overrides=f"{set_id}:{d['id']}_v{d['definition_version']}",
+               reason="tenant rule", provenance={"kind": "client_submitted", "reference": "r"})
+    vals = {n: (0.0 if n == divisor else float(seed * (i + 3))) for i, n in enumerate(names)}
+    text = "\n".join(f"{n} = {v}" for n, v in vals.items())
+    ans = answer_query("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text),
+                       overlays=[{"set_id": "tenant-rules", "definitions": [row]}])
+    assert not ans.unknown and ans.kernel_value == pytest.approx(sum(vals.values()))
+    rec = ans.labeled_answer.claims[0].precedence
+    assert rec.winner_result == pytest.approx(sum(vals.values()))
+    assert not isinstance(rec.loser_result, (int, float))  # no invented certified number
