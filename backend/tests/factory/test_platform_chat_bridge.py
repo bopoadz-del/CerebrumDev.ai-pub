@@ -149,3 +149,49 @@ def test_draft_resets_previous_design():
     assert state.product_design.blueprint_approved is False
     assert state.product_design.generation is None
     assert state.product_design.brief == "create a platform for clinics"
+
+
+# --- F-4a (H1): the chat-flow draft surfaces the golden OFFER -----------------
+
+def _chat_draft_with_threshold(monkeypatch, min_overlap: str, sid: str):
+    """Draft through platform_chat_flow.draft_from_chat with the same brief and
+    vertical hint the steward offer flow uses; only the kernel threshold
+    differs, so the two calls are two inputs giving two results."""
+    from tests.factory.blocks_root import real_blocks_root
+
+    monkeypatch.setenv("CEREBRUM_BLOCKS_ROOT", str(real_blocks_root()))
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", min_overlap)
+    state = SessionState(session_id=sid, user_id="test-user")
+    # The vertical is the user's Floor choice persisted on the session.
+    state.product_design.vertical = "estate"
+    result = platform_chat_flow.draft_from_chat(
+        state, "Generate Projectsix private estate operations"
+    )
+    return state, result
+
+
+def test_draft_from_chat_offers_golden_above_threshold_not_below(monkeypatch):
+    """K2: draft_from_chat must return the blueprint's golden_suggestion.
+
+    Above the lowered threshold the matching golden rides on
+    result["golden_suggestion"]; at 0.99 it is None. In both the base stays
+    the user's own draft (never substituted). Setting the returned key to None
+    (or dropping it) reddens the above-threshold half."""
+    state_hi, hi = _chat_draft_with_threshold(monkeypatch, "0.05", "chat-golden-hi")
+    state_lo, lo = _chat_draft_with_threshold(monkeypatch, "0.99", "chat-golden-lo")
+
+    assert hi["ok"] is True and lo["ok"] is True
+    sug = hi["golden_suggestion"]
+    assert sug is not None, "draft_from_chat must surface the golden offer"
+    assert sug["golden_id"] == "projectsix"
+    assert sug["drafting_mode"] == "golden"
+    # The returned offer is the blueprint's own, not a separately built one.
+    assert sug == state_hi.product_design.blueprint.get("golden_suggestion")
+    assert lo["golden_suggestion"] is None
+    assert hi["golden_suggestion"] != lo["golden_suggestion"]
+    # The base is the user's draft in both cases.
+    for state, res in ((state_hi, hi), (state_lo, lo)):
+        assert res["blueprint"]["product_id"] == "estate"
+        assert res["source"] == "drafted"
+        assert state.product_design.blueprint["product_id"] == "estate"
