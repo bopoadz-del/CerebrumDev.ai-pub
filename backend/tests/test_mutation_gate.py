@@ -168,8 +168,10 @@ def test_drop_rule_keeps_the_else_branch(src, kept):
 ])
 def test_bypass_dispatcher_reports_whether_it_applied(src, applies):
     fn = _fn(src)
+    before = _ast.unparse(fn)
     assert mg.mutate(fn, "bypass_dispatcher") is applies
-    assert ("handle_it(" in _ast.unparse(fn)) is (not applies)
+    assert (_ast.unparse(fn) != before) is applies
+    assert "handle_it(" not in _ast.unparse(fn)
 
 
 @pytest.mark.parametrize("src,applies", [
