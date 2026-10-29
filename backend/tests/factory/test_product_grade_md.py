@@ -76,3 +76,40 @@ def test_write_grade_md(tmp_path, pid):
     path = gm.write_grade_md(tmp_path / "out", g)
     assert path.name == gm.GRADE_MD and path.read_text("utf-8") == gm.render_md(g)
     assert path.read_text("utf-8").splitlines()[0] == f"# GRADE -- {pid}"
+
+
+# --- G2 #77: ok / ran / passed are `is True`, so a 'yes' never shows PASS --
+TRUTHY = ["yes", 1, "true", ["x"]]
+
+
+@pytest.mark.parametrize("ok", TRUTHY)
+def test_truthy_function_ok_shows_fail(ok):
+    lines = _lines(_grade(fns=[{"capability_id": "c", "ok": ok}]))
+    assert "  - `c`: FAIL; mutants killed none; survived none" in lines
+
+
+@pytest.mark.parametrize("ran", TRUTHY + [False])
+def test_truthy_ran_shows_did_not_run(ran):
+    assert "## Layer 2 (separate grader context): did not run" in _lines(_grade(ran=ran))
+
+
+@pytest.mark.parametrize("ok", TRUTHY)
+def test_truthy_layer1_ok_shows_red(ok):
+    assert "## Layer 1 (deterministic): RED" in _lines(_grade(l1_ok=ok))
+
+
+@pytest.mark.parametrize("passed", TRUTHY)
+def test_truthy_step_not_counted(passed):
+    assert "- UI steps passed: 1/2" in _lines(_grade(steps=[{"passed": True}, {"passed": passed}]))
+
+
+@pytest.mark.parametrize("v,shown", [
+    ({"verdict": "PASS", "question": "q", "evidence": "quote"}, "PASS"),
+    ({"verdict": "yes", "question": "q", "evidence": "quote"}, "FAIL (recorded 'yes')"),
+    ({"verdict": "pass", "question": "q", "evidence": "quote"}, "FAIL (recorded 'pass')"),
+    ({"verdict": "PASS", "question": "q", "evidence": "  "}, "FAIL (recorded 'PASS')"),
+    ({"verdict": "PASS", "question": "q", "evidence": 5}, "FAIL (recorded 'PASS')"),
+    ({"verdict": True, "question": "q", "evidence": "quote"}, "FAIL (recorded True)"),
+])
+def test_verdict_shows_pass_only_when_it_is_one(v, shown):
+    assert any(line.startswith(f"- {shown}: q -- evidence:") for line in _lines(_grade(verdicts=[v])))

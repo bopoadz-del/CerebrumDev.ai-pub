@@ -16,6 +16,15 @@ def _names(xs: Any) -> str:
     return ", ".join(str(x) for x in xs or []) or "none"
 
 
+def _shown_verdict(v: Mapping[str, Any]) -> str:
+    """PASS only for exactly ``PASS`` with non-blank string evidence (the gate's
+    rule); anything else shows as FAIL, naming what was recorded."""
+    verdict, ev = v.get("verdict"), v.get("evidence")
+    if verdict == "PASS" and isinstance(ev, str) and ev.strip():
+        return "PASS"
+    return "FAIL" if verdict == "FAIL" else f"FAIL (recorded {verdict!r})"
+
+
 def render_md(grade: Mapping[str, Any]) -> str:
     l1, l2 = grade["layer1"], grade["layer2"]
     fn, ui = l1.get("functions") or {}, l1.get("ui") or {}
@@ -37,7 +46,7 @@ def render_md(grade: Mapping[str, Any]) -> str:
     lines += [f"  - FAIL: {name}" for name in ui.get("failing") or []]
     lines += ["", f"## Layer 2 (separate grader context): {'ran' if l2.get('ran') is True else 'did not run'}"]
     for v in l2.get("verdicts") or []:
-        lines.append(f"- {v.get('verdict')}: {v.get('question')} -- evidence: \"{v.get('evidence') or ''}\"")
+        lines.append(f"- {_shown_verdict(v)}: {v.get('question')} -- evidence: \"{v.get('evidence') or ''}\"")
     lines += [f"- OPEN: {q}" for q in l2.get("open_fails") or []]
     if grade.get("next_tasks"):
         lines += ["", "## Next tasks"] + [f"- {t}" for t in grade["next_tasks"]]
