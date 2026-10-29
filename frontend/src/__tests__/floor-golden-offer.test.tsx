@@ -16,6 +16,8 @@ const getHealthMock = vi.fn()
 const sessionStateMock = vi.fn()
 const acceptGoldenMock = vi.fn()
 const declineGoldenMock = vi.fn()
+const watchBuildMock = vi.fn()
+const approveMock = vi.fn()
 
 vi.mock('../api/factory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/factory')>()
@@ -23,11 +25,13 @@ vi.mock('../api/factory', async (importOriginal) => {
     ...actual,
     chatStream: (...args: unknown[]) => chatStreamMock(...args),
     getHealth: (...args: unknown[]) => getHealthMock(...args),
+    watchBuildStatus: (...args: unknown[]) => watchBuildMock(...args),
     product: {
       ...actual.product,
       get: (...args: unknown[]) => getMock(...args),
       acceptGolden: (...args: unknown[]) => acceptGoldenMock(...args),
       declineGolden: (...args: unknown[]) => declineGoldenMock(...args),
+      approve: (...args: unknown[]) => approveMock(...args),
     },
     sessions: {
       ...actual.sessions,
@@ -67,7 +71,7 @@ async function renderWithDraft(sid: string, draft: ReturnType<typeof draftWithOf
 
 describe('Floor golden offer (F-4b)', () => {
   beforeEach(() => {
-    for (const m of [chatStreamMock, getMock, getHealthMock, sessionStateMock, acceptGoldenMock, declineGoldenMock]) {
+    for (const m of [chatStreamMock, getMock, getHealthMock, sessionStateMock, acceptGoldenMock, declineGoldenMock, watchBuildMock, approveMock]) {
       m.mockReset()
     }
     sessionStateMock.mockResolvedValue({ chat_history: [] })
@@ -127,6 +131,72 @@ describe('Floor golden offer (F-4b)', () => {
     // second session id -> second call argument (not a constant)
     expect(acceptGoldenMock).toHaveBeenCalledWith('sess_err')
     expect(screen.getByTestId('bp-golden-offer')).toBeInTheDocument()
+  })
+})
+
+describe('Floor header follows the resolved design (F-4b, F6)', () => {
+  // product.get returns a real draft design, so the header's design-first
+  // name (productDesign.blueprint.product_name) is the draft's until the
+  // resolve re-points it. If resolveGolden stopped updating the design, the
+  // header would keep the draft's name after Accept.
+  beforeEach(() => {
+    for (const m of [chatStreamMock, getMock, getHealthMock, sessionStateMock, acceptGoldenMock, declineGoldenMock, watchBuildMock, approveMock]) {
+      m.mockReset()
+    }
+    sessionStateMock.mockResolvedValue({ chat_history: [] })
+    getHealthMock.mockResolvedValue({ factory_code_cli: { available: true, credentials_file_present: true } })
+    approveMock.mockResolvedValue({})
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({
+        state: 'succeeded',
+        pilot_ready: true,
+        cycle: 'pilot',
+        authorship: { artifacts: 4, agent_written: 3, templated: 1 },
+        acceptance: { passed: 5, total: 5, ok: true },
+      })
+    })
+    chatStreamMock.mockImplementation(
+      async (_sid: string, _m: string, onEvent: (ev: { event: string; data: unknown }) => void, _v?: unknown, _l?: unknown, typed?: { action: string }) => {
+        if (typed?.action === 'approve') {
+          onEvent({
+            event: 'generation',
+            data: { summary: 'Build started.', triggered_by: 'chat_llm', generation: { engine: 'runner', product_id: 'p', triggered_by: 'chat_llm' } },
+          })
+        }
+      },
+    )
+  })
+
+  async function resolveThenBuild(sid: string, draftName: string, mode: 'accept' | 'decline', returnedName: string) {
+    const draft = draftWithOffer(draftName, 'g_' + sid, 'Golden ' + sid, 0.7)
+    getMock.mockResolvedValue({ blueprint: draft, blueprint_approved: false })
+    const resolved = {
+      ok: true,
+      source: mode === 'accept' ? 'golden' : 'drafted',
+      blueprint: { ...draft, product_name: returnedName, golden_suggestion: null },
+    }
+    acceptGoldenMock.mockResolvedValue(resolved)
+    declineGoldenMock.mockResolvedValue(resolved)
+    render(<Floor sessionId={sid} goPlatforms={() => {}} />)
+    fireEvent.click(await screen.findByTestId(mode === 'accept' ? 'bp-accept-golden' : 'bp-decline-golden'))
+    await waitFor(() => expect(screen.queryByTestId('bp-golden-offer')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve & build' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Approve & build' }))
+    return screen.findByTestId('floor-product-title')
+  }
+
+  it('after Accept the header shows the golden product_name, not the draft', async () => {
+    const title = await resolveThenBuild('sess_hacc', 'Draft Kappa', 'accept', 'Golden Lambda Platform')
+    expect(acceptGoldenMock).toHaveBeenCalledWith('sess_hacc')
+    expect(title).toHaveTextContent('Golden Lambda Platform')
+    expect(title).not.toHaveTextContent('Draft Kappa')
+  })
+
+  it('after Decline the header still shows the draft product_name', async () => {
+    const title = await resolveThenBuild('sess_hdec', 'Draft Sigma', 'decline', 'Draft Sigma')
+    expect(declineGoldenMock).toHaveBeenCalledWith('sess_hdec')
+    expect(title).toHaveTextContent('Draft Sigma')
+    expect(title).not.toHaveTextContent('Golden sess_hdec')
   })
 })
 
