@@ -132,6 +132,27 @@ describe('Floor golden offer (F-4b)', () => {
     expect(acceptGoldenMock).toHaveBeenCalledWith('sess_err')
     expect(screen.getByTestId('bp-golden-offer')).toBeInTheDocument()
   })
+
+  it.each([
+    ['sess_pend_a', 'Draft Omega', 'g_omega', 'Omega Golden'],
+    ['sess_pend_b', 'Draft Theta', 'g_theta', 'Theta Golden'],
+  ])('a second Accept while the first resolve is pending does nothing (%s)', async (sid, name, gid, gname) => {
+    let release: (v: unknown) => void = () => {}
+    acceptGoldenMock.mockImplementation(() => new Promise((r) => { release = r }))
+    await renderWithDraft(sid, draftWithOffer(name, gid, gname, 0.7))
+    const accept = screen.getByTestId('bp-accept-golden')
+    fireEvent.click(accept)
+    await waitFor(() => expect(screen.getByTestId('bp-accept-golden')).toBeDisabled())
+    expect(screen.getByTestId('bp-decline-golden')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('bp-accept-golden'))
+    fireEvent.click(screen.getByTestId('bp-decline-golden'))
+    expect(acceptGoldenMock).toHaveBeenCalledTimes(1)
+    expect(acceptGoldenMock).toHaveBeenCalledWith(sid)
+    expect(declineGoldenMock).not.toHaveBeenCalled()
+    release({ ok: true, source: 'golden', blueprint: { product_name: gname + ' Platform', vertical: 'v_' + gid, capabilities: [], golden_suggestion: null } })
+    expect(await screen.findByText(new RegExp(gname + ' Platform'))).toBeInTheDocument()
+    expect(acceptGoldenMock).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('Floor header follows the resolved design (F-4b, F6)', () => {
