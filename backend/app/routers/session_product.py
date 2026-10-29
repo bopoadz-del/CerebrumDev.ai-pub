@@ -923,30 +923,53 @@ def draft_product(
 def accept_golden(
     session_id: str, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
-    """Accept the golden OFFERED on the current draft.
+    """Resolve the golden OFFERED on the current draft into the product.
 
     The draft (POST /product/draft) leaves the user's own blueprint as the base
-    and only OFFERS a matching golden on ``golden_suggestion`` (H1, F-4). This
-    is where the user's ACCEPT is resolved into the product: the offered golden
-    is loaded via ``_golden_for_draft`` and becomes the session's blueprint, so
-    plan/approve/generate run on it. Without this route the offer is wired to
-    nothing. The resolution uses the same structural match as the offer, keyed
-    on the user's chosen vertical; a golden can never hand a vertical the user
-    did not pick. 409 if there is no draft, or no golden was offered for it.
+    and only OFFERS a matching golden on ``blueprint.golden_suggestion`` (H1,
+    F-4). This route resolves that PENDING offer — it is never a fresh re-match
+    that could accept a golden the user was never shown:
+
+    1. Read the stored offer off ``state.product_design.blueprint``'s
+       ``golden_suggestion``. Absent/None -> 409 (nothing to accept).
+    2. Resolve the golden via ``_golden_for_draft`` (the same structural match,
+       keyed on the user's chosen vertical, that produced the offer). If it
+       resolves to nothing, or to a golden whose ``product_id`` is not the
+       pending offer's ``golden_id``, -> 409: the accept must match the offer
+       that was shown, never an unoffered or different golden.
+    3. Otherwise write the accepted golden as the session blueprint, reset the
+       downstream stages, and set the session domain, so plan/approve/generate
+       run on it.
+
+    409 if there is no draft, or no golden was offered for it.
     """
     state = _require_session(session_id, principal)
-    if not state.product_design.blueprint:
+    bp_dict = state.product_design.blueprint
+    if not bp_dict:
         raise HTTPException(
             status_code=409, detail="no draft to accept a golden for"
         )
     try:
-        draft_bp = ProductBlueprint.model_validate(state.product_design.blueprint)
-        accepted = _golden_for_draft(draft_bp, state.product_design.vertical)
-        if accepted is None:
+        # The PENDING offer, read off the stored draft — not a fresh re-match.
+        offer = bp_dict.get("golden_suggestion") if isinstance(bp_dict, dict) else None
+        if not offer:
             raise HTTPException(
                 status_code=409,
                 detail="no golden was offered for this draft (none cleared the "
                 "overlap threshold)",
+            )
+        offered_id = offer.get("golden_id")
+        draft_bp = ProductBlueprint.model_validate(bp_dict)
+        accepted = _golden_for_draft(draft_bp, state.product_design.vertical)
+        if accepted is None or accepted.product_id != offered_id:
+            # The accept must resolve the golden that was OFFERED. A resolver
+            # that now yields nothing, or a different golden than the pending
+            # offer named, is not an accept of this offer — refuse rather than
+            # silently swap in a golden the user never saw.
+            raise HTTPException(
+                status_code=409,
+                detail="the golden offered on this draft is no longer the one "
+                "that resolves for it — re-draft before accepting",
             )
         state.product_design.blueprint = accepted.model_dump(mode="json")
         state.product_design.blueprint_approved = False
@@ -965,6 +988,36 @@ def accept_golden(
         raise
     except Exception as exc:  # noqa: BLE001
         _raise_product_error(session_id, state, exc)
+
+
+@router.post("/{session_id}/product/draft/decline-golden")
+def decline_golden(
+    session_id: str, principal: Principal = Depends(require_entitled)
+) -> Dict[str, Any]:
+    """Decline the golden OFFERED on the current draft.
+
+    The user keeps their OWN draft (H1, F-4): this route returns that draft
+    UNCHANGED and only CLEARS the pending offer, by setting the stored
+    blueprint's ``golden_suggestion`` to None so the Floor stops showing the
+    accept/decline card. plan/approve/generate then run on the user's draft.
+    409 if there is no draft.
+    """
+    state = _require_session(session_id, principal)
+    bp_dict = state.product_design.blueprint
+    if not bp_dict:
+        raise HTTPException(
+            status_code=409, detail="no draft to decline a golden for"
+        )
+    # The user's draft stays the base; only the offer is cleared.
+    if isinstance(bp_dict, dict):
+        bp_dict["golden_suggestion"] = None
+        state.product_design.blueprint = bp_dict
+    update_session(session_id, state)
+    return {
+        "ok": True,
+        "blueprint": state.product_design.blueprint,
+        "source": "drafted",
+    }
 
 
 @router.post("/{session_id}/product/plan")

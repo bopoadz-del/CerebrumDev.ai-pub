@@ -205,6 +205,119 @@ def test_accept_golden_refuses_when_none_offered(client, monkeypatch):
     assert r.status_code == 409, r.text
 
 
+def test_accept_golden_vs_decline_two_different_outcomes(client, monkeypatch):
+    """Two inputs (accept vs decline) -> two different outcomes (H1, F-4).
+
+    One session drafts (threshold lowered so the structural overlap surfaces
+    the "projectsix" steward golden as an OFFER) and ACCEPTS: its blueprint
+    becomes the golden. A second session drafts the same brief and DECLINES:
+    its blueprint stays the user's own "estate" draft and the pending offer is
+    cleared. Neither path re-matches a golden the user was never shown.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
+
+    # --- ACCEPT ---------------------------------------------------------
+    create_session("sess_accept_golden", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_accept_golden/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["blueprint"]["product_id"] == "estate"
+    assert body["golden_suggestion"] is not None
+    assert body["golden_suggestion"]["golden_id"] == "projectsix"
+
+    r = client.post("/v1/sessions/sess_accept_golden/product/draft/accept-golden")
+    assert r.status_code == 200, r.text
+    acc = r.json()
+    assert acc["source"] == "golden"
+    assert acc["blueprint"]["product_id"] == "projectsix"
+    assert acc["blueprint"]["drafting_mode"] == "golden"
+
+    # PERSISTENCE: the route WROTE the accepted golden to the store (so the
+    # "route writes nothing / drop update_session" mutant reddens). Reload the
+    # session from the store and read the persisted blueprint and session.
+    state2 = get_session("sess_accept_golden")
+    assert state2 is not None
+    assert state2.product_design.blueprint["product_id"] == "projectsix"
+    # Accept resets the downstream stages and sets the session domain.
+    assert state2.product_design.blueprint_approved is False
+    assert state2.product_design.plan is None
+    assert state2.config.domain, "accept must set config.domain from the golden"
+
+    # --- DECLINE --------------------------------------------------------
+    create_session("sess_decline_golden", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_decline_golden/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["golden_suggestion"] is not None
+
+    r = client.post("/v1/sessions/sess_decline_golden/product/draft/decline-golden")
+    assert r.status_code == 200, r.text
+    dec = r.json()
+    assert dec["source"] == "drafted"
+    # The user's own draft, UNCHANGED, with the offer cleared.
+    assert dec["blueprint"]["product_id"] == "estate"
+    assert dec["blueprint"]["golden_suggestion"] is None
+
+    state3 = get_session("sess_decline_golden")
+    assert state3 is not None
+    assert state3.product_design.blueprint["product_id"] == "estate"
+    assert state3.product_design.blueprint["golden_suggestion"] is None
+
+
+def test_accept_golden_refuses_an_offer_that_no_longer_resolves(client, monkeypatch):
+    """Accept resolves the PENDING offer, never a free re-match (H1, F-4).
+
+    If the stored offer names a golden that is not the one the draft
+    structurally resolves to, the accept refuses (409) rather than silently
+    accepting a golden the user was never shown. An "accept ignores the
+    suggested id" mutant reddens this.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
+    create_session("sess_offer_mismatch", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_offer_mismatch/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["golden_suggestion"]["golden_id"] == "projectsix"
+
+    # Tamper the STORED offer so its golden_id no longer matches what the draft
+    # resolves to; the accept must refuse rather than swap in the resolved one.
+    state = get_session("sess_offer_mismatch")
+    assert state is not None
+    state.product_design.blueprint["golden_suggestion"]["golden_id"] = "not-the-offer"
+    update_session("sess_offer_mismatch", state)
+
+    r = client.post("/v1/sessions/sess_offer_mismatch/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
+
+
+def test_accept_and_decline_golden_require_a_draft(client, monkeypatch):
+    """Both resolve routes 409 when there is no draft to resolve an offer for."""
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    create_session("sess_nodraft_golden", DEV_LOCAL_TENANT)
+    r = client.post("/v1/sessions/sess_nodraft_golden/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
+    r = client.post("/v1/sessions/sess_nodraft_golden/product/draft/decline-golden")
+    assert r.status_code == 409, r.text
+
+
 def test_generate_requires_approval(client):
     create_session("sess_product_2", DEV_LOCAL_TENANT)
     client.post(
