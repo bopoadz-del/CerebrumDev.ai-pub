@@ -93,3 +93,88 @@ def test_store_gate_success_refuses_ungraded_build(tmp_path):
     assert snap.is_12_of_12
     with pytest.raises(BuildsPushError, match="grade"):
         n3.apply_store_gate_success(tmp_path, snap)
+
+
+# --- G2 survivors M1-M10 --------------------------------------------------
+import json as _json
+
+from app.factory.build.product_grader import grade_record as _gr
+
+_BPS = [
+    {"product_id": "a", "capabilities": [{"id": "rent_roll", "description": "Roll rent."}], "ui_modules": ["portal"]},
+    {"product_id": "b", "capabilities": [{"id": "x", "description": "X."}, {"id": "y", "description": "Y."}], "ui_modules": ["map", "board"]},
+]
+
+
+def _answer_all(bp, evidence="quoted \"text\""):
+    return _json.dumps([{"question": q, "verdict": "PASS", "evidence": evidence} for q in _gr.layer2_questions(bp)])
+
+
+@pytest.mark.parametrize("bp", _BPS)
+@pytest.mark.parametrize("evidence", ["", "   "])
+def test_pass_without_evidence_is_an_open_fail(bp, evidence):  # M1
+    r = _gr.run_layer2({"compiled_brief": "b"}, bp, lambda m: _answer_all(bp, evidence))
+    assert len(r["open_fails"]) == len(_gr.layer2_questions(bp))
+
+
+@pytest.mark.parametrize("bp", _BPS)
+def test_pass_with_evidence_is_not_open(bp):
+    r = _gr.run_layer2({"compiled_brief": "b"}, bp, lambda m: _answer_all(bp))
+    assert r["ran"] and r["open_fails"] == []
+
+
+@pytest.mark.parametrize("bp", _BPS)
+def test_unanswered_questions_are_open_fails(bp):  # M2
+    qs = _gr.layer2_questions(bp)
+    raw = _json.dumps([{"question": qs[0], "verdict": "PASS", "evidence": "q"}])
+    assert _gr.run_layer2({}, bp, lambda m: raw)["open_fails"] == qs[1:]
+
+
+def _green(tmp_path, layer2):
+    g = _gr.build_grade(product_id="p", functions={"ok": True}, ui={"ok": True, "steps": []}, layer2=layer2)
+    _gr.write_grade(tmp_path, g)
+    return g
+
+
+@pytest.mark.parametrize("layer2", [{"ran": False, "open_fails": []}, {"open_fails": []}])
+def test_layer2_did_not_run_is_refused(tmp_path, layer2):  # M3
+    g = _green(tmp_path, layer2)
+    assert g["certified"] is False
+    assert "did not run" in _gr.certification_refusal(tmp_path)
+
+
+def test_recorded_pass_without_evidence_is_refused(tmp_path):
+    _green(tmp_path, {"ran": True, "open_fails": [], "verdicts": [{"question": "q", "verdict": "PASS", "evidence": ""}]})
+    assert "open Layer-2" in _gr.certification_refusal(tmp_path)
+
+
+def test_green_with_evidence_certifies(tmp_path):
+    _green(tmp_path, {"ran": True, "open_fails": [], "verdicts": [{"question": "q", "verdict": "PASS", "evidence": "e"}]})
+    assert _gr.certification_refusal(tmp_path) is None
+
+
+@pytest.mark.parametrize("key", ["notes", "extra", "writer_prompt", "messages"])
+def test_unknown_input_keys_are_refused(key):  # M6
+    with pytest.raises(_gr.ContextLeak):
+        _gr.layer2_messages({"compiled_brief": "b", key: "x"}, ["q"])
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]", "{}", '{"layer1": {}}', '"str"', ""])
+def test_unreadable_grade_json_refuses(tmp_path, content):  # M7
+    (tmp_path / _gr.GRADE_JSON).write_text(content)
+    r = _gr.certification_refusal(tmp_path)
+    assert r is not None and "not certified" in r
+
+
+@pytest.mark.parametrize("bp", _BPS)
+def test_every_screen_has_a_question(bp):  # M8
+    qs = _gr.layer2_questions(bp)
+    for m in bp["ui_modules"]:
+        assert sum(f"'{m}'" in q for q in qs) == 1
+    assert len(qs) == len(bp["capabilities"]) + len(bp["ui_modules"]) + 1
+
+
+@pytest.mark.parametrize("bp", _BPS)
+def test_grounding_question_is_always_asked(bp):  # M10
+    assert any("grounded" in q for q in _gr.layer2_questions(bp))
+    assert any("grounded" in q for q in _gr.layer2_questions({}))

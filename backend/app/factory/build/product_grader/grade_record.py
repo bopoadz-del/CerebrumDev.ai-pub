@@ -106,7 +106,7 @@ def build_grade(
         "layer2": dict(layer2),
         "next_tasks": [f"re-run writer on: {q}" for q in open_fails],
         # Layer 1 alone certifies; Layer 2 can only block.
-        "certified": layer1_ok and not open_fails,
+        "certified": layer1_ok and bool(layer2.get("ran")) and not open_fails,
     }
 
 
@@ -158,6 +158,13 @@ def certification_refusal(root: Path | str) -> Optional[str]:
         fn_ok, ui_ok = bool(l1["functions"]["ok"]), bool(l1["ui"]["ok"])
         open_fails = list(grade.get("layer2", {}).get("open_fails") or [])
         ran = bool(grade.get("layer2", {}).get("ran"))
+        # A recorded PASS is only a PASS with quoted evidence.
+        open_fails += [
+            str(v.get("question"))
+            for v in grade.get("layer2", {}).get("verdicts") or []
+            if not (str(v.get("verdict")).upper() == "PASS" and str(v.get("evidence") or "").strip())
+            and str(v.get("question")) not in open_fails
+        ]
     except Exception:  # noqa: BLE001
         return "product grade unreadable: build not certified"
     if not (fn_ok and ui_ok):
