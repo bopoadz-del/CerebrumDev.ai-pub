@@ -72,7 +72,8 @@ class _Invented:
     product_name = "Zorblat Yard"
     vertical = "zorblat_yards"
     summary = "Track zorblats through the yard."
-    capabilities = ()
+    # F-9a: an empty roster is an empty intake, which assert_pack refuses.
+    capabilities = (type("Cap", (), {"id": "zorblat_tally"})(),)
 
 
 def _pack():
@@ -86,7 +87,8 @@ def test_own_pack_exists_with_all_15_fields_kernel_bound():
     assert list(pack["fields"]) == list(DOMAIN_PACK_FIELDS)
     for name in DOMAIN_PACK_FIELDS:
         item = pack["fields"][name]
-        assert item["value"], name
+        # F-9a: a slot is valued, or DECLARED absent -- never filled by the Factory.
+        assert item["value"] or item.get("absent") is True, name
         kernel = item["kernel"]
         assert kernel["action_ids"], name
         assert kernel["contracts"], name
