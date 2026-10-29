@@ -117,15 +117,18 @@ def mutate(fn: ast.FunctionDef, kind: str) -> bool:
 
 def module_tokens(path: str, src_roots: Sequence[str]) -> List[str]:
     p = Path(path)
+    prefix: List[str] = []
     for root in src_roots:
         try:
             rel = p.relative_to(root)
+            # The import name starts at the root's own package: backend/app/x.py -> app.x
+            prefix = [Path(root).name]
             break
         except ValueError:
             continue
     else:
         rel = p
-    parts = list(rel.with_suffix("").parts)
+    parts = prefix + list(rel.with_suffix("").parts)
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     return [".".join(parts)] if parts else []
