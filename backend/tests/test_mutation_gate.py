@@ -141,3 +141,100 @@ def test_changed_test_module_under_src_is_never_mutated(tmp_path, name):
     _commit(repo)
     res = mg.mutation_gate(repo, "HEAD~1", ["src"], ["tests"], ".", [])
     assert not any(r.path.endswith(name) for r in res)
+
+
+# --- G2 survivor repairs (#72) -------------------------------------------
+import ast as _ast
+
+
+def _fn(src: str):
+    return _ast.parse(src).body[0]
+
+
+@pytest.mark.parametrize("src,kept", [
+    ("def f(x):\n    if x:\n        return 1\n    else:\n        return 2\n", "return 2"),
+    ("def f(x):\n    if x:\n        return 1\n    else:\n        y = x * 3\n        return y\n", "y = x * 3"),
+])
+def test_drop_rule_keeps_the_else_branch(src, kept):
+    fn = _fn(src)
+    assert mg.mutate(fn, "drop_rule")
+    out = _ast.unparse(fn)
+    assert kept in out and "return 1" not in out
+
+
+@pytest.mark.parametrize("src,applies", [
+    ("def f(x):\n    return handle_it(x)\n", True),
+    ("def f(x):\n    return compute(x)\n", False),
+])
+def test_bypass_dispatcher_reports_whether_it_applied(src, applies):
+    fn = _fn(src)
+    assert mg.mutate(fn, "bypass_dispatcher") is applies
+    assert ("handle_it(" in _ast.unparse(fn)) is (not applies)
+
+
+@pytest.mark.parametrize("src,applies", [
+    ("def f(x):\n    return x + 1\n", True),
+    ("def f(x):\n    yield x\n", False),
+    ("def f(x):\n    '''doc'''\n    pass\n", False),
+    ("def f(x):\n    '''doc'''\n", False),
+])
+def test_constant_return_skips_generators_and_trivial(src, applies):
+    fn = _fn(src)
+    assert mg.mutate(fn, "constant_return") is applies
+    assert ("return None" in _ast.unparse(fn)) is applies
+
+
+NESTED = "def outer():\n    a = 1\n    def inner():\n        return 2\n    return inner\n"
+
+
+@pytest.mark.parametrize("lines,want", [({4}, ["inner"]), ({2}, ["outer"]), ({2, 4}, ["outer", "inner"])])
+def test_nested_lines_count_only_for_the_innermost(lines, want):
+    got = [f.name for f in mg.functions_touching(_ast.parse(NESTED), lines)]
+    assert sorted(got) == sorted(want)
+
+
+@pytest.mark.parametrize("hunk,want", [("@@ -4,2 +5,0 @@", {5}), ("@@ -1 +7,3 @@", {7, 8, 9}), ("@@ -1 +2 @@", {2})])
+def test_changed_lines_hunks(monkeypatch, hunk, want):
+    monkeypatch.setattr(mg, "git", lambda *a, cwd: f"+++ b/src/a.py\n{hunk}\n")
+    assert mg.changed_lines("B", Path("."), ["src"]) == {"src/a.py": want}
+
+
+@pytest.mark.parametrize("name,kept", [("src/a.py", True), ("src/a.txt", False), ("src/a.pyi", False)])
+def test_changed_lines_only_python(monkeypatch, name, kept):
+    monkeypatch.setattr(mg, "git", lambda *a, cwd: f"+++ b/{name}\n@@ -1 +1 @@\n")
+    assert (name in mg.changed_lines("B", Path("."), ["src"])) is kept
+
+
+@pytest.mark.parametrize("text,hit", [
+    ("# pkg.calc mentioned\ndef test_x():\n    fee\n", True),
+    ("# pkg.calc mentioned\ndef test_x():\n    other\n", False),
+    ("from pkg.calc import something\n", True),
+    ("import pkg.calc\n", True),
+])
+def test_tests_for_needs_name_or_import(tmp_path, text, hit):
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text(text)
+    got = mg.tests_for("src/pkg/calc.py", "fee", tmp_path, ["tests"], ["src"])
+    assert got == (["tests/test_a.py"] if hit else [])
+
+
+@pytest.mark.parametrize("path,want", [("src/pkg/__init__.py", ["pkg"]), ("src/pkg/sub/__init__.py", ["pkg.sub"]), ("src/pkg/m.py", ["pkg.m"])])
+def test_init_is_stripped(tmp_path, path, want):
+    assert mg.module_tokens(path, ["src"], tmp_path) == want
+
+
+@pytest.mark.parametrize("outcomes", [["survived"], ["uncovered", "timeout"], ["killed", "survived"]])
+def test_summary_lists_every_red(tmp_path, monkeypatch, outcomes):
+    rs = [mg.MutantResult(f"src/m{i}.py", f"f{i}", "drop_rule", o) for i, o in enumerate(outcomes)]
+    monkeypatch.setattr(mg, "git", lambda *a, cwd: str(tmp_path) + "\n")
+    monkeypatch.setattr(mg, "mutation_gate", lambda *a: rs)
+    s = tmp_path / "s.md"
+    assert mg.main(["--base", "B", "--src", "src", "--tests", "t", "--summary", str(s)]) == 1
+    text = s.read_text()
+    for r in rs:
+        line = f"`{r.path}::{r.function}`"
+        assert (line in text) is mg.is_red(r.outcome)
+        if mg.is_red(r.outcome):
+            assert f"{r.outcome.upper()}: {line}" in text
+    assert f"red: {sum(mg.is_red(o) for o in outcomes)}" in text
