@@ -6,7 +6,7 @@
  * the user's draft. Values come from the stream / route responses, not from
  * constants in the component, so two different offers render two results.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { BlueprintCard, Floor } from '../App'
 
@@ -152,6 +152,74 @@ describe('Floor golden offer (F-4b)', () => {
     release({ ok: true, source: 'golden', blueprint: { product_name: gname + ' Platform', vertical: 'v_' + gid, capabilities: [], golden_suggestion: null } })
     expect(await screen.findByText(new RegExp(gname + ' Platform'))).toBeInTheDocument()
     expect(acceptGoldenMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Floor golden resolve in-flight lock (F-4c)', () => {
+  beforeEach(() => {
+    for (const m of [chatStreamMock, getMock, getHealthMock, sessionStateMock, acceptGoldenMock, declineGoldenMock, watchBuildMock, approveMock]) {
+      m.mockReset()
+    }
+    sessionStateMock.mockResolvedValue({ chat_history: [] })
+    getHealthMock.mockResolvedValue({ factory_code_cli: { available: true, credentials_file_present: true } })
+    getMock.mockResolvedValue({})
+  })
+
+  // Two clicks dispatched in ONE React batch: `busy` state has not re-rendered
+  // between them, so only an in-flight ref can stop the second request.
+  it.each([
+    ['sess_batch_a', 'Draft Nu', 'g_nu', 'Nu Golden', 'accept'],
+    ['sess_batch_b', 'Draft Xi', 'g_xi', 'Xi Golden', 'decline'],
+  ] as const)('same-batch double submit sends one resolve (%s, first=%s)', async (sid, name, gid, gname, first) => {
+    let release: (v: unknown) => void = () => {}
+    const pending = () => new Promise((r) => { release = r })
+    acceptGoldenMock.mockImplementation(pending)
+    declineGoldenMock.mockImplementation(pending)
+    await renderWithDraft(sid, draftWithOffer(name, gid, gname, 0.7))
+    const a = screen.getByTestId('bp-accept-golden')
+    const d = screen.getByTestId('bp-decline-golden')
+    const [one, two] = first === 'accept' ? [a, d] : [d, a]
+    act(() => {
+      one.click()
+      two.click()
+      one.click()
+    })
+    const firstMock = first === 'accept' ? acceptGoldenMock : declineGoldenMock
+    const otherMock = first === 'accept' ? declineGoldenMock : acceptGoldenMock
+    expect(firstMock).toHaveBeenCalledTimes(1)
+    expect(firstMock).toHaveBeenCalledWith(sid)
+    expect(otherMock).not.toHaveBeenCalled()
+    await act(async () => {
+      release({ ok: true, source: 'drafted', blueprint: { product_name: name, vertical: 'v_' + gid, capabilities: [], golden_suggestion: null } })
+    })
+    await waitFor(() => expect(screen.queryByTestId('bp-golden-offer')).not.toBeInTheDocument())
+  })
+})
+
+describe('Floor golden resolve lock is released (F-4c)', () => {
+  beforeEach(() => {
+    for (const m of [chatStreamMock, getMock, getHealthMock, sessionStateMock, acceptGoldenMock, declineGoldenMock, watchBuildMock, approveMock]) {
+      m.mockReset()
+    }
+    sessionStateMock.mockResolvedValue({ chat_history: [] })
+    getHealthMock.mockResolvedValue({ factory_code_cli: { available: true, credentials_file_present: true } })
+    getMock.mockResolvedValue({})
+  })
+
+  it.each([
+    ['sess_retry_a', '503 try again'],
+    ['sess_retry_b', '409 conflict'],
+  ])('after a failed resolve the user can retry (%s)', async (sid, msg) => {
+    acceptGoldenMock.mockRejectedValueOnce(new Error(msg)).mockResolvedValueOnce({
+      ok: true, source: 'golden', blueprint: { product_name: 'Retry ' + sid, vertical: 'v', capabilities: [], golden_suggestion: null },
+    })
+    await renderWithDraft(sid, draftWithOffer('Draft R', 'g_r', 'R Golden', 0.7))
+    fireEvent.click(screen.getByTestId('bp-accept-golden'))
+    expect(await screen.findByText(new RegExp(msg))).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('bp-accept-golden')).toBeEnabled())
+    fireEvent.click(screen.getByTestId('bp-accept-golden'))
+    await waitFor(() => expect(acceptGoldenMock).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(new RegExp('Retry ' + sid))).toBeInTheDocument()
   })
 })
 
