@@ -237,9 +237,11 @@ def answer_query(
         )
     collection = retrieval_index.tenant_collection(identity)
 
-    covered = kernel_coverage(query, overlays=overlays, resolved=resolved)
+    if resolved is None:
+        resolved = resolve_definitions(overlays=overlays)
+    covered = kernel_coverage(query, resolved=resolved)
     if covered is not None:
-        return _kernel_answer(engine, collection, query, covered)
+        return _kernel_answer(engine, collection, query, covered, resolved=resolved)
 
     labeled = engine.labeled_answer(collection, query, answer_text)
     label = IMPROVISED_LABEL.format(subject=query)
@@ -270,6 +272,7 @@ def _kernel_answer(
     collection: str,
     query: str,
     covered: Dict[str, Any],
+    resolved: Optional[Dict[str, Any]] = None,
 ) -> ProductAnswer:
     """Compute the kernel's number from grounded inputs, or refuse (UNKNOWN).
 
@@ -324,6 +327,32 @@ def _kernel_answer(
             missing_inputs=list(missing),
             unknown=True,
         )
+
+    # K-F1: every declared guard is EVALUATED (safe_eval over the same grounded
+    # inputs) BEFORE the expression. A guard that is false — or that cannot be
+    # evaluated — is an UNKNOWN refusal that names the guard, so a zero divisor
+    # is refused by the definition's own rule, not caught after the fact.
+    # Guards are read from the RESOLVED definition (the set coverage was decided
+    # over), not from the index row, so the index surface stays unwidened.
+    resolved_set = resolved if resolved is not None else resolve_definitions()
+    definition = resolved_set.get(str(covered.get("id") or "")) or {}
+    for guard in [str(g).strip() for g in (definition.get("guards") or []) if str(g).strip()]:
+        try:
+            holds = bool(safe_eval(guard, values))
+        except (MissingInput, UnsafeExpression, ZeroDivisionError, ArithmeticError):
+            holds = False
+        if not holds:
+            refusal = f"unknown: {subject} not computed, guard failed: {guard}"
+            return ProductAnswer(
+                query=query,
+                kind=KIND_KERNEL,
+                text=refusal,
+                improvised=False,
+                label=refusal,
+                kernel=covered,
+                citations=citations,
+                unknown=True,
+            )
 
     try:
         computed = float(safe_eval(expression, values))
