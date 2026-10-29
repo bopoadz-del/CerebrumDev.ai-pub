@@ -30,6 +30,7 @@ from app.factory.build.ledger import BuildLedger, EventKind
 from app.factory.build.level_grade import Level, attach_level_grade
 from app.factory.build_jobs import _authorship, build_status
 from app.factory.product_architect import plan_blueprint, session_domain_from_blueprint
+from app.factory.store_kits import NO_VERTICAL
 from app.main import app
 from fastapi.testclient import TestClient
 from tests.factory.test_level_grade import _full_repo
@@ -834,7 +835,11 @@ def test_session_domain_from_blueprint_prefers_product_id():
     assert session_domain_from_blueprint({"vertical": "residential_lettings"}) == (
         "residential-lettings"
     )
-    assert session_domain_from_blueprint(None) == "construction"
+    # No blueprint -> the NEUTRAL sentinel, never a hardwired vertical.
+    assert session_domain_from_blueprint(None) == NO_VERTICAL
+    assert session_domain_from_blueprint(None) != "construction"
+    # A blueprint that names no vertical/product_id -> the same sentinel.
+    assert session_domain_from_blueprint({}) == NO_VERTICAL
 
 
 def test_lettings_draft_writes_residential_lettings_domain(monkeypatch):
@@ -849,7 +854,8 @@ def test_lettings_draft_writes_residential_lettings_domain(monkeypatch):
     create_session("sess_lettings_domain", "tester")
     state = get_session("sess_lettings_domain")
     assert state is not None
-    assert state.config.domain == "construction"
+    # A fresh session carries the neutral sentinel, not a baked-in vertical.
+    assert state.config.domain == NO_VERTICAL
 
     drafted = client.post(
         "/v1/sessions/sess_lettings_domain/product/draft",
