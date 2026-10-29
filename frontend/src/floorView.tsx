@@ -903,9 +903,13 @@ export function Floor({
   // call the dedicated routes and re-render the blueprint card with the
   // resulting blueprint — accept swaps in the golden, decline keeps the user's
   // draft and clears the offer so the accept/decline card disappears.
+  // F-4c: `busy` is React state, so two clicks in one batch both read the old
+  // value; this ref flips synchronously and blocks the second request.
+  const resolveInFlightRef = useRef(false)
   const resolveGolden = useCallback(
     async (mode: 'accept' | 'decline') => {
-      if (busy || accessPaused) return
+      if (busy || accessPaused || resolveInFlightRef.current) return
+      resolveInFlightRef.current = true
       setBusy(true)
       try {
         const resp =
@@ -941,6 +945,7 @@ export function Floor({
           },
         ])
       } finally {
+        resolveInFlightRef.current = false
         setBusy(false)
       }
     },
