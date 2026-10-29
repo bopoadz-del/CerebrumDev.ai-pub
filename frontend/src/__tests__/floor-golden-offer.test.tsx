@@ -223,6 +223,37 @@ describe('Floor golden resolve lock is released (F-4c)', () => {
   })
 })
 
+describe('Floor golden resolve lock is released after success (F-4c, G2 M11)', () => {
+  beforeEach(() => {
+    for (const m of [chatStreamMock, getMock, getHealthMock, sessionStateMock, acceptGoldenMock, declineGoldenMock, watchBuildMock, approveMock]) {
+      m.mockReset()
+    }
+    sessionStateMock.mockResolvedValue({ chat_history: [] })
+    getHealthMock.mockResolvedValue({ factory_code_cli: { available: true, credentials_file_present: true } })
+    getMock.mockResolvedValue({})
+  })
+
+  // A successful decline that still carries a golden offer leaves the card up;
+  // the next Accept must reach the route, so the lock was released on success.
+  it.each([
+    ['sess_ok_a', 'Draft Pi', 'g_pi', 'Pi Golden'],
+    ['sess_ok_b', 'Draft Rho', 'g_rho', 'Rho Golden'],
+  ])('a successful resolve releases the lock (%s)', async (sid, name, gid, gname) => {
+    const still = draftWithOffer(name, gid, gname, 0.7)
+    declineGoldenMock.mockResolvedValue({ ok: true, source: 'drafted', blueprint: still })
+    acceptGoldenMock.mockResolvedValue({
+      ok: true, source: 'golden', blueprint: { product_name: gname + ' Platform', vertical: 'v_' + gid, capabilities: [], golden_suggestion: null },
+    })
+    await renderWithDraft(sid, still)
+    fireEvent.click(screen.getByTestId('bp-decline-golden'))
+    await waitFor(() => expect(declineGoldenMock).toHaveBeenCalledWith(sid))
+    await waitFor(() => expect(screen.getByTestId('bp-accept-golden')).toBeEnabled())
+    fireEvent.click(screen.getByTestId('bp-accept-golden'))
+    await waitFor(() => expect(acceptGoldenMock).toHaveBeenCalledWith(sid))
+    expect(await screen.findByText(new RegExp(gname + ' Platform'))).toBeInTheDocument()
+  })
+})
+
 describe('Floor header follows the resolved design (F-4b, F6)', () => {
   // product.get returns a real draft design, so the header's design-first
   // name (productDesign.blueprint.product_name) is the draft's until the
