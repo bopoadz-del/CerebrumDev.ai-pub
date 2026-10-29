@@ -10,6 +10,8 @@ origin cannot be established is a Factory fault, never silently the writer's.
 
 from __future__ import annotations
 
+import pytest
+
 import json
 from pathlib import Path
 
@@ -26,6 +28,10 @@ from app.factory.build.n3_store_gate import (
     store_gate_verdict,
 )
 from app.factory.build.store_acceptance import ACCEPTANCE_CHECK_NAMES, factory_rendered_paths
+
+#: F-8c: these tests grade the Store verdict; the product grade gate is
+#: tested in test_product_grade_record.py.
+pytestmark = pytest.mark.usefixtures("green_product_grade")
 
 AUDIT = audit_check_ids()[0]
 
