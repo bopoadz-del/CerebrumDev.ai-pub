@@ -34,11 +34,19 @@ def _layer1_part(result: Optional[Mapping[str, Any]], name: str) -> Dict[str, An
 def _layer2_part(layer2: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     if not isinstance(layer2, Mapping):
         return {"ran": False, "verdicts": [], "open_fails": ["layer 2 did not run"]}
-    verdicts = [dict(v) for v in layer2.get("verdicts") or [] if isinstance(v, Mapping)]
+    verdicts = []
+    for raw in layer2.get("verdicts") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        v = dict(raw)
+        if not isinstance(v.get("evidence"), str):
+            # Not evidence: recorded as none, so the verdict cannot pass on it.
+            v["evidence"] = ""
+        verdicts.append(v)
     fails = [str(q) for q in layer2.get("open_fails") or []]
     for v in verdicts:
         ev = v.get("evidence")
-        ok = v.get("verdict") == PASS and isinstance(ev, str) and bool(ev.strip())
+        ok = v.get("verdict") == PASS and bool(ev.strip())
         q = str(v.get("question") or "")
         if not ok and q not in fails:
             fails.append(q)
@@ -100,7 +108,17 @@ def write_build_grade(
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     (root / GRADE_MD).write_text(render_md(grade), encoding="utf-8")
+    write_grade_json(root, grade)
+    return grade
+
+
+def write_grade_json(root: Path | str, grade: Mapping[str, Any]) -> Path:
+    """Write ``<root>/grade.json`` atomically (tmp + replace). The one writer
+    of the file: the #75 gate and its tests import this, never a copy."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / GRADE_JSON
     tmp = root / (GRADE_JSON + ".tmp")
     tmp.write_text(json.dumps(grade, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(root / GRADE_JSON)
-    return grade
+    tmp.replace(path)
+    return path

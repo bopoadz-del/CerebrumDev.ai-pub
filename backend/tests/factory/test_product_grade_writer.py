@@ -114,3 +114,83 @@ def test_rewrite_replaces_previous_grade(tmp_path, first, second):
     gw.write_build_grade(tmp_path, product_id="p", functions=_fn(ok=first), ui=_ui(), layer2=_l2())
     gw.write_build_grade(tmp_path, product_id="p", functions=_fn(ok=second), ui=_ui(), layer2=_l2())
     assert json.loads((tmp_path / "grade.json").read_text())["certified"] is second
+
+
+# --- G2 #79 repairs: M1 non-string evidence; M2-M8 render_md directly -----
+@pytest.mark.parametrize("ev", [5, ["quote"], {"q": "x"}, None, True, "   "])
+def test_non_string_evidence_is_rejected(ev):
+    g = gw.build_record(product_id="p", functions=_fn(), ui=_ui(),
+                        layer2=_l2({"question": "qx", "verdict": "PASS", "evidence": ev}))
+    assert g["layer2"]["open_fails"] == ["qx"] and g["certified"] is False
+    assert all(isinstance(v["evidence"], str) for v in g["layer2"]["verdicts"])
+
+
+def _md(**kw):
+    args = {"product_id": "p", "functions": _fn(), "ui": _ui(), "layer2": _l2()}
+    args.update(kw)
+    return gw.render_md(gw.build_record(**args))
+
+
+@pytest.mark.parametrize("pid", ["lettings-desk", "site-ops"])
+def test_md_title_names_the_product(pid):
+    assert _md(product_id=pid).splitlines()[0] == f"# GRADE -- {pid}"
+
+
+@pytest.mark.parametrize("kw,cert,l1", [
+    ({}, "YES", "GREEN"),
+    ({"functions": _fn(ok=False)}, "NO", "RED"),
+    ({"ui": _ui(ok=False)}, "NO", "RED"),
+    ({"layer2": _l2(ran=False)}, "NO", "GREEN"),
+])
+def test_md_certified_and_layer1_lines(kw, cert, l1):
+    md = _md(**kw)
+    assert f"**Certified:** {cert} " in md and f"## Layer 1 (deterministic): {l1}" in md
+
+
+@pytest.mark.parametrize("ids", [("a", "b", "c", "d"), ("w", "x", "y", "z", "v")])
+def test_md_lists_every_function_with_mutants(ids):
+    md = _md(functions=_fn(ids=ids))
+    assert f"- Functions graded: {len(ids)} (min 4)" in md
+    for c in ids:
+        assert f"  - `{c}`: PASS; mutants killed constant_return, drop_rule; survived none" in md
+
+
+@pytest.mark.parametrize("ids", [("a", "b", "c", "d"), ("q", "r", "s", "t")])
+def test_md_failing_function_lines(ids):
+    md = _md(functions=_fn(ok=False, ids=ids))
+    for c in ids:
+        assert f"  - `{c}`: FAIL; mutants killed none; survived drop_rule" in md and f"  - FAIL: {c}" in md
+
+
+@pytest.mark.parametrize("names,ok,want", [(("load:/", "route:/a"), True, "2/2"), (("load:/", "s:1", "s:2"), False, "0/3")])
+def test_md_ui_step_count(names, ok, want):
+    md = _md(ui=_ui(ok=ok, names=names))
+    assert f"- UI steps passed: {want}" in md
+    assert all((f"  - FAIL: {n}" in md) is (not ok) for n in names)
+
+
+@pytest.mark.parametrize("ran,word", [(True, "ran"), (False, "did not run")])
+def test_md_layer2_header(ran, word):
+    assert f"## Layer 2 (separate grader context): {word}\n" in _md(layer2=_l2(ran=ran))
+
+
+@pytest.mark.parametrize("verdict,ev", [("PASS", EV), ("FAIL", "button missing")])
+def test_md_verdict_line_and_open(verdict, ev):
+    md = _md(layer2=_l2({"question": "does it list rents", "verdict": verdict, "evidence": ev}))
+    assert f'- {verdict}: does it list rents -- evidence: "{ev}"' in md
+    assert ("- OPEN: does it list rents" in md) is (verdict != "PASS")
+    assert ("## Next tasks\n- re-run writer on: does it list rents" in md) is (verdict != "PASS")
+
+
+@pytest.mark.parametrize("missing", ["functions", "ui"])
+def test_md_skipped_grader_is_shown_red(missing):
+    md = _md(**{missing: None})
+    assert "## Layer 1 (deterministic): RED" in md and f"  - FAIL: {'function' if missing == 'functions' else 'ui'} grader did not run" in md
+
+
+@pytest.mark.parametrize("pid", ["a1", "b2"])
+def test_write_grade_json_roundtrips_and_is_atomic(tmp_path, pid):
+    g = gw.build_record(product_id=pid, functions=_fn(), ui=_ui(), layer2=_l2())
+    p = gw.write_grade_json(tmp_path / "out", g)
+    assert p == tmp_path / "out" / "grade.json" and json.loads(p.read_text()) == g
+    assert not (tmp_path / "out" / "grade.json.tmp").exists()
