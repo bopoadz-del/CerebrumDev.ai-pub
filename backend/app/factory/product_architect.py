@@ -487,7 +487,6 @@ def draft_blueprint_from_brief(
     brief: str,
     *,
     vertical_hint: Optional[str] = None,
-    use_goldens: bool = False,
     use_llm: Optional[bool] = None,
 ) -> ProductBlueprint:
     """Draft a ProductBlueprint and stamp the honest inventory declaration.
@@ -499,21 +498,23 @@ def draft_blueprint_from_brief(
     must see "the Store has no domain kit for this" before approving, never
     after.
 
-    A matching golden is OFFERED, not swapped in. When ``use_goldens`` is on
-    (it defaults OFF), a golden is chosen by STRUCTURE only (``golden_match``:
-    the draft's capability ids, vertical and hint against each golden's
-    declared structure) and attached as a labelled accept/decline SUGGESTION
-    on ``blueprint.golden_suggestion`` — the user's draft stays the base.
+    A matching golden is OFFERED, not swapped in. A golden is chosen by
+    STRUCTURE only (``golden_match``: the draft's capability ids, vertical and
+    hint against each golden's declared structure) and, whenever its overlap
+    clears the kernel threshold (``golden_match.min_overlap``), is ALWAYS
+    attached as a labelled accept/decline SUGGESTION on
+    ``blueprint.golden_suggestion`` — the user's draft stays the base. Below
+    the threshold (or on a tie / no match) the suggestion is None. There is no
+    on/off flag: a structural match that clears the threshold is always offered.
     """
     bp = _draft_blueprint_from_brief_inner(
         brief,
         vertical_hint=vertical_hint,
         use_llm=use_llm,
     )
-    if use_goldens:
-        suggestion = _golden_suggestion_for_draft(bp, vertical_hint)
-        if suggestion is not None:
-            bp.golden_suggestion = suggestion
+    suggestion = _golden_suggestion_for_draft(bp, vertical_hint)
+    if suggestion is not None:
+        bp.golden_suggestion = suggestion
     from app.factory.inventory import inventory_drafting_note
 
     note = inventory_drafting_note(str(getattr(bp, "vertical", "") or ""))

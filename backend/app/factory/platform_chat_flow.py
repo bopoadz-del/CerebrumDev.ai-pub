@@ -431,8 +431,9 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
         "source": source,
         "drafting_mode": bp.drafting_mode,
         "drafting_note": bp.drafting_note,
-        # A matching golden rides here as a labelled accept/decline offer when
-        # use_goldens is on; it is never substituted for the user's draft.
+        # A matching golden rides here as a labelled accept/decline offer
+        # whenever its overlap clears the kernel threshold; it is never
+        # substituted for the user's draft.
         "golden_suggestion": bp.golden_suggestion,
         "blueprint": pd.blueprint,
         "yaml": blueprint_to_yaml(bp),
