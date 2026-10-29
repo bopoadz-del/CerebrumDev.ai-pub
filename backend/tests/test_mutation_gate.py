@@ -93,3 +93,9 @@ def test_untested_function_is_red(tmp_path, tests):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "o"], cwd=repo, check=True)
     res = mg.mutation_gate(repo, "HEAD~2", ["src"], ["tests"], ".", [])
     assert any(r.function == "lonely" and r.outcome == "uncovered" for r in res)
+
+
+@pytest.mark.parametrize("root,want", [("src", "pkg.calc"), ("src/pkg", "pkg.calc")])
+def test_module_token_follows_package_root(tmp_path, root, want):
+    repo = _repo(tmp_path, STRONG)
+    assert mg.module_tokens("src/pkg/calc.py", [root], repo) == [want]

@@ -115,14 +115,16 @@ def mutate(fn: ast.FunctionDef, kind: str) -> bool:
     return False
 
 
-def module_tokens(path: str, src_roots: Sequence[str]) -> List[str]:
+def module_tokens(path: str, src_roots: Sequence[str], repo: Optional[Path] = None) -> List[str]:
     p = Path(path)
     prefix: List[str] = []
     for root in src_roots:
         try:
             rel = p.relative_to(root)
             # The import name starts at the root's own package: backend/app/x.py -> app.x
-            prefix = [Path(root).name]
+            # ...only when the root is itself a package (src/ layouts are not).
+            if ((repo or Path.cwd()) / root / "__init__.py").is_file():
+                prefix = [Path(root).name]
             break
         except ValueError:
             continue
@@ -135,7 +137,7 @@ def module_tokens(path: str, src_roots: Sequence[str]) -> List[str]:
 
 
 def tests_for(path: str, fn_name: str, repo: Path, test_roots: Sequence[str], src_roots: Sequence[str]) -> List[str]:
-    toks = module_tokens(path, src_roots)
+    toks = module_tokens(path, src_roots, repo)
     hits = []
     for root in test_roots:
         for t in sorted((repo / root).rglob("test_*.py")):
