@@ -77,3 +77,78 @@ def test_run_with_report_is_parsed(tmp_path):
 def test_fixtures_come_from_blueprint(tmp_path, bp):
     fx = ug.write_fixtures(bp, tmp_path)
     assert bp["product_name"].encode() in fx["pdf"].read_bytes()
+
+
+# --- G2 survivors M1-M7 ---------------------------------------------------
+
+@pytest.mark.parametrize("statuses,expected", [
+    (["passed", "passed"], True),
+    (["passed", "failed"], False),   # M1: any() would pass this
+    (["failed", "passed"], False),
+    ([], False),                     # M2: empty results never pass
+])
+def test_step_passed_needs_every_result(statuses, expected):
+    assert ug.step_passed([{"status": x} for x in statuses]) is expected
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_report_with_mixed_retries_or_empty_step_fails(bp):
+    names = [s.name for s in ug.ui_plan(bp)]
+    rep = _report(names)
+    specs = rep["suites"][0]["specs"]
+    specs[0]["tests"][0]["results"].append({"status": "failed"})
+    specs[1]["tests"][0]["results"] = []
+    g = ug.parse_report(rep, bp)
+    assert g.failing == [names[0], names[1]]
+
+
+@pytest.mark.parametrize("status,honest", [(422, True), (503, True), (200, False), (500, False)])
+def test_honest_error_never_accepts_200(status, honest):  # M3
+    assert (status in ug.HONEST_ERROR_STATUSES) is honest
+    assert f"expect({list(ug.HONEST_ERROR_STATUSES)}".replace(" ", "") in ug.KIND_JS["honest_error"].replace(" ", "")
+
+
+@pytest.mark.parametrize("exc", [OSError("boom"), TimeoutError("slow"), RuntimeError("x")])
+def test_run_exception_is_a_recorded_fail(tmp_path, exc):  # M4
+    def boom(*a, **k):
+        raise exc
+
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://x", run=boom)
+    assert not g.ok and any(type(exc).__name__ in e for e in g.errors)
+
+
+@pytest.mark.parametrize("kind,needle", [
+    ("route", "toBe(200)"),                 # M5
+    ("load", "toBe(200)"),
+    ("screen", "toBe(200)"),
+    ("screen", "expect(errs).toEqual([])"),  # M6
+    ("load", "expect(errs).toEqual([])"),
+])
+def test_kind_assertions(kind, needle):
+    assert needle in ug.KIND_JS[kind]
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_spec_has_a_body_for_every_planned_kind(bp):
+    spec = ug.render_spec(bp)
+    for kind in {s.kind for s in ug.ui_plan(bp)}:
+        assert f'(s.kind === "{kind}")' in spec
+        assert ug.KIND_JS[kind].splitlines()[0] in spec
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_xlsx_fixture_rows_come_from_blueprint(tmp_path, bp):  # M7
+    from openpyxl import load_workbook
+
+    ws = load_workbook(ug.write_fixtures(bp, tmp_path)["xlsx"]).active
+    rows = [r for r in ws.iter_rows(values_only=True)][1:]
+    assert [r[0] for r in rows] == [c["id"] for c in bp["capabilities"]]
+    assert [r[1] for r in rows] == [c["description"] for c in bp["capabilities"]]
+    assert ws.title == ug._slug(bp["product_id"])
+
+
+def test_two_blueprints_two_xlsx(tmp_path):
+    from openpyxl import load_workbook
+
+    a, b = (load_workbook(ug.write_fixtures(bp, tmp_path / str(i))["xlsx"]).active for i, bp in enumerate(BPS))
+    assert list(a.iter_rows(values_only=True)) != list(b.iter_rows(values_only=True))

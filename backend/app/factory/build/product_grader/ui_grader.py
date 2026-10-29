@@ -117,6 +117,7 @@ def write_fixtures(blueprint: Mapping[str, Any], dest: Path) -> Dict[str, Path]:
 
     wb = Workbook()
     ws = wb.active
+    ws.title = _slug(blueprint.get("product_id") or "product")[:31] or "product"
     ws.append(["capability", "description", "quantity"])
     for i, c in enumerate(caps, 1):
         ws.append([str(c.get("id")), str(c.get("description") or "")[:200], i * 3])
@@ -125,12 +126,52 @@ def write_fixtures(blueprint: Mapping[str, Any], dest: Path) -> Dict[str, Path]:
     return {"pdf": pdf, "xlsx": xlsx}
 
 
+#: An invalid request must be answered honestly. A 200 is never honest.
+HONEST_ERROR_STATUSES = (422, 503)
+
+#: Per-kind Playwright body. Kept as data so every kind's assertion is
+#: inspectable (and testable) on its own.
+_PAGE_OK = (
+    "const r = await page.goto(s.target); expect(r?.status()).toBe(200);\n"
+    "await page.waitForLoadState('networkidle'); expect(errs).toEqual([]);"
+)
+KIND_JS: Dict[str, str] = {
+    "load": _PAGE_OK,
+    "screen": _PAGE_OK,
+    "route": "const r = await request.get(s.target); expect(r.status()).toBe(200);",
+    "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
+    "attach_pdf": (
+        "await page.getByRole('button', { name: '+' }).first().click();\n"
+        "await page.locator('input[type=file]').first().setInputFiles(process.env.GRADE_FIXTURES + '/' + s.target);"
+    ),
+    "parsed": "await expect(page.getByText(/parsed/i).first()).toBeVisible({ timeout: 60000 });",
+    "cited_answer": (
+        "const box = page.getByRole('textbox').first(); await box.fill(QUESTION); await box.press('Enter');\n"
+        "await expect(page.getByText(/\\[\\d+\\]|source|citation/i).first()).toBeVisible({ timeout: 90000 });\n"
+        "await expect(page.getByText(/\\d/).last()).toBeVisible();"
+    ),
+    "honest_error": (
+        "const r = await request.post(s.target, { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
+        f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}).toContain(r.status());"
+    ),
+}
+KIND_JS["attach_xlsx"] = KIND_JS["attach_pdf"]
+
+
 def render_spec(blueprint: Mapping[str, Any]) -> str:
-    """The Playwright test file. One ``test`` per plan step, titled by name."""
-    plan = [s.__dict__ for s in ui_plan(blueprint)]
+    """The Playwright test file. One ``test`` per plan step, titled by name.
+    A step whose kind has no body is a hard error, never an empty pass."""
+    plan = ui_plan(blueprint)
+    missing = sorted({s.kind for s in plan} - set(KIND_JS))
+    if missing:
+        raise ValueError(f"no UI assertion for step kinds: {missing}")
+    branches = "".join(
+        f"    {'if' if i == 0 else '} else if'} (s.kind === {json.dumps(k)}) {{\n      {body.replace(chr(10), chr(10) + '      ')}\n"
+        for i, (k, body) in enumerate(KIND_JS.items())
+    )
     return (
         "import { test, expect } from '@playwright/test';\n"
-        f"const PLAN = {json.dumps(plan)};\n"
+        f"const PLAN = {json.dumps([s.__dict__ for s in plan])};\n"
         f"const QUESTION = {json.dumps(_question(blueprint))};\n"
         "const errs: string[] = [];\n"
         "test.describe.configure({ mode: 'serial' });\n"
@@ -141,30 +182,16 @@ def render_spec(blueprint: Mapping[str, Any]) -> str:
         "for (const s of PLAN) {\n"
         "  test(s.name, async ({ request }) => {\n"
         "    errs.length = 0;\n"
-        "    if (s.kind === 'load' || s.kind === 'screen') {\n"
-        "      const r = await page.goto(s.target); expect(r?.status()).toBe(200);\n"
-        "      await page.waitForLoadState('networkidle'); expect(errs).toEqual([]);\n"
-        "    } else if (s.kind === 'route') {\n"
-        "      const r = await request.get(s.target); expect(r.status()).toBe(200);\n"
-        "    } else if (s.kind === 'bind') {\n"
-        "      await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();\n"
-        "    } else if (s.kind === 'attach_pdf' || s.kind === 'attach_xlsx') {\n"
-        "      await page.getByRole('button', { name: '+' }).first().click();\n"
-        "      await page.locator('input[type=file]').first().setInputFiles(process.env.GRADE_FIXTURES + '/' + s.target);\n"
-        "    } else if (s.kind === 'parsed') {\n"
-        "      await expect(page.getByText(/parsed/i).first()).toBeVisible({ timeout: 60000 });\n"
-        "    } else if (s.kind === 'cited_answer') {\n"
-        "      const box = page.getByRole('textbox').first(); await box.fill(QUESTION); await box.press('Enter');\n"
-        "      const ans = page.getByText(/\\[\\d+\\]|source|citation/i).first();\n"
-        "      await expect(ans).toBeVisible({ timeout: 90000 });\n"
-        "      await expect(page.getByText(/\\d/).last()).toBeVisible();\n"
-        "    } else if (s.kind === 'honest_error') {\n"
-        "      const r = await request.post(s.target, { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
-        "      expect([422, 503]).toContain(r.status());\n"
-        "    }\n"
+        + branches +
+        "    } else { throw new Error('no assertion for ' + s.kind); }\n"
         "  });\n"
         "}\n"
     )
+
+
+def step_passed(results: List[Mapping[str, Any]]) -> bool:
+    """A step passes only if it produced results and EVERY result passed."""
+    return bool(results) and all(r.get("status") == "passed" for r in results)
 
 
 def parse_report(report: Mapping[str, Any], blueprint: Mapping[str, Any]) -> UiGrade:
@@ -175,7 +202,7 @@ def parse_report(report: Mapping[str, Any], blueprint: Mapping[str, Any]) -> UiG
     def walk(suite: Mapping[str, Any]) -> None:
         for spec in suite.get("specs") or []:
             results = [r for t in spec.get("tests") or [] for r in t.get("results") or []]
-            seen[str(spec.get("title"))] = bool(results) and all(r.get("status") == "passed" for r in results)
+            seen[str(spec.get("title"))] = step_passed(results)
         for child in suite.get("suites") or []:
             walk(child)
 
