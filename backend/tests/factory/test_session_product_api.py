@@ -43,32 +43,38 @@ def _confirm_level(session_id: str, level: str) -> None:
     update_session(session_id, state)
 
 
-def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub_coder):
-    """The TEMPLATE path's golden flow (provenance.json, kernel ActionOutcome
-    actions, command_center.tsx) -- all template-only artifacts.
+def test_session_product_steward_golden_offer_flow(client, monkeypatch, tmp_path, stub_coder):
+    """H1 (F-4): a golden is OFFERED, never auto-substituted.
 
-    Pinned to that engine. Note for the next reader: before pinning, this
-    test PASSED locally and failed in CI, because a stale output directory
-    from an earlier template-era run still satisfied the assertions on a
-    developer machine while a fresh CI container told the truth. The runner
-    path's session contract is covered by test_production_uses_the_runner.py
-    and the build-status endpoint test below.
+    The draft stays the user's OWN ("estate"); the matching "projectsix"
+    steward golden is surfaced as an accept/decline suggestion, not swapped
+    in. When the user ACCEPTS the offer, the TEMPLATE path builds that golden
+    (provenance.json, kernel ActionOutcome actions, command_center.tsx -- all
+    template-only artifacts).
+
+    Pinned to the template engine. Note for the next reader: before pinning,
+    this test PASSED locally and failed in CI, because a stale output
+    directory from an earlier template-era run still satisfied the assertions
+    on a developer machine while a fresh CI container told the truth. The
+    runner path's session contract is covered by
+    test_production_uses_the_runner.py and the build-status endpoint test
+    below.
     """
     monkeypatch.setenv("FACTORY_BUILD_ENGINE", "template")
     # Pin the stage-resume blueprint cache OFF. It is ON by default (owner
     # option B); a cached blueprint for this brief -- from an earlier run or an
     # earlier test in the same suite writing the shared on-disk cache -- would be
-    # served verbatim and skip the golden selection this flow asserts, yielding a
-    # fresh "estate" draft instead of the "projectsix" golden. The cache has its
-    # own tests; here we isolate golden selection so it is deterministic.
+    # served verbatim. The cache has its own tests; here we isolate the draft so
+    # it is deterministic.
     monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
-    # Goldens are chosen by structural overlap, not words. The deterministic
-    # draft shares only its vertical with the golden, so this flow lowers
-    # the configured threshold to let that unique overlap select it.
+    # Goldens are offered by structural overlap, not words. The deterministic
+    # draft shares only its vertical with the golden, so this flow lowers the
+    # configured threshold to let that unique overlap surface the offer.
     monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
     create_session("sess_product_1", DEV_LOCAL_TENANT)
     out = tmp_path / "gen"
-    # draft
+    # draft -- the base output is the user's OWN draft (vertical "estate" ->
+    # product_id "estate"); the golden is NEVER substituted for it (H1).
     r = client.post(
         "/v1/sessions/sess_product_1/product/draft",
         json={
@@ -79,8 +85,34 @@ def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
-    assert body["blueprint"]["product_id"] == "projectsix"
-    assert body["source"] == "golden"
+    assert body["blueprint"]["product_id"] == "estate", (
+        "the draft stays the user's own; a golden is offered, never swapped in"
+    )
+    assert body["source"] == "drafted"
+    assert body["blueprint"].get("drafting_mode") != "golden"
+    # The /product/draft RESPONSE surfaces the offer to the user -- this is the
+    # only path the user sees it on. Pin it here: above the (lowered) threshold
+    # the "projectsix" golden rides on body["golden_suggestion"] as a labelled
+    # accept/decline offer, while the base above stays the user's "estate"
+    # draft. Dropping the key from draft_from_chat (or setting it None) reddens
+    # these asserts.
+    sug = body["golden_suggestion"]
+    assert sug is not None, "the matching golden must be offered on the draft response"
+    assert sug["golden_id"] == "projectsix"
+    assert sug["drafting_mode"] == "golden"
+    assert "accept" in sug["label"].lower() and "decline" in sug["label"].lower()
+
+    # The user ACCEPTS the offer THROUGH the real route (not test-side code):
+    # POST /product/draft/accept-golden resolves the offered "projectsix"
+    # golden via _golden_for_draft and writes it to the session, so
+    # plan/approve/build run on the accepted golden.
+    r = client.post("/v1/sessions/sess_product_1/product/draft/accept-golden")
+    assert r.status_code == 200, r.text
+    acc = r.json()
+    assert acc["ok"] is True
+    assert acc["source"] == "golden"
+    assert acc["blueprint"]["product_id"] == "projectsix"
+    assert acc["blueprint"]["drafting_mode"] == "golden"
 
     r = client.post("/v1/sessions/sess_product_1/product/plan")
     assert r.status_code == 200, r.text
@@ -121,6 +153,188 @@ def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub
     assert st.status_code == 200
     assert st.json()["blueprint_approved"] is True
     assert st.json()["generation"]["inputs_hash"]
+
+
+def test_product_draft_response_omits_golden_below_threshold(client, monkeypatch):
+    """Below the overlap threshold the /product/draft response carries NO offer.
+
+    The companion to the steward offer flow: with the threshold raised so no
+    golden's structural overlap clears it, body["golden_suggestion"] is None and
+    the base is still the user's own draft. A threshold mutant (always-suggest)
+    reddens the `is None` assert here, on the user-facing response path.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.99")
+    create_session("sess_product_below", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_product_below/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["source"] == "drafted"
+    assert body["blueprint"]["product_id"] == "estate"
+    assert body["golden_suggestion"] is None
+
+
+def test_accept_golden_refuses_when_none_offered(client, monkeypatch):
+    """The accept route refuses honestly (409) when no golden was offered.
+
+    The companion to the steward accept path: with the threshold raised so no
+    golden clears it, POST /product/draft/accept-golden returns 409 rather than
+    forcing an unoffered golden onto the session. An "always accept" mutant
+    (resolve and write regardless) reddens this.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.99")
+    create_session("sess_product_nogold", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_product_nogold/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["golden_suggestion"] is None
+    r = client.post("/v1/sessions/sess_product_nogold/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
+
+
+def test_accept_golden_vs_decline_two_different_outcomes(client, monkeypatch):
+    """Two inputs (accept vs decline) -> two different outcomes (H1, F-4).
+
+    One session drafts (threshold lowered so the structural overlap surfaces
+    the "projectsix" steward golden as an OFFER) and ACCEPTS: its blueprint
+    becomes the golden. A second session drafts the same brief and DECLINES:
+    its blueprint stays the user's own "estate" draft and the pending offer is
+    cleared. Neither path re-matches a golden the user was never shown.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
+
+    # --- ACCEPT ---------------------------------------------------------
+    create_session("sess_accept_golden", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_accept_golden/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["blueprint"]["product_id"] == "estate"
+    assert body["golden_suggestion"] is not None
+    assert body["golden_suggestion"]["golden_id"] == "projectsix"
+
+    # Seed the OPPOSITE of what accept must produce and PERSIST it, so a stale
+    # value is what a real (disk) reload returns if accept fails to reset a
+    # field or to write at all. These are exactly the states accept overwrites.
+    import app.core.session_store as _ss
+
+    _seed = get_session("sess_accept_golden")
+    _seed.product_design.blueprint_approved = True
+    _seed.product_design.plan = {"product_id": "stale-plan"}
+    _seed.config.domain = "__before_accept__"
+    update_session("sess_accept_golden", _seed)
+
+    r = client.post("/v1/sessions/sess_accept_golden/product/draft/accept-golden")
+    assert r.status_code == 200, r.text
+    acc = r.json()
+    assert acc["source"] == "golden"
+    assert acc["blueprint"]["product_id"] == "projectsix"
+    assert acc["blueprint"]["drafting_mode"] == "golden"
+
+    # PERSISTENCE: evict the in-memory copy so the reload comes from the DISK
+    # snapshot update_session wrote -- not the object the route mutated in
+    # place. Dropping update_session (the "route writes nothing" mutant) then
+    # leaves the seeded stale state on disk and reddens every assert below.
+    _ss._session_store.pop("sess_accept_golden", None)
+    state2 = get_session("sess_accept_golden")
+    assert state2 is not None
+    assert state2.product_design.blueprint["product_id"] == "projectsix"
+    # Accept resets the downstream stages (reddens the drop-reset mutants: the
+    # seeded True / stale-plan would otherwise survive on disk) and sets the
+    # domain from the accepted golden, not the seeded sentinel.
+    assert state2.product_design.blueprint_approved is False
+    assert state2.product_design.plan is None
+    assert state2.config.domain and state2.config.domain != "__before_accept__"
+
+    # --- DECLINE --------------------------------------------------------
+    create_session("sess_decline_golden", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_decline_golden/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["golden_suggestion"] is not None
+
+    r = client.post("/v1/sessions/sess_decline_golden/product/draft/decline-golden")
+    assert r.status_code == 200, r.text
+    dec = r.json()
+    assert dec["source"] == "drafted"
+    # The user's own draft, UNCHANGED, with the offer cleared.
+    assert dec["blueprint"]["product_id"] == "estate"
+    assert dec["blueprint"]["golden_suggestion"] is None
+
+    # Evict so the reload reads the DISK snapshot decline wrote -- not the
+    # in-place-mutated object. Dropping decline's update_session (the D2 mutant)
+    # then leaves the offer on disk and reddens the golden_suggestion assert.
+    _ss._session_store.pop("sess_decline_golden", None)
+    state3 = get_session("sess_decline_golden")
+    assert state3 is not None
+    assert state3.product_design.blueprint["product_id"] == "estate"
+    assert state3.product_design.blueprint["golden_suggestion"] is None
+
+
+def test_accept_golden_refuses_an_offer_that_no_longer_resolves(client, monkeypatch):
+    """Accept resolves the PENDING offer, never a free re-match (H1, F-4).
+
+    If the stored offer names a golden that is not the one the draft
+    structurally resolves to, the accept refuses (409) rather than silently
+    accepting a golden the user was never shown. An "accept ignores the
+    suggested id" mutant reddens this.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
+    create_session("sess_offer_mismatch", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_offer_mismatch/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["golden_suggestion"]["golden_id"] == "projectsix"
+
+    # Tamper the STORED offer so its golden_id no longer matches what the draft
+    # resolves to; the accept must refuse rather than swap in the resolved one.
+    state = get_session("sess_offer_mismatch")
+    assert state is not None
+    state.product_design.blueprint["golden_suggestion"]["golden_id"] = "not-the-offer"
+    update_session("sess_offer_mismatch", state)
+
+    r = client.post("/v1/sessions/sess_offer_mismatch/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
+
+
+def test_accept_and_decline_golden_require_a_draft(client, monkeypatch):
+    """Both resolve routes 409 when there is no draft to resolve an offer for."""
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    create_session("sess_nodraft_golden", DEV_LOCAL_TENANT)
+    r = client.post("/v1/sessions/sess_nodraft_golden/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
+    r = client.post("/v1/sessions/sess_nodraft_golden/product/draft/decline-golden")
+    assert r.status_code == 409, r.text
 
 
 def test_generate_requires_approval(client):
@@ -468,3 +682,43 @@ def test_building_is_never_downloadable_even_as_is(client, tmp_path):
 
     pkg = client.get("/v1/sessions/sess_asis_building/product/package?as_is=1")
     assert pkg.status_code == 409, pkg.text
+
+
+def test_accept_golden_absent_offer_guard_on_its_own(client, monkeypatch):
+    """The absent-offer 409 guard, pinned on its own (G2 note on #58).
+
+    Same brief, same lowered threshold, so the resolver DOES resolve the
+    golden in both halves (a matching id) — the mismatch guard cannot fire.
+    Two inputs: offer stored -> accept is 200; the same draft with its stored
+    offer cleared -> 409 and the user's draft is left untouched. Removing or
+    neutralising the absent-offer guard (treating "no offer" as "accept
+    whatever resolves") reddens the second half.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
+    results = {}
+    for sid, keep_offer in (("sess_guard_offer", True), ("sess_guard_nooffer", False)):
+        create_session(sid, DEV_LOCAL_TENANT)
+        r = client.post(
+            f"/v1/sessions/{sid}/product/draft",
+            json={
+                "brief": "Generate Projectsix private estate operations",
+                "vertical_hint": "estate",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["golden_suggestion"]["golden_id"] == "projectsix"
+        if not keep_offer:
+            state = get_session(sid)
+            assert state is not None
+            state.product_design.blueprint["golden_suggestion"] = None
+            update_session(sid, state)
+        results[keep_offer] = client.post(f"/v1/sessions/{sid}/product/draft/accept-golden")
+
+    assert results[True].status_code == 200, results[True].text
+    assert results[True].json()["blueprint"]["product_id"] == "projectsix"
+    assert results[False].status_code == 409, results[False].text
+    assert "no golden was offered" in results[False].json()["detail"]
+    after = get_session("sess_guard_nooffer")
+    assert after is not None
+    assert after.product_design.blueprint["product_id"] == "estate"
