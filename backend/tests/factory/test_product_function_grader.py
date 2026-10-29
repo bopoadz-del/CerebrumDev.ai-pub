@@ -260,3 +260,25 @@ def test_nonzero_returncode_fails_even_with_a_result(tmp_path, monkeypatch, rc, 
     r = fg.run_function(fn, ws)
     assert r.ok is ok
     assert (f"rc={rc}" in r.detail) is (not ok)
+
+
+# --- G2 5809bb8 exact gaps: F20 a raised floor is honoured; R5 exit on the
+# drop_rule input is a KILL of that mutant, not a grader exit --------------
+@pytest.mark.parametrize("asked,n,ok", [(5, 5, True), (6, 5, False), (5, 4, False)])
+def test_grade_functions_honours_a_raised_min(tmp_path, asked, n, ok):  # F20
+    ids = BLUEPRINTS[1][:n]
+    g = fg.grade_functions(_bp(ids), _workspace(tmp_path, {i: READS_INPUT for i in ids}), min_functions=asked)
+    assert g.ok is ok and g.to_dict()["min_functions"] == asked
+
+
+EXIT_ON_EMPTY = [
+    "import sys\ndef handle(payload):\n    if not payload:\n        sys.exit(0)\n    return sorted(payload.items())\n",
+    "def handle(payload):\n    if not payload:\n        raise SystemExit(4)\n    return sorted(payload.items())\n",
+]
+
+
+@pytest.mark.parametrize("body", EXIT_ON_EMPTY)
+def test_exit_only_on_the_drop_rule_input_still_grades(tmp_path, body):  # R5
+    ws = _workspace(tmp_path, {"cap": body})
+    (r,) = [fg.run_function(f, ws) for f in fg.derive_functions(_bp(["cap"]), ws)]
+    assert r.ok is True and r.detail == "" and "drop_rule" in r.mutants_killed
