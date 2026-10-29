@@ -20,7 +20,6 @@ import json
 import re
 import shutil
 import subprocess
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
