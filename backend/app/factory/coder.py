@@ -1561,14 +1561,12 @@ Rules:
   action= as a keyword. execute() with action=None is
   'Unknown action: None'. That miss is reuse/accept miss: HALT before
   TESTER. Harvest formula_executor, vector_search (and other bound Store
-  blocks) from vendored block.json or the factory Store map. Photographed roster:
-  patient_records_management, appointment_scheduling,
-  prescription_management, billing_and_invoicing,
-  client_communication_portal.
+  blocks) from vendored block.json or the factory Store map. The capability
+  roster is the one in the user message (BLUEPRINT FEW-SHOT) — never a
+  roster from another product.
 - PRODUCT test_every_capability_route_accepts_payload then POSTs that
   same schema sample and runs bound blocks. A capability that binds
-  workflow + event_bus (appointment_scheduling / appointment_booking /
-  automated_reminders / reminders_notifications style) must prepare EACH
+  workflow + event_bus (whichever blueprint capabilities do) must prepare EACH
   event_bus step including Store step_0, step_1 and step_2+
   (block=event_bus, action=publish, topic, payload dict, message,
   channel=mcp, tool=event_bus). Do not set step input to payload.
@@ -1599,6 +1597,34 @@ Rules:
 """
 
 
+def blueprint_few_shot(capabilities: List[str], product_name: str, vertical: str) -> str:
+    """F-9b: the few-shot is GENERATED from the current blueprint's capability
+    ids — the roster and the worked example name this product's capabilities,
+    never a roster photographed from another build."""
+    known = [str(c).strip() for c in capabilities if str(c).strip()]
+    if not known:
+        raise CoderError("blueprint few-shot needs at least one capability id")
+    example = known[0]
+    entity = example.split("_")[0] if "_" in example else example
+    shot = {
+        "specs": {example: {"entity": entity, "fields": [
+            {"name": f"{entity}_id", "type": "str", "required": True},
+            {"name": "status", "type": "str", "required": True,
+             "allowed_values": ["open", "in_progress", "closed"]},
+        ]}},
+        "handlers": {example: (
+            "out = execute(BLOCK_IDS[0], action=BLOCK_DEFAULT_ACTIONS[BLOCK_IDS[0]], "
+            "input=payload)\nreturn {'ok': True, 'capability': CAPABILITY_ID, 'result': out}"
+        )},
+    }
+    return (
+        f"BLUEPRINT FEW-SHOT ({product_name}, vertical {vertical}):\n"
+        f"Roster (exactly these ids): {', '.join(known)}\n"
+        f"Worked example for {example} (shape only; derive fields from the brief):\n"
+        f"{json.dumps(shot, indent=2)}"
+    )
+
+
 def generate_from_compiled_brief(
     *,
     brief: str,
@@ -1611,6 +1637,7 @@ def generate_from_compiled_brief(
     user = (
         f"Platform: {product_name} (vertical: {vertical})\n"
         f"Capability ids you must cover: {known!r}\n\n"
+        f"{blueprint_few_shot(known, product_name, vertical)}\n\n"
         "COMPILED BRIEF:\n"
         f"{brief}\n\n"
         "Return the specs+handlers JSON now."
