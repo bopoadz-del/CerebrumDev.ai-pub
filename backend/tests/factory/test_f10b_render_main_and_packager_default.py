@@ -79,6 +79,33 @@ def test_excluded_vertical_mounts_no_ingestion_and_installs_no_engine(monkeypatc
     assert "install_default_engine" not in text
 
 
+def _include_router_args(tree: ast.AST) -> List[str]:
+    """Names passed to every ``app.include_router(<Name>)`` call in the rendered main."""
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "include_router"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "app"
+        ):
+            out.extend(a.id for a in node.args if isinstance(a, ast.Name))
+    return out
+
+
+@pytest.mark.parametrize("vertical", ["vert_one", "vert_two"])
+def test_non_excluded_vertical_calls_include_router_with_product_ingestion_router(monkeypatch, vertical):
+    tree = ast.parse(_render(monkeypatch, excluded=False, vertical=vertical))
+    assert _include_router_args(tree).count("product_ingestion_router") == 1
+
+
+@pytest.mark.parametrize("vertical", ["vert_one", "vert_two"])
+def test_excluded_vertical_never_calls_include_router_with_product_ingestion_router(monkeypatch, vertical):
+    tree = ast.parse(_render(monkeypatch, excluded=True, vertical=vertical))
+    assert "product_ingestion_router" not in _include_router_args(tree)
+
+
 # ── product_router surface ─────────────────────────────────────────────────
 
 def _paths(r) -> Dict[str, set]:
