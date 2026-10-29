@@ -487,19 +487,23 @@ def draft_blueprint_from_brief(
     brief: str,
     *,
     vertical_hint: Optional[str] = None,
-    use_goldens: bool = True,
+    use_goldens: bool = False,
     use_llm: Optional[bool] = None,
 ) -> ProductBlueprint:
     """Draft a ProductBlueprint and stamp the honest inventory declaration.
 
-    The draft itself runs in ``_draft_blueprint_from_brief_inner``; this
-    wrapper stamps ``drafting_note`` with the factory inventory verdict when
-    the vertical is not on the declared-ready list — the client must see
-    "the Store has no domain kit for this" before approving, never after.
-    A golden is chosen by STRUCTURE only (``golden_match``): the draft's
-    capability ids, vertical and hint against each golden's declared
-    structure. Golden drafts are shipped, store-backed products and are
-    exempt from the inventory note.
+    The base output is ALWAYS the user's own draft (from
+    ``_draft_blueprint_from_brief_inner``) — a golden is never substituted
+    for it. This wrapper stamps ``drafting_note`` with the factory inventory
+    verdict when the vertical is not on the declared-ready list — the client
+    must see "the Store has no domain kit for this" before approving, never
+    after.
+
+    A matching golden is OFFERED, not swapped in. When ``use_goldens`` is on
+    (it defaults OFF), a golden is chosen by STRUCTURE only (``golden_match``:
+    the draft's capability ids, vertical and hint against each golden's
+    declared structure) and attached as a labelled accept/decline SUGGESTION
+    on ``blueprint.golden_suggestion`` — the user's draft stays the base.
     """
     bp = _draft_blueprint_from_brief_inner(
         brief,
@@ -507,9 +511,9 @@ def draft_blueprint_from_brief(
         use_llm=use_llm,
     )
     if use_goldens:
-        golden = _golden_for_draft(bp, vertical_hint)
-        if golden is not None:
-            return golden
+        suggestion = _golden_suggestion_for_draft(bp, vertical_hint)
+        if suggestion is not None:
+            bp.golden_suggestion = suggestion
     from app.factory.inventory import inventory_drafting_note
 
     note = inventory_drafting_note(str(getattr(bp, "vertical", "") or ""))
@@ -519,14 +523,15 @@ def draft_blueprint_from_brief(
     return bp
 
 
-def _golden_for_draft(
+def _best_golden_match(
     draft: ProductBlueprint, vertical_hint: Optional[str] = None
-) -> Optional[ProductBlueprint]:
-    """The golden whose declared structure best overlaps the draft's, if any.
+) -> Optional[tuple]:
+    """(Golden, overlap) whose declared structure best overlaps the draft's.
 
     Only goldens that declare the USER's chosen vertical (their own
     ``serves_verticals``) are eligible, so a golden can never hand a product
-    a vertical the user did not pick. No choice, no golden.
+    a vertical the user did not pick. No choice, no golden. The scoring is a
+    pure structural rule (Jaccard over capability ids), never an LLM call.
     """
     from app.factory.golden_match import (
         best_golden,
@@ -547,10 +552,50 @@ def _golden_for_draft(
         store_root = resolve_blocks_root()
     except Exception:  # noqa: BLE001 -- no Store: score on blueprints alone
         store_root = None
-    match = best_golden(
+    return best_golden(
         draft_structure(draft, choice),
         eligible_for(choice, goldens(_repo_root() / "blueprints", store_root)),
     )
+
+
+def _golden_suggestion_for_draft(
+    draft: ProductBlueprint, vertical_hint: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """A labelled accept/decline suggestion for the best-overlapping golden.
+
+    Returns the OFFER, never a replacement blueprint: {golden_id, golden_name,
+    overlap, drafting_mode, label}. The caller attaches it to the user's own
+    draft (``golden_suggestion``); the draft stays the base output.
+    """
+    match = _best_golden_match(draft, vertical_hint)
+    if match is None:
+        return None
+    golden, score = match
+    golden_bp = load_blueprint(golden.path)
+    return {
+        "golden_id": golden_bp.product_id,
+        "golden_name": golden.name,
+        "overlap": round(float(score), 4),
+        "drafting_mode": "golden",
+        "label": "suggested golden match — accept/decline",
+    }
+
+
+def _golden_for_draft(
+    draft: ProductBlueprint, vertical_hint: Optional[str] = None
+) -> Optional[ProductBlueprint]:
+    """The golden whose declared structure best overlaps the draft's, if any.
+
+    This loads the matching golden as a standalone blueprint — the resolution
+    a user's ACCEPT of the offered suggestion uses. It is NOT part of the
+    drafting path: ``draft_blueprint_from_brief`` never substitutes a golden
+    for the user's draft, it only offers one (``_golden_suggestion_for_draft``).
+
+    Only goldens that declare the USER's chosen vertical (their own
+    ``serves_verticals``) are eligible, so a golden can never hand a product
+    a vertical the user did not pick. No choice, no golden.
+    """
+    match = _best_golden_match(draft, vertical_hint)
     if match is None:
         return None
     golden, score = match
