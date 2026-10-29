@@ -177,10 +177,11 @@
         "unit_price != 0"
       ],
       "note": "break_even_revenue consumes this ratio; it is the per-unit contribution margin over the unit price.",
+      "label": "improvised, no Store coverage",
       "provenance": {
-        "kind": "internal_protocol",
-        "reference": "Cerebrum universal base tier: standing accounting/arithmetic identity, defined rather than measured. It encodes no observed or mandated figure, so there is no external rate to cite -- every rate is a named input.",
-        "recorded_on": "2026-08-25"
+        "kind": "published_reference",
+        "reference": "Srikant M. Datar and Madhav V. Rajan, Horngren's Cost Accounting: A Managerial Emphasis, 16th edition (Pearson), Chapter 3 'Cost-Volume-Profit Analysis': contribution-margin percentage = contribution margin per unit / selling price.",
+        "recorded_on": "2026-10-29"
       }
     },
     {
