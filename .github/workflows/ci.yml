@@ -251,6 +251,97 @@ jobs:
   # Incremental typecheck. Scope is backend/mypy.ini — not the whole tree.
   # Adding a new HTTP/ops helper under app/core/ means adding it to files=
   # and keeping this job green. Do not widen to factory god-files in this job.
+  # CI-M (ORDERS_29OCT_1710Z-B): a gate, not a report. Every function this
+  # PR changes under backend/app gets the standard mutants (constant return,
+  # drop a rule, swallow an exception, bypass a dispatcher); any survivor,
+  # or a changed function no test references, is red. New value tests must
+  # carry >= 2 distinct inputs. No allowlists.
+  mutation-gate:
+    name: Mutation gate (CI-M)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      ENV: test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Check out the Store
+        working-directory: .
+        env:
+          # The Store repo is named by a workflow-level variable, never a
+          # hardcoded owner/repo literal here: this tree publishes to a public
+          # mirror, so the repo differs per deployment and the orchestrator
+          # sets vars.BLOCKS_PUB_REPO (an "owner/repo" slug). The fetch still
+          # authenticates when the Store is private: CROSS_REPO_PAT (an
+          # existing repo secret) has read access; for a public mirror an empty
+          # token is harmless. Passed via a token URL that is never stored in
+          # remote config, and GitHub masks the secret in logs.
+          # Default: <owner>/Cerebrum-Blocks-pub (owner-derived); the repo
+          # variable vars.BLOCKS_PUB_REPO overrides it when set.
+          BLOCKS_PUB_REPO: ${{ vars.BLOCKS_PUB_REPO || format('{0}/Cerebrum-Blocks-pub', github.repository_owner) }}
+          CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          test -n "$BLOCKS_PUB_REPO" || { echo "vars.BLOCKS_PUB_REPO is not set (owner/repo of the Store mirror)" >&2; exit 1; }
+          STORE_REF="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/store.pin")"
+          echo "Store ref: $STORE_REF  (repo: $BLOCKS_PUB_REPO)"
+          git init -q "$RUNNER_TEMP/Cerebrum-Blocks"
+          cd "$RUNNER_TEMP/Cerebrum-Blocks"
+          git fetch -q --depth 1 "https://x-access-token:${CROSS_REPO_PAT}@github.com/${BLOCKS_PUB_REPO}.git" "$STORE_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$STORE_REF"
+          git checkout -q FETCH_HEAD
+          test -d block_registry
+          echo "Store head: $(git rev-parse HEAD)  ($(ls block_registry | wc -l) blocks)"
+          echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
+
+      - name: Mutants on changed functions (CI-M-a)
+        working-directory: .
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE"
+          python3 scripts/mutation_gate.py --base "$BASE" \
+            --src backend/app --tests backend/tests --workdir backend \
+            --summary "$RUNNER_TEMP/cim.md"
+
+      - name: Two-input test lint (CI-M-b)
+        if: always()
+        working-directory: .
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          python3 scripts/two_input_lint.py --base "$BASE" --tests backend/tests \
+            --summary "$RUNNER_TEMP/cim_lint.md"
+
+      - name: Post CI-M results on the PR
+        if: always()
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat "$RUNNER_TEMP"/cim*.md > "$RUNNER_TEMP/cim_all.md" 2>/dev/null || exit 0
+          cat "$RUNNER_TEMP/cim_all.md" >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/cim_all.md" || echo "comment not posted (fork PR token)"
+
   backend-types:
     name: Backend typecheck (mypy, scoped)
     runs-on: ubuntu-latest
