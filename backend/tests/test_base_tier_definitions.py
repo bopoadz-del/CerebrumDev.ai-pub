@@ -81,7 +81,7 @@ def _definition(ident, **kwargs):
 
 def test_the_base_set_loads_and_is_all_base_tier():
     resolved = resolve_definitions()
-    assert len(resolved) == 30, "29 definitions + 1 convention"
+    assert len(resolved) == 31, "30 definitions + 1 convention"
     assert {entry["tier"] for entry in resolved.values()} == {"base"}
 
 
@@ -400,7 +400,7 @@ def test_the_base_set_ships_into_a_product_via_generator_copytree(tmp_path, monk
     assert "class PrecedenceError" in src
     assert "Section 15" in src and "EXPORTS AND REPORTING" in src
     data = json.loads(shipped_json.read_text(encoding="utf-8"))
-    assert len(data["definitions"]) == 29
+    assert len(data["definitions"]) == 30
     assert data["addressing"]["example"] == "universal:gross_margin_ratio_v1"
 
     shipped = _load_shipped_formulas(formulas, "shipped_formulas_via_write_app")
