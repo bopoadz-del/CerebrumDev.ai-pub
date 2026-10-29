@@ -285,3 +285,123 @@ def test_missing_node_fails_never_skips(tmp_path, monkeypatch, which):
     monkeypatch.setattr(h.shutil, "which", lambda name: which or None)
     with pytest.raises(pytest.fail.Exception, match="never a skip"):
         h.run_spec(ug.render_spec(BP), tmp_path, "http://127.0.0.1:9")
+
+
+# --- merged from split B (#83): N1, N2, N4-N6, U18, U19 ---
+PLANNED = sorted({s.kind for bp in BPS for s in ug.ui_plan(bp)})
+
+
+@pytest.mark.parametrize("drop", [("route",), ("screen",), ("honest_error",), ("load", "parsed"), ("attach_pdf", "bind", "cited_answer")])
+def test_missing_kind_is_a_hard_error_naming_every_kind(monkeypatch, drop):  # N1 / N2
+    monkeypatch.setattr(ug, "KIND_JS", {k: v for k, v in ug.KIND_JS.items() if k not in drop})
+    with pytest.raises(ValueError) as e:
+        ug.render_spec(BPS[1])
+    assert str(e.value) == f"no UI assertion for step kinds: {sorted(drop)}"
+
+
+@pytest.mark.parametrize("extra", ["unused_kind", "another"])
+def test_extra_kind_bodies_are_not_an_error(monkeypatch, extra):  # N4
+    monkeypatch.setattr(ug, "KIND_JS", {**ug.KIND_JS, extra: "expect(1).toBe(1);"})
+    assert f"s.kind === {json.dumps(extra)}" in ug.render_spec(BPS[0])
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_every_planned_kind_has_exactly_one_branch(bp):  # N5
+    spec = ug.render_spec(bp)
+    for k in {s.kind for s in ug.ui_plan(bp)}:
+        assert spec.count(f"(s.kind === {json.dumps(k)})") == 1
+    assert spec.count("} else { throw new Error('no assertion for ' + s.kind); }") == 1
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_planned_kinds_all_have_bodies(bp):  # N6
+    assert {s.kind for s in ug.ui_plan(bp)} <= set(ug.KIND_JS)
+
+
+def _with_plan_kind(spec: str, name: str, kind: str) -> str:
+    plan_line = next(line for line in spec.splitlines() if line.startswith("const PLAN = "))
+    plan = json.loads(plan_line[len("const PLAN = "):-1])
+    plan.append({"name": name, "kind": kind, "target": "/"})
+    return spec.replace(plan_line, f"const PLAN = {json.dumps(plan)};")
+
+
+@pytest.mark.parametrize("kind", ["mystery", "routee"])
+def test_runtime_unknown_kind_throws_never_passes(tmp_path, kind):  # U18
+    spec = _with_plan_kind(ug.render_spec(BPS[0]), f"odd:{kind}", kind)
+    with h.server({}) as base:
+        got = h.run_spec(spec, tmp_path, base, only_kinds=(kind, "route"))
+    assert got[f"odd:{kind}"] == f"failed: no assertion for {kind}"
+    assert all(v == "passed" for k, v in got.items() if k.startswith("route:"))
+
+
+@pytest.mark.parametrize("kind,statuses,failed", [
+    ("route", {"/v1/rent_roll": 500}, {"route:/v1/rent_roll"}),
+    ("load", {"/": 500}, {"load:/"}),
+    ("honest_error", {"POST /v1/rent_roll": 200}, {"honest_error:/v1/rent_roll"}),
+])
+def test_each_kind_runs_its_own_branch(tmp_path, kind, statuses, failed):  # U19
+    with h.server(statuses) as base:
+        got = h.run_spec(ug.render_spec(BPS[0]), tmp_path, base, only_kinds=(kind,))
+    assert {k for k, v in got.items() if v != "passed"} == failed and got
+
+
+# --- G2 15bd9c1 gaps on split B: N4-N6, U18, U19 executed end to end -------
+def _flow(tmp_path, bp, *, page="", upload="parsed ok", answer="total 1,240 [1]"):
+    fx = ug.write_fixtures(bp, tmp_path / "fx")
+    with h.server({}, bodies={"/": page, "POST /__upload": upload, "POST /__ask": answer}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, fixtures=fx["pdf"].parent,
+                         only_kinds=("load", "bind", "attach_pdf", "attach_xlsx", "parsed", "cited_answer"))
+        return got, list(base.seen), fx
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_full_flow_passes_on_a_product_that_answers(tmp_path, bp):
+    got, seen, fx = _flow(tmp_path, bp, page=f"tenant {bp['product_id']}")
+    assert set(got.values()) == {"passed"}, got
+    uploads = [(k, b) for k, b in seen if k.startswith("/__upload")]
+    assert [k for k, _ in uploads] == ["/__upload?name=fixture.pdf", "/__upload?name=fixture.xlsx"]  # N6
+    assert uploads[0][1] == fx["pdf"].read_bytes() and uploads[1][1] == fx["xlsx"].read_bytes()
+    assert bp["summary"].encode() in uploads[0][1]  # U19: the blueprint's own summary reaches the product
+    asked = [b.decode() for k, b in seen if k == "/__ask"]
+    assert asked == [ug._question(bp)]  # U18
+    assert bp["capabilities"][0]["description"].split(".")[0] in asked[0]
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_bind_fails_without_the_product_id(tmp_path, bp):  # N4
+    got, _, _ = _flow(tmp_path, bp, page="tenant somebody-else")
+    assert got["bind:tenant"].startswith("failed")
+
+
+@pytest.mark.parametrize("upload", ["", "upload received"])
+def test_parsed_fails_without_a_parsed_status(tmp_path, upload):  # N5
+    got, _, _ = _flow(tmp_path, BPS[0], page="lettings-desk", upload=upload)
+    assert got["parsed:status"].startswith("failed") and got["attach:pdf"] == "passed"
+
+
+@pytest.mark.parametrize("answer,ok", [("total 1,240 [1]", True), ("I cannot say", False), ("see [2]", True)])
+def test_cited_answer_needs_a_citation_and_a_number(tmp_path, answer, ok):
+    got, _, _ = _flow(tmp_path, BPS[1], page="site-ops", answer=answer)
+    assert (got["answer:cited"] == "passed") is ok
+
+
+@pytest.mark.parametrize("pair", [(0, 1)])
+def test_two_blueprints_two_questions_and_fixtures(tmp_path, pair):  # U18 / U19 two inputs
+    runs = [_flow(tmp_path / str(i), BPS[i], page=BPS[i]["product_id"]) for i in pair]
+    asked = [[b for k, b in seen if k == "/__ask"] for _, seen, _ in runs]
+    pdfs = [[b for k, b in seen if k == "/__upload?name=fixture.pdf"] for _, seen, _ in runs]
+    assert asked[0] != asked[1] and pdfs[0] != pdfs[1]
+
+
+
+# --- 'playwright report has no results' is an error, and only for an empty report ---
+@pytest.mark.parametrize("report,empty", [
+    ({"suites": []}, True),
+    ({"suites": [{"specs": []}]}, True),
+    ({}, True),
+    ({"suites": [{"specs": [{"title": "load:/", "tests": [{"results": [{"status": "passed"}]}]}]}]}, False),
+])
+def test_empty_report_is_a_named_error(report, empty):
+    g = ug.parse_report(report, BPS[0])
+    assert g.errors == (["playwright report has no results"] if empty else [])
+    assert ("playwright report has no results" in g.to_dict()["failing"]) is empty and not (empty and g.ok)
