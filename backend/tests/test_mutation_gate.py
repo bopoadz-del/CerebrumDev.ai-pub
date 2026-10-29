@@ -251,3 +251,24 @@ def test_bypass_dispatcher_substitutes_the_first_argument(src, want):
     fn = _fn(src)
     assert mg.mutate(fn, "bypass_dispatcher")
     assert want in _ast.unparse(fn) and "None" not in _ast.unparse(fn)
+
+
+# --- G2: the source file is restored on disk after the run (finally/write_text) ---
+@pytest.mark.parametrize("tests", [STRONG, WEAK])
+def test_source_is_restored_after_the_run(tmp_path, tests):
+    repo = _repo(tmp_path, tests)
+    mg.mutation_gate(repo, "HEAD~1", ["src"], ["tests"], ".", [])
+    assert (repo / "src" / "pkg" / "calc.py").read_text("utf-8") == FN
+
+
+@pytest.mark.parametrize("exc", [RuntimeError, KeyboardInterrupt])
+def test_source_is_restored_when_the_run_raises(tmp_path, monkeypatch, exc):
+    repo = _repo(tmp_path, STRONG)
+
+    def boom(*a, **k):
+        raise exc("stop")
+
+    monkeypatch.setattr(mg, "run_tests", boom)
+    with pytest.raises(exc):
+        mg.mutation_gate(repo, "HEAD~1", ["src"], ["tests"], ".", [])
+    assert (repo / "src" / "pkg" / "calc.py").read_text("utf-8") == FN
