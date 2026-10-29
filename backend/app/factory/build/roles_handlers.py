@@ -3849,6 +3849,19 @@ def _writer_worker_live_time_left(ctx: RoleContext) -> Optional[Callable[[], Opt
     return _left
 
 
+def _formula_sources(ctx: RoleContext) -> Dict[str, Any]:
+    """Kernel definition index + Store coverage for the blueprint's vertical."""
+    from app.cerebrum_product_kernel.formulas import definition_index
+    from app.factory.build.formula_resolution import store_coverage_index
+    from app.factory.store_pin import pinned_sha_or_none
+
+    return {
+        "kernel_index": definition_index(),
+        "store_index": store_coverage_index(getattr(ctx.blueprint, "vertical", "")),
+        "store_sha": pinned_sha_or_none(),
+    }
+
+
 def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     """Phase 5: the WRITER role runs headless through `codewhale exec`.
 
@@ -3880,6 +3893,9 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         ctx.blueprint,
         brief=_compiled_writer_brief(ctx),
         resume=bool(ctx.state.get("writer_resumed")),
+        # K-F7 (ORDERS_1900Z): kernel first, then the Store, then labelled
+        # improvisation -- the writer sees what already exists.
+        **_formula_sources(ctx),
         # How many specialist agents this instance can carry at once. Read
         # here, not in the template: it follows the worker profile and the
         # operator override instead of going stale on the next plan.
