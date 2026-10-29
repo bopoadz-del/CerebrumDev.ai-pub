@@ -447,18 +447,18 @@ def _kernel_claims(
     if covered.get("tier") == TIER_BASE:
         claim = Claim(text=text, layer=1, object_id=address)
         return LabeledAnswer(claims=[claim], citations=list(citations))
-    tenant = identity or "unknown-tenant"
+    tenant = identity
     if not covered.get("supersedes"):
         claim = Claim(text=text, layer=3, object_id=address)
         return LabeledAnswer(claims=[claim], citations=list(citations))
     base_value: Optional[float] = None
     if base_expression:
-        base_values, base_missing = extract_grounded_inputs(base_required, corpus)
-        if not base_missing:
-            try:
-                base_value = float(safe_eval(base_expression, base_values))
-            except (MissingInput, UnsafeExpression, ZeroDivisionError, ArithmeticError):
-                base_value = None
+        # An ungrounded certified input raises MissingInput -> None (never invented).
+        base_values, _ = extract_grounded_inputs(base_required, corpus)
+        try:
+            base_value = float(safe_eval(base_expression, base_values))
+        except (MissingInput, UnsafeExpression, ZeroDivisionError, ArithmeticError):
+            base_value = None
     verdict = resolve_formula_by_id(
         ident,
         [

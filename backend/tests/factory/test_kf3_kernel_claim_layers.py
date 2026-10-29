@@ -46,6 +46,17 @@ class _Engine:
         )
 
 
+def _ask(*args, **kwargs):
+    """answer_query, with any crash or a missing labeled_answer surfaced as an
+    assertion failure (so a mutant shows as a failed assertion, not a crash)."""
+    try:
+        ans = answer_query(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+        raise AssertionError(f"answer_query raised {type(exc).__name__}: {exc}") from None
+    assert ans.labeled_answer is not None, "answer carries no labeled_answer"
+    return ans
+
+
 @pytest.fixture(autouse=True)
 def _roots(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "s"))
@@ -70,7 +81,7 @@ def _corpus(names, seed):
 def test_base_kernel_answer_is_layer_1(seed):
     set_id, d = _base()
     vals, text = _corpus(free_names(d["expression"]), seed)
-    ans = answer_query("t-a", d["id"].replace("_", " "), "prose 0.99", engine=_Engine(text))
+    ans = _ask("t-a", d["id"].replace("_", " "), "prose 0.99", engine=_Engine(text))
     assert ans.kind == KIND_KERNEL and ans.labeled_answer is not None
     [claim] = ans.labeled_answer.claims
     assert claim.layer == 1 and claim.human_label == "Certified"
@@ -81,7 +92,7 @@ def test_base_kernel_answer_is_layer_1(seed):
 
 
 def test_improvised_answer_is_not_layer_1():
-    ans = answer_query("t-a", "zzqx nonkernel subject", "prose", engine=_Engine("nothing"))
+    ans = _ask("t-a", "zzqx nonkernel subject", "prose", engine=_Engine("nothing"))
     assert ans.kind == KIND_IMPROVISED
     assert [c.layer for c in ans.labeled_answer.claims] == [2]
 
@@ -99,7 +110,7 @@ def test_override_is_layer_3_with_shadow_divergence(seed):
     set_id, d = _base()
     overlay, expr = _override_overlay(set_id, d)
     vals, text = _corpus(free_names(expr), seed)
-    ans = answer_query("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text), overlays=[overlay])
+    ans = _ask("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text), overlays=[overlay])
     [claim] = ans.labeled_answer.claims
     assert claim.layer == 3 and claim.human_label == "Your formula"
     rec = claim.precedence
@@ -115,7 +126,7 @@ def test_extension_is_layer_3_without_divergence():
     ext = {"set_id": "tenant-x", "definitions": [{
         "id": "widget_yield_ratio", "definition_version": 1, "expression": "widgets / batches",
         "provenance": {"kind": "client_submitted", "reference": "r"}}]}
-    ans = answer_query("t-a", "widget yield ratio", "p",
+    ans = _ask("t-a", "widget yield ratio", "p",
                        engine=_Engine("widgets = 40\nbatches = 8"), overlays=[ext])
     [claim] = ans.labeled_answer.claims
     assert ans.kernel_value == 5
@@ -130,27 +141,53 @@ def test_certified_value_is_grounded_even_when_the_override_drops_its_inputs():
     row = dict(d, expression=expr, overrides=f"{set_id}:{d['id']}_v{d['definition_version']}",
                reason="tenant rule", provenance={"kind": "client_submitted", "reference": "r"})
     vals, text = _corpus(names + ["tenant_adjustment"], 3)
-    ans = answer_query("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text),
+    ans = _ask("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text),
                        overlays=[{"set_id": "tenant-rules", "definitions": [row]}])
     rec = ans.labeled_answer.claims[0].precedence
+    assert rec is not None, "override claim carries no divergence record"
     assert rec.winner_result == pytest.approx(float(safe_eval(expr, vals)))
     assert rec.loser_result == pytest.approx(float(safe_eval(d["expression"], vals)))
 
 
 # ---- repair 1 (G2 M9 / M9b / M17) ----
-@pytest.mark.parametrize("seed", [2, 5])
-def test_kernel_labeled_answer_carries_the_retrieved_citations(seed):
-    set_id, d = _base()
-    _, text = _corpus(free_names(d["expression"]), seed)
+def _citing_engine(text, seed):
     src = f"ledger_{seed}.xlsx"
     eng = _Engine(text)
-    eng.file = src
     orig = eng.retrieve
     eng.retrieve = lambda c, q: [_Hit(h.text, file=src, location={"sheet": "S", "row": seed})
                                  for h in orig(c, q)]
-    ans = answer_query("t-a", d["id"].replace("_", " "), "p", engine=eng)
+    return eng, [{"file": src, "location": {"sheet": "S", "row": seed}}]
+
+
+def _path_case(path, seed):
+    """(query, overlays, names) for each claim path: base, extension, override."""
+    set_id, d = _base()
+    query = d["id"].replace("_", " ")
+    if path == "base":
+        return query, (), free_names(d["expression"])
+    if path == "override":
+        overlay, expr = _override_overlay(set_id, d)
+        return query, [overlay], free_names(expr)
+    ext = {"set_id": "tenant-x", "definitions": [{
+        "id": "widget_yield_ratio", "definition_version": 1, "expression": "widgets / batches",
+        "provenance": {"kind": "client_submitted", "reference": "r"}}]}
+    return "widget yield ratio", [ext], ["widgets", "batches"]
+
+
+# repair: G2 M9 (base), M9b (override), M9c (extension) -- every claim path
+@pytest.mark.parametrize("path", ["base", "extension", "override"])
+@pytest.mark.parametrize("seed", [2, 5])
+def test_kernel_labeled_answer_carries_the_retrieved_citations(path, seed):
+    query, overlays, names = _path_case(path, seed)
+    _, text = _corpus(names, seed)
+    eng, expected = _citing_engine(text, seed)
+    ans = _ask("t-a", query, "p", engine=eng, overlays=overlays)
+    assert ans.kind == KIND_KERNEL and not ans.unknown
+    expected_layer = 1 if path == "base" else 3
+    assert [c.layer for c in ans.labeled_answer.claims] == [expected_layer]
+    assert (ans.labeled_answer.claims[0].precedence is not None) == (path == "override")
     cites = [c.to_dict() for c in ans.labeled_answer.citations]
-    assert cites == [{"file": src, "location": {"sheet": "S", "row": seed}}]
+    assert cites == expected
     assert ans.labeled_answer.to_dict()["citations"] == cites == [c.to_dict() for c in ans.citations]
 
 
@@ -169,13 +206,16 @@ def test_certified_divide_by_zero_is_not_invented_and_does_not_crash(seed):
     set_id, d, divisor = _divisor_base()
     names = free_names(d["expression"])
     expr = " + ".join(names)  # the tenant rule has no division
-    row = dict(d, expression=expr, overrides=f"{set_id}:{d['id']}_v{d['definition_version']}",
+    # the tenant rule drops the base's divisor guard (it does not divide), so the
+    # zero divisor reaches only the certified (base) computation
+    row = dict(d, expression=expr, guards=[], overrides=f"{set_id}:{d['id']}_v{d['definition_version']}",
                reason="tenant rule", provenance={"kind": "client_submitted", "reference": "r"})
     vals = {n: (0.0 if n == divisor else float(seed * (i + 3))) for i, n in enumerate(names)}
     text = "\n".join(f"{n} = {v}" for n, v in vals.items())
-    ans = answer_query("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text),
+    ans = _ask("t-a", d["id"].replace("_", " "), "p", engine=_Engine(text),
                        overlays=[{"set_id": "tenant-rules", "definitions": [row]}])
     assert not ans.unknown and ans.kernel_value == pytest.approx(sum(vals.values()))
     rec = ans.labeled_answer.claims[0].precedence
+    assert rec is not None, "override claim carries no divergence record"
     assert rec.winner_result == pytest.approx(sum(vals.values()))
     assert not isinstance(rec.loser_result, (int, float))  # no invented certified number
