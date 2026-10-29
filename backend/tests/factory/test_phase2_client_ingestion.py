@@ -134,7 +134,7 @@ def test_router_401s_unbound_caller_by_name(monkeypatch):
     assert no_header.json()["detail"] == "authentication_required"
 
 
-def test_router_501s_honestly_until_drive_and_formulas_land(monkeypatch):
+def test_router_501s_honestly_until_drive_lands(monkeypatch):
     _stub_tenancy(monkeypatch, {"good-token": "tenant-a"})
     app = FastAPI()
     app.include_router(ingestion_router)
@@ -142,10 +142,9 @@ def test_router_501s_honestly_until_drive_and_formulas_land(monkeypatch):
     headers = {"Authorization": "Bearer good-token"}
 
     # The upload path is REAL as of F-1a and is deliberately NOT in this list:
-    # only the Drive/formula handlers still refuse honestly with 501.
+    # only the Drive handlers still refuse honestly with 501 (formula overlays are
+    # real as of K-F5, at /overlays).
     for method, path in (
-        ("post", "/v1/product/ingestion/formulas"),
-        ("get", "/v1/product/ingestion/formulas"),
         ("get", "/v1/product/ingestion/drive/files"),
     ):
         resp = getattr(client, method)(path, headers=headers)
