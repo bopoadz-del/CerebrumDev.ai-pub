@@ -198,13 +198,11 @@ from pathlib import Path as _P  # noqa: E402
 _sys.path.insert(0, str(_P(__file__).parent))
 import ui_spec_harness as h  # noqa: E402
 
-needs_node = pytest.mark.skipif(not h.node_available(), reason="node not installed")
 BP = BPS[0]
 ROUTES = [f"/v1/{c['id']}" for c in BP["capabilities"]]
 HONEST = f"POST /v1/{BP['capabilities'][0]['id']}"
 
 
-@needs_node
 @pytest.mark.parametrize("statuses,want", [
     ({}, {"load:/": "passed", "screen:tenant_portal": "passed"}),
     ({"/": 500}, {"load:/": "failed", "screen:tenant_portal": "failed"}),
@@ -220,7 +218,6 @@ def test_page_steps_need_exactly_200(tmp_path, statuses, want):  # U5 / U12
         assert f"expected 200 got {statuses['/']}" in got["load:/"]
 
 
-@needs_node
 @pytest.mark.parametrize("bad,code", [(ROUTES[0], 404), (ROUTES[1], 500), (ROUTES[1], 204)])
 def test_every_route_needs_exactly_200(tmp_path, bad, code):  # U13
     with h.server({bad: code}) as base:
@@ -228,7 +225,6 @@ def test_every_route_needs_exactly_200(tmp_path, bad, code):  # U13
     assert got == {f"route:{r}": ("passed" if r != bad else f"failed: expected 200 got {code}") for r in ROUTES}
 
 
-@needs_node
 @pytest.mark.parametrize("code,ok", [(422, True), (503, True), (200, False), (400, False), (500, False)])
 def test_honest_error_needs_422_or_503_never_200(tmp_path, code, ok):  # U15b
     with h.server({HONEST: code}) as base:
@@ -237,7 +233,6 @@ def test_honest_error_needs_422_or_503_never_200(tmp_path, code, ok):  # U15b
     assert (v == "passed") is ok
 
 
-@needs_node
 @pytest.mark.parametrize("pair", [({}, {ROUTES[0]: 500}), ({ROUTES[1]: 404}, {})])
 def test_two_base_urls_two_runs(tmp_path, pair):  # U16: BASE_URL is what is graded
     runs = []
@@ -250,8 +245,43 @@ def test_two_base_urls_two_runs(tmp_path, pair):  # U16: BASE_URL is what is gra
         assert sorted(k for k, v in run.items() if v != "passed") == sorted(f"route:{r}" for r in statuses)
 
 
-@needs_node
 @pytest.mark.parametrize("base", [None, ""])
 def test_no_base_url_throws_not_relative(tmp_path, base):  # U16
     got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("route",))
     assert "BASE_URL is not set" in got["__error__"]
+
+
+# --- G2 15bd9c1 gaps on split A: U5 nested suites, U12 bind, U13 target ---
+@pytest.mark.parametrize("depth", [1, 3])
+def test_nested_report_suites_are_read(depth):  # U5
+    names = [s.name for s in ug.ui_plan(BP)]
+    suite = {"specs": [{"title": n, "tests": [{"results": [{"status": "passed"}]}]} for n in names]}
+    for _ in range(depth):
+        suite = {"suites": [suite]}
+    g = ug.parse_report({"suites": [suite]}, BP)
+    assert g.ok and [s["passed"] for s in g.steps] == [True] * len(names)
+
+
+@pytest.mark.parametrize("i,served,ok", [(0, 0, True), (1, 1, True), (0, 1, False), (1, 0, False)])
+def test_bind_needs_the_products_own_id_on_the_page(tmp_path, i, served, ok):  # U12
+    bp = BPS[i]
+    with h.server({}, bodies={"/": f"<h1>tenant {BPS[served]['product_id']}</h1>"}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "bind"))
+    assert got["load:/"] == "passed" and (got["bind:tenant"] == "passed") is ok
+
+
+@pytest.mark.parametrize("i", [0, 1])
+def test_honest_error_targets_the_products_first_route(tmp_path, i):  # U13
+    bp = BPS[i]
+    first = bp["capabilities"][0]["id"]
+    with h.server({f"POST /v1/{first}": 422}) as base:  # every other POST answers 200
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("honest_error",))
+        assert [k for k, _ in base.seen] == [f"/v1/{first}"]
+    assert got == {f"honest_error:/v1/{first}": "passed"}
+
+
+@pytest.mark.parametrize("which", [None, ""])
+def test_missing_node_fails_never_skips(tmp_path, monkeypatch, which):
+    monkeypatch.setattr(h.shutil, "which", lambda name: which or None)
+    with pytest.raises(pytest.fail.Exception, match="never a skip"):
+        h.run_spec(ug.render_spec(BP), tmp_path, "http://127.0.0.1:9")
