@@ -161,6 +161,29 @@
       }
     },
     {
+      "id": "contribution_margin_ratio",
+      "definition_version": 1,
+      "key": "universal:contribution_margin_ratio_v1",
+      "tier": "base",
+      "name": "Contribution margin ratio",
+      "category": "break_even",
+      "expression": "(unit_price - unit_variable_cost) / unit_price",
+      "inputs": [
+        "unit_price",
+        "unit_variable_cost"
+      ],
+      "output": "ratio",
+      "guards": [
+        "unit_price != 0"
+      ],
+      "note": "break_even_revenue consumes this ratio; it is the per-unit contribution margin over the unit price.",
+      "provenance": {
+        "kind": "internal_protocol",
+        "reference": "Cerebrum universal base tier: standing accounting/arithmetic identity, defined rather than measured. It encodes no observed or mandated figure, so there is no external rate to cite -- every rate is a named input.",
+        "recorded_on": "2026-08-25"
+      }
+    },
+    {
       "id": "break_even_units",
       "definition_version": 1,
       "key": "universal:break_even_units_v1",
@@ -257,6 +280,9 @@
         "tax_rate"
       ],
       "output": "money",
+      "guards": [
+        "1 + tax_rate != 0"
+      ],
       "note": "Extracting tax is division, not multiplication. gross * tax_rate overstates the tax on every tax-inclusive price.",
       "provenance": {
         "kind": "internal_protocol",
@@ -317,6 +343,9 @@
         "days_in_year"
       ],
       "output": "money",
+      "guards": [
+        "days_in_year != 0"
+      ],
       "note": "days_in_year is an input because the day-count convention (360 or 365) is a contract term, not a universal constant.",
       "provenance": {
         "kind": "internal_protocol",
