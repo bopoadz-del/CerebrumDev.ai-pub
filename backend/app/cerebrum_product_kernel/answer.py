@@ -29,8 +29,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from app.cerebrum_product_kernel.claim_labels import Citation, LabeledAnswer
-from app.cerebrum_product_kernel.formulas import definition_index, resolve_definitions
+from app.cerebrum_product_kernel.claim_labels import Citation, Claim, LabeledAnswer
+from app.cerebrum_product_kernel.formulas import (
+    TIER_BASE,
+    definition_index,
+    load_base_definitions,
+    resolve_definitions,
+)
+from app.cerebrum_product_kernel.precedence import LayerObject, resolve_formula_by_id
 from app.cerebrum_product_kernel.formulas.evaluator import (
     MissingInput,
     UnsafeExpression,
@@ -239,7 +245,7 @@ def answer_query(
 
     covered = kernel_coverage(query, overlays=overlays, resolved=resolved)
     if covered is not None:
-        return _kernel_answer(engine, collection, query, covered)
+        return _kernel_answer(engine, collection, query, covered, identity=identity)
 
     labeled = engine.labeled_answer(collection, query, answer_text)
     label = IMPROVISED_LABEL.format(subject=query)
@@ -270,6 +276,8 @@ def _kernel_answer(
     collection: str,
     query: str,
     covered: Dict[str, Any],
+    *,
+    identity: str = "",
 ) -> ProductAnswer:
     """Compute the kernel's number from grounded inputs, or refuse (UNKNOWN).
 
@@ -297,12 +305,16 @@ def _kernel_answer(
         )
 
     required = free_names(expression)
+    base_expression = _superseded_expression(covered)
+    base_required = free_names(base_expression) if base_expression else []
     # Ground the inputs: retrieve with the query AND the input names so the
     # figures that feed the formula are in the retrieved excerpts. A retrieval
     # error is NOT swallowed — an egress failure here (EmbeddingEgressError)
     # must propagate so the route surfaces a 503, never a 200 "missing inputs"
     # that hides a broken backend behind a fabricated refusal.
-    grounding_query = " ".join([query, *required]).strip()
+    grounding_query = " ".join(
+        [query, *required, *[n for n in base_required if n not in required]]
+    ).strip()
     hits = engine.retrieve(collection, grounding_query)
     corpus = "\n\n".join(h.text for h in hits)
     citations = [
@@ -346,6 +358,10 @@ def _kernel_answer(
     number = _format_kernel_number(computed)
     grounded = ", ".join(f"{k}={_format_kernel_number(v)}" for k, v in values.items())
     text = f"{subject} = {number} (kernel-computed from {grounded})."
+    labeled = _kernel_claims(
+        covered, text, computed, identity, base_expression, base_required, corpus,
+        citations,
+    )
     return ProductAnswer(
         query=query,
         kind=KIND_KERNEL,
@@ -354,4 +370,71 @@ def _kernel_answer(
         kernel=covered,
         citations=citations,
         kernel_value=computed,
+        labeled_answer=labeled,
     )
+
+
+def _superseded_expression(covered: Dict[str, Any]) -> str:
+    """The base expression an overlay override replaced ('' when none).
+
+    Read from the base definition set by the superseded ADDRESS the resolver
+    recorded, so the losing (certified) value can be computed for the
+    divergence record."""
+    supersedes = str(covered.get("supersedes") or "")
+    if not supersedes:
+        return ""
+    base = load_base_definitions()
+    for definition in base.get("definitions", []):
+        address = "%s:%s_v%s" % (
+            base.get("set_id"), definition.get("id"), definition.get("definition_version")
+        )
+        if address == supersedes:
+            return str(definition.get("expression") or "")
+    return ""
+
+
+def _kernel_claims(
+    covered: Dict[str, Any],
+    text: str,
+    computed: float,
+    identity: str,
+    base_expression: str,
+    base_required: List[str],
+    corpus: str,
+    citations: List[Citation],
+) -> LabeledAnswer:
+    """Label the kernel's claim with its authority layer (K-F3).
+
+    A base-tier definition is layer 1 ("Certified"). A tenant overlay (an
+    extension or an override) is layer 3 ("Your formula"); when it overrides
+    a base id, :func:`resolve_formula_by_id` decides in code and the claim
+    carries the formula_shadow DivergenceRecord with BOTH values — the
+    certified value is computed from the same grounded corpus, or ``None``
+    when its inputs are not grounded (never invented)."""
+    ident = str(covered.get("id") or "")
+    address = str(covered.get("address") or ident)
+    if covered.get("tier") == TIER_BASE:
+        claim = Claim(text=text, layer=1, object_id=address)
+        return LabeledAnswer(claims=[claim], citations=list(citations))
+    tenant = identity or "unknown-tenant"
+    if not covered.get("supersedes"):
+        claim = Claim(text=text, layer=3, object_id=address)
+        return LabeledAnswer(claims=[claim], citations=list(citations))
+    base_value: Optional[float] = None
+    if base_expression:
+        base_values, base_missing = extract_grounded_inputs(base_required, corpus)
+        if not base_missing:
+            try:
+                base_value = float(safe_eval(base_expression, base_values))
+            except (MissingInput, UnsafeExpression, ZeroDivisionError, ArithmeticError):
+                base_value = None
+    verdict = resolve_formula_by_id(
+        ident,
+        [
+            LayerObject(object_id=ident, layer=1, result=base_value),
+            LayerObject(object_id=ident, layer=3, tenant_id=tenant, result=computed),
+        ],
+    )
+    record = verdict.records[0] if verdict.records else None
+    claim = Claim(text=text, layer=verdict.winner.layer, object_id=address, precedence=record)
+    return LabeledAnswer(claims=[claim], citations=list(citations))
