@@ -126,19 +126,27 @@ def write_fixtures(blueprint: Mapping[str, Any], dest: Path) -> Dict[str, Path]:
     return {"pdf": pdf, "xlsx": xlsx}
 
 
+#: Every target is resolved against BASE_URL (the rendered product). A
+#: missing BASE_URL throws -- it never falls back to a relative URL.
+BASE_JS = (
+    "const BASE = process.env.BASE_URL;\n"
+    "if (!BASE) throw new Error('BASE_URL is not set: UI run cannot happen');\n"
+    "const url = (t: string) => new URL(t, BASE).toString();\n"
+)
+
 #: An invalid request must be answered honestly. A 200 is never honest.
 HONEST_ERROR_STATUSES = (422, 503)
 
 #: Per-kind Playwright body. Kept as data so every kind's assertion is
 #: inspectable (and testable) on its own.
 _PAGE_OK = (
-    "const r = await page.goto(s.target); expect(r?.status()).toBe(200);\n"
+    "const r = await page.goto(url(s.target)); expect(r?.status()).toBe(200);\n"
     "await page.waitForLoadState('networkidle'); expect(errs).toEqual([]);"
 )
 KIND_JS: Dict[str, str] = {
     "load": _PAGE_OK,
     "screen": _PAGE_OK,
-    "route": "const r = await request.get(s.target); expect(r.status()).toBe(200);",
+    "route": "const r = await request.get(url(s.target)); expect(r.status()).toBe(200);",
     "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
     "attach_pdf": (
         "await page.getByRole('button', { name: '+' }).first().click();\n"
@@ -151,7 +159,7 @@ KIND_JS: Dict[str, str] = {
         "await expect(page.getByText(/\\d/).last()).toBeVisible();"
     ),
     "honest_error": (
-        "const r = await request.post(s.target, { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
+        "const r = await request.post(url(s.target), { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
         f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}).toContain(r.status());"
     ),
 }
@@ -173,6 +181,7 @@ def render_spec(blueprint: Mapping[str, Any]) -> str:
         "import { test, expect } from '@playwright/test';\n"
         f"const PLAN = {json.dumps([s.__dict__ for s in plan])};\n"
         f"const QUESTION = {json.dumps(_question(blueprint))};\n"
+        + BASE_JS +
         "const errs: string[] = [];\n"
         "test.describe.configure({ mode: 'serial' });\n"
         "let page: any;\n"

@@ -152,3 +152,40 @@ def test_two_blueprints_two_xlsx(tmp_path):
 
     a, b = (load_workbook(ug.write_fixtures(bp, tmp_path / str(i))["xlsx"]).active for i, bp in enumerate(BPS))
     assert list(a.iter_rows(values_only=True)) != list(b.iter_rows(values_only=True))
+
+
+# --- G2 U14-U17, U21 ------------------------------------------------------
+
+@pytest.mark.parametrize("bp", BPS)
+def test_spec_resolves_every_target_against_base_url(bp):  # U21
+    spec = ug.render_spec(bp)
+    assert "process.env.BASE_URL" in spec and "new URL(t, BASE)" in spec
+    for call in ("page.goto(", "request.get(", "request.post("):
+        for chunk in spec.split(call)[1:]:
+            assert chunk.startswith("url("), call
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000", "https://p.example.test/app/"])
+def test_grade_ui_passes_base_url_to_the_run(tmp_path, url):
+    seen = {}
+    ug.grade_ui(BPS[0], tmp_path, base_url=url, run=lambda cmd, **kw: seen.update(kw["env"]))
+    assert seen["BASE_URL"] == url
+
+
+@pytest.mark.parametrize("kind,needles", [
+    ("bind", ["s.target", "toBeVisible()"]),                                   # U14
+    ("attach_pdf", ["name: '+'", "setInputFiles", "GRADE_FIXTURES"]),          # U15
+    ("attach_xlsx", ["name: '+'", "setInputFiles", "GRADE_FIXTURES"]),
+    ("parsed", ["/parsed/i", "toBeVisible"]),                                   # U16
+    ("cited_answer", ["QUESTION", "citation", "getByText(/", "toBeVisible"]),           # U17
+])
+def test_kind_bodies_pinned(kind, needles):
+    for n in needles:
+        assert n in ug.KIND_JS[kind], (kind, n)
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_attach_targets_are_the_written_fixtures(tmp_path, bp):
+    fx = ug.write_fixtures(bp, tmp_path)
+    targets = {s.target for s in ug.ui_plan(bp) if s.kind.startswith("attach_")}
+    assert targets == {fx["pdf"].name, fx["xlsx"].name}
