@@ -43,32 +43,38 @@ def _confirm_level(session_id: str, level: str) -> None:
     update_session(session_id, state)
 
 
-def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub_coder):
-    """The TEMPLATE path's golden flow (provenance.json, kernel ActionOutcome
-    actions, command_center.tsx) -- all template-only artifacts.
+def test_session_product_steward_golden_offer_flow(client, monkeypatch, tmp_path, stub_coder):
+    """H1 (F-4): a golden is OFFERED, never auto-substituted.
 
-    Pinned to that engine. Note for the next reader: before pinning, this
-    test PASSED locally and failed in CI, because a stale output directory
-    from an earlier template-era run still satisfied the assertions on a
-    developer machine while a fresh CI container told the truth. The runner
-    path's session contract is covered by test_production_uses_the_runner.py
-    and the build-status endpoint test below.
+    The draft stays the user's OWN ("estate"); the matching "projectsix"
+    steward golden is surfaced as an accept/decline suggestion, not swapped
+    in. When the user ACCEPTS the offer, the TEMPLATE path builds that golden
+    (provenance.json, kernel ActionOutcome actions, command_center.tsx -- all
+    template-only artifacts).
+
+    Pinned to the template engine. Note for the next reader: before pinning,
+    this test PASSED locally and failed in CI, because a stale output
+    directory from an earlier template-era run still satisfied the assertions
+    on a developer machine while a fresh CI container told the truth. The
+    runner path's session contract is covered by
+    test_production_uses_the_runner.py and the build-status endpoint test
+    below.
     """
     monkeypatch.setenv("FACTORY_BUILD_ENGINE", "template")
     # Pin the stage-resume blueprint cache OFF. It is ON by default (owner
     # option B); a cached blueprint for this brief -- from an earlier run or an
     # earlier test in the same suite writing the shared on-disk cache -- would be
-    # served verbatim and skip the golden selection this flow asserts, yielding a
-    # fresh "estate" draft instead of the "projectsix" golden. The cache has its
-    # own tests; here we isolate golden selection so it is deterministic.
+    # served verbatim. The cache has its own tests; here we isolate the draft so
+    # it is deterministic.
     monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
-    # Goldens are chosen by structural overlap, not words. The deterministic
-    # draft shares only its vertical with the golden, so this flow lowers
-    # the configured threshold to let that unique overlap select it.
+    # Goldens are offered by structural overlap, not words. The deterministic
+    # draft shares only its vertical with the golden, so this flow lowers the
+    # configured threshold to let that unique overlap surface the offer.
     monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
     create_session("sess_product_1", DEV_LOCAL_TENANT)
     out = tmp_path / "gen"
-    # draft
+    # draft -- the base output is the user's OWN draft (vertical "estate" ->
+    # product_id "estate"); the golden is NEVER substituted for it (H1).
     r = client.post(
         "/v1/sessions/sess_product_1/product/draft",
         json={
@@ -79,8 +85,34 @@ def test_session_product_steward_golden_flow(client, monkeypatch, tmp_path, stub
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
-    assert body["blueprint"]["product_id"] == "projectsix"
-    assert body["source"] == "golden"
+    assert body["blueprint"]["product_id"] == "estate", (
+        "the draft stays the user's own; a golden is offered, never swapped in"
+    )
+    assert body["source"] == "drafted"
+    assert body["blueprint"].get("drafting_mode") != "golden"
+
+    # The "projectsix" steward golden is OFFERED for this estate draft. The
+    # accept/decline resolution (the user accepting the suggestion) resolves to
+    # it by structural overlap. The user ACCEPTS: the accepted golden becomes
+    # the session base, and plan/approve/build run on it.
+    from app.factory.blueprint import ProductBlueprint
+    from app.factory.product_architect import (
+        _golden_for_draft,
+        session_domain_from_blueprint,
+    )
+
+    state = get_session("sess_product_1")
+    assert state is not None
+    draft_bp = ProductBlueprint.model_validate(state.product_design.blueprint)
+    offered = _golden_for_draft(draft_bp, "estate")
+    assert offered is not None, "the matching golden must be offered for an estate draft"
+    assert offered.product_id == "projectsix"
+    assert offered.drafting_mode == "golden"
+    state.product_design.blueprint = offered.model_dump(mode="json")
+    state.product_design.blueprint_approved = False
+    state.product_design.plan = None
+    state.config.domain = session_domain_from_blueprint(offered)
+    update_session("sess_product_1", state)
 
     r = client.post("/v1/sessions/sess_product_1/product/plan")
     assert r.status_code == 200, r.text
