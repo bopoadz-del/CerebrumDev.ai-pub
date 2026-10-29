@@ -195,9 +195,11 @@ def parse_csv(data: bytes, *, source_name: str, object_id: str, tenant_id: str):
     rows = 0
     for row_number, row in enumerate(reader, start=1):
         cells = [str(cell) for cell in row]
-        line = " | ".join(cells).strip()
-        if not line:
+        # A row whose every cell is blank (",,") is skipped like an empty line;
+        # its row number still counts, so later rows keep their true number.
+        if not any(cell.strip() for cell in cells):
             continue
+        line = " | ".join(cells).strip()
         rows += 1
         units.append((line, {"sheet": source_name, "row": row_number}))
     chunks = _units_to_chunks(

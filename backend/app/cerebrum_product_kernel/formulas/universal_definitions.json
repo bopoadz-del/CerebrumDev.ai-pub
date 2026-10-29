@@ -161,6 +161,30 @@
       }
     },
     {
+      "id": "contribution_margin_ratio",
+      "definition_version": 1,
+      "key": "universal:contribution_margin_ratio_v1",
+      "tier": "base",
+      "name": "Contribution margin ratio",
+      "category": "break_even",
+      "expression": "(unit_price - unit_variable_cost) / unit_price",
+      "inputs": [
+        "unit_price",
+        "unit_variable_cost"
+      ],
+      "output": "ratio",
+      "guards": [
+        "unit_price != 0"
+      ],
+      "note": "break_even_revenue consumes this ratio; it is the per-unit contribution margin over the unit price.",
+      "label": "improvised, no Store coverage",
+      "provenance": {
+        "kind": "published_reference",
+        "reference": "Srikant M. Datar and Madhav V. Rajan, Horngren's Cost Accounting: A Managerial Emphasis, 16th edition (Pearson), Chapter 3 'Cost-Volume-Profit Analysis': contribution-margin percentage = contribution margin per unit / selling price.",
+        "recorded_on": "2026-10-29"
+      }
+    },
+    {
       "id": "break_even_units",
       "definition_version": 1,
       "key": "universal:break_even_units_v1",
@@ -257,6 +281,9 @@
         "tax_rate"
       ],
       "output": "money",
+      "guards": [
+        "1 + tax_rate != 0"
+      ],
       "note": "Extracting tax is division, not multiplication. gross * tax_rate overstates the tax on every tax-inclusive price.",
       "provenance": {
         "kind": "internal_protocol",
@@ -317,6 +344,9 @@
         "days_in_year"
       ],
       "output": "money",
+      "guards": [
+        "days_in_year != 0"
+      ],
       "note": "days_in_year is an input because the day-count convention (360 or 365) is a contract term, not a universal constant.",
       "provenance": {
         "kind": "internal_protocol",
