@@ -268,3 +268,65 @@ def test_answer_route_zero_divisor_is_unknown_200(tmp_path, monkeypatch, ratio, 
         assert body.get("kernel_value") is None
     else:
         assert body["kernel_value"] == pytest.approx(value)
+
+
+# ── G6 FAIL e215ecd repair 1: raising guards (M12), overlay guards on the
+#    answer_query path (M14 resolved= dropped, M15 overlays= dropped) ────────
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "unit_count != 0",            # names an input the definition never grounds -> MissingInput
+        "unit_price / (unit_price - unit_price) > 0",  # divides by zero inside the guard
+    ],
+)
+def test_guard_that_raises_is_an_unknown_refusal_naming_it(guard):
+    base = resolve_definitions()
+    strict = dict(base)
+    strict["contribution_margin_per_unit"] = {**base["contribution_margin_per_unit"], "guards": [guard]}
+    row = answer_definition("contribution_margin_per_unit")
+    eng = _Engine([_hit("unit price is 9. unit variable cost is 5.", "f", {})])
+    refused = _kernel_answer(eng, "c", "x", row, resolved=strict)
+    assert refused.unknown is True
+    assert refused.kernel_value is None
+    assert f"guard failed: {guard}" in refused.text
+    # Same corpus with no guard computes: the refusal came from the guard.
+    assert _kernel_answer(eng, "c", "x", row, resolved=base).kernel_value == pytest.approx(4.0)
+
+
+def _guard_overlay(guard: str):
+    base = load_base_definitions()
+    cmpu = next(d for d in base["definitions"] if d["id"] == "contribution_margin_per_unit")
+    override = {
+        **{k: cmpu[k] for k in ("id", "name", "category", "expression", "inputs", "output")},
+        "definition_version": 1,
+        "guards": [guard],
+        "overrides": cmpu["key"],
+        "reason": "Selling below variable cost is refused for this overlay.",
+        "provenance": {"kind": "internal_protocol", "reference": "overlay guard test"},
+    }
+    return {"set_id": "overlay_guard_test", "definitions": [override]}
+
+
+@pytest.mark.parametrize(
+    "price, cost, overlay_refuses, value",
+    [("5", "9", True, None), ("9", "5", False, 4.0)],
+)
+def test_answer_query_applies_an_overlay_guard(monkeypatch, price, cost, overlay_refuses, value):
+    from app.cerebrum_product_kernel import answer as answer_mod
+
+    monkeypatch.setattr(answer_mod.retrieval_index, "tenant_collection", lambda identity: "c-" + identity)
+    guard = "unit_price > unit_variable_cost"
+    eng = _Engine([_hit(f"unit price is {price}. unit variable cost is {cost}.", "f.md", {"line": 2})])
+    q = "what is the contribution margin per unit"
+
+    with_overlay = answer_mod.answer_query("t1", q, "ignored", engine=eng, overlays=[_guard_overlay(guard)])
+    without = answer_mod.answer_query("t1", q, "ignored", engine=eng)
+    assert with_overlay.kind == "kernel" and without.kind == "kernel"
+    assert with_overlay.unknown is overlay_refuses
+    assert without.unknown is False
+    if overlay_refuses:
+        assert f"guard failed: {guard}" in with_overlay.text
+        assert without.kernel_value == pytest.approx(float(price) - float(cost))
+    else:
+        assert with_overlay.kernel_value == pytest.approx(value)
