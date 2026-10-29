@@ -27,7 +27,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 #: ORDERS_1710Z-B: "graded on at least 4-5 of its functions".
 MIN_FUNCTIONS = 4
