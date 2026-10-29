@@ -1583,8 +1583,8 @@ Rules:
   SyntaxError: cannot assign to function call (queue / formula_executor).
   fail-closed keep original must still rewrite reads — a whole-module
   keep of Store workflow.py leaves envelope['result'] as
-  workflow: RuntimeError: 'result' (appointment_scheduling rejected a
-  payload built from its own schema).
+  workflow: RuntimeError: 'result' (a capability rejected a payload
+  built from its own schema).
   Exact shape:
   {"block": "event_bus", "action": "publish",
    "input": {"topic": "<str>", "payload": {}, "message": "<str>",
@@ -1604,13 +1604,15 @@ def blueprint_few_shot(capabilities: List[str], product_name: str, vertical: str
     known = [str(c).strip() for c in capabilities if str(c).strip()]
     if not known:
         raise CoderError("blueprint few-shot needs at least one capability id")
+    from app.factory.build.block_obligations import ENVELOPE_STATUS_VALUES
+
     example = known[0]
     entity = example.split("_")[0] if "_" in example else example
     shot = {
         "specs": {example: {"entity": entity, "fields": [
             {"name": f"{entity}_id", "type": "str", "required": True},
             {"name": "status", "type": "str", "required": True,
-             "allowed_values": ["open", "in_progress", "closed"]},
+             "allowed_values": list(ENVELOPE_STATUS_VALUES)},
         ]}},
         "handlers": {example: (
             "out = execute(BLOCK_IDS[0], action=BLOCK_DEFAULT_ACTIONS[BLOCK_IDS[0]], "
