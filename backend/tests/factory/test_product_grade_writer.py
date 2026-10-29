@@ -205,3 +205,12 @@ def test_truthy_function_ok_renders_fail(ok):
     md = gw.render_md(gw.build_record(product_id="p", functions=fn, ui=_ui(), layer2=_l2()))
     assert f"  - `{cid}`: FAIL;" in md and f"  - `{cid}`: PASS;" not in md
     assert all(f"  - `{f['capability_id']}`: PASS;" in md for f in fn["functions"][1:])
+
+
+# --- G2: a UI step counts as passed only when passed is True (not merely truthy) ---
+@pytest.mark.parametrize("flags,want", [((True, "yes"), "1/2"), (("yes", 1, True, "True"), "1/4")])
+def test_md_ui_step_count_needs_passed_true(flags, want):
+    ui = _ui(names=tuple(f"s:{i}" for i in range(len(flags))))
+    for s, f in zip(ui["steps"], flags):
+        s["passed"] = f
+    assert f"- UI steps passed: {want}" in _md(ui=ui)
