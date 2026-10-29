@@ -12,7 +12,7 @@ name, never mapped to a default.
 The ``/upload`` path is REAL: it validates (415/413/400), stores the blob in the
 tenant-bound object store, and parses each stored object inline and by default
 (the F-1b parser runs on upload), so the response status reflects the real
-post-parse state (``parsed`` / ``failed``). The Drive/formula handlers land in
+post-parse state (``parsed`` / ``failed``). The Drive handlers land in
 §2/§3 and until then refuse honestly with 501 — only the upload path is
 implemented.
 """
@@ -26,11 +26,11 @@ from pydantic import BaseModel, Field
 
 # The REAL product-facing routes (upload, status, answer). This is the ONLY
 # router the deploy renderer mounts into a GENERATED product — the 501
-# drive/formula placeholders live on ``_scaffold_router`` below and are NOT
+# drive placeholders live on ``_scaffold_router`` below and are NOT
 # shipped into products (F-1d §2: no 501 route ships in a generated product).
 product_router = APIRouter(prefix="/v1/product/ingestion", tags=["ingestion"])
 
-# The out-of-scope Drive/formula placeholders. They still refuse honestly with
+# The out-of-scope Drive placeholders. They still refuse honestly with
 # 501 on the Factory host (where the combined ``router`` is used) and in the
 # full-router tests, but the product renderer never mounts them.
 _scaffold_router = APIRouter(
@@ -126,21 +126,36 @@ def answer_product_question(request: Request, body: AnswerRequest) -> dict:
     return answer_question(tenant_id, body)
 
 
-@_scaffold_router.post("/formulas")
-def submit_formula_overlay(request: Request) -> None:
-    _require_product_tenant(request)
-    raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
+@product_router.post("/overlays")
+def submit_formula_overlay(request: Request, body: Dict[str, Any]) -> dict:
+    """K-F5: store one overlay set for the tenant after the kernel validates it.
+
+    A set the kernel's precedence rule refuses answers 422 carrying the
+    PrecedenceError reason; a body that is not an overlay set answers 422 too.
+    Nothing is stored on refusal.
+    """
+    from .formula_intake import OverlayShapeError, PrecedenceError, submit_overlay
+
+    tenant_id = _require_product_tenant(request)
+    try:
+        return submit_overlay(tenant_id, body)
+    except (PrecedenceError, OverlayShapeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@_scaffold_router.get("/formulas")
-def list_formula_overlays(request: Request) -> None:
-    _require_product_tenant(request)
-    raise HTTPException(status_code=501, detail="phase2_ingestion_scaffold_not_implemented")
+@product_router.get("/overlays")
+def list_formula_overlays(request: Request, response: Response) -> dict:
+    """K-F5: the tenant's stored overlay sets."""
+    from .formula_intake import list_overlays
+
+    tenant_id = _require_product_tenant(request)
+    response.headers["Cache-Control"] = "no-store"
+    return list_overlays(tenant_id)
 
 
 # The combined router: the REAL routes plus the 501 placeholders. Used on the
-# Factory host and by the full-router tests. The deploy renderer imports
-# ``product_router`` (real routes ONLY) so no 501 route ships into a product.
+# Factory host and by the full-router tests (only the Drive routes still 501).
+# The deploy renderer imports ``product_router`` (real routes ONLY).
 router = APIRouter()
 router.include_router(product_router)
 router.include_router(_scaffold_router)
@@ -268,7 +283,11 @@ def answer_question(tenant_id: str, body: "AnswerRequest") -> Dict[str, Any]:
     from app.core.llm_embeddings import EmbeddingEgressError
 
     try:
-        answer = answer_query(tenant_id, body.query, body.answer_text)
+        from app.cerebrum_product_kernel.ingestion.formula_intake import tenant_overlays
+
+        answer = answer_query(
+            tenant_id, body.query, body.answer_text, overlays=tenant_overlays(tenant_id)
+        )
     except EmbeddingEgressError as exc:
         # The embeddings egress is unconfigured or failed — a computed 503,
         # matched by TYPE (not message), on both answer routes.
