@@ -26,7 +26,7 @@ from app.models.session import SessionConfig
 def _derive(brief: str, vertical_hint):
     """Two different inputs -> two different derived verticals, offline."""
     bp = draft_blueprint_from_brief(
-        brief, vertical_hint=vertical_hint, use_goldens=False, use_llm=False
+        brief, vertical_hint=vertical_hint, use_llm=False
     )
     return bp.vertical
 
@@ -49,7 +49,7 @@ def test_no_vertical_named_yields_neutral_sentinel():
     # A brief that names NO vertical -> the neutral sentinel, never
     # "construction".
     bp = draft_blueprint_from_brief(
-        "build me a platform", vertical_hint=None, use_goldens=False, use_llm=False
+        "build me a platform", vertical_hint=None, use_llm=False
     )
     assert bp.vertical == NO_VERTICAL
     assert bp.vertical != "construction"
