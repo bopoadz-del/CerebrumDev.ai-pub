@@ -232,6 +232,17 @@ def test_accept_golden_vs_decline_two_different_outcomes(client, monkeypatch):
     assert body["golden_suggestion"] is not None
     assert body["golden_suggestion"]["golden_id"] == "projectsix"
 
+    # Seed the OPPOSITE of what accept must produce and PERSIST it, so a stale
+    # value is what a real (disk) reload returns if accept fails to reset a
+    # field or to write at all. These are exactly the states accept overwrites.
+    import app.core.session_store as _ss
+
+    _seed = get_session("sess_accept_golden")
+    _seed.product_design.blueprint_approved = True
+    _seed.product_design.plan = {"product_id": "stale-plan"}
+    _seed.config.domain = "__before_accept__"
+    update_session("sess_accept_golden", _seed)
+
     r = client.post("/v1/sessions/sess_accept_golden/product/draft/accept-golden")
     assert r.status_code == 200, r.text
     acc = r.json()
@@ -239,16 +250,20 @@ def test_accept_golden_vs_decline_two_different_outcomes(client, monkeypatch):
     assert acc["blueprint"]["product_id"] == "projectsix"
     assert acc["blueprint"]["drafting_mode"] == "golden"
 
-    # PERSISTENCE: the route WROTE the accepted golden to the store (so the
-    # "route writes nothing / drop update_session" mutant reddens). Reload the
-    # session from the store and read the persisted blueprint and session.
+    # PERSISTENCE: evict the in-memory copy so the reload comes from the DISK
+    # snapshot update_session wrote -- not the object the route mutated in
+    # place. Dropping update_session (the "route writes nothing" mutant) then
+    # leaves the seeded stale state on disk and reddens every assert below.
+    _ss._session_store.pop("sess_accept_golden", None)
     state2 = get_session("sess_accept_golden")
     assert state2 is not None
     assert state2.product_design.blueprint["product_id"] == "projectsix"
-    # Accept resets the downstream stages and sets the session domain.
+    # Accept resets the downstream stages (reddens the drop-reset mutants: the
+    # seeded True / stale-plan would otherwise survive on disk) and sets the
+    # domain from the accepted golden, not the seeded sentinel.
     assert state2.product_design.blueprint_approved is False
     assert state2.product_design.plan is None
-    assert state2.config.domain, "accept must set config.domain from the golden"
+    assert state2.config.domain and state2.config.domain != "__before_accept__"
 
     # --- DECLINE --------------------------------------------------------
     create_session("sess_decline_golden", DEV_LOCAL_TENANT)
