@@ -130,8 +130,12 @@ def derive_functions(blueprint: Mapping[str, Any], workspace: Path) -> List[Grad
 _RUNNER = r"""
 import importlib, json, sys
 spec = json.loads(sys.stdin.read())
-mod = importlib.import_module(spec["module"])
-original = mod.handle
+try:
+    original = importlib.import_module(spec["module"]).handle
+except Exception as exc:
+    print("@@GRADE@@" + json.dumps({"two_input": False, "mutants": {m: "not_run" for m in spec["mutants"]},
+                                    "error": f"import failed: {type(exc).__name__}: {exc}"[:300]}))
+    sys.exit(0)
 def canon(r):
     return json.dumps(r, sort_keys=True, default=str)
 def two_input(handle):
@@ -141,6 +145,7 @@ out = {"two_input": None, "mutants": {}}
 try:
     out["two_input"] = two_input(original)
 except Exception as exc:
+    # A handle that raises answered nothing: never ok, and its mutants prove nothing.
     out["two_input"] = False
     out["error"] = f"{type(exc).__name__}: {exc}"[:300]
 fixed = None
@@ -153,6 +158,9 @@ mutants = {
     "drop_rule": lambda payload: original({}),
 }
 for name in spec["mutants"]:
+    if out.get("error"):
+        out["mutants"][name] = "not_run"
+        continue
     try:
         survived = two_input(mutants[name])
     except Exception:
