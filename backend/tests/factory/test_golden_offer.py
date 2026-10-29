@@ -133,6 +133,29 @@ def test_two_inputs_two_base_drafts_golden_offered_above_threshold(goldens_on_di
         assert "accept" in sug["label"].lower() and "decline" in sug["label"].lower()
 
 
+def test_overlap_is_input_derived_not_constant(goldens_on_disk):
+    # Two drafts with DIFFERENT structural overlap with the golden -> two
+    # DIFFERENT reported overlap values. A draft sharing all three golden cap
+    # ids scores Jaccard 1.0; one sharing two of three scores 3/4 = 0.75. The
+    # constant-overlap mutant (overlap forced to a fixed value) reddens the
+    # a != b / exact-value asserts below.
+    monkeypatch = goldens_on_disk
+
+    _install_fake_inner(monkeypatch, ["cap_x", "cap_y", "cap_z"])  # overlap 1.0
+    a = product_architect.draft_blueprint_from_brief(
+        "Alpha widget co", vertical_hint="acme_vertical"
+    )
+    _install_fake_inner(monkeypatch, ["cap_x", "cap_y"])  # overlap 3/4 = 0.75
+    b = product_architect.draft_blueprint_from_brief(
+        "Beta gadget ltd", vertical_hint="acme_vertical"
+    )
+
+    assert a.golden_suggestion is not None and b.golden_suggestion is not None
+    assert a.golden_suggestion["overlap"] == 1.0
+    assert b.golden_suggestion["overlap"] == 0.75
+    assert a.golden_suggestion["overlap"] != b.golden_suggestion["overlap"]
+
+
 def test_below_threshold_no_suggestion(goldens_on_disk):
     # Low overlap: the draft shares NONE of the golden's capability ids, so only
     # the vertical overlaps -> Jaccard({cap_p,cap_q,acme_vertical},

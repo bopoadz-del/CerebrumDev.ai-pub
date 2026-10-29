@@ -90,6 +90,17 @@ def test_session_product_steward_golden_offer_flow(client, monkeypatch, tmp_path
     )
     assert body["source"] == "drafted"
     assert body["blueprint"].get("drafting_mode") != "golden"
+    # The /product/draft RESPONSE surfaces the offer to the user -- this is the
+    # only path the user sees it on. Pin it here: above the (lowered) threshold
+    # the "projectsix" golden rides on body["golden_suggestion"] as a labelled
+    # accept/decline offer, while the base above stays the user's "estate"
+    # draft. Dropping the key from draft_from_chat (or setting it None) reddens
+    # these asserts.
+    sug = body["golden_suggestion"]
+    assert sug is not None, "the matching golden must be offered on the draft response"
+    assert sug["golden_id"] == "projectsix"
+    assert sug["drafting_mode"] == "golden"
+    assert "accept" in sug["label"].lower() and "decline" in sug["label"].lower()
 
     # The "projectsix" steward golden is OFFERED for this estate draft. The
     # accept/decline resolution (the user accepting the suggestion) resolves to
@@ -153,6 +164,32 @@ def test_session_product_steward_golden_offer_flow(client, monkeypatch, tmp_path
     assert st.status_code == 200
     assert st.json()["blueprint_approved"] is True
     assert st.json()["generation"]["inputs_hash"]
+
+
+def test_product_draft_response_omits_golden_below_threshold(client, monkeypatch):
+    """Below the overlap threshold the /product/draft response carries NO offer.
+
+    The companion to the steward offer flow: with the threshold raised so no
+    golden's structural overlap clears it, body["golden_suggestion"] is None and
+    the base is still the user's own draft. A threshold mutant (always-suggest)
+    reddens the `is None` assert here, on the user-facing response path.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.99")
+    create_session("sess_product_below", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_product_below/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["source"] == "drafted"
+    assert body["blueprint"]["product_id"] == "estate"
+    assert body["golden_suggestion"] is None
 
 
 def test_generate_requires_approval(client):

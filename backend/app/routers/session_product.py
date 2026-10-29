@@ -909,6 +909,10 @@ def draft_product(
                 "resumed" if _bp_resumed
                 else ("golden" if bp.drafting_mode == "golden" else "drafted")
             ),
+            # Surface the golden OFFER to the user on the response (the only
+            # path they see it on), mirroring draft_from_chat. None below the
+            # threshold / on no match; the base above stays the user's draft.
+            "golden_suggestion": bp.golden_suggestion,
         }
     except Exception as exc:  # noqa: BLE001
         _raise_product_error(session_id, state, exc)
