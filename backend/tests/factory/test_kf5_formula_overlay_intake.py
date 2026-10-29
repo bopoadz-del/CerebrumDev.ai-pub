@@ -127,3 +127,15 @@ def test_answer_question_passes_the_tenants_overlays(store, monkeypatch):
     ingestion_router_mod.answer_question("tenant-a", body)
     ingestion_router_mod.answer_question("tenant-b", body)
     assert seen == {"tenant-a": ["set-a"], "tenant-b": []}
+
+
+# ---- repair 1 (G2 M5 / M7) ----
+@pytest.mark.parametrize("ids", [("s1", "s2"), ("alpha_set", "beta_set", "gamma_set")])
+def test_one_tenant_keeps_every_distinct_set(store, ids):
+    outs = [fi.submit_overlay("tenant-a", _extend(sid, f"metric_{sid}")) for sid in ids]
+    assert [o["sets_stored"] for o in outs] == list(range(1, len(ids) + 1))
+    listed = fi.list_overlays("tenant-a")
+    assert [s["set_id"] for s in listed["sets"]] == list(ids)
+    assert listed["count"] == len(ids)
+    # resubmitting one set replaces it, the count does not grow
+    assert fi.submit_overlay("tenant-a", _extend(ids[0], f"metric_{ids[0]}"))["sets_stored"] == len(ids)
