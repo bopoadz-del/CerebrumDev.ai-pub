@@ -19,6 +19,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+# The one writer of grade.json is F-8c-0's (#79); no copy lives here.
+from app.factory.build.product_grader.grade_writer import write_grade_json  # noqa: F401
+
 GRADE_JSON = "grade.json"
 SCHEMA = "product_grade.v1"
 PASS = "PASS"
@@ -63,23 +66,52 @@ def build_grade(
     }
 
 
-def write_grade_json(root: Path | str, grade: Mapping[str, Any]) -> Path:
-    root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / GRADE_JSON
-    path.write_text(json.dumps(grade, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return path
+def _schema_errors(grade: Any) -> List[str]:
+    """Every way ``grade`` is not a product_grade.v1 record (empty == valid)."""
+    if not isinstance(grade, Mapping):
+        return ["record is not a mapping"]
+    errs: List[str] = []
+    want = {"schema", "product_id", "layer1", "layer2", "next_tasks", "certified"}
+    if set(grade) != want:
+        errs.append(f"fields {sorted(set(grade) ^ want)} missing or unknown")
+    if grade.get("schema") != SCHEMA:
+        errs.append("schema is not product_grade.v1")
+    if not isinstance(grade.get("product_id"), str) or not grade["product_id"].strip():
+        errs.append("product_id is not a non-blank string")
+    if not isinstance(grade.get("certified"), bool):
+        errs.append("certified is not a bool")
+    if not isinstance(grade.get("next_tasks"), list) or not all(isinstance(t, str) for t in grade["next_tasks"]):
+        errs.append("next_tasks is not a list of strings")
+    l1, l2 = grade.get("layer1"), grade.get("layer2")
+    if not isinstance(l1, Mapping):
+        errs.append("layer1 is not a mapping")
+    else:
+        if not isinstance(l1.get("ok"), bool):
+            errs.append("layer1.ok is not a bool")
+        for part in ("functions", "ui"):
+            if not isinstance(l1.get(part), Mapping) or not isinstance(l1[part].get("ok"), bool):
+                errs.append(f"layer1.{part} is not a mapping with a bool ok")
+    if not isinstance(l2, Mapping):
+        errs.append("layer2 is not a mapping")
+    else:
+        if not isinstance(l2.get("ran"), bool):
+            errs.append("layer2.ran is not a bool")
+        vs = l2.get("verdicts")
+        if not isinstance(vs, list) or not all(
+            isinstance(v, Mapping) and all(isinstance(v.get(k), str) for k in ("question", "verdict", "evidence")) for v in vs
+        ):
+            errs.append("layer2.verdicts is not a list of {question, verdict, evidence} strings")
+        of = l2.get("open_fails")
+        if not isinstance(of, list) or not all(isinstance(q, str) for q in of):
+            errs.append("layer2.open_fails is not a list of strings")
+    return errs
 
 
 def _load(root: Path | str) -> Mapping[str, Any]:
     grade = json.loads((Path(root) / GRADE_JSON).read_text("utf-8"))
-    if not isinstance(grade, Mapping) or grade.get("schema") != SCHEMA:
-        raise ValueError("not a product_grade.v1 record")
-    l1, l2 = grade["layer1"], grade["layer2"]
-    if not all(isinstance(x, Mapping) for x in (l1, l2, l1["functions"], l1["ui"])):
-        raise ValueError("layers are not mappings")
-    if not isinstance(l2.get("verdicts", []), list):
-        raise ValueError("verdicts is not a list")
+    errs = _schema_errors(grade)
+    if errs:
+        raise ValueError("not a product_grade.v1 record: " + "; ".join(errs))
     return grade
 
 

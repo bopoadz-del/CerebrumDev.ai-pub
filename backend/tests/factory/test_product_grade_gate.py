@@ -79,8 +79,8 @@ def test_layer1_alone_certifies(tmp_path, fn, ui, certified):  # G33
 
 @pytest.mark.parametrize("l2,reason", [
     (_l2(_v(), ran=False), "Layer 2 did not run"),     # G34
-    ({"verdicts": [_v()]}, "Layer 2 did not run"),
-    (_l2(_v(), ran="true"), "Layer 2 did not run"),
+    ({"verdicts": [_v()]}, "unreadable"),            # no ran: off-schema (S1), still refused
+    (_l2(_v(), ran="true"), "unreadable"),
     (_l2(), "no verdicts"),
     (_l2(_v(), open_fails=["q7"]), "1 open Layer-2"),
 ])
@@ -129,3 +129,63 @@ def test_store_gate_success_refuses_ungraded_build(tmp_path):
     )
     with pytest.raises(BuildsPushError, match="grade.json missing"):
         n3.apply_store_gate_success(tmp_path, snap)
+
+
+# --- G2 #75 repairs: S1 _load enforces the schema; one writer -------------
+from app.factory.build.product_grader import grade_writer as gw  # noqa: E402
+
+
+def test_gate_uses_the_writers_write_grade_json():
+    assert gr.write_grade_json is gw.write_grade_json
+
+
+def _good():
+    return gr.build_grade(product_id="p", functions=GREEN_FN, ui=GREEN_UI, layer2=_l2(_v()))
+
+
+def _set(path, value):
+    def m(g):
+        *head, last = path
+        for k in head:
+            g = g[k]
+        if value is KeyError:
+            del g[last]
+        else:
+            g[last] = value
+    return m
+
+
+S1 = [
+    _set(["product_id"], ""), _set(["product_id"], 7), _set(["product_id"], KeyError),
+    _set(["certified"], "yes"), _set(["certified"], KeyError),
+    _set(["next_tasks"], "x"), _set(["next_tasks"], [1]),
+    _set(["layer1", "ok"], "true"), _set(["layer1", "ok"], 1),
+    _set(["layer1", "functions"], []), _set(["layer1", "ui", "ok"], "yes"), _set(["layer1", "functions", "ok"], KeyError),
+    _set(["layer2", "ran"], "yes"), _set(["layer2", "ran"], KeyError),
+    _set(["layer2", "verdicts"], "PASS"), _set(["layer2", "verdicts"], [{"question": "q", "verdict": "PASS"}]),
+    _set(["layer2", "verdicts"], [{"question": "q", "verdict": "PASS", "evidence": 5}]),
+    _set(["layer2", "verdicts"], ["PASS"]),
+    _set(["layer2", "open_fails"], "none"), _set(["layer2", "open_fails"], [None]),
+    _set(["schema"], "product_grade.v2"), _set(["extra"], 1),
+]
+
+
+@pytest.mark.parametrize("break_it", S1)
+def test_load_enforces_schema(tmp_path, break_it):
+    g = _good()
+    assert gr.certification_refusal(_written(tmp_path / "ok", g)) is None
+    break_it(g)
+    assert gr.certification_refusal(_written(tmp_path / "bad", g)) == "product grade unreadable: build not certified"
+
+
+def _written(root, g):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "grade.json").write_text(json.dumps(g))
+    return root
+
+
+@pytest.mark.parametrize("pid", ["a", "lettings-desk"])
+def test_schema_errors_empty_for_writer_output(pid):
+    g = gw.build_record(product_id=pid, functions={"ok": True}, ui={"ok": True},
+                        layer2={"ran": True, "verdicts": [{"question": "q", "verdict": "PASS", "evidence": EV}]})
+    assert gr._schema_errors(g) == [] and gr._schema_errors(json.loads(json.dumps(g))) == []
