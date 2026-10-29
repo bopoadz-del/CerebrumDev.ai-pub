@@ -26,8 +26,11 @@ def git(*args: str, cwd: Path) -> str:
 def _param_cases(fn: ast.FunctionDef) -> int:
     best = 0
     for d in fn.decorator_list:
-        if isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "parametrize" and len(d.args) >= 2:
-            vals = d.args[1]
+        if not (isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "parametrize"):
+            continue
+        kw = {k.arg: k.value for k in d.keywords}
+        vals = d.args[1] if len(d.args) >= 2 else kw.get("argvalues")
+        if vals is not None:
             if isinstance(vals, (ast.List, ast.Tuple)):
                 distinct = {ast.dump(e) for e in vals.elts}
                 best = max(best, len(distinct))
@@ -38,10 +41,11 @@ def _param_cases(fn: ast.FunctionDef) -> int:
 
 def _asserts_value(fn: ast.FunctionDef) -> bool:
     for n in ast.walk(fn):
-        if (
-            isinstance(n, ast.Assert)
-            and isinstance(n.test, ast.Compare)
-            and any(isinstance(op, (ast.Eq, ast.NotEq)) for op in n.test.ops)
+        # Any ==/!= anywhere in the asserted expression counts (chained
+        # compares, ``a and b == c``, ``not x == y``), not just the first op.
+        if isinstance(n, ast.Assert) and any(
+            isinstance(c, ast.Compare) and any(isinstance(op, (ast.Eq, ast.NotEq)) for op in c.ops)
+            for c in ast.walk(n.test)
         ):
             return True
     return False

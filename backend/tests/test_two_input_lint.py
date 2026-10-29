@@ -112,3 +112,95 @@ def test_lint_only_reads_test_modules(tmp_path, fname):
     (repo / "tests" / fname).write_text("def test_z():\n    assert 1 == 1\n")
     _commit(repo)
     assert mg.lint_two_inputs(repo, "HEAD~2", ["tests"]) == []
+
+
+# --- G2 survivor repairs (#73) -------------------------------------------
+import ast as _ast
+
+VALUE_TEST = "def test_v():\n    assert f(1) == 2\n"
+
+
+def _fake_git(monkeypatch, old):
+    def git(*args, cwd):
+        if args[0] == "diff":
+            return "tests/test_m.py\n"
+        if old is None:
+            raise subprocess.CalledProcessError(128, "git show")
+        return old
+    monkeypatch.setattr(mg, "git", git)
+
+
+@pytest.mark.parametrize("old,bad", [
+    (VALUE_TEST, []),                       # existed before: not new, not linted
+    ("def test_other():\n    pass\n", ["tests/test_m.py::test_v"]),
+    (None, ["tests/test_m.py::test_v"]),    # empty base: file is new
+    ("", ["tests/test_m.py::test_v"]),
+])
+def test_only_new_tests_are_linted(tmp_path, monkeypatch, old, bad):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_m.py").write_text(VALUE_TEST)
+    _fake_git(monkeypatch, old)
+    assert mg.lint_two_inputs(tmp_path, "B", ["tests"]) == bad
+
+
+def _cases(deco: str) -> int:
+    return mg._param_cases(_ast.parse(f"{deco}\ndef test_x(a):\n    assert a == 1\n").body[0])
+
+
+@pytest.mark.parametrize("deco,n", [
+    ("@pytest.mark.parametrize('a', CASES)", 2),                 # G5 computed list
+    ("@pytest.mark.parametrize('a', make_cases())", 2),
+    ("@pytest.mark.parametrize('a', [1, 1, 1])", 1),             # G6 duplicates
+    ("@pytest.mark.parametrize('a', [1, 2, 2])", 2),
+    ("@pytest.mark.parametrize('a', [1, 2, 3])", 3),
+    ("@pytest.mark.skipif('a', [1, 2])", 0),                     # not parametrize
+    ("@pytest.mark.parametrize('a')", 0),                        # args < 2
+    ("@pytest.mark.parametrize('a', argvalues=[1, 2])", 2),
+    ("@pytest.mark.parametrize(argnames='a', argvalues=[1, 2, 3])", 3),
+])
+def test_param_case_count(deco, n):
+    assert _cases(deco) == n
+
+
+@pytest.mark.parametrize("decos", [
+    "@pytest.mark.slow\n@pytest.mark.parametrize('a', [1, 2])",
+    "@pytest.mark.parametrize('a', [1, 2])\n@pytest.mark.slow",
+    "@pytest.mark.slow\n@pytest.mark.parametrize('a', [1, 2])\n@pytest.mark.other",
+])
+def test_parametrize_found_in_any_decorator_position(decos):
+    assert _cases(decos) == 2
+
+
+@pytest.mark.parametrize("src,names", [
+    ("async def test_a():\n    pass\ndef test_b():\n    pass\n", {"test_a", "test_b"}),
+    ("def helper_test():\n    pass\ndef testing():\n    pass\ndef check_x():\n    pass\n", {"testing"}),
+])
+def test_test_fns_includes_async_and_needs_test_prefix(src, names):
+    assert set(mg._test_fns(src)) == names
+
+
+@pytest.mark.parametrize("body,value", [
+    ("assert a < b == c", True),           # not only the first op
+    ("assert a < b != c", True),
+    ("assert a and b == c", True),         # compare inside a BoolOp
+    ("assert not a == b", True),
+    ("assert x\n    assert y == 1", True),  # not only the first assert
+    ("assert a < b < c", False),
+    ("assert a in b", False),
+])
+def test_every_compare_is_checked(body, value):
+    fn = _ast.parse(f"def test_x():\n    {body}\n").body[0]
+    assert mg._asserts_value(fn) is value
+
+
+@pytest.mark.parametrize("extra,lines", [
+    ("", ["New single-input value tests: 0"]),
+    ("\ndef test_one():\n    assert fee(1, 1) == 2\n", ["New single-input value tests: 1", "- FAIL: `tests/test_calc.py::test_one`"]),
+])
+def test_summary_is_written(tmp_path, monkeypatch, extra, lines):
+    repo = _repo(tmp_path / "r", STRONG + extra)
+    monkeypatch.chdir(repo)
+    s = tmp_path / "s.md"
+    mg.main(["--base", "HEAD~1", "--tests", "tests", "--summary", str(s)])
+    text = s.read_text()
+    assert text.startswith("## Two-input test lint") and all(x in text for x in lines)
