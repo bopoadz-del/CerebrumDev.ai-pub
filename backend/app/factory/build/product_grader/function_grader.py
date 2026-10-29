@@ -63,6 +63,14 @@ class FunctionGrade:
     min_functions: int = MIN_FUNCTIONS
     errors: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # MIN_FUNCTIONS is a floor, not a default: a caller can ask for more
+        # gradeable functions, never fewer (0, negatives, bools, non-ints).
+        m = self.min_functions
+        if isinstance(m, bool) or not isinstance(m, int):
+            raise TypeError(f"min_functions must be an int, got {type(m).__name__}")
+        self.min_functions = max(m, MIN_FUNCTIONS)
+
     @property
     def ok(self) -> bool:
         return (

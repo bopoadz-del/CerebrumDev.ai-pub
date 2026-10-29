@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -184,3 +186,77 @@ def test_result_needs_the_runs_nonce(tmp_path, nonce, ok):
     p = tmp_path / "r.json"
     p.write_text('{"nonce": "%s", "two_input": true, "mutants": {}}' % nonce)
     assert (fg._read_result(p, "abc") is not None) is ok
+
+
+# --- G2 #80: F20 min_functions enforced, F21 to_dict failing, R5, R1 -------
+def _ok_result(cid):
+    return fg.FunctionResult(cid, True, ["constant_return", "drop_rule"], [], "")
+
+
+@pytest.mark.parametrize("asked,n,ok", [(0, 1, False), (-5, 3, False), (1, 1, False), (2, 3, False),
+                                       (4, 4, True), (6, 5, False), (6, 6, True)])
+def test_min_functions_is_a_floor(asked, n, ok):  # F20
+    g = fg.FunctionGrade([_ok_result(f"c{i}") for i in range(n)], min_functions=asked)
+    assert g.min_functions == max(asked, fg.MIN_FUNCTIONS) and g.ok is ok
+    assert any("too few" in f for f in g.failing) is (not ok)
+
+
+@pytest.mark.parametrize("asked", [True, "0", 2.5, None])
+def test_min_functions_must_be_an_int(asked):  # F20
+    with pytest.raises(TypeError):
+        fg.FunctionGrade([], min_functions=asked)
+
+
+@pytest.mark.parametrize("asked", [0, 1])
+def test_grade_functions_cannot_lower_the_floor(tmp_path, asked):  # F20
+    ids = BLUEPRINTS[1][:2]
+    g = fg.grade_functions(_bp(ids), _workspace(tmp_path, {i: READS_INPUT for i in ids}), min_functions=asked)
+    assert not g.ok and g.to_dict()["min_functions"] == fg.MIN_FUNCTIONS
+
+
+@pytest.mark.parametrize("bad", [["c1"], ["c0", "c3"]])
+def test_to_dict_failing_path(bad):  # F21
+    rs = [fg.FunctionResult(f"c{i}", f"c{i}" not in bad, [] if f"c{i}" in bad else ["drop_rule"],
+                            ["drop_rule"] if f"c{i}" in bad else [], "x") for i in range(5)]
+    d = fg.FunctionGrade(rs, errors=["derivation error"]).to_dict()
+    assert d["ok"] is False and d["graded"] == 5 and d["min_functions"] == fg.MIN_FUNCTIONS
+    assert d["failing"] == bad + ["derivation error"]
+    assert [f["capability_id"] for f in d["functions"] if f["ok"] is False] == bad
+    assert all(f["ok"] is True for f in d["functions"] if f["capability_id"] not in bad)
+
+
+@pytest.mark.parametrize("n", [2, 3])
+def test_to_dict_too_few_path(n):  # F21
+    d = fg.FunctionGrade([_ok_result(f"c{i}") for i in range(n)]).to_dict()
+    assert d["ok"] is False and d["failing"] == [f"too few gradeable functions: {n} < {fg.MIN_FUNCTIONS}"]
+
+
+@pytest.mark.parametrize("raise_,word", [
+    ("raise ValueError('v')", "handle raised: ValueError"),
+    ("raise KeyError('k')", "handle raised: KeyError"),
+    ("raise KeyboardInterrupt", "handle raised: KeyboardInterrupt"),
+    ("raise GeneratorExit", "handle raised: GeneratorExit"),
+    ("class Odd(BaseException):\n        pass\n    raise Odd()", "handle raised: Odd"),
+    ("raise SystemExit(2)", "handle exited: SystemExit"),
+])
+def test_base_exception_vs_exception(tmp_path, raise_, word):  # R5
+    ws = _workspace(tmp_path, {"cap": f"def handle(payload):\n    {raise_}\n"})
+    (r,) = [fg.run_function(f, ws) for f in fg.derive_functions(_bp(["cap"]), ws)]
+    assert not r.ok and r.detail.startswith(word) and r.mutants_killed == []
+
+
+@pytest.mark.parametrize("rc,ok", [(0, True), (1, False), (137, False), (-9, False)])
+def test_nonzero_returncode_fails_even_with_a_result(tmp_path, monkeypatch, rc, ok):  # R1
+    ws = _workspace(tmp_path, {"cap": READS_INPUT})
+    (fn,) = fg.derive_functions(_bp(["cap"]), ws)
+
+    def fake(cmd, *, input, **kw):
+        spec = json.loads(input)
+        Path(spec["out"]).write_text(json.dumps({"nonce": spec["nonce"], "two_input": True,
+                                                 "mutants": {m: "killed" for m in spec["mutants"]}}))
+        return subprocess.CompletedProcess(cmd, rc, "", "boom" if rc else "")
+
+    monkeypatch.setattr(fg.subprocess, "run", fake)
+    r = fg.run_function(fn, ws)
+    assert r.ok is ok
+    assert (f"rc={rc}" in r.detail) is (not ok)
