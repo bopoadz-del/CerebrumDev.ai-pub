@@ -10,6 +10,7 @@ import {
   type BuildStatus,
   type ChatEvent,
   type DeclaredLocale,
+  type GoldenSuggestion,
   type IntakeState,
   type ProductDesign,
   type TypedFloorAction,
@@ -69,6 +70,11 @@ interface ChatMsg {
     roles?: string[]
     users?: string[]
     done_when?: string[]
+    /**
+     * The golden OFFERED on this draft (H1, F-4): an accept/decline offer, not
+     * a substitution — the base blueprint above stays the user's own draft.
+     */
+    golden_suggestion?: GoldenSuggestion | null
   }
   plainLanguage?: string
 }
@@ -84,15 +90,20 @@ export function BlueprintCard({
   busy,
   onApprove,
   onRefine,
+  onAcceptGolden,
+  onDeclineGolden,
   accessPaused = false,
 }: {
   blueprint: NonNullable<ChatMsg['blueprint']>
   busy: boolean
   onApprove: (excludedIds: string[], delivery: 'zip' | 'github_repo') => void
   onRefine: (typed: TypedFloorAction) => void
+  onAcceptGolden?: () => void
+  onDeclineGolden?: () => void
   accessPaused?: boolean
 }) {
   const caps = blueprint.capabilities ?? []
+  const golden: GoldenSuggestion | null = blueprint.golden_suggestion ?? null
   const [ticked, setTicked] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(caps.map((c) => [c.id, true])),
   )
@@ -133,6 +144,37 @@ export function BlueprintCard({
         </p>
       )}
       {blueprint.summary && <p className="bp-summary">{blueprint.summary}</p>}
+      {golden && !accessPaused && (onAcceptGolden || onDeclineGolden) && (
+        <div className="bp-golden-offer" data-testid="bp-golden-offer" role="group">
+          <p className="bp-golden-offer-label">
+            {golden.label}: <strong>{golden.golden_name}</strong>
+            {typeof golden.overlap === 'number'
+              ? ' (' + Math.round(golden.overlap * 100) + '% overlap)'
+              : ''}
+          </p>
+          <div className="card-actions">
+            {onAcceptGolden && (
+              <button
+                data-testid="bp-accept-golden"
+                disabled={busy}
+                onClick={() => onAcceptGolden()}
+              >
+                Accept golden
+              </button>
+            )}
+            {onDeclineGolden && (
+              <button
+                className="link"
+                data-testid="bp-decline-golden"
+                disabled={busy}
+                onClick={() => onDeclineGolden()}
+              >
+                Decline
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {(blueprint.users?.length || blueprint.roles?.length) ? (
         <p className="bp-summary dim" data-testid="bp-plain-who">
           {blueprint.users?.length ? 'For: ' + blueprint.users.join(', ') : ''}
@@ -857,6 +899,54 @@ export function Floor({
     [accessPaused, busy, sendCore],
   )
 
+  // H1 (F-4): the user resolves the golden OFFERED on the current draft. Both
+  // call the dedicated routes and re-render the blueprint card with the
+  // resulting blueprint — accept swaps in the golden, decline keeps the user's
+  // draft and clears the offer so the accept/decline card disappears.
+  const resolveGolden = useCallback(
+    async (mode: 'accept' | 'decline') => {
+      if (busy || accessPaused) return
+      setBusy(true)
+      try {
+        const resp =
+          mode === 'accept'
+            ? await product.acceptGolden(sessionId)
+            : await product.declineGolden(sessionId)
+        const bp = resp.blueprint as NonNullable<ChatMsg['blueprint']>
+        setProductDesign((d) => (d ? { ...d, blueprint: resp.blueprint } : d))
+        setMsgs((m) => {
+          const copy = [...m]
+          for (let i = copy.length - 1; i >= 0; i -= 1) {
+            if (copy[i].card === 'blueprint') {
+              copy[i] = {
+                ...copy[i],
+                text:
+                  mode === 'accept'
+                    ? 'Golden accepted — this platform now builds the golden blueprint. Approve the feature list to start the coding agent.'
+                    : 'Golden declined — keeping your own draft. Approve the feature list to start the coding agent.',
+                blueprint: bp,
+              }
+              return copy
+            }
+          }
+          return copy
+        })
+      } catch (e) {
+        setMsgs((m) => [
+          ...m,
+          {
+            role: 'factory',
+            text: e instanceof Error ? e.message : 'could not resolve the golden offer',
+            card: 'error',
+          },
+        ])
+      } finally {
+        setBusy(false)
+      }
+    },
+    [accessPaused, busy, sessionId],
+  )
+
   const approveWithSelection = useCallback(
     async (excludedIds: string[], delivery: 'zip' | 'github_repo') => {
       if (busy || accessPaused) return
@@ -1065,6 +1155,8 @@ export function Floor({
                 void approveWithSelection(excludedIds, delivery)
               }
                     onRefine={(typed) => void sendTyped(typed)}
+                    onAcceptGolden={() => void resolveGolden('accept')}
+                    onDeclineGolden={() => void resolveGolden('decline')}
                   />
                 )}
                 {m.card === 'generation' && (
