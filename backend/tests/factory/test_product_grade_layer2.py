@@ -110,3 +110,24 @@ def test_ran_is_true_exactly_when_the_grader_answered_a_list(reply, ran):
 
     out = l2m.run_layer2({"compiled_brief": "b"}, _L6_BPS[0], lambda m: reply)
     assert out["ran"] is ran and out["open_fails"]
+
+
+# --- G2 X10: the recorded verdict is the grader's verdict, FAIL included ---
+@pytest.mark.parametrize("verdicts", [["FAIL"], ["PASS", "FAIL"], ["FAIL", "PASS", "FAIL"]])
+def test_recorded_verdict_is_the_graders_verdict(verdicts):
+    bp = {"capabilities": [{"id": f"c{i}", "description": f"D{i}."} for i in range(len(verdicts) - 1)]}
+    qs = l2.layer2_questions(bp)
+    raw = json.dumps([{"question": q, "verdict": v, "evidence": "e"} for q, v in zip(qs, verdicts)])
+    out = l2.run_layer2(INPUTS[0], bp, lambda m: raw)
+    assert [v["verdict"] for v in out["verdicts"]] == verdicts
+
+
+# --- G2 X8: each capability question carries the capability's description ---
+@pytest.mark.parametrize("caps", [
+    [{"id": "rent_roll", "description": "Roll the monthly rent ledger."}],
+    [{"id": "a", "description": "Raise a site defect with photo."}, {"id": "b", "description": "Show the crew roster by day."}],
+])
+def test_capability_question_carries_its_description(caps):
+    qs = l2.layer2_questions({"capabilities": caps})
+    for c, q in zip(caps, qs):
+        assert f"'{c['id']}'" in q and c["description"] in q
