@@ -682,3 +682,43 @@ def test_building_is_never_downloadable_even_as_is(client, tmp_path):
 
     pkg = client.get("/v1/sessions/sess_asis_building/product/package?as_is=1")
     assert pkg.status_code == 409, pkg.text
+
+
+def test_accept_golden_absent_offer_guard_on_its_own(client, monkeypatch):
+    """The absent-offer 409 guard, pinned on its own (G2 note on #58).
+
+    Same brief, same lowered threshold, so the resolver DOES resolve the
+    golden in both halves (a matching id) — the mismatch guard cannot fire.
+    Two inputs: offer stored -> accept is 200; the same draft with its stored
+    offer cleared -> 409 and the user's draft is left untouched. Removing or
+    neutralising the absent-offer guard (treating "no offer" as "accept
+    whatever resolves") reddens the second half.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.05")
+    results = {}
+    for sid, keep_offer in (("sess_guard_offer", True), ("sess_guard_nooffer", False)):
+        create_session(sid, DEV_LOCAL_TENANT)
+        r = client.post(
+            f"/v1/sessions/{sid}/product/draft",
+            json={
+                "brief": "Generate Projectsix private estate operations",
+                "vertical_hint": "estate",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["golden_suggestion"]["golden_id"] == "projectsix"
+        if not keep_offer:
+            state = get_session(sid)
+            assert state is not None
+            state.product_design.blueprint["golden_suggestion"] = None
+            update_session(sid, state)
+        results[keep_offer] = client.post(f"/v1/sessions/{sid}/product/draft/accept-golden")
+
+    assert results[True].status_code == 200, results[True].text
+    assert results[True].json()["blueprint"]["product_id"] == "projectsix"
+    assert results[False].status_code == 409, results[False].text
+    assert "no golden was offered" in results[False].json()["detail"]
+    after = get_session("sess_guard_nooffer")
+    assert after is not None
+    assert after.product_design.blueprint["product_id"] == "estate"
