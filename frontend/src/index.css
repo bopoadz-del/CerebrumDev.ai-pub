@@ -620,6 +620,17 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   color: #9ec5e8;
   border-color: #2f4c6a;
 }
+.bp-golden-offer {
+  border: 1px solid #2f4c6a;
+  background: #0f1724;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0 0;
+}
+.bp-golden-offer-label {
+  margin: 0 0 8px;
+  color: #9ec5e8;
+}
 .coder-takeover {
   border: 1px solid #2f5c43;
   background: #102018;

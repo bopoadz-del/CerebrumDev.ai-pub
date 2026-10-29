@@ -397,6 +397,18 @@ export function chatEventText(ev: ChatEvent): string | null {
   return null
 }
 
+/**
+ * The golden match OFFERED on a draft (H1, F-4). It is an OFFER, never a
+ * substitution: the base blueprint stays the user's own draft.
+ */
+export interface GoldenSuggestion {
+  golden_id: string
+  golden_name: string
+  overlap: number
+  drafting_mode: string
+  label: string
+}
+
 export interface ProductDesign {
   session_id?: string
   mode?: string
@@ -407,6 +419,12 @@ export interface ProductDesign {
   intake_blueprint?: Record<string, unknown> | null
   blueprint_approved?: boolean
   brief_lint?: Record<string, unknown> | null
+  /**
+   * The golden OFFER surfaced on the draft (H1, F-4): the user's draft stays
+   * the base and a matching golden is offered as accept/decline, never swapped
+   * in. None below the overlap threshold / on no match.
+   */
+  golden_suggestion?: GoldenSuggestion | null
   generation?: {
     output_dir?: string
     inputs_hash?: string
@@ -450,10 +468,29 @@ export const product = {
       `/v1/sessions/${sid}/product/verticals`,
     ),
   draft: (sid: string, brief: string, vertical_hint?: string) =>
-    req<ProductDesign & { source?: string; yaml?: string }>('POST', `/v1/sessions/${sid}/product/draft`, {
-      brief,
-      vertical_hint,
-    }),
+    req<ProductDesign & { source?: string; yaml?: string; golden_suggestion?: GoldenSuggestion | null }>(
+      'POST',
+      `/v1/sessions/${sid}/product/draft`,
+      {
+        brief,
+        vertical_hint,
+      },
+    ),
+  // H1 (F-4): resolve the golden OFFERED on the current draft. Accept makes
+  // the offered golden the session blueprint; decline keeps the user's draft
+  // and clears the offer. Both return the resulting blueprint.
+  acceptGolden: (sid: string) =>
+    req<{ ok: boolean; blueprint: Record<string, unknown>; yaml?: string; source: string }>(
+      'POST',
+      `/v1/sessions/${sid}/product/draft/accept-golden`,
+      {},
+    ),
+  declineGolden: (sid: string) =>
+    req<{ ok: boolean; blueprint: Record<string, unknown>; source: string }>(
+      'POST',
+      `/v1/sessions/${sid}/product/draft/decline-golden`,
+      {},
+    ),
   approve: (sid: string, approve: boolean, blueprint?: Record<string, unknown>) =>
     req<{ ok: boolean; blueprint_approved: boolean }>('POST', `/v1/sessions/${sid}/product/approve`, {
       approve,
