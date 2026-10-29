@@ -143,3 +143,14 @@ def _figure(mod, **kw):
                 text="TORA 3200 m")
     base.update(kw)
     return mod.Figure(**base)
+
+
+@pytest.fixture
+def green_product_grade(monkeypatch):
+    """F-8c: Store-gate ingestion tests written before the product grade
+    existed exercise the Store verdict, not the grade. They opt in to a
+    green grade explicitly; the grade gate itself is tested (and its
+    refusals reddened) in test_product_grade_record.py."""
+    from app.factory.build.product_grader import grade_record
+
+    monkeypatch.setattr(grade_record, "certification_refusal", lambda root: None)

@@ -48,6 +48,10 @@ from app.factory.build.store_acceptance import (
 )
 from app.factory.build_jobs import build_status, is_build_complete
 
+#: F-8c: these tests grade the Store verdict; the product grade gate is
+#: tested in test_product_grade_record.py.
+pytestmark = pytest.mark.usefixtures("green_product_grade")
+
 SHA = "081a52874bb0141c5eb730b01f26dcc0bf8d0fa2"
 BRANCH = "build/sess_7c1d1c1e049c4c4a-3117a9fb"
 ENV = {
