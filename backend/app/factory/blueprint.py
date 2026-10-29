@@ -97,6 +97,13 @@ class ProductBlueprint(BaseModel):
     # a user whose LLM credit died must see that templates drafted this.
     drafting_mode: Optional[str] = None
     drafting_note: Optional[str] = None
+    #: A matching golden surfaced as a labelled accept/decline SUGGESTION —
+    #: never substituted for the user's own draft. The base output is always
+    #: the user's draft; whenever a golden's declared structure overlaps the
+    #: draft above the kernel threshold the match rides here as
+    #: {golden_id, golden_name, overlap, drafting_mode, label} for the user to
+    #: accept or decline. None below the threshold or when nothing matched.
+    golden_suggestion: Optional[Dict[str, Any]] = None
     #: How the client wants the platform delivered — chosen at request
     #: time, never after the build: "zip" (download in the Floor) or
     #: "github_repo" (pushed to a repo, URL returned on the build).
