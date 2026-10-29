@@ -73,7 +73,11 @@ def test_unsupplied_fields_are_declared_absent_not_filled():
 
 
 def test_empty_intake_fails_assert_pack():
-    empty = _bp("X", "x_vertical", "", [])
+    # ProductBlueprint refuses an empty roster itself; the pack builder takes
+    # any blueprint-shaped object, so an empty intake is modelled directly.
+    from types import SimpleNamespace
+    empty = SimpleNamespace(product_id="x", product_name="X", vertical="x_vertical",
+                            summary="", capabilities=[], connectors=[])
     with pytest.raises(DomainPackError, match="intake"):
         assert_pack(domain_pack_for(empty))
 

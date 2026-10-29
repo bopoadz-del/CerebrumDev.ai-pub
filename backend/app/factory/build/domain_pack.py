@@ -166,12 +166,17 @@ def domain_pack_for(blueprint: Any, plan: Any = None) -> Dict[str, Any]:
     product_id = str(getattr(blueprint, "product_id", "") or "")
     product_name = str(getattr(blueprint, "product_name", "") or values.get("platform_name") or "")
     domain_id = _slug(getattr(blueprint, "vertical", "") or values.get("domain"))
-    fields = {
-        # An empty slot stays NAMED ("none claimed"), never invented and
-        # never silently blank -- the same wording intake uses.
-        name: _field(values.get(name) or ["none claimed"], _binding(**FIELD_BINDINGS[name]))
-        for name in DOMAIN_PACK_FIELDS
-    }
+    fields: Dict[str, Any] = {}
+    for name in DOMAIN_PACK_FIELDS:
+        value = values.get(name)
+        if value:
+            fields[name] = _field(value, _binding(**FIELD_BINDINGS[name]))
+        else:
+            # Nothing the build has supplies this slot: it is DECLARED absent,
+            # never filled with a Factory sentence and never silently blank.
+            fields[name] = dict(
+                _field([], _binding(**FIELD_BINDINGS[name])), absent=True
+            )
     return {
         "schema_version": SCHEMA_VERSION,
         "domain_id": domain_id,
@@ -230,7 +235,7 @@ def missing_fields(pack: Mapping[str, Any]) -> List[str]:
         if not isinstance(item, Mapping):
             found.append(name)
             continue
-        if not _value_present(item.get("value")):
+        if not _value_present(item.get("value")) and item.get("absent") is not True:
             found.append(name)
             continue
         if not _kernel_bound(item.get("kernel")):
@@ -252,10 +257,25 @@ def is_empty_pack(pack: Any) -> bool:
     )
 
 
+#: The slots only the customer's intake can fill. A pack where either one
+#: carries no value was built from an empty intake.
+INTAKE_FIELDS: tuple[str, ...] = ("domain_purpose", "required_product_modules")
+
+
 def assert_pack(pack: Mapping[str, Any]) -> None:
-    """Fail closed: every DOMAIN_PACK_FIELDS name present, valued, kernel-bound."""
+    """Fail closed: every DOMAIN_PACK_FIELDS name present, kernel-bound, and
+    either valued or explicitly declared absent; an empty intake fails."""
     if is_empty_pack(pack):
         raise DomainPackError("empty Domain Pack")
+    fields = pack.get("fields") if isinstance(pack.get("fields"), Mapping) else {}
+    empty_intake = [
+        name for name in INTAKE_FIELDS
+        if not (isinstance(fields.get(name), Mapping) and _value_present(fields[name].get("value")))
+    ]
+    if empty_intake:
+        raise DomainPackError(
+            "Domain Pack built from an empty intake: no " + ", ".join(empty_intake)
+        )
     if pack.get("schema_version") != SCHEMA_VERSION:
         raise DomainPackError("schema_version must be domain_pack.v1")
     if not str(pack.get("domain_id") or "").strip():

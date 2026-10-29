@@ -32,6 +32,27 @@ def _sourced(value: Any, turn: int, text: str = "") -> Dict[str, Any]:
     }
 
 
+def _said_in(value: str, turn_item: Mapping[str, Any]) -> bool:
+    return str(value).strip().lower() in _turn_text(turn_item).lower()
+
+
+def _provenance(values: List[str], turns: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """A field's provenance is the turn that SAYS it -- never the first turn
+    stamped onto every value. A value no turn says came from the architect
+    (``source_turn`` None); a field nothing supplied is declared absent."""
+    if not values:
+        return {"value": [], "absent": True, "source_turn": None, "source": "none"}
+    for item in turns:
+        if all(_said_in(v, item) for v in values):
+            return {
+                "value": values,
+                "source_turn": _turn_no(item),
+                "source_text": _turn_text(item)[:400],
+                "source": "turn",
+            }
+    return {"value": values, "source_turn": None, "source": "architect"}
+
+
 def _first_user_turn(turns: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     for item in turns:
         role = str(item.get("role") or "").lower()
@@ -122,30 +143,27 @@ def intake_from_product_blueprint(
     if not caps:
         raise IntakeBlueprintError("intake blueprint has no capabilities")
 
-    users = pack.get("primary_users") or pack.get("target_users")
-    if isinstance(users, str):
-        users = [users]
-    users = [str(u) for u in (users or []) if str(u).strip()] or [
-        f"{str(getattr(blueprint, 'vertical', 'product')).replace('_', ' ')} operators"
+    def _listed(*keys: str) -> List[str]:
+        for key in keys:
+            got = pack.get(key)
+            if isinstance(got, str):
+                got = [got]
+            got = [str(x) for x in (got or []) if str(x).strip()]
+            if got:
+                return got
+        return []
+
+    users = _listed("primary_users", "target_users")
+    roles = _listed("required_roles")
+    data_sources = _listed("data_sources")
+    integrations = _listed("required_connectors") or [
+        str(x) for x in (getattr(blueprint, "connectors", None) or []) if str(x).strip()
     ]
-    roles = pack.get("required_roles") or ["operator", "admin"]
-    roles = [str(r) for r in roles if str(r).strip()]
-    data_sources = pack.get("data_sources") or ["vendored Store blocks", "local sqlite"]
-    data_sources = [str(x) for x in data_sources if str(x).strip()]
-    integrations = pack.get("required_connectors") or list(
-        getattr(blueprint, "connectors", None) or []
-    )
-    integrations = [str(x) for x in integrations if str(x).strip()] or ["none claimed"]
-    constraints = pack.get("domain_rules") or pack.get("security_regulatory_rules") or [
-        "offline platform — no network, no HTTP store callbacks",
-    ]
-    constraints = [str(x) for x in constraints if str(x).strip()]
-    done_when = pack.get("domain_acceptance_conditions") or [
-        "product boots",
-        "own gates green",
-        "one-record round-trip per capability",
-    ]
-    done_when = [str(x) for x in done_when if str(x).strip()]
+    constraints = _listed("domain_rules", "security_regulatory_rules")
+    done_when = _listed("domain_acceptance_conditions")
+
+    def _field(values: List[str]) -> Dict[str, Any]:
+        return _provenance(values, turns)
 
     intake = {
         "schema_version": SCHEMA_VERSION,
@@ -162,18 +180,22 @@ def intake_from_product_blueprint(
             str(getattr(blueprint, "vertical", "") or "product"), turn, text
         ),
         "capabilities": caps,
-        "roles": _sourced(roles, turn, text),
-        "users": _sourced(users, turn, text),
-        "data_sources": _sourced(data_sources, turn, text),
-        "integrations": _sourced(integrations, turn, text),
-        "constraints": _sourced(constraints, turn, text),
-        "done_when": _sourced(done_when, turn, text),
+        "roles": _field(roles),
+        "users": _field(users),
+        "data_sources": _field(data_sources),
+        "integrations": _field(integrations),
+        "constraints": _field(constraints),
+        "done_when": _field(done_when),
     }
-    validate_intake(intake)
+    validate_intake(intake, chat_turns=turns)
     return intake
 
 
-def validate_intake(intake: Mapping[str, Any]) -> Dict[str, Any]:
+def validate_intake(
+    intake: Mapping[str, Any],
+    *,
+    chat_turns: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Fail closed against BLUEPRINT_SCHEMA required fields. No defaults here."""
     if not isinstance(intake, Mapping):
         raise IntakeBlueprintError("intake blueprint must be a mapping")
@@ -218,8 +240,17 @@ def validate_intake(intake: Mapping[str, Any]) -> Dict[str, Any]:
         if not isinstance(field, Mapping) or "source_turn" not in field:
             raise IntakeBlueprintError(f"{key} must carry source_turn")
         values = field.get("value")
-        if not isinstance(values, list) or not values:
-            raise IntakeBlueprintError(f"{key}.value must be a non-empty list")
+        if not isinstance(values, list):
+            raise IntakeBlueprintError(f"{key}.value must be a list")
+        if not values and field.get("absent") is not True:
+            raise IntakeBlueprintError(f"{key}.value is empty but not declared absent")
+        turn_no = field.get("source_turn")
+        if chat_turns is not None and turn_no is not None:
+            said = [t for t in chat_turns if _turn_no(t) == turn_no]
+            if not said or not all(_said_in(v, said[0]) for v in values):
+                raise IntakeBlueprintError(
+                    f"{key} cites turn {turn_no}, which does not say {values!r}"
+                )
     return dict(intake)
 
 
