@@ -44,6 +44,7 @@ from app.factory.floor_actions import require_build_level
 from app.factory.locale_choice import intake_state
 from app.factory.paths import UnsafeOutputDir, factory_outputs_root, safe_output_dir
 from app.factory.product_architect import (
+    _golden_for_draft,
     blueprint_to_yaml,
     draft_blueprint_from_brief,
     generate_product,
@@ -914,6 +915,54 @@ def draft_product(
             # threshold / on no match; the base above stays the user's draft.
             "golden_suggestion": bp.golden_suggestion,
         }
+    except Exception as exc:  # noqa: BLE001
+        _raise_product_error(session_id, state, exc)
+
+
+@router.post("/{session_id}/product/draft/accept-golden")
+def accept_golden(
+    session_id: str, principal: Principal = Depends(require_entitled)
+) -> Dict[str, Any]:
+    """Accept the golden OFFERED on the current draft.
+
+    The draft (POST /product/draft) leaves the user's own blueprint as the base
+    and only OFFERS a matching golden on ``golden_suggestion`` (H1, F-4). This
+    is where the user's ACCEPT is resolved into the product: the offered golden
+    is loaded via ``_golden_for_draft`` and becomes the session's blueprint, so
+    plan/approve/generate run on it. Without this route the offer is wired to
+    nothing. The resolution uses the same structural match as the offer, keyed
+    on the user's chosen vertical; a golden can never hand a vertical the user
+    did not pick. 409 if there is no draft, or no golden was offered for it.
+    """
+    state = _require_session(session_id, principal)
+    if not state.product_design.blueprint:
+        raise HTTPException(
+            status_code=409, detail="no draft to accept a golden for"
+        )
+    try:
+        draft_bp = ProductBlueprint.model_validate(state.product_design.blueprint)
+        accepted = _golden_for_draft(draft_bp, state.product_design.vertical)
+        if accepted is None:
+            raise HTTPException(
+                status_code=409,
+                detail="no golden was offered for this draft (none cleared the "
+                "overlap threshold)",
+            )
+        state.product_design.blueprint = accepted.model_dump(mode="json")
+        state.product_design.blueprint_approved = False
+        state.product_design.plan = None
+        state.product_design.generation = None
+        state.product_design.last_error = None
+        state.config.domain = session_domain_from_blueprint(accepted)
+        update_session(session_id, state)
+        return {
+            "ok": True,
+            "blueprint": state.product_design.blueprint,
+            "yaml": blueprint_to_yaml(accepted),
+            "source": "golden",
+        }
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         _raise_product_error(session_id, state, exc)
 

@@ -102,28 +102,17 @@ def test_session_product_steward_golden_offer_flow(client, monkeypatch, tmp_path
     assert sug["drafting_mode"] == "golden"
     assert "accept" in sug["label"].lower() and "decline" in sug["label"].lower()
 
-    # The "projectsix" steward golden is OFFERED for this estate draft. The
-    # accept/decline resolution (the user accepting the suggestion) resolves to
-    # it by structural overlap. The user ACCEPTS: the accepted golden becomes
-    # the session base, and plan/approve/build run on it.
-    from app.factory.blueprint import ProductBlueprint
-    from app.factory.product_architect import (
-        _golden_for_draft,
-        session_domain_from_blueprint,
-    )
-
-    state = get_session("sess_product_1")
-    assert state is not None
-    draft_bp = ProductBlueprint.model_validate(state.product_design.blueprint)
-    offered = _golden_for_draft(draft_bp, "estate")
-    assert offered is not None, "the matching golden must be offered for an estate draft"
-    assert offered.product_id == "projectsix"
-    assert offered.drafting_mode == "golden"
-    state.product_design.blueprint = offered.model_dump(mode="json")
-    state.product_design.blueprint_approved = False
-    state.product_design.plan = None
-    state.config.domain = session_domain_from_blueprint(offered)
-    update_session("sess_product_1", state)
+    # The user ACCEPTS the offer THROUGH the real route (not test-side code):
+    # POST /product/draft/accept-golden resolves the offered "projectsix"
+    # golden via _golden_for_draft and writes it to the session, so
+    # plan/approve/build run on the accepted golden.
+    r = client.post("/v1/sessions/sess_product_1/product/draft/accept-golden")
+    assert r.status_code == 200, r.text
+    acc = r.json()
+    assert acc["ok"] is True
+    assert acc["source"] == "golden"
+    assert acc["blueprint"]["product_id"] == "projectsix"
+    assert acc["blueprint"]["drafting_mode"] == "golden"
 
     r = client.post("/v1/sessions/sess_product_1/product/plan")
     assert r.status_code == 200, r.text
@@ -190,6 +179,30 @@ def test_product_draft_response_omits_golden_below_threshold(client, monkeypatch
     assert body["source"] == "drafted"
     assert body["blueprint"]["product_id"] == "estate"
     assert body["golden_suggestion"] is None
+
+
+def test_accept_golden_refuses_when_none_offered(client, monkeypatch):
+    """The accept route refuses honestly (409) when no golden was offered.
+
+    The companion to the steward accept path: with the threshold raised so no
+    golden clears it, POST /product/draft/accept-golden returns 409 rather than
+    forcing an unoffered golden onto the session. An "always accept" mutant
+    (resolve and write regardless) reddens this.
+    """
+    monkeypatch.setenv("FACTORY_STAGE_RESUME", "0")
+    monkeypatch.setenv("FACTORY_GOLDEN_MIN_OVERLAP", "0.99")
+    create_session("sess_product_nogold", DEV_LOCAL_TENANT)
+    r = client.post(
+        "/v1/sessions/sess_product_nogold/product/draft",
+        json={
+            "brief": "Generate Projectsix private estate operations",
+            "vertical_hint": "estate",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["golden_suggestion"] is None
+    r = client.post("/v1/sessions/sess_product_nogold/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
 
 
 def test_generate_requires_approval(client):
