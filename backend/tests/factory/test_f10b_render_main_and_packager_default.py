@@ -108,15 +108,10 @@ def test_product_router_has_no_501_scaffold_routes_but_full_router_does():
 
 @pytest.fixture
 def rag_client(tmp_path, monkeypatch):
-    from app.factory.build import rag_surface
-    from app.factory.build.rag_surface import RAG_ROUTES_REL
+    from app.factory.build.rag_surface import RAG_ROUTES_REL, emit_factory_grounded_rag_surface
+    from tests.factory.test_writer_phases import _compiled_steward_dual_rag
 
-    # Plant the exact source emit_factory_grounded_rag_surface writes. Its
-    # rag gate reads signed Store manifests (blocks_declaring_read), which a
-    # checkout without the Store cannot answer; the gate is not under test here.
-    dest = tmp_path / RAG_ROUTES_REL
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(rag_surface._RAG_ROUTES_PY, encoding="utf-8")
+    assert emit_factory_grounded_rag_surface(tmp_path, _compiled_steward_dual_rag())
     spec = importlib.util.spec_from_file_location("f10b_rag_routes", tmp_path / RAG_ROUTES_REL)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
