@@ -629,6 +629,8 @@ class _Blueprint:
     product_name = "Obligation Probe"
     product_id = "obligation-probe"
     vertical = "testing"
+    # ProductBlueprint requires a summary; F-9a reads domain_purpose from it.
+    summary = "Synthetic probe product for the writer test."
 
 
 def test_the_writer_declares_what_the_cloner_recorded(tmp_path, monkeypatch, stub_coder):

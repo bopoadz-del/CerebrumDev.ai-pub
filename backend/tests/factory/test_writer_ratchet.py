@@ -66,6 +66,8 @@ class _Blueprint:
     product_name = "Ratchet Probe"
     product_id = "ratchet-probe"
     vertical = "testing"
+    # ProductBlueprint requires a summary; F-9a reads domain_purpose from it.
+    summary = "Synthetic probe product for the writer test."
 
 
 def _writer_ctx(tmp_path: Path, work_list=(), state=None):
