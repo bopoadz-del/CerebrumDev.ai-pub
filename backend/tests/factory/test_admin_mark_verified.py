@@ -146,3 +146,47 @@ def test_a_verified_non_admin_user_cannot_verify_another_account(client, victim_
 
     assert res.status_code in (401, 403), res.text
     assert _verified(victim) is False
+
+
+def _verify_row(account_id):
+    from app.core import accounts_store as store
+
+    cols = store._t_accounts.c
+    with store._engine().begin() as conn:
+        row = conn.execute(
+            store.sa.select(cols.verify_token_hash, cols.verify_expires_at)
+            .where(cols.id == account_id)
+        ).one()
+    return row[0], row[1]
+
+
+@pytest.mark.parametrize("email", ["replay-a@example.test", "replay-z@example.test"])
+def test_admin_verify_clears_token_and_old_token_is_refused(client, email):
+    import app.routers.accounts as accounts_router
+
+    acct = _register(client, email)
+    old_token = accounts_router.accounts_store.issue_verify_token(acct)
+    assert _verify_row(acct) != (None, None)
+
+    res = client.post("/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": acct})
+
+    assert res.status_code == 200, res.text
+    assert _verify_row(acct) == (None, None)
+    replay = client.post("/v1/auth/verify-email", json={"token": old_token})
+    assert replay.status_code == 400, replay.status_code
+
+
+@pytest.mark.parametrize("pad", ["  {}  ", "\t{}\n"])
+def test_padded_account_id_is_stripped_in_response(client, pad):
+    import app.routers.accounts as accounts_router
+
+    acct = _register(client, "padded@example.test")
+    assert accounts_router.admin_mark_verified is not None
+
+    res = client.post(
+        "/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": pad.format(acct)}
+    )
+
+    assert res.status_code == 200, res.text
+    assert res.json()["account_id"] == acct
+    assert _verified(acct) is True
