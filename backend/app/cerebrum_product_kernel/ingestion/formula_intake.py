@@ -1,78 +1,82 @@
-"""Client submission of an L3/L4 overlay definition. PLACEHOLDER, no logic.
+"""Client submission of L3/L4 overlay definition sets (K-F5).
 
-SCOPE
------
-``cerebrum_product_kernel/formulas/__init__.py`` already implements the real
-extend/override precedence contract and already ships into every generated
-product. What does NOT exist is a way for a CLIENT to submit an overlay
-definition to their OWN deployed platform at runtime — today the only path
-is ``scripts/intake_formulas.py`` equivalent tooling, a developer-run CLI
-inside the Factory's own repo (the exact gap identified 2026-09-16: The
-Fork's ``scripts/intake_formulas.py`` is the same shape — a dev CLI, not a
-client-facing endpoint).
-
-CONTRACT — must match cerebrum_product_kernel/formulas/__init__.py exactly.
-An overlay definition dict requires:
-    "id"                 str, collides with a base id only if "overrides"
-                          names that exact base address
-                          ("universal:<id>_v<definition_version>")
-    "definition_version"  the version component of the address
-    "overrides"           optional str, the exact base address this
-                          replaces (omit for a pure "extend")
-    "provenance"          required when overriding — where this number/rule
-                          came from
-    "reason"              required when overriding — why it replaces the
-                          base value
-
-An overlay whose id collides with a base id but declares no "overrides" is
-an ERROR (PrecedenceError), never a silent replacement. Do not soften that
-in this module — the refusal is the point.
-
-WHAT THIS MODULE MUST DECIDE (deferred to whoever implements it, not
-decided here — these are open design questions, not oversights):
-  1. Where does a submitted overlay PERSIST between submission and
-     resolve_definitions() being called? formulas/__init__.py reads from
-     ``universal_definitions.json`` plus an overlay file passed by the
-     caller — there is currently no per-tenant overlay STORE. This needs
-     one (likely per-tenant, alongside the per-tenant Chroma collection in
-     retrieval_engine.py — same isolation boundary, do not invent a second
-     one).
-  2. Does a client submit raw JSON, or does an LLM assist turning a
-     described business rule into the ``{id, definition_version, overrides,
-     provenance, reason}`` shape? If the latter, that draft step must never
-     bypass the same validation resolve_definitions() already enforces —
-     LLM-assisted drafting, code-enforced validation, same discipline as
-     the Factory's own Architect draft / deterministic-template split.
-  3. Audit trail: precedence.py already logs divergence records when an L3
-     formula shadows an L1 certified one. A client-submitted overlay should
-     produce that same record on first resolution, not a separate log.
-
-Every function below is a stub.
+A tenant submits an overlay SET ``{"set_id": str, "definitions": [...]}``. The
+set is validated by the kernel's own :func:`resolve_definitions` together with
+every set the tenant already stored, so the refusal rules (an undeclared
+shadow of a base id, an override without provenance/reason, two sets claiming
+one id) are the kernel's, never a bespoke path. A refused set raises
+:class:`PrecedenceError` and is NOT stored. An accepted set is persisted per
+tenant under ``tenant_uploads_dir(tenant)/overlays/overlays.json`` (the same
+isolation boundary as the tenant's uploads and parse jobs). Re-submitting a
+``set_id`` replaces that tenant's earlier version of the set.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List
+
+from app.cerebrum_product_kernel.formulas import PrecedenceError, resolve_definitions
+
+from .object_store import tenant_uploads_dir
+
+__all__ = ["PrecedenceError", "OverlayShapeError", "submit_overlay", "list_overlays", "tenant_overlays"]
+
+
+class OverlayShapeError(ValueError):
+    """The submitted body is not an overlay set at all."""
+
+
+def _store_path(tenant_id: str) -> Path:
+    return tenant_uploads_dir(tenant_id) / "overlays" / "overlays.json"
+
+
+def tenant_overlays(tenant_id: str) -> List[Dict[str, Any]]:
+    """The tenant's stored overlay sets, in submission order ([] if none)."""
+    path = _store_path(tenant_id)
+    if not path.is_file():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))["sets"]
+
+
+def _write(tenant_id: str, sets: List[Dict[str, Any]]) -> None:
+    path = _store_path(tenant_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"sets": sets}, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _check_shape(overlay: Any) -> None:
+    if not isinstance(overlay, dict):
+        raise OverlayShapeError("overlay must be an object")
+    if not isinstance(overlay.get("set_id"), str) or not overlay["set_id"].strip():
+        raise OverlayShapeError("overlay.set_id must be a non-empty string")
+    defs = overlay.get("definitions")
+    if not isinstance(defs, list) or not defs or not all(isinstance(d, dict) for d in defs):
+        raise OverlayShapeError("overlay.definitions must be a non-empty list of objects")
 
 
 def submit_overlay(tenant_id: str, overlay: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate and (eventually) persist one client overlay definition.
-
-    PLACEHOLDER — not implemented. Intended to call
-    ``cerebrum_product_kernel.formulas.resolve_definitions`` (or an
-    equivalent single-definition validation path) so a malformed or
-    silently-colliding overlay is refused with the SAME PrecedenceError the
-    kernel already raises — never a bespoke validation path.
-    """
-    raise NotImplementedError(
-        "submit_overlay is a Phase 2 scaffold placeholder — see "
-        "cerebrum_product_kernel/ingestion/__init__.py"
-    )
+    """Validate ``overlay`` against base + the tenant's other sets, then store it."""
+    _check_shape(overlay)
+    others = [s for s in tenant_overlays(tenant_id) if s["set_id"] != overlay["set_id"]]
+    candidate = others + [overlay]
+    resolved = resolve_definitions(overlays=candidate)  # PrecedenceError propagates
+    _write(tenant_id, candidate)
+    ids = [d["id"] for d in overlay["definitions"]]
+    return {
+        "set_id": overlay["set_id"],
+        "definitions": ids,
+        "overrides": {i: resolved[i].supersedes for i in ids if resolved[i].supersedes},
+        "sets_stored": len(candidate),
+    }
 
 
 def list_overlays(tenant_id: str) -> Dict[str, Any]:
-    """PLACEHOLDER — not implemented. See module docstring, open question 1."""
-    raise NotImplementedError(
-        "list_overlays is a Phase 2 scaffold placeholder — see "
-        "cerebrum_product_kernel/ingestion/__init__.py"
-    )
+    sets = tenant_overlays(tenant_id)
+    return {"sets": sets, "count": len(sets)}
