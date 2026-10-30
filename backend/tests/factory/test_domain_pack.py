@@ -226,3 +226,10 @@ def test_evaluate_domain_pack_and_reread(tmp_path: Path):
     other = evaluate_domain_pack()
     other["git_sha"] = "0" * 40
     assert "git_sha" in fingerprint_disagreements(result, other)
+
+
+def test_is_empty_pack_unwraps_the_field_value():
+    # A field item is a Mapping; is_empty_pack reads its "value", not the item.
+    # str() of the item itself is never blank, so only the unwrap sees "".
+    assert is_empty_pack({"fields": {"a": {"value": ""}}}) is True
+    assert is_empty_pack({"fields": {"a": {"value": "x"}}}) is False
