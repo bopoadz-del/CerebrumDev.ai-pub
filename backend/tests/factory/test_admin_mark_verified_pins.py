@@ -66,6 +66,13 @@ def test_blank_or_whitespace_id_is_400_with_exact_body(client, blank):
     assert res.json() == {"detail": "account_id required"}
 
 
+@pytest.mark.parametrize("payload", [{"account_id": None}, {}])
+def test_null_or_missing_id_is_422_before_the_handler(client, payload):
+    res = client.post(URL, headers=ADMIN, json=payload)
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"][0]["loc"] == ["body", "account_id"]
+
+
 @pytest.mark.parametrize("missing", ["acct_p13c_missing", "acct_nobody_0000"])
 def test_unknown_id_is_404_with_exact_body(client, missing):
     _register(client, "bystander-p13c@example.test")
