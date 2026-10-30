@@ -528,7 +528,7 @@ async def admin_mark_verified(
     unchanged: no env flag turns it off, and every other account still
     needs its emailed token.
     """
-    target = (body.account_id or "").strip()
+    target = body.account_id.strip()
     if not target:
         raise HTTPException(status_code=400, detail="account_id required")
     if not accounts_store.mark_account_verified(target):
