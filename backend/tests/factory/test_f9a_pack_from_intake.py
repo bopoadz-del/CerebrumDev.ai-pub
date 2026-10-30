@@ -330,3 +330,33 @@ def test_blank_vertical_leaves_the_domain_absent(vertical, want):
     bp = SimpleNamespace(product_id="x", product_name="Dock Board", vertical=vertical,
                          summary="Berth allocation.", capabilities=[], connectors=[])
     assert synthesize_domain_pack(bp, None).get("domain") == want
+
+
+# --- G6 post-hoc #97 (97-M2): a blank vertical leaves the domain slot out; it
+# is never filled with a Factory word.
+
+@pytest.mark.parametrize("vertical, want", [(None, None), ("kiln_ops", "kiln_ops")])
+def test_blank_vertical_leaves_domain_out(vertical, want):
+    bp = SimpleNamespace(product_name="Kiln Log", vertical=vertical, summary="s",
+                         capabilities=[], connectors=[])
+    pack = synthesize_domain_pack(bp, SimpleNamespace(capabilities=[SimpleNamespace(id="firing_log")]))
+    assert pack.get("domain") == want
+
+
+# --- G6 post-hoc #97 (97-M19): a loaded pack (the LotDesk path reads JSON from
+# disk) whose intake slot is missing or not an object fails closed as an empty
+# intake, never with a KeyError/AttributeError.
+
+@pytest.mark.parametrize("domain_purpose", ["missing", "raw string"])
+def test_intake_slot_missing_or_not_an_object_is_an_empty_intake(domain_purpose):
+    fields = {"required_product_modules": {"value": ["firing_log"]}}
+    if domain_purpose != "missing":
+        fields["domain_purpose"] = domain_purpose
+    try:
+        assert_pack({"fields": fields})
+        got = "accepted"
+    except DomainPackError as exc:
+        got = str(exc)
+    except (KeyError, AttributeError) as exc:
+        got = f"crashed: {type(exc).__name__}"
+    assert got == "Domain Pack built from an empty intake: no domain_purpose"
