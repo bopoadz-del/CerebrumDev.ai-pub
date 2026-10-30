@@ -139,3 +139,177 @@ def test_caller_feeds_real_kernel_and_store_to_the_prompt(monkeypatch, tmp_path)
     got = rh._formula_sources(Ctx())
     assert [r["id"] for r in got["store_index"]] == ["ze.f1"]
     assert got["kernel_index"] and all(r["address"] for r in got["kernel_index"])
+
+
+# --- R1: one test per G2 survivor (synthetic rows / trees only) -------------
+
+IMP = {"label": IMPROVISED_LABEL, "source": "Ref, p. 1"}
+
+
+@pytest.mark.parametrize("row, expect", [
+    ({**IMP}, ["definition row without an id"]),
+    ({**IMP, "id": "   "}, ["definition row without an id"]),
+    ({**IMP, "id": "imp_n"}, []),
+])
+def test_s1_row_without_an_id_is_reported(row, expect):
+    assert _fr().writer_formula_errors([row], [], [], [{"definition": "imp_n"}]) == expect
+
+
+@pytest.mark.parametrize("prov, expect", [
+    ({"reference": "Handbook, s. 4"}, []),
+    ({"reference": "  "}, ["imp_p: improvised without a cited source"]),
+])
+def test_s2_provenance_reference_counts_as_the_source(prov, expect):
+    row = {"id": "imp_p", "label": IMPROVISED_LABEL, "provenance": prov}
+    assert _fr().writer_formula_errors([row], [], [], [{"definition": "imp_p"}]) == expect
+
+
+@pytest.mark.parametrize("cands, expect", [
+    ([{"id": "imp_c"}], []),
+    ([{"id": "imp_other"}], ["imp_c: improvised without a new_domain_candidates row"]),
+])
+def test_s3_candidate_row_may_name_it_by_id(cands, expect):
+    row = {"id": "imp_c", **IMP}
+    assert _fr().writer_formula_errors([row], [], [], cands) == expect
+
+
+@pytest.mark.parametrize("key, expect", [
+    ("imp_k", []),
+    ("k9", ["k9: kernel covers this; use the kernel definition"]),
+])
+def test_s4_row_may_carry_its_id_as_key(key, expect):
+    row = {"key": key, **IMP}
+    assert _fr().writer_formula_errors([row], [{"id": "k9"}], [], [{"definition": "imp_k"}]) == expect
+
+
+@pytest.mark.parametrize("vertical, reads", [("", 0), ("  ", 0), ("omega", 1)])
+def test_s5_blank_vertical_never_reads_the_store(monkeypatch, tmp_path, vertical, reads):
+    fr = _fr()
+    calls = []
+    monkeypatch.setattr(fr, "reasoning_kits", lambda root: calls.append(root) or {})
+    root = _store(tmp_path, {"omega": ({"domain_id": "omega"}, ["om.f1"])}, {})
+    rows = fr.store_coverage_index(vertical, root)
+    assert len(calls) == reads
+    assert [r["id"] for r in rows] == (["om.f1"] if reads else [])
+
+
+@pytest.mark.parametrize("fids, expect", [
+    (["z.f", "m.f", "a.f"], ["INV-B", "a.f", "m.f", "z.f"]),
+    (["c.f", "b.f"], ["INV-B", "b.f", "c.f"]),
+])
+def test_s6_index_is_returned_sorted_by_id(tmp_path, fids, expect):
+    root = _store(tmp_path, {"sigma": ({"domain_id": "sigma"}, fids)}, {"skit": (["sigma"], ["INV-B"])})
+    assert [r["id"] for r in _fr().store_coverage_index("sigma", root)] == expect
+
+
+@pytest.mark.parametrize("fids, expect", [
+    (["", "  ", "t.f1"], ["t.f1"]),
+    (["t.f1", "t.f2"], ["t.f1", "t.f2"]),
+])
+def test_s7_blank_formula_ids_are_dropped(tmp_path, fids, expect):
+    root = _store(tmp_path, {"tau": ({"domain_id": "tau"}, fids)}, {})
+    assert [r["id"] for r in _fr().store_coverage_index("tau", root)] == expect
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("sources", [
+    {"kernel_index": [{"id": "kq", "address": "u:kq"}], "store_index": [], "store_sha": "c" * 40},
+    {"kernel_index": [], "store_index": [{"id": "sq", "kind": "pack_formula", "source": "p"}], "store_sha": None},
+])
+def test_s8_writer_run_passes_formula_sources_to_the_prompt(monkeypatch, tmp_path, sources):
+    from app.factory.build import roles_handlers as rh
+    from app.factory.build import writer_prompt as wp
+    from app.factory.build import image_sufficiency as img
+    from app.factory.build import codewhale_worker as cw
+
+    seen = {}
+
+    def fake_render(blueprint, **kw):
+        seen.update(kw)
+        raise _Stop
+
+    monkeypatch.setattr(wp, "render_writer_prompt", fake_render)
+    monkeypatch.setattr(rh, "_formula_sources", lambda ctx: dict(sources))
+    monkeypatch.setattr(rh, "persist_workspace_root", lambda ws: tmp_path)
+    monkeypatch.setattr(rh, "_compiled_writer_brief", lambda ctx: "b")
+    monkeypatch.setattr(img, "runtime_paths", lambda tree: [])
+    monkeypatch.setattr(img, "locked_entries", lambda tree: {})
+    monkeypatch.setattr(cw, "writer_specialist_cap", lambda: 1)
+
+    class Ctx:
+        blueprint = _BP("v")
+        workspace = None
+        state = {}
+
+    with pytest.raises(_Stop):
+        rh._run_writer_via_codewhale_worker(Ctx())
+    for k, v in sources.items():
+        assert seen.get(k) == v, k
+
+
+# --- R1 (orchestrator add): the production writer path runs the check -------
+
+@pytest.mark.parametrize("defs, cands, expect", [
+    # bad: re-writes a kernel formula, and improvises one unlabelled
+    ([{"id": "kz_v1"}, {"id": "imp_q", "source": "Ref"}], [{"definition": "imp_q"}],
+     ["kz_v1: kernel covers this; use the kernel definition",
+      f"imp_q: improvised without the label {IMPROVISED_LABEL!r}"]),
+    # good: improvised, labelled, sourced, with its candidate row
+    ([{"id": "imp_q", "label": IMPROVISED_LABEL, "source": "Ref"}], [{"definition": "imp_q"}], []),
+])
+def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, cands, expect):
+    from app.factory.build import roles_handlers as rh
+    from app.factory.build import image_sufficiency as img
+    from app.factory.build import codewhale_worker as cw
+    from app.factory.build import factory_owned
+    from app.factory.build import data_lifecycle
+
+    fr = _fr()
+
+    class Receipt:
+        def to_dict(self):
+            return {}
+
+    def fake_job(prompt, dest, **kw):
+        d = Path(dest)
+        for rel, rows in ((fr.WRITER_DEFINITIONS_REL, defs), (fr.WRITER_CANDIDATES_REL, cands)):
+            (d / rel).parent.mkdir(parents=True, exist_ok=True)
+            (d / rel).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        return Receipt()
+
+    def stop(_ws):
+        raise _Stop
+
+    monkeypatch.setattr(rh, "_formula_sources", lambda ctx: {
+        "kernel_index": [{"id": "kz_v1", "address": "u:kz_v1"}], "store_index": [], "store_sha": None})
+    monkeypatch.setattr(rh, "persist_workspace_root", lambda ws: tmp_path)
+    monkeypatch.setattr(rh, "_compiled_writer_brief", lambda ctx: "b")
+    monkeypatch.setattr(img, "runtime_paths", lambda tree: [])
+    monkeypatch.setattr(img, "locked_entries", lambda tree: {})
+    monkeypatch.setattr(cw, "writer_specialist_cap", lambda: 1)
+    monkeypatch.setattr(cw, "run_worker_job", fake_job)
+    monkeypatch.setattr(factory_owned, "prestamp", lambda *a, **k: [])
+    monkeypatch.setattr(data_lifecycle, "backfill_platform_substrate", stop)
+    for name in ("_writer_worker_timeout_s", "_writer_worker_live_time_left", "_writer_slot_wait_left"):
+        monkeypatch.setattr(rh, name, lambda ctx: None)
+
+    notes = []
+
+    class Ctx:
+        blueprint = _BP("v")
+        workspace = None
+        state = {}
+
+        def note(self, msg, **kw):
+            notes.append(msg)
+
+    with pytest.raises(_Stop):
+        rh._run_writer_via_codewhale_worker(Ctx())
+    findings = tmp_path / fr.FORMULA_FINDINGS_REL
+    assert findings.is_file(), "the writer run recorded no formula findings"
+    rec = json.loads(findings.read_text(encoding="utf-8"))
+    assert rec == {"errors": expect}
+    assert [n for n in notes if n.startswith("writer formula: ")] == [f"writer formula: {e}" for e in expect]

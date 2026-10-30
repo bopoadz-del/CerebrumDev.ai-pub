@@ -29,6 +29,12 @@ LAYER_KERNEL = "kernel"
 LAYER_STORE = "store"
 LAYER_IMPROVISED = "improvised"
 ORDER = (LAYER_KERNEL, LAYER_STORE, LAYER_IMPROVISED)
+#: Where, in the product tree, the writer records the formulas it authored
+#: and the new-domain candidates it raises (named to it in the prompt).
+WRITER_DEFINITIONS_REL = "app/formulas/writer_definitions.jsonl"
+WRITER_CANDIDATES_REL = "app/formulas/new_domain_candidates.jsonl"
+#: The Factory's record of this pass's formula findings (rework reads it).
+FORMULA_FINDINGS_REL = ".factory/writer_formula_findings.json"
 
 
 def _store_root(store_root: Any) -> Optional[Path]:
@@ -162,3 +168,46 @@ def render_resolution_section(
     lines += [f"   - {r.get('id')} [{r.get('kind')}] {r.get('source')}" for r in store] or ["   (none)"]
     lines.append(f'3. IMPROVISED -- only for what 1 and 2 do not cover; label "{IMPROVISED_LABEL}".')
     return "\n".join(lines) + "\n\n"
+
+
+def _jsonl(path: Path) -> List[Dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            rows.append({})  # an unreadable row is a row without an id
+            continue
+        rows.append(row if isinstance(row, dict) else {})
+    return rows
+
+
+def audit_product_formulas(
+    product_root: Any,
+    kernel_index: Sequence[Mapping[str, Any]],
+    store_index: Sequence[Mapping[str, Any]],
+) -> List[str]:
+    """Grade what the writer authored in ``product_root`` and record it.
+
+    Reads WRITER_DEFINITIONS_REL / WRITER_CANDIDATES_REL, runs
+    :func:`writer_formula_errors`, and writes the findings to
+    FORMULA_FINDINGS_REL (an empty list on a clean pass).
+    """
+    root = Path(product_root)
+    errs = writer_formula_errors(
+        _jsonl(root / WRITER_DEFINITIONS_REL),
+        kernel_index,
+        store_index,
+        _jsonl(root / WRITER_CANDIDATES_REL),
+    )
+    target = root / FORMULA_FINDINGS_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"errors": errs}, indent=2) + "\n", encoding="utf-8")
+    return errs

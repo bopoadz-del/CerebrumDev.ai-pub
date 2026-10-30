@@ -270,9 +270,12 @@ UI (a pilot is deployed and tested, so what it serves must work):
   (c) only then: Research what you do not know and write it yourself, labelled
   "improvised, no Store coverage", with its source cited in the definition row
   (say where it came from) and the row appended to new_domain_candidates.jsonl.
-  Re-writing a formula the kernel or the Store already has is a failure. A
-  value the customer owns (a rate, a threshold, a limit) stays a named setting
-  they can change, whatever you learn about it.
+  Every formula you write goes, one JSON row each ({{"id", "label",
+  "source"}}), in app/formulas/writer_definitions.jsonl; its candidate row
+  ({{"definition": id}}) in app/formulas/new_domain_candidates.jsonl.
+  Re-writing a formula the kernel or the Store already has is a failure.
+  A value the customer owns (a rate, a threshold, a limit)
+  stays a named setting they can change, whatever you learn about it.
 - The work is yours to create, grounded in our block-store standards and the
   vertical build. Build ON the stocked kit when one exists for this domain,
   composing the blocks you were given. When none exists, research the domain

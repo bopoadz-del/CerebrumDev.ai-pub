@@ -3862,6 +3862,18 @@ def _formula_sources(ctx: RoleContext) -> Dict[str, Any]:
     }
 
 
+def _flag_writer_formulas(ctx: RoleContext, dest: Path, sources: Dict[str, Any]) -> List[str]:
+    """Run the Store-first formula check on the writer's tree; note each finding."""
+    from app.factory.build.formula_resolution import audit_product_formulas
+
+    errs = audit_product_formulas(
+        dest, sources.get("kernel_index") or (), sources.get("store_index") or ()
+    )
+    for err in errs:
+        ctx.note(f"writer formula: {err}", stage="formula-resolution", source="factory")
+    return errs
+
+
 def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     """Phase 5: the WRITER role runs headless through `codewhale exec`.
 
@@ -3889,13 +3901,14 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     from app.factory.build.image_sufficiency import runtime_paths as image_runtime_paths
 
     product_tree = Path(getattr(ctx.workspace, "destination", None) or dest)
+    formula_sources = _formula_sources(ctx)
     prompt = render_writer_prompt(
         ctx.blueprint,
         brief=_compiled_writer_brief(ctx),
         resume=bool(ctx.state.get("writer_resumed")),
         # K-F7 (ORDERS_1900Z): kernel first, then the Store, then labelled
         # improvisation -- the writer sees what already exists.
-        **_formula_sources(ctx),
+        **formula_sources,
         # How many specialist agents this instance can carry at once. Read
         # here, not in the template: it follows the worker profile and the
         # operator override instead of going stale on the next plan.
@@ -4104,6 +4117,11 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             source="factory",
         )
     factory_owned.record(Path(dest), touched)
+
+    # K-F7 (ORDERS_1900Z): every formula the writer authored is graded
+    # against the kernel and the Store it was shown; a re-written or
+    # unlabelled one is flagged by name and recorded for rework.
+    _flag_writer_formulas(ctx, Path(dest), formula_sources)
 
     # Which writer run produced app/actions/, recorded where converge can
     # stamp it into the product's provenance. The receipt carries no id of
