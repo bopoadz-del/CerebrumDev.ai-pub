@@ -628,6 +628,21 @@ def confirm_verify_token(raw: str) -> Optional[str]:
         return row._mapping["id"]
 
 
+def mark_account_verified(account_id: str) -> bool:
+    """Admin action: mark one existing account email-verified.
+
+    Returns False when no account has that id; never creates one. Clears any
+    outstanding verify token so it cannot be replayed afterwards.
+    """
+    with _LOCK, _engine().begin() as conn:
+        result = conn.execute(
+            sa.update(_t_accounts)
+            .where(_t_accounts.c.id == account_id)
+            .values(email_verified=True, verify_token_hash=None, verify_expires_at=None)
+        )
+        return result.rowcount == 1
+
+
 def issue_reset_token(email: str) -> Optional[str]:
     """Issue a password-reset token if the email is registered; else None."""
     email_norm = email.strip().lower()

@@ -13,7 +13,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..core import accounts_store, billing, data_rights, mailer
-from ..core.auth import Principal, require_account_allow_unverified, require_api_key
+from ..core.auth import (
+    Principal,
+    require_account_allow_unverified,
+    require_api_key,
+    require_master_key,
+)
 from ..core.auth_cookies import clear_login_cookie, cookie_login_token, set_login_cookie
 from ..core.rate_limit import check_rate_limit_for_request
 from ..core.trial_limits import SMOKE_PRINCIPALS
@@ -507,6 +512,28 @@ async def admin_revoke_tenant_key(
     if not accounts_store.revoke_api_key(account_id, key_id):
         raise HTTPException(status_code=404, detail="Key not found or already revoked")
     return {"ok": True, "account_id": account_id, "key_id": key_id, "revoked": True}
+
+
+class AdminVerifyBody(BaseModel):
+    account_id: str
+
+
+@router.post("/admin/verify-email")
+async def admin_mark_verified(
+    body: AdminVerifyBody, principal: Principal = Depends(require_master_key)
+):
+    """Admin only (master key): mark one named account email-verified.
+
+    For test accounts that cannot receive mail. Public verification is
+    unchanged: no env flag turns it off, and every other account still
+    needs its emailed token.
+    """
+    target = (body.account_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="account_id required")
+    if not accounts_store.mark_account_verified(target):
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"ok": True, "account_id": target, "email_verified": True}
 
 
 @router.get("/export")
