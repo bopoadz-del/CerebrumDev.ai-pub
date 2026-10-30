@@ -1044,6 +1044,13 @@ def apply_store_gate_success(
             "refuse N3 SUCCESS: store-gate is not 12/12 ok=true "
             f"(score={snap.score!r} state={snap.state!r})"
         )
+    # F-8c: no product grade, a red Layer 1 or an open Layer-2 FAIL = the
+    # build is not certified, whatever the Store gate said.
+    from app.factory.build.product_grader.grade_record import certification_refusal
+
+    refusal = certification_refusal(root)
+    if refusal:
+        raise BuildsPushError(f"refuse N3 SUCCESS: {refusal}")
     write_acceptance_report(root, report)
     ids = list(cli_authored_ids or _cli_authored_ids(root))
     _persist_cli_authorship(root, ids)

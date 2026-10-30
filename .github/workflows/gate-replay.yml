@@ -65,6 +65,7 @@ on:
       - "backend/app/factory/build/factory_refresh.py"
       - "backend/app/factory/build/failure_owner.py"
       - "backend/app/factory/build/gate_replay.py"
+      - "backend/app/factory/build/product_grader/grade_record.py"
       - "backend/app/factory/build/gates.py"
       - "backend/app/factory/build/kernel_publish.py"
       - "backend/app/factory/build/ledger.py"

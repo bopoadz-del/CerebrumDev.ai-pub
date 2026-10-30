@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import json
 from pathlib import Path
 from urllib.request import Request
@@ -24,6 +26,10 @@ from app.factory.build.store_acceptance import ACCEPTANCE_REQUIRED, acceptance_i
 from app.factory.build_jobs import build_status, is_build_complete
 from app.factory import platform_chat_flow
 from app.models.session import ProductDesignState, SessionState
+
+#: F-8c: these tests grade the Store verdict; the product grade gate is
+#: tested in test_product_grade_record.py.
+pytestmark = pytest.mark.usefixtures("green_product_grade")
 
 SHA = "081a52874bb0141c5eb730b01f26dcc0bf8d0fa2"
 BRANCH = "build/sess_02af51453b364e3f-278c481a"

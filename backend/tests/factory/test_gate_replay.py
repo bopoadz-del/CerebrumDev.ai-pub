@@ -17,6 +17,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 
 from app.factory.build import gate_replay
@@ -49,7 +50,7 @@ def _gate_modules() -> set:
         tree = ast.parse((BUILD / f"{name}.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app.factory.build."):
-                found.add(node.module.rsplit(".", 1)[1])
+                found.add(node.module[len("app.factory.build."):].replace(".", "/"))
     return found
 
 
@@ -228,6 +229,7 @@ def _payload(failing=(), score=None) -> dict:
     }
 
 
+@pytest.mark.usefixtures("green_product_grade")  # F-8c: the grade gate is tested in test_product_grade_gate.py
 def test_a_certified_result_routes_green(tmp_path):
     out = gate_replay.verdict(_certified_tree(tmp_path), _payload(), branch="build/x")
     assert out["ok"] is True
