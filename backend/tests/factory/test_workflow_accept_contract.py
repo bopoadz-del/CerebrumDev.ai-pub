@@ -382,7 +382,7 @@ def test_system_brief_and_oneshot_name_the_event_bus_step_halt():
     assert PRODUCT_EVENT_BUS_STEP_0_HALT in _WHOLE_JOB_SYSTEM
     assert PRODUCT_EVENT_BUS_STEP_1_HALT in _WHOLE_JOB_SYSTEM
     assert PRODUCT_EVENT_BUS_STEP_2_HALT in _WHOLE_JOB_SYSTEM
-    assert "appointment_booking" in _WHOLE_JOB_SYSTEM
+    assert "appointment_booking" not in _WHOLE_JOB_SYSTEM  # F-9b: no foreign roster
     assert "channel=mcp" in _WHOLE_JOB_SYSTEM
     assert "'input': payload" in _WHOLE_JOB_SYSTEM or "input to payload" in _WHOLE_JOB_SYSTEM
 
