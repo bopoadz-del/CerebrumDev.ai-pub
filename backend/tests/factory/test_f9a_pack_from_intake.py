@@ -300,3 +300,20 @@ def test_empty_pack_and_empty_intake_are_two_refusals(make, reason):
     with pytest.raises(DomainPackError) as err:
         assert_pack(make())
     assert str(err.value) == reason
+
+
+# --- repair 1 of split A: blank-only values are excluded, never carried -----
+
+@pytest.mark.parametrize("name,summary,connectors,want", [
+    ("   ", "\t ", ["ais_feed", "  "],
+     {"platform_name": None, "mission": None, "required_connectors": ["ais_feed"]}),
+    ("Dock Board", "Berth allocation.", ["", "tide_api"],
+     {"platform_name": "Dock Board", "mission": "Berth allocation.", "required_connectors": ["tide_api"]}),
+], ids=["blank", "valued"])
+def test_blank_name_summary_and_connector_are_excluded(name, summary, connectors, want):
+    # N3 / N11 / N12: whitespace is not a value.
+    bp = SimpleNamespace(product_id="x", product_name=name, vertical="harbour_ops",
+                         summary=summary, capabilities=[], connectors=connectors)
+    syn = synthesize_domain_pack(bp, None)
+    for key, value in want.items():
+        assert syn.get(key) == value, key
