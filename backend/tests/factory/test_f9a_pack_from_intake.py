@@ -317,3 +317,16 @@ def test_blank_name_summary_and_connector_are_excluded(name, summary, connectors
     syn = synthesize_domain_pack(bp, None)
     for key, value in want.items():
         assert syn.get(key) == value, key
+
+
+# --- grader-miss fix of split A: a blank vertical is not a domain ------------
+
+@pytest.mark.parametrize("vertical,want", [
+    ("   ", None),
+    ("\t\n", None),
+    ("harbour_ops", "harbour_ops"),
+], ids=["spaces", "tab-newline", "real"])
+def test_blank_vertical_leaves_the_domain_absent(vertical, want):
+    bp = SimpleNamespace(product_id="x", product_name="Dock Board", vertical=vertical,
+                         summary="Berth allocation.", capabilities=[], connectors=[])
+    assert synthesize_domain_pack(bp, None).get("domain") == want
