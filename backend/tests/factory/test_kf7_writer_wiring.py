@@ -57,7 +57,8 @@ class _Stop(Exception):
     # good: improvised, labelled, sourced, with its candidate row
     ([{"id": "imp_q", "label": IMPROVISED_LABEL, "source": "Ref"}], [{"definition": "imp_q"}], []),
 ])
-def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, cands, expect):
+@pytest.mark.parametrize("elsewhere", [False, True])
+def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, cands, expect, elsewhere):
     from app.factory.build import roles_handlers as rh
     from app.factory.build import image_sufficiency as img
     from app.factory.build import codewhale_worker as cw
@@ -95,15 +96,24 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
 
     notes = []
     stages = []
+    sources = []
+    # B11: a workspace whose destination is not the writer's dest; the
+    # findings must still be graded and recorded from dest (tmp_path).
+    other = tmp_path.parent / (tmp_path.name + "_destination")
+    other.mkdir()
+
+    class _WS:
+        destination = str(other)
 
     class Ctx:
         blueprint = _BP("v")
-        workspace = None
+        workspace = _WS() if elsewhere else None
         state = {}
 
         def note(self, msg, **kw):
             notes.append(msg)
             stages.append((msg, kw.get("stage")))
+            sources.append((msg, kw.get("source")))
 
     with pytest.raises(_Stop):
         rh._run_writer_via_codewhale_worker(Ctx())
@@ -114,6 +124,10 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
     assert [n for n in notes if n.startswith("writer formula: ")] == [f"writer formula: {e}" for e in expect]
     # X9: every formula note is tagged with the literal stage name
     assert [st for m, st in stages if m.startswith("writer formula: ")] == ["formula-resolution"] * len(expect)
+    # B9: every formula note is tagged as coming from the Factory
+    assert [src for m, src in sources if m.startswith("writer formula: ")] == ["factory"] * len(expect)
+    # B11: nothing was graded into the workspace destination
+    assert not (other / fr.FORMULA_FINDINGS_REL).exists()
 
 
 
@@ -134,3 +148,29 @@ def test_n7_the_flag_grades_against_the_store_it_was_given(tmp_path, store, expe
     got = rh._flag_writer_formulas(Ctx(), tmp_path, {"kernel_index": [], "store_index": store})
     assert got == expect
     assert notes == [f"writer formula: {e}" for e in expect]
+
+
+# --- B12 (G2 #100 29de1fb): callers pass list indexes; a None or missing
+# index is a caller bug and must raise, never be audited against nothing.
+
+@pytest.mark.parametrize("sources", [
+    {"kernel_index": None, "store_index": []},
+    {"kernel_index": [], "store_index": None},
+    {"store_index": []},
+    {"kernel_index": []},
+])
+def test_b12_a_none_or_missing_index_raises(tmp_path, sources):
+    from app.factory.build import roles_handlers as rh
+
+    _write_defs(tmp_path, [GOOD_ROW])
+
+    class Ctx:
+        def note(self, msg, **kw):
+            pass
+
+    try:
+        rh._flag_writer_formulas(Ctx(), tmp_path, sources)
+        raised = None
+    except (TypeError, KeyError) as exc:
+        raised = type(exc).__name__
+    assert raised is not None, f"a None/missing index was silently accepted: {sources}"
