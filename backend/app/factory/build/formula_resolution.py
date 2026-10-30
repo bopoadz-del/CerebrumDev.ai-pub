@@ -49,7 +49,7 @@ def _store_root(store_root: Any) -> Optional[Path]:
 def _pack_serves(manifest: Mapping[str, Any], want: str) -> bool:
     names = {slug(manifest.get("domain_id"))}
     names |= {slug(v) for v in (manifest.get("serves_verticals") or [])}
-    return bool(want) and want in names
+    return want in names
 
 
 def store_coverage_index(vertical: Any, store_root: Any = None) -> List[Dict[str, str]]:
