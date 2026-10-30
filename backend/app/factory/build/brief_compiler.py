@@ -349,31 +349,41 @@ def _load_kit_manifests(
 
 
 def synthesize_domain_pack(blueprint: Any, plan: Any) -> Dict[str, Any]:
-    """Honest pack from the blueprint. Empty slots stay named, never invented."""
-    name = str(getattr(blueprint, "product_name", "") or "platform")
-    vertical = str(getattr(blueprint, "vertical", "") or "product")
-    summary = str(getattr(blueprint, "summary", "") or "")
+    """Honest pack from the blueprint, the intake and the kernel.
+
+    Every value is read from something the build has: the blueprint the
+    architect drafted from the customer's turns, the capability plan, and the
+    kernel's resolved definition addresses. A slot nothing supplies is left
+    OUT (``domain_pack_for`` declares it absent) -- the Factory never invents
+    users, roles, data sources or a mission for a product it has not been told
+    about.
+    """
+    from app.cerebrum_product_kernel.formulas import definition_index
+
+    name = str(getattr(blueprint, "product_name", "") or "").strip()
+    vertical = str(getattr(blueprint, "vertical", "") or "").strip()
+    summary = str(getattr(blueprint, "summary", "") or "").strip()
     caps = list(getattr(plan, "capabilities", ()) or getattr(blueprint, "capabilities", ()) or [])
     cap_ids = [
         str(getattr(c, "capability_id", "") or getattr(c, "id", "") or "")
         for c in caps
     ]
     cap_ids = [c for c in cap_ids if c]
-    users = f"{vertical.replace('_', ' ').replace('-', ' ')} operators"
-    pack = {
+    connectors = [str(c) for c in (getattr(blueprint, "connectors", None) or []) if str(c).strip()]
+    pack: Dict[str, Any] = {
         "platform_name": name,
         "domain": vertical,
-        "product_type": "operations platform",
-        "target_users": users,
-        "mission": summary or f"A booted {vertical} platform with the listed capabilities.",
-        "domain_purpose": summary or f"System of record for {vertical}.",
-        "primary_users": [users],
-        "required_roles": ["operator", "admin"],
+        "mission": summary,
+        "domain_purpose": summary,
         "required_product_modules": cap_ids,
         "core_business_workflows": [
             f"one-record round-trip for {cid}" for cid in cap_ids
-        ] or ["one-record create/read round-trip"],
-        "authoritative_calculations": ["none claimed beyond persisted fields"],
+        ],
+        # The calculations the product may state are the kernel's resolved
+        # definitions -- by address, never a Factory sentence.
+        "authoritative_calculations": [
+            str(row["address"]) for row in definition_index() if row.get("address")
+        ],
         "domain_rules": [
             f"status vocabulary is schema-enforced: {', '.join(ENVELOPE_STATUS_VALUES)}",
             "reserved-keyword fields are refused",
@@ -384,21 +394,16 @@ def synthesize_domain_pack(blueprint: Any, plan: Any) -> Dict[str, Any]:
             "store publish",
             "export when the pilot suite is red",
         ],
-        "data_sources": ["vendored Store blocks", "local sqlite"],
-        "required_connectors": [],
+        "required_connectors": connectors,
         "required_exports": ["pilot_candidate zip after PRODUCT+STORE green"],
-        "security_regulatory_rules": [
-            "offline platform — no network, no HTTP store callbacks",
-        ],
-        "demo_data_requirements": ["one persisted record per capability"],
         "domain_acceptance_conditions": [
             "product boots",
             "own gates green",
             "one-record round-trip per capability",
             "envelope vocab open|in_progress|closed enforced by schema, not prose",
-        ],
+        ] if cap_ids else [],
     }
-    return pack
+    return {k: v for k, v in pack.items() if v}
 
 
 def _section_lines(*parts: str) -> str:
