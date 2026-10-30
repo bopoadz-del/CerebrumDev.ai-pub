@@ -233,3 +233,9 @@ def test_is_empty_pack_unwraps_the_field_value():
     # str() of the item itself is never blank, so only the unwrap sees "".
     assert is_empty_pack({"fields": {"a": {"value": ""}}}) is True
     assert is_empty_pack({"fields": {"a": {"value": "x"}}}) is False
+
+
+def test_is_empty_pack_reads_a_bare_field_item():
+    # A field item that is not a Mapping is itself the value.
+    assert is_empty_pack({"fields": {"a": ""}}) is True
+    assert is_empty_pack({"fields": {"a": "x"}}) is False
