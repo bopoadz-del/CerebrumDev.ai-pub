@@ -14,6 +14,8 @@ from app.cerebrum_product_kernel.formulas import definition_index
 from app.factory.blueprint import CapabilitySpec, ProductBlueprint
 from app.factory.build.brief_compiler import synthesize_domain_pack
 from app.factory.build.domain_pack import DomainPackError, assert_pack, domain_pack_for
+from app.factory.build.domain_pack import as_delivery_domain_pack
+import app.cerebrum_product_kernel.formulas as kernel_formulas
 
 def _bp(name, vertical, summary, caps, connectors=()):
     return ProductBlueprint(
@@ -360,3 +362,33 @@ def test_intake_slot_missing_or_not_an_object_is_an_empty_intake(domain_purpose)
     except (KeyError, AttributeError) as exc:
         got = f"crashed: {type(exc).__name__}"
     assert got == "Domain Pack built from an empty intake: no domain_purpose"
+
+
+# --- G2 #101 repair (X3): a pack missing a field, or whose fields are not an
+# object, passes through as_delivery_domain_pack without crashing.
+
+@pytest.mark.parametrize("pack, want", [
+    ({}, None),
+    ({"fields": {}}, None),
+    ({"fields": "not an object"}, None),
+    ({"fields": {"domain_purpose": "raw purpose"}}, "raw purpose"),
+    ({"fields": {"domain_purpose": {"value": "kiln firings"}}}, "kiln firings"),
+])
+def test_delivery_flatten_passes_odd_fields_through(pack, want):
+    try:
+        got = as_delivery_domain_pack(pack).get("domain_purpose")
+    except (AttributeError, TypeError) as exc:
+        got = f"crashed: {type(exc).__name__}"
+    assert got == want
+
+
+# --- G2 #101 repair: a kernel row with a blank address never ships as an
+# authoritative calculation; a real address does.
+
+@pytest.mark.parametrize("address, want", [("", []), ("kiln:firing_curve_v1", ["kiln:firing_curve_v1"])])
+def test_blank_kernel_address_does_not_ship(monkeypatch, address, want):
+    monkeypatch.setattr(kernel_formulas, "definition_index", lambda: [{"address": address}])
+    bp = SimpleNamespace(product_name="Kiln Log", vertical="kiln_ops", summary="s",
+                         capabilities=[], connectors=[])
+    pack = synthesize_domain_pack(bp, SimpleNamespace(capabilities=[SimpleNamespace(id="firing_log")]))
+    assert pack.get("authoritative_calculations", []) == want

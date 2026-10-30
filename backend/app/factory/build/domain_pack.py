@@ -207,7 +207,7 @@ def as_delivery_domain_pack(pack: Mapping[str, Any]) -> Dict[str, Any]:
     fields = pack.get("fields") if isinstance(pack.get("fields"), Mapping) else {}
     for name in DOMAIN_PACK_FIELDS:
         item = fields.get(name)
-        if item.get("absent") is True:
+        if isinstance(item, Mapping) and item.get("absent") is True:
             # Rendered as what it is -- absent from the intake -- so the brief
             # says so instead of carrying a Factory-invented value.
             out[name] = "absent: not supplied in the intake"

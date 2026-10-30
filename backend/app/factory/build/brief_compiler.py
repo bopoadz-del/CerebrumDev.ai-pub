@@ -382,7 +382,7 @@ def synthesize_domain_pack(blueprint: Any, plan: Any) -> Dict[str, Any]:
         # The calculations the product may state are the kernel's resolved
         # definitions -- by address, never a Factory sentence.
         "authoritative_calculations": [
-            str(row["address"]) for row in definition_index()
+            str(row["address"]) for row in definition_index() if row.get("address")
         ],
         "domain_rules": [
             f"status vocabulary is schema-enforced: {', '.join(ENVELOPE_STATUS_VALUES)}",
