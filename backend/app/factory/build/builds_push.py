@@ -101,6 +101,9 @@ FACTORY_INTERNAL_PATHS = frozenset(
         # The WRITER pass's record of Factory-owned files it touched
         # (factory_owned.VIOLATIONS_REL): read by the WRITER gate, never shipped.
         "docs/writer_factory_owned.json",
+        # The WRITER pass's formula findings (formula_resolution.
+        # FORMULA_FINDINGS_REL): read for rework, never shipped.
+        ".factory/writer_formula_findings.json",
     }
 )
 
