@@ -255,3 +255,24 @@ def test_n10_a_tree_without_formula_files_is_clean_not_a_crash(tmp_path, write, 
     assert got == expect
     rec = json.loads((tmp_path / _fr().FORMULA_FINDINGS_REL).read_text(encoding="utf-8"))
     assert rec == {"errors": expect}
+
+
+# --- #91 repair: G2 0059Z survivors N11, R5 (own file) ----------------------
+
+@pytest.mark.parametrize("lines, expect", [
+    ([GOOD_ROW, "", "   "], []),
+    (["", GOOD_ROW, "{not json"], ["definition row without an id"]),
+])
+def test_n11_blank_lines_in_the_writer_jsonl_are_not_rows(tmp_path, lines, expect):
+    _write_defs(tmp_path, lines)
+    assert _fr().audit_product_formulas(tmp_path, [], []) == expect
+
+
+@pytest.mark.parametrize("cands, expect", [
+    ([{"definition": " imp_r "}], []),
+    ([{"id": "\timp_r"}], []),
+    ([{"definition": " imp_other "}], ["imp_r: improvised without a new_domain_candidates row"]),
+])
+def test_r5_a_padded_candidate_row_still_names_it(cands, expect):
+    row = {"id": "imp_r", **IMP}
+    assert _fr().writer_formula_errors([row], [], [], cands) == expect
