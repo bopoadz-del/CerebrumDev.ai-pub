@@ -46,25 +46,31 @@ def test_pack_carries_no_factory_invented_values(bp):
         assert f'"{word}' not in blob, word
 
 
-def test_two_intakes_give_two_packs():
-    pa, pb = domain_pack_for(A), domain_pack_for(B)
-    assert pa["fields"]["required_product_modules"]["value"] == ["firing_log", "glaze_batch"]
-    assert pb["fields"]["required_product_modules"]["value"] == ["berth_plan"]
-    assert pb["fields"]["required_connectors"]["value"] == ["ais_feed"]
-    assert pa["fields"]["required_connectors"].get("absent") is True
-    assert pa["header"]["mission"] == "Track kiln firings."
-    assert pb["header"]["mission"] == "Berth allocation for tugs."
+@pytest.mark.parametrize("bp,modules,connectors,mission", [
+    (A, ["firing_log", "glaze_batch"], None, "Track kiln firings."),
+    (B, ["berth_plan"], ["ais_feed"], "Berth allocation for tugs."),
+], ids=["A", "B"])
+def test_two_intakes_give_two_packs(bp, modules, connectors, mission):
+    pack = domain_pack_for(bp)
+    assert pack["fields"]["required_product_modules"]["value"] == modules
+    if connectors is None:
+        assert pack["fields"]["required_connectors"].get("absent") is True
+    else:
+        assert pack["fields"]["required_connectors"]["value"] == connectors
+    assert pack["header"]["mission"] == mission
 
 
-def test_calculations_are_the_kernel_definition_addresses():
+@pytest.mark.parametrize("bp", [A, B], ids=["A", "B"])
+def test_calculations_are_the_kernel_definition_addresses(bp):
     want = [r["address"] for r in definition_index()]
     assert want
-    vals = synthesize_domain_pack(A, None)["authoritative_calculations"]
+    vals = synthesize_domain_pack(bp, None)["authoritative_calculations"]
     assert vals == want
 
 
-def test_unsupplied_fields_are_declared_absent_not_filled():
-    pack = domain_pack_for(A)
+@pytest.mark.parametrize("bp", [A, B], ids=["A", "B"])
+def test_unsupplied_fields_are_declared_absent_not_filled(bp):
+    pack = domain_pack_for(bp)
     for name in ("primary_users", "required_roles", "data_sources"):
         item = pack["fields"][name]
         assert item.get("absent") is True, name
@@ -102,9 +108,11 @@ def test_provenance_is_the_turn_that_says_it(turns, expect):
     assert "glazers" in intake["users"]["source_text"]
 
 
-def test_value_no_turn_says_is_not_stamped_on_a_turn():
+@pytest.mark.parametrize("role", ["harbourmaster", "tug pilot"])
+def test_value_no_turn_says_is_not_stamped_on_a_turn(role):
     intake = intake_from_product_blueprint(
-        A, chat_turns=TURNS_A, domain_pack={"required_roles": ["harbourmaster"]})
+        A, chat_turns=TURNS_A, domain_pack={"required_roles": [role]})
+    assert intake["roles"]["value"] == [role]
     assert intake["roles"]["source_turn"] is None
     assert intake["roles"]["source"] == "architect"
     assert intake["users"]["absent"] is True and intake["users"]["value"] == []
@@ -149,12 +157,15 @@ def test_blank_blueprint_gets_no_made_up_name_mission_or_workflows():
     assert all(v for v in syn.values())
 
 
-def test_supplied_values_are_carried_verbatim():
-    syn = synthesize_domain_pack(_bp("Kiln Log", "pottery_studio", "Track kiln firings.",
-                                     ["firing_log"]), None)
-    assert syn["platform_name"] == "Kiln Log"
-    assert syn["mission"] == "Track kiln firings."
-    assert syn["core_business_workflows"] == ["one-record round-trip for firing_log"]
+@pytest.mark.parametrize("name,summary,cap", [
+    ("Kiln Log", "Track kiln firings.", "firing_log"),
+    ("Dock Board", "Berth allocation for tugs.", "berth_plan"),
+])
+def test_supplied_values_are_carried_verbatim(name, summary, cap):
+    syn = synthesize_domain_pack(_bp(name, "pottery_studio", summary, [cap]), None)
+    assert syn["platform_name"] == name
+    assert syn["mission"] == summary
+    assert syn["core_business_workflows"] == [f"one-record round-trip for {cap}"]
     assert "domain_acceptance_conditions" in syn
 
 
@@ -164,8 +175,9 @@ def test_pack_without_capabilities_has_no_acceptance_conditions():
     assert "core_business_workflows" not in syn
 
 
-def test_no_made_up_roles_users_or_sources_come_back_on_intake():
-    intake = intake_from_product_blueprint(A, chat_turns=TURNS_A, domain_pack={})
+@pytest.mark.parametrize("turns", [TURNS_A, TURNS_B], ids=["A", "B"])
+def test_no_made_up_roles_users_or_sources_come_back_on_intake(turns):
+    intake = intake_from_product_blueprint(A, chat_turns=turns, domain_pack={})
     for key in ("roles", "users", "data_sources", "integrations", "constraints", "done_when"):
         assert intake[key]["value"] == [], key
         assert intake[key]["absent"] is True, key
@@ -201,12 +213,16 @@ def test_intake_integrations_fall_back_to_blueprint_connectors(bp, expect):
         assert intake["integrations"]["value"] == expect
 
 
-def test_provenance_matching_is_case_insensitive():
-    turns = [{"turn": 1, "role": "user", "text": "hello"},
-             {"turn": 2, "role": "user", "text": "GLAZERS run the kiln"}]
+@pytest.mark.parametrize("said,typed,turn", [
+    ("GLAZERS run the kiln", "Glazers", 2),
+    ("kiln techs only", "KILN TECHS", 1),
+])
+def test_provenance_matching_is_case_insensitive(said, typed, turn):
+    turns = [{"turn": 1, "role": "user", "text": "hello" if turn == 2 else said},
+             {"turn": 2, "role": "user", "text": said if turn == 2 else "thanks"}]
     intake = intake_from_product_blueprint(A, chat_turns=turns,
-                                           domain_pack={"primary_users": ["Glazers"]})
-    assert intake["users"]["source_turn"] == 2
+                                           domain_pack={"primary_users": [typed]})
+    assert intake["users"]["source_turn"] == turn
     assert intake["users"]["source"] == "turn"
     validate_intake(intake, chat_turns=turns)
 
@@ -218,11 +234,13 @@ def test_citation_must_say_every_value_not_just_one():
         validate_intake(intake, chat_turns=TURNS_A)
 
 
-def test_delivery_brief_says_absent_for_an_absent_slot():
+@pytest.mark.parametrize("bp,modules", [(A, ["firing_log", "glaze_batch"]), (B, ["berth_plan"])],
+                         ids=["A", "B"])
+def test_delivery_brief_says_absent_for_an_absent_slot(bp, modules):
     from app.factory.build.domain_pack import as_delivery_domain_pack
-    out = as_delivery_domain_pack(domain_pack_for(A))
+    out = as_delivery_domain_pack(domain_pack_for(bp))
     assert out["required_roles"] == "absent: not supplied in the intake"
-    assert out["required_product_modules"] == ["firing_log", "glaze_batch"]
+    assert out["required_product_modules"] == modules
 
 
 @pytest.mark.parametrize("values,turn,source", [(["glazers"], 2, "turn"),
