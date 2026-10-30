@@ -117,7 +117,7 @@ def render_resolution_section(
 
 
 def _ids(index: Iterable[Mapping[str, Any]]) -> set:
-    return {str(r.get("id") or "").strip() for r in index or []} - {""}
+    return {str(r.get("id") or "").strip() for r in index} - {""}
 
 
 def resolve_layer(
@@ -147,9 +147,9 @@ def writer_formula_errors(
     Any other row is improvisation and must carry ``IMPROVISED_LABEL``, a
     non-empty source, and a candidate row naming it (FAIL otherwise).
     """
-    candidates = {str(r.get("definition") or r.get("id") or "").strip() for r in candidate_rows or []}
+    candidates = {str(r.get("definition") or r.get("id") or "").strip() for r in candidate_rows}
     errs: List[str] = []
-    for row in rows or []:
+    for row in rows:
         ident = str(row.get("id") or row.get("key") or "").strip()
         if not ident:
             errs.append("definition row without an id")

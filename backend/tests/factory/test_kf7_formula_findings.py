@@ -265,3 +265,42 @@ def test_x3_findings_recorded_whether_or_not_factory_dir_exists(tmp_path, pre_ma
     assert got == []
     literal = tmp_path / ".factory" / "writer_formula_findings.json"
     assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": []}
+
+
+# --- Y2 (G2 #99 a263faf): a covered row gets exactly the one coverage error ---
+
+@pytest.mark.parametrize("kernel, store, expect", [
+    ([], [{"id": "cov_1"}], ["cov_1: the Store covers this; use the Store definition"]),
+    ([{"id": "cov_1"}], [], ["cov_1: kernel covers this; use the kernel definition"]),
+])
+def test_y2_a_covered_row_gets_exactly_one_error(kernel, store, expect):
+    # unlabelled, unsourced, no candidate row: only the coverage error may fire
+    assert _fr().writer_formula_errors([{"id": "cov_1"}], kernel, store, []) == expect
+
+
+# --- Y6: a candidate row's definition wins over a differing id ---------------
+
+@pytest.mark.parametrize("ident, expect", [
+    ("imp_def", []),
+    ("imp_other", ["imp_other: improvised without a new_domain_candidates row"]),
+])
+def test_y6_candidate_definition_wins_over_a_differing_id(ident, expect):
+    row = {"id": ident, "label": IMPROVISED_LABEL, "source": "Ref"}
+    cands = [{"definition": "imp_def", "id": "imp_other"}]
+    assert _fr().writer_formula_errors([row], [], [], cands) == expect
+
+
+# --- Y14: a null provenance never breaks the source check --------------------
+
+@pytest.mark.parametrize("source, expect", [
+    ("Ref", []),
+    (None, ["imp_p: improvised without a cited source"]),
+])
+def test_y14_null_provenance_with_or_without_a_source(source, expect):
+    row = {"id": "imp_p", "label": IMPROVISED_LABEL, "source": source, "provenance": None}
+    try:
+        got, raised = _fr().writer_formula_errors([row], [], [], [{"definition": "imp_p"}]), None
+    except (AttributeError, TypeError) as exc:  # null provenance must grade, not crash
+        got, raised = None, type(exc).__name__
+    assert raised is None, f"a null provenance raised {raised}"
+    assert got == expect
