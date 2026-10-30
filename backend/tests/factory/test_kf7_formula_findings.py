@@ -14,7 +14,9 @@ import pytest
 
 
 def _fr():
-    from app.factory.build import formula_resolution
+    # Imported by its full dotted path so CI-M's tests_for() maps
+    # app.factory.build.formula_resolution to this file.
+    import app.factory.build.formula_resolution as formula_resolution
 
     return formula_resolution
 
@@ -171,6 +173,7 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
         monkeypatch.setattr(rh, name, lambda ctx: None)
 
     notes = []
+    stages = []
 
     class Ctx:
         blueprint = _BP("v")
@@ -179,6 +182,7 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
 
         def note(self, msg, **kw):
             notes.append(msg)
+            stages.append((msg, kw.get("stage")))
 
     with pytest.raises(_Stop):
         rh._run_writer_via_codewhale_worker(Ctx())
@@ -187,6 +191,8 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
     rec = json.loads(findings.read_text(encoding="utf-8"))
     assert rec == {"errors": expect}
     assert [n for n in notes if n.startswith("writer formula: ")] == [f"writer formula: {e}" for e in expect]
+    # X9: every formula note is tagged with the literal stage name
+    assert [st for m, st in stages if m.startswith("writer formula: ")] == ["formula-resolution"] * len(expect)
 
 
 # --- K-F7 split: one test per G2 survivor of 84bf10d (own file) -------------
@@ -311,3 +317,26 @@ def test_r6_findings_land_at_the_literal_path(tmp_path, lines, expect):
     assert literal.is_file(), "findings not written to .factory/writer_formula_findings.json"
     assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": expect}
     assert _fr().FORMULA_FINDINGS_REL == ".factory/writer_formula_findings.json"
+
+
+# --- X1 (G2 #94 0c8e475): a blank or missing id never matches a blank index id
+
+@pytest.mark.parametrize("ident, kernel, store", [
+    ("", [{"id": ""}], []),
+    ("", [], [{"id": None}]),
+    (None, [{"id": None}], []),
+    (None, [], [{"id": "  "}]),
+    ("", [{}], [{}]),
+])
+def test_x1_blank_ident_is_improvised_even_against_blank_index_ids(ident, kernel, store):
+    out = _fr().resolve_layer(ident, kernel, store)
+    assert out == {"id": "", "layer": "improvised", "label": IMPROVISED_LABEL}
+
+
+@pytest.mark.parametrize("ident, kernel, store, layer", [
+    ("k1", [{"id": ""}, {"id": "k1"}], [], "kernel"),
+    ("s1", [{"id": None}], [{"id": ""}, {"id": "s1"}], "store"),
+    ("", [{"id": "k1"}], [{"id": "s1"}], "improvised"),
+])
+def test_x1_blank_index_rows_do_not_hide_real_ids(ident, kernel, store, layer):
+    assert _fr().resolve_layer(ident, kernel, store)["layer"] == layer
