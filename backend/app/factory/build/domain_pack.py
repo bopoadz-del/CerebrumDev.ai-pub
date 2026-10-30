@@ -271,7 +271,8 @@ def assert_pack(pack: Mapping[str, Any]) -> None:
     either valued or explicitly declared absent; an empty intake fails."""
     if is_empty_pack(pack):
         raise DomainPackError("empty Domain Pack")
-    fields = pack.get("fields") if isinstance(pack.get("fields"), Mapping) else {}
+    # is_empty_pack just proved fields is a non-empty Mapping.
+    fields = pack["fields"]
     empty_intake = [
         name for name in INTAKE_FIELDS
         if not (isinstance(fields.get(name), Mapping) and _value_present(fields[name].get("value")))

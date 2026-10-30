@@ -392,3 +392,35 @@ def test_blank_kernel_address_does_not_ship(monkeypatch, address, want):
                          capabilities=[], connectors=[])
     pack = synthesize_domain_pack(bp, SimpleNamespace(capabilities=[SimpleNamespace(id="firing_log")]))
     assert pack.get("authoritative_calculations", []) == want
+
+
+# --- G2 handback V1: a capability with no id never ships as a blank module.
+
+@pytest.mark.parametrize("ids, want", [
+    (["", "firing_log"], ["firing_log"]),
+    (["glaze_batch"], ["glaze_batch"]),
+])
+def test_blank_capability_id_is_not_a_module(ids, want):
+    bp = SimpleNamespace(product_name="Kiln Log", vertical="kiln_ops", summary="s",
+                         capabilities=[], connectors=[])
+    plan = SimpleNamespace(capabilities=[SimpleNamespace(id=i) for i in ids])
+    assert synthesize_domain_pack(bp, plan)["required_product_modules"] == want
+
+
+# --- G2 handback X5 (deleted fallback): assert_pack reaches its fields read
+# only after is_empty_pack accepted a non-empty Mapping; anything else is the
+# empty-pack refusal, a real intake is accepted.
+
+@pytest.mark.parametrize("fields, want", [
+    ("not an object", "empty Domain Pack"),
+    ({"domain_purpose": {"value": "kiln firings"}}, "Domain Pack built from an empty intake: no required_product_modules"),
+])
+def test_assert_pack_fields_shape(fields, want):
+    try:
+        assert_pack({"fields": fields})
+        got = "accepted"
+    except DomainPackError as exc:
+        got = str(exc)
+    except (KeyError, AttributeError, TypeError) as exc:
+        got = f"crashed: {type(exc).__name__}"
+    assert got == want
