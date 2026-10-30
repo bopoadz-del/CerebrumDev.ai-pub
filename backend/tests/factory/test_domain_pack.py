@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from app.factory.blueprint import load_blueprint
+from app.factory.build.brief_compiler import synthesize_domain_pack
 from app.factory.build.domain_pack import (
+    INTAKE_FIELDS,
     EMITTER_ID,
     PACK_REL,
     DomainPackError,
@@ -85,10 +87,23 @@ def test_own_pack_exists_with_all_15_fields_kernel_bound():
     assert_pack(pack)
     assert pack["domain_id"] == load_blueprint(SMOKE).vertical
     assert list(pack["fields"]) == list(DOMAIN_PACK_FIELDS)
+    supplied = synthesize_domain_pack(load_blueprint(SMOKE), None)
+    for name in INTAKE_FIELDS:
+        assert name in supplied and pack["fields"][name]["value"], name
     for name in DOMAIN_PACK_FIELDS:
         item = pack["fields"][name]
-        # F-9a: a slot is valued, or DECLARED absent -- never filled by the Factory.
-        assert item["value"] or item.get("absent") is True, name
+        # F-9a: a slot is valued XOR declared absent -- never filled by the
+        # Factory. Every slot the blueprint supplies must carry exactly that
+        # value (not absent); every slot it does not must be absent with an
+        # empty value. At least as strong as the old `assert item["value"]`
+        # for every supplied slot, and the intake slots must be supplied.
+        if name in supplied:
+            assert item["value"], name
+            assert item["value"] == supplied[name], name
+            assert item.get("absent") is not True, name
+        else:
+            assert item.get("absent") is True, name
+            assert item["value"] == [], name
         kernel = item["kernel"]
         assert kernel["action_ids"], name
         assert kernel["contracts"], name

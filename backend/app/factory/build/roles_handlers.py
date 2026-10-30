@@ -5328,7 +5328,9 @@ def run_writer(
     from app.factory.build.domain_pack import DomainPackError, emit_domain_pack
 
     try:
-        emit_domain_pack(ctx.workspace, blueprint=ctx.blueprint)
+        emit_domain_pack(
+            ctx.workspace, blueprint=ctx.blueprint, plan=getattr(ctx, "plan", None)
+        )
     except DomainPackError as exc:
         raise RoleError(str(exc)) from exc
     sources["deploy_scaffold"] = fallback_source

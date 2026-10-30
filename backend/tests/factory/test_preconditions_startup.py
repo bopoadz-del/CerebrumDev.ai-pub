@@ -396,6 +396,8 @@ def test_the_writer_renders_the_module_from_the_blocks_it_vendored(
         product_name = "Lettings Manager"
         product_id = "lettings-manager"
         vertical = "property"
+        # ProductBlueprint requires a summary; F-9a reads domain_purpose from it.
+        summary = "Synthetic probe product for the writer test."
 
     ws = RoleWorkspace(BuildRole.WRITER, tmp_path / "build")
     state = {"vendored_blocks": ("team", "storage")}

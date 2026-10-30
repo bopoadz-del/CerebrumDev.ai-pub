@@ -313,9 +313,13 @@ def emit_domain_pack(
     workspace: Any,
     *,
     blueprint: Any = None,
+    plan: Any = None,
 ) -> Dict[str, Any]:
-    """WRITER ships the BUILD'S OWN pack into the product tree."""
-    pack = domain_pack_for(blueprint)
+    """WRITER ships the BUILD'S OWN pack into the product tree.
+
+    The capability plan is the build's module roster; without it a blueprint
+    that does not carry its own capabilities reads as an empty intake."""
+    pack = domain_pack_for(blueprint, plan)
     assert_pack(pack)
     workspace.write_text(PACK_REL, render_pack(pack))
     return {

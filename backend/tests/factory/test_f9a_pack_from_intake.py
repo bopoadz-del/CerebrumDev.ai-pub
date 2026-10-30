@@ -231,3 +231,109 @@ def test_provenance_picks_the_saying_turn_or_none(values, turn, source):
     got = _ib._provenance(values, TURNS_A)
     assert got["source_turn"] == turn
     assert got["source"] == source
+
+
+# --- repair 2: the WRITER builds its pack from the capability PLAN too -------
+
+class _PlanCap:
+    def __init__(self, cid):
+        self.capability_id = cid
+
+
+class _Plan:
+    def __init__(self, *cids):
+        self.capabilities = tuple(_PlanCap(c) for c in cids)
+
+
+class _BareBlueprint:
+    """A stand-in that carries no capabilities of its own: the plan does."""
+
+    def __init__(self, name, vertical, summary):
+        self.product_name = name
+        self.product_id = name.lower().replace(" ", "-")
+        self.vertical = vertical
+        self.summary = summary
+
+
+class _MemWorkspace:
+    def __init__(self):
+        self.files = {}
+
+    def write_text(self, rel, text):
+        self.files[str(rel)] = text
+
+
+@pytest.mark.parametrize(
+    "bp,cids",
+    [
+        (_BareBlueprint("Kiln Log", "pottery_studio", "Track kiln firings."), ("firing_log", "glaze_batch")),
+        (_BareBlueprint("Dock Board", "harbour_ops", "Berth allocation for tugs."), ("berth_plan",)),
+    ],
+)
+def test_emit_domain_pack_reads_modules_from_the_plan(bp, cids):
+    from app.factory.build.domain_pack import PACK_REL, emit_domain_pack
+
+    ws = _MemWorkspace()
+    try:
+        out = emit_domain_pack(ws, blueprint=bp, plan=_Plan(*cids))
+    except DomainPackError as exc:
+        raise AssertionError(f"the plan's modules were not read: {exc}") from exc
+    assert out["domain_id"] == bp.vertical
+    text = ws.files[str(PACK_REL)]
+    for cid in cids:
+        assert cid in text
+    pack = domain_pack_for(bp, _Plan(*cids))
+    assert pack["fields"]["required_product_modules"]["value"] == list(cids)
+
+
+def test_emit_domain_pack_without_a_plan_or_caps_is_an_empty_intake():
+    from app.factory.build.domain_pack import emit_domain_pack
+
+    bp = _BareBlueprint("Kiln Log", "pottery_studio", "Track kiln firings.")
+    with pytest.raises(DomainPackError, match="required_product_modules"):
+        emit_domain_pack(_MemWorkspace(), blueprint=bp)
+
+
+@pytest.mark.parametrize(
+    "bp,cids",
+    [
+        (_BareBlueprint("Kiln Log", "pottery_studio", "Track kiln firings."), ("firing_log", "glaze_batch")),
+        (_BareBlueprint("Dock Board", "harbour_ops", "Berth allocation for tugs."), ("berth_plan",)),
+    ],
+)
+def test_writer_builds_the_pack_from_its_plan(tmp_path, stub_coder, bp, cids):
+    """The WRITER hands ctx.plan to emit_domain_pack: a blueprint whose roster
+    lives only on the plan is NOT an empty intake, and the shipped pack lists
+    exactly the plan's modules."""
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.domain_pack import PACK_REL
+    from app.factory.build.roles import RoleContext, run_writer
+    from app.factory.build.workspace import RoleWorkspace
+
+    class _Cap:
+        def __init__(self, cid):
+            self.capability_id = cid
+            self.block_ids = ()
+
+    class _P:
+        capabilities = tuple(_Cap(c) for c in cids)
+
+    ctx = RoleContext(
+        role=BuildRole.WRITER,
+        workspace=RoleWorkspace(BuildRole.WRITER, tmp_path / "build"),
+        blueprint=bp,
+        plan=_P(),
+        work_list=(),
+        state={},
+    )
+    from app.factory.build.roles_models import RoleError
+
+    try:
+        result = run_writer(ctx)
+    except RoleError as exc:
+        raise AssertionError(f"writer did not build the pack from ctx.plan: {exc}") from exc
+    assert result.ok
+    shipped = json.loads((tmp_path / "build" / PACK_REL).read_text(encoding="utf-8"))
+    assert shipped["domain_id"] == bp.vertical
+    assert shipped["fields"]["required_product_modules"]["value"] == list(cids)
+    assert shipped["fields"]["domain_purpose"]["value"] == bp.summary
