@@ -218,3 +218,89 @@ def test_b2_the_store_sha_comes_from_the_pin(monkeypatch, tmp_path, sha):
 def test_n9_the_prompt_names_where_formulas_go(const):
     text = render_writer_prompt(_BP("v"), brief="b")
     assert f"in {getattr(_fr(), const)}" in text, const
+
+
+# --- #90 repair: G2 0059Z survivors (A21, A30, A22/A23, A27-A29, S9) --------
+
+def _index(vertical, root):
+    """store_coverage_index, with any raise kept an assertion failure."""
+    try:
+        return _fr().store_coverage_index(vertical, root)
+    except Exception as exc:  # noqa: BLE001 -- a raise is the defect under test
+        raise AssertionError(f"store_coverage_index raised {type(exc).__name__}: {exc}")
+
+
+@pytest.mark.parametrize("store, first", [
+    ([], "   (none)"),
+    ([{"id": "sw", "kind": "pack_formula", "source": "domain_packs/w/pack.json"}],
+     "   - sw [pack_formula] domain_packs/w/pack.json"),
+])
+def test_a21_an_empty_store_index_says_none(store, first):
+    lines = _fr().render_resolution_section([], store, "e" * 40).splitlines()
+    head = [i for i, ln in enumerate(lines) if ln.startswith("2. STORE coverage")][0]
+    assert lines[head + 1] == first
+
+
+@pytest.mark.parametrize("iids, expect", [
+    (["INV-K1", "''"], ["INV-K1"]),
+    (["'  '", "INV-K2", "INV-K3"], ["INV-K2", "INV-K3"]),
+])
+def test_a30_blank_kit_invariant_ids_are_dropped(tmp_path, iids, expect):
+    root = _store(tmp_path, {}, {"kk": (["vk"], iids)})
+    rows = [r for r in _index("vk", root) if r["kind"] == "kit_invariant"]
+    assert [r["id"] for r in rows] == expect
+
+
+@pytest.mark.parametrize("pid, kid", [("pa", "ka"), ("pb_two", "kb_two")])
+def test_a22_a23_sources_are_store_relative(tmp_path, pid, kid):
+    root = _store(tmp_path, {pid: ({"domain_id": "vr"}, [f"{pid}.f"])}, {kid: (["vr"], [f"INV-{kid}"])})
+    src = {r["kind"]: r["source"] for r in _index("vr", root)}
+    assert src == {
+        "pack_formula": f"domain_packs/{pid}/pack.json",
+        "kit_invariant": f"app/blocks/{kid}/invariants.yaml",
+    }
+    assert not any(s.startswith("/") or str(tmp_path) in s for s in src.values())
+
+
+@pytest.mark.parametrize("bad", ["{not json", "\ufeff[1, 2"])
+def test_a27_a_corrupt_pack_is_skipped_not_raised(tmp_path, bad):
+    root = _store(tmp_path, {"good": ({"domain_id": "vc"}, ["g.f1"])}, {})
+    d = root / "domain_packs" / "broken"
+    d.mkdir(parents=True)
+    (d / "pack.json").write_text(bad, encoding="utf-8")
+    assert [r["id"] for r in _index("vc", root)] == ["g.f1"]
+
+
+@pytest.mark.parametrize("kid", ["km1", "km2"])
+def test_a28_a_kit_without_invariants_gives_no_kit_rows(tmp_path, kid):
+    root = _store(tmp_path, {"pm": ({"domain_id": "vm"}, ["pm.f"])}, {kid: (["vm"], ["INV-X"])})
+    # The kit listing is cached per Store root, so a kit seen once can lose
+    # its invariants.yaml before the next read (a Store update in place).
+    assert ("INV-X", "kit_invariant") in [(r["id"], r["kind"]) for r in _index("vm", root)]
+    (root / "app" / "blocks" / kid / "invariants.yaml").unlink()
+    assert [(r["id"], r["kind"]) for r in _index("vm", root)] == [("pm.f", "pack_formula")]
+
+
+@pytest.mark.parametrize("resolver", ["none", "raise"])
+def test_a29_no_store_gives_no_coverage(monkeypatch, resolver):
+    from app.factory import blocks_source
+
+    def _resolve():
+        if resolver == "raise":
+            raise RuntimeError("no Store clone")
+        return None
+
+    monkeypatch.setattr(blocks_source, "resolve_blocks_root", _resolve)
+    assert _index("any_vertical", None) == []
+
+
+@pytest.mark.parametrize("body, expect", [
+    ('["vs"]', ["ok.f"]),
+    ('"vs"', ["ok.f"]),
+])
+def test_s9_a_non_object_pack_is_skipped(tmp_path, body, expect):
+    root = _store(tmp_path, {"ok": ({"domain_id": "vs"}, ["ok.f"])}, {})
+    d = root / "domain_packs" / "listy"
+    d.mkdir(parents=True)
+    (d / "pack.json").write_text(body, encoding="utf-8")
+    assert [r["id"] for r in _index("vs", root)] == expect
