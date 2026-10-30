@@ -314,3 +314,14 @@ def test_cited_turn_is_checked_only_when_turns_are_given(turns, refused):
     except TypeError as exc:  # None turns must never be iterated
         got = f"crashed: {type(exc).__name__}"
     assert got == ("refused" if refused else "accepted")
+
+
+# --- G2 handback L2: a capability's source_text is the customer's words, cut
+# at 400 characters.
+
+@pytest.mark.parametrize("length", [50, 500])
+def test_capability_source_text_is_cut_at_400(length):
+    words = ("kiln firing " * 60)[:length]
+    intake = intake_from_product_blueprint(A, chat_turns=[{"turn": 1, "role": "user", "text": words}])
+    assert intake["capabilities"][0]["source_text"] == words[:400]
+    assert len(intake["capabilities"][0]["source_text"]) == min(length, 400)
