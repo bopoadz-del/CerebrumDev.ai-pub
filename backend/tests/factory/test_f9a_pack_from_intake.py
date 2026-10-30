@@ -16,6 +16,7 @@ from app.factory.build.brief_compiler import synthesize_domain_pack
 from app.factory.build.domain_pack import DomainPackError, assert_pack, domain_pack_for
 from app.factory.build.domain_pack import as_delivery_domain_pack
 import app.cerebrum_product_kernel.formulas as kernel_formulas
+from app.factory.build.domain_pack import is_empty_pack
 
 def _bp(name, vertical, summary, caps, connectors=()):
     return ProductBlueprint(
@@ -424,3 +425,14 @@ def test_assert_pack_fields_shape(fields, want):
     except (KeyError, AttributeError, TypeError) as exc:
         got = f"crashed: {type(exc).__name__}"
     assert got == want
+
+
+# --- G2 P3: is_empty_pack with no `or not fields` term -- an empty fields
+# Mapping is still empty (all() over nothing), a valued one is not.
+
+@pytest.mark.parametrize("fields, want", [
+    ({}, True),
+    ({"domain_purpose": {"value": "kiln firings"}}, False),
+])
+def test_is_empty_pack_reads_the_fields(fields, want):
+    assert is_empty_pack({"fields": fields}) is want

@@ -251,7 +251,8 @@ def is_empty_pack(pack: Any) -> bool:
     if not isinstance(pack, Mapping) or not pack:
         return True
     fields = pack.get("fields")
-    if not isinstance(fields, Mapping) or not fields:
+    # An empty Mapping needs no test of its own: all() over no items is True.
+    if not isinstance(fields, Mapping):
         return True
     return all(
         not _value_present(
