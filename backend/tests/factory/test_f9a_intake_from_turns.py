@@ -236,3 +236,36 @@ def test_a_single_string_is_one_listed_value(key, field, value):
     # _listed: a bare string is ONE value, never split into its characters.
     intake = intake_from_product_blueprint(A, chat_turns=TURNS_A, domain_pack={key: value})
     assert intake[field]["value"] == [value]
+
+
+# --- repair 1 of split B ------------------------------------------------------
+
+@pytest.mark.parametrize("pad,want_len", [(600, 400), (10, None)], ids=["long", "short"])
+def test_source_text_is_cut_at_400(pad, want_len):
+    # M3: the cited turn's text is kept to 400 characters.
+    text = "glazers " + "k" * pad
+    turns = [{"turn": 1, "role": "user", "text": text}]
+    intake = intake_from_product_blueprint(A, chat_turns=turns, domain_pack={"primary_users": ["glazers"]})
+    got = intake["users"]["source_text"]
+    assert len(got) == (want_len or len(text))
+    assert got == text[:400]
+
+
+@pytest.mark.parametrize("connectors,want", [
+    (["ais_feed", "  ", ""], ["ais_feed"]),
+    (["\t", "tide_api"], ["tide_api"]),
+], ids=["trailing-blank", "leading-blank"])
+def test_blank_blueprint_connectors_are_dropped(connectors, want):
+    # M10: the blueprint-connector fallback drops blank strings.
+    bp = SimpleNamespace(product_id="x", product_name="X", vertical="v", summary="s",
+                         capabilities=[SimpleNamespace(id="berth_plan")], connectors=connectors)
+    intake = intake_from_product_blueprint(bp, chat_turns=TURNS_A, domain_pack={})
+    assert intake["integrations"]["value"] == want
+
+
+@pytest.mark.parametrize("value,turn", [("  glazers  ", 2), ("\tkiln log ", 1)], ids=["t2", "t1"])
+def test_padded_value_is_credited_to_its_turn(value, turn):
+    # M12: _said_in strips the value before matching.
+    got = _ib._provenance([value], TURNS_A)
+    assert got["source"] == "turn"
+    assert got["source_turn"] == turn
