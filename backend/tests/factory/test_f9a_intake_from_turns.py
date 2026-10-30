@@ -285,3 +285,32 @@ def test_blank_listed_value_is_declared_absent(roles, want):
         assert field.get("absent") is True and field["value"] == []
     else:
         assert field["value"] == want and field.get("absent") is not True
+
+
+# --- G6 post-hoc #98 (98-M8): the pack's own required_connectors win over the
+# blueprint's connectors; the blueprint list is only the fallback.
+
+@pytest.mark.parametrize("pack, want", [
+    ({"required_connectors": ["tide_gauge"]}, ["tide_gauge"]),
+    ({}, ["ais_feed"]),
+])
+def test_pack_required_connectors_beat_blueprint_connectors(pack, want):
+    intake = intake_from_product_blueprint(B, chat_turns=TURNS_A, domain_pack=pack)
+    assert intake["integrations"]["value"] == want
+
+
+# --- G6 post-hoc #98 (98-M18): validate_intake without chat_turns (the
+# brief_compiler path) accepts a field that cites a turn; with turns it checks.
+
+@pytest.mark.parametrize("turns, refused", [(None, False), ([TURNS_A[0]], True)])
+def test_cited_turn_is_checked_only_when_turns_are_given(turns, refused):
+    intake = intake_from_product_blueprint(A, chat_turns=TURNS_A, domain_pack={"primary_users": ["glazers"]})
+    assert intake["users"]["source_turn"] == 2
+    try:
+        validate_intake(intake, chat_turns=turns)
+        got = "accepted"
+    except IntakeBlueprintError:
+        got = "refused"
+    except TypeError as exc:  # None turns must never be iterated
+        got = f"crashed: {type(exc).__name__}"
+    assert got == ("refused" if refused else "accepted")
