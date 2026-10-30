@@ -219,9 +219,12 @@ def test_validate_intake_refuses_a_non_mapping(bad):
     assert str(err.value) == "intake blueprint must be a mapping"
 
 
-def test_validate_intake_accepts_a_real_intake_mapping():
-    intake = intake_from_product_blueprint(A, chat_turns=TURNS_A, domain_pack={})
-    assert validate_intake(intake, chat_turns=TURNS_A) == intake
+@pytest.mark.parametrize("turns,users", [(TURNS_A, ["glazers"]), (TURNS_B, ["glazers"])],
+                         ids=["A", "B"])
+def test_validate_intake_accepts_a_real_intake_mapping(turns, users):
+    intake = intake_from_product_blueprint(B, chat_turns=turns, domain_pack={"primary_users": users})
+    assert validate_intake(intake, chat_turns=turns) == intake
+    assert intake["users"]["source_turn"] == turns[-1]["turn"]
 
 
 @pytest.mark.parametrize("key,field,value", [
