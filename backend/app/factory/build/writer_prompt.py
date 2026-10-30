@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from app.factory.build.formula_resolution import render_resolution_section
 from app.factory.build.acceptance_floor import (
     render_for_prompt as render_acceptance_floor,
 )
@@ -106,7 +107,12 @@ from app.factory.build.acceptance_floor import (
 #:   contract from red tests, one rework round per file. v3 names what the
 #:   factory backfills (data_lifecycle.platform_substrate) and what the agent
 #:   owns (store.py, 0001_baseline), with the exact surface the suite calls.
-PROMPT_VERSION = "writer_worker_prompt.v14"
+#: v15 -- STORE FIRST (ORDERS_1900Z, K-F7/F-9c). The prompt told the writer
+#:   to research and write any formula it needed; the owner ruled it may only
+#:   when neither the kernel nor the Store covers it. The DEPTH rule now states
+#:   the ruling, and FORMULA SOURCES lists the kernel definition_index() and
+#:   the Store coverage index for the vertical (formula_resolution), in order.
+PROMPT_VERSION = "writer_worker_prompt.v15"
 
 _TEMPLATE = """You are the WRITER role of the CerebrumDev factory, manufacturing a
 governed platform. Work headless in this checkout. Produce real, runnable
@@ -246,7 +252,7 @@ UI (a pilot is deployed and tested, so what it serves must work):
 
 {acceptance_floor}
 
-DEPTH (the gates are the bar, and you can reach them yourself):
+{formula_sources}DEPTH (the gates are the bar, and you can reach them yourself):
 - Run them before you yield. The code-phase suite is
   ``python -m pytest -m "not pilot" -q`` from this checkout root. Fix what it
   reports and run it again. Then exercise each capability the way the harness
@@ -257,10 +263,19 @@ DEPTH (the gates are the bar, and you can reach them yourself):
   capability and ask whether the customer would call it done. A handler that
   stores a row where they asked for a decision, a routing, a check or a
   calculation is not finished work.
-- Research what you do not know. A domain fact you need -- a rule, a formula,
-  a standard, how a trade actually works -- is yours to find out. Say in your
-  report where it came from. A value the customer owns (a rate, a threshold, a
-  limit) stays a named setting they can change, whatever you learn about it.
+- FORMULAS (owner ruling): the coder writes and finds formulas himself ONLY
+  when nothing is available in our Store. For every formula, rule or figure a
+  capability needs: (a) the kernel definition, by address; else (b) the Store
+  -- the pack formulas and kit invariants listed under FORMULA SOURCES; else
+  (c) only then: Research what you do not know and write it yourself, labelled
+  "improvised, no Store coverage", with its source cited in the definition row
+  (say where it came from) and the row appended to new_domain_candidates.jsonl.
+  Every formula you write goes, one JSON row each ({{"id", "label",
+  "source"}}), in app/formulas/writer_definitions.jsonl; its candidate row
+  ({{"definition": id}}) in app/formulas/new_domain_candidates.jsonl.
+  Re-writing a formula the kernel or the Store already has is a failure.
+  A value the customer owns (a rate, a threshold, a limit)
+  stays a named setting they can change, whatever you learn about it.
 - The work is yours to create, grounded in our block-store standards and the
   vertical build. Build ON the stocked kit when one exists for this domain,
   composing the blocks you were given. When none exists, research the domain
@@ -417,6 +432,9 @@ def render_writer_prompt(
     specialist_workers: int = 1,
     runtime_paths: Sequence[str] = (),
     locked_blocks: Optional[Mapping[str, Sequence[str]]] = None,
+    kernel_index: Sequence[Mapping[str, Any]] = (),
+    store_index: Sequence[Mapping[str, Any]] = (),
+    store_sha: Optional[str] = None,
 ) -> str:
     """Fill the template from the brief. Deterministic by construction.
 
@@ -433,6 +451,10 @@ def render_writer_prompt(
     ``locked_blocks`` are the module files under each locked block's path
     (image_sufficiency.locked_entries), read the same way: what the app's
     loader must load each locked block from.
+
+    ``kernel_index`` / ``store_index`` / ``store_sha`` are read by the caller
+    (kernel definition_index(), formula_resolution.store_coverage_index(),
+    store_pin) and rendered as FORMULA SOURCES in resolution order.
 
     Brief/summary text is inserted verbatim: str.format interprets braces
     only in the template, never in values, so user/model content passes
@@ -456,6 +478,8 @@ def render_writer_prompt(
         # grades against. The agent used to be judged on thirteen checks it
         # was never shown, and discovered them one rework round at a time.
         acceptance_floor=render_acceptance_floor(blueprint),
+        # K-F7: what already exists, in the order the ruling resolves it.
+        formula_sources=render_resolution_section(kernel_index, store_index, store_sha),
     )
     if resume:
         body = _RESUME_PREFACE + body
