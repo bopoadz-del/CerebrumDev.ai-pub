@@ -30,10 +30,10 @@ def client(monkeypatch, tmp_path):
     from app.core.rate_limit import reset_rate_limits
 
     reset_rate_limits()
-    from app.routers import accounts
+    from app.routers.accounts import router
 
     app = FastAPI()
-    app.include_router(accounts.router, prefix="/v1/auth")
+    app.include_router(router, prefix="/v1/auth")
     return TestClient(app)
 
 
@@ -57,16 +57,29 @@ def _verified(account_id):
     return get_account(account_id)["email_verified"]
 
 
-def test_admin_marks_account_verified_and_it_can_then_sign_in(client):
-    acct = _register(client, "tester-a@example.test")
-    assert _me_status(client, "tester-a@example.test") == 403
+@pytest.mark.parametrize("path, endpoint", [
+    ("/admin/verify-email", "admin_mark_verified"),
+    ("/admin/keys", "admin_issue_tenant_key"),
+])
+def test_admin_routes_are_served_by_their_handlers(path, endpoint):
+    import app.routers.accounts as accounts_router
+
+    (route,) = [r for r in accounts_router.router.routes if r.path == path]
+    assert route.endpoint is getattr(accounts_router, endpoint)
+    assert route.methods == {"POST"}
+
+
+@pytest.mark.parametrize("email", ["tester-a@example.test", "tester-z@example.test"])
+def test_admin_marks_account_verified_and_it_can_then_sign_in(client, email):
+    acct = _register(client, email)
+    assert _me_status(client, email) == 403
 
     res = client.post("/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": acct})
 
     assert res.status_code == 200, res.text
     assert res.json() == {"ok": True, "account_id": acct, "email_verified": True}
     assert _verified(acct) is True
-    assert _me_status(client, "tester-a@example.test") == 200
+    assert _me_status(client, email) == 200
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-API-Key": "not-the-master"}, "user"])
@@ -85,38 +98,45 @@ def test_non_admin_or_anonymous_is_refused_and_flag_unchanged(client, headers):
     assert _me_status(client, "tester-b@example.test") == 403
 
 
-def test_two_accounts_give_two_results(client):
-    marked = _register(client, "marked@example.test")
-    left = _register(client, "left@example.test")
+@pytest.mark.parametrize("marked_email, left_email", [
+    ("marked@example.test", "left@example.test"),
+    ("left@example.test", "marked@example.test"),
+])
+def test_two_accounts_give_two_results(client, marked_email, left_email):
+    marked = _register(client, marked_email)
+    left = _register(client, left_email)
 
     client.post("/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": marked})
 
     assert (_verified(marked), _verified(left)) == (True, False)
-    assert (_me_status(client, "marked@example.test"), _me_status(client, "left@example.test")) == (200, 403)
+    assert (_me_status(client, marked_email), _me_status(client, left_email)) == (200, 403)
 
 
-def test_unknown_or_blank_account_is_refused_not_created(client):
-    assert client.post(
-        "/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": "acct_missing"}
-    ).status_code == 404
-    assert client.post(
-        "/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": "  "}
-    ).status_code == 400
+@pytest.mark.parametrize("account_id, status", [("acct_missing", 404), ("  ", 400)])
+def test_unknown_or_blank_account_is_refused_not_created(client, account_id, status):
+    from app.core.accounts_store import get_account
+
+    res = client.post("/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": account_id})
+
+    assert res.status_code == status, res.text
+    assert get_account(account_id.strip()) is None
 
 
-def test_unverified_user_cannot_skip_verification(client):
+@pytest.mark.parametrize("bogus", ["cdv_bogus", "not-a-token"])
+def test_unverified_user_cannot_skip_verification(client, bogus):
     acct = _register(client, "plain@example.test")
     # No admin action: the gate still refuses, and the bad-token path still 400s.
     assert _me_status(client, "plain@example.test") == 403
-    assert client.post("/v1/auth/verify-email", json={"token": "cdv_bogus"}).status_code == 400
+    assert client.post("/v1/auth/verify-email", json={"token": bogus}).status_code == 400
     assert _verified(acct) is False
 
 
-def test_a_verified_non_admin_user_cannot_verify_another_account(client):
+@pytest.mark.parametrize("victim_email", ["other@example.test", "another@example.test"])
+def test_a_verified_non_admin_user_cannot_verify_another_account(client, victim_email):
     insider = _register(client, "insider@example.test")
     client.post("/v1/auth/admin/verify-email", headers=ADMIN, json={"account_id": insider})
     assert _me_status(client, "insider@example.test") == 200
-    victim = _register(client, "other@example.test")
+    victim = _register(client, victim_email)
     login = client.post(
         "/v1/auth/login", json={"email": "insider@example.test", "password": PASSWORD}
     )
