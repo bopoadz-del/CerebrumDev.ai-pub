@@ -20,6 +20,7 @@ a product's imports never leak into the Factory process.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -124,14 +125,24 @@ def two_inputs(capability: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _defines_handle(text: str) -> bool:
+    """A module-level ``def handle``. Unparseable source still counts: it is
+    graded (and fails on import), never silently dropped."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return True
+    return any(isinstance(n, ast.FunctionDef) and n.name == "handle" for n in tree.body)
+
+
 def derive_functions(blueprint: Mapping[str, Any], workspace: Path) -> List[GradedFunction]:
     found: List[GradedFunction] = []
     for cap in blueprint.get("capabilities") or []:
         cid = str(cap.get("id") or "")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cid):
+        if not (cid.isascii() and cid.isidentifier()):
             continue
         src = Path(workspace) / "app" / "actions" / f"{cid}.py"
-        if not src.is_file() or not re.search(r"^def handle\(", src.read_text("utf-8", "replace"), re.M):
+        if not src.is_file() or not _defines_handle(src.read_text("utf-8", "replace")):
             continue
         found.append(GradedFunction(cid, f"app.actions.{cid}", two_inputs(cap)))
     return found

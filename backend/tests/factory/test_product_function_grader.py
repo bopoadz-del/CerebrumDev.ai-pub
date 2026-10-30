@@ -282,3 +282,17 @@ def test_exit_only_on_the_drop_rule_input_still_grades(tmp_path, body):  # R5
     ws = _workspace(tmp_path, {"cap": body})
     (r,) = [fg.run_function(f, ws) for f in fg.derive_functions(_bp(["cap"]), ws)]
     assert r.ok is True and r.detail == "" and "drop_rule" in r.mutants_killed
+
+
+# --- hardwiring-gate repair: id and handle detection are derived (str.isidentifier / ast) ---
+@pytest.mark.parametrize("cid,files,graded", [
+    ("caf\u00e9", {"caf\u00e9": READS_INPUT}, False),                  # non-ASCII identifier
+    ("class_", {"class_": READS_INPUT}, True),
+    ("handler_only", {"handler_only": "def handler(p):\n    return p\n"}, False),
+    ("in_string", {"in_string": 'X = """\ndef handle(p):\n"""\n'}, False),
+    ("broken_src", {"broken_src": "def handle(p:\n"}, True),            # graded, fails on import
+    ("after_other", {"after_other": "def other(p):\n    return p\n\ndef handle(p):\n    return p\n"}, True),
+])
+def test_derivation_is_structural(tmp_path, cid, files, graded):
+    ws = _workspace(tmp_path, files)
+    assert [f.capability_id for f in fg.derive_functions(_bp([cid]), ws)] == ([cid] if graded else [])
