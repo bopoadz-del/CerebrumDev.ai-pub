@@ -269,3 +269,19 @@ def test_padded_value_is_credited_to_its_turn(value, turn):
     got = _ib._provenance([value], TURNS_A)
     assert got["source"] == "turn"
     assert got["source_turn"] == turn
+
+
+# --- grader-miss fix of split B: a blank listed value is no value ------------
+
+@pytest.mark.parametrize("roles,want", [
+    (["  "], None),
+    (["\t\n", " "], None),
+    (["kiln techs"], ["kiln techs"]),
+], ids=["spaces", "tab-newline", "real"])
+def test_blank_listed_value_is_declared_absent(roles, want):
+    intake = intake_from_product_blueprint(A, chat_turns=TURNS_A, domain_pack={"required_roles": roles})
+    field = validate_intake(intake, chat_turns=TURNS_A)["roles"]
+    if want is None:
+        assert field.get("absent") is True and field["value"] == []
+    else:
+        assert field["value"] == want and field.get("absent") is not True
