@@ -247,3 +247,21 @@ def test_x1_blank_ident_is_improvised_even_against_blank_index_ids(ident, kernel
 ])
 def test_x1_blank_index_rows_do_not_hide_real_ids(ident, kernel, store, layer):
     assert _fr().resolve_layer(ident, kernel, store)["layer"] == layer
+
+
+# --- X3 (PR A): the findings dir is created, so a fresh tree records findings
+
+@pytest.mark.parametrize("pre_make_dir", [False, True])
+def test_x3_findings_recorded_whether_or_not_factory_dir_exists(tmp_path, pre_make_dir):
+    _write_defs(tmp_path, [GOOD_ROW])
+    if pre_make_dir:
+        (tmp_path / ".factory").mkdir()
+    try:
+        got = _fr().audit_product_formulas(tmp_path, [], [])
+        raised = None
+    except OSError as exc:  # a missing .factory/ must not stop the record
+        got, raised = None, type(exc).__name__
+    assert raised is None, f"audit_product_formulas raised {raised} on a fresh tree"
+    assert got == []
+    literal = tmp_path / ".factory" / "writer_formula_findings.json"
+    assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": []}
