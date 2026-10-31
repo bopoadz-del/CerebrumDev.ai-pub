@@ -378,11 +378,10 @@ def coder_idle_wall_s() -> float:
 
     from app.factory.llm_watchdog import DEFAULT_CALL_TIMEOUT_S
 
-    raw = os.environ.get(CODER_IDLE_WALL_ENV)
-    if raw is None:
-        return float(DEFAULT_CALL_TIMEOUT_S)
     try:
-        return max(1.0, float(raw))
+        # Unset -> os.environ.get returns None -> float(None) raises TypeError,
+        # caught below with the band default; so no separate None guard.
+        return max(1.0, float(os.environ.get(CODER_IDLE_WALL_ENV)))
     except (TypeError, ValueError):
         return float(DEFAULT_CALL_TIMEOUT_S)
 
