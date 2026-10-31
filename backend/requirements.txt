@@ -18,7 +18,7 @@ chromadb==1.5.9
 # User accounts storage (P0): SQLAlchemy Core drives both the default sqlite
 # file and Postgres (ACCOUNTS_DATABASE_URL). psycopg is only exercised when a
 # Postgres URL is configured.
-sqlalchemy==2.1.4
+sqlalchemy==2.1.6
 psycopg[binary]==3.3.6
 
 # Accounts DB migrations (Alembic). Runs at container boot; see backend/alembic/.
@@ -26,7 +26,7 @@ alembic==1.20.0
 
 # Billing (P3): Stripe subscription checkout + webhooks. Account state changes
 # only through accounts_store.set_subscription; this SDK is the transport.
-stripe==15.6.1
+stripe==16.0.1
 
 # Observability: error tracking + performance. Activates when SENTRY_DSN is
 # set; inert otherwise. See backend/.env.example.
