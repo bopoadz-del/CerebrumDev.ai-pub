@@ -34,6 +34,7 @@ from app.factory.build.rejection_contract import (
     REJECTED_FIELD_KEY,
     REJECTION_REASON_HEADER,
     REJECTION_REASON_KEY,
+    VALIDATION_REFUSAL_STATUS,
 )
 from app.factory.build.roles import RoleContext
 from app.factory.build.roles_handlers import _constraint_guard
@@ -159,6 +160,51 @@ def test_the_route_guard_states_the_rejection_as_data(product_models):
         auth.reject_invalid_payload(CAP, {"phase": "bloom"})
     assert exc.value.headers[REJECTION_REASON_HEADER] == MISSING_REQUIRED
     assert exc.value.headers[REJECTED_FIELD_HEADER] == '"reference"'
+
+
+@dataclasses.dataclass
+class _OpenDesk:
+    """A capability with declared fields but NONE required -- the
+    fieldless/optional-only class the negative_floor empty-payload case is
+    written for."""
+
+    status: str = "open"
+    note: str = ""
+    FIELDS = ["status", "note"]
+    CONSTRAINTS = {"status": {"allowed_values": ["open", "closed"]}}
+
+
+OPEN_CAP = "open_desk"
+
+
+def test_a_no_required_field_capability_refuses_a_contentless_payload(monkeypatch):
+    """negative_floor asks a capability that declares no required field to
+    REFUSE an empty payload ("Nothing at all is not a record"); the guard must,
+    or that floor is unwinnable by construction.
+
+    Live SAME_FAILURE_TWICE at TESTER (2026-10-31): manager_dashboard and
+    sap_odata_connector -- both fieldless-of-required -- accepted {} and
+    malformed dicts and stored a row, so the rework rounds produced the same
+    red twice. A payload that sets no DECLARED field to a real value stores
+    nothing, so it is refused; the rule reads the model's own FIELDS and names
+    no capability or vertical."""
+    from fastapi import HTTPException
+
+    mod = types.ModuleType("app.models")
+    mod.MODELS = {OPEN_CAP: _OpenDesk}
+    monkeypatch.setitem(sys.modules, "app.models", mod)
+    auth = _auth_module()
+
+    # Empty, undeclared-only, and declared-but-blank all store nothing.
+    for junk in ({}, {"": None}, {"x" * 300: "y" * 2000}, {"note": ""}, {"note": None}):
+        with pytest.raises(HTTPException) as exc:
+            auth.reject_invalid_payload(OPEN_CAP, junk)
+        assert exc.value.status_code == VALIDATION_REFUSAL_STATUS, junk
+
+    # A payload that sets a declared field to a real value is accepted
+    # (reject_invalid_payload returns None, no raise).
+    auth.reject_invalid_payload(OPEN_CAP, {"note": "hello"})
+    auth.reject_invalid_payload(OPEN_CAP, {"status": "open"})
 
 
 def test_a_closed_vocabulary_is_adopted_in_the_named_field_only(tmp_path, product_models):
