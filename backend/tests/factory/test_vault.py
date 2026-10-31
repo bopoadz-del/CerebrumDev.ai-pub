@@ -119,6 +119,37 @@ def test_writer_has_no_read_path_to_the_vault(seed, tmp_path):
         open(writer_view)
 
 
+@pytest.mark.parametrize("uncovered", ["no_such_formula_xyz", "another_unknown_cap"])
+def test_grade_functions_builds_the_vault_under_the_grader_root(uncovered, tmp_path):
+    """grade_functions(grader_root=...) builds the writer-blind vault: a kernel
+    definition (gross_profit = revenue - cogs) resolves to an entry with the
+    kernel-computed expected; an unknown capability is a kernel gap; the vault
+    file lands under the grader root, not the workspace."""
+    from app.factory.build.product_grader import function_grader as fg
+
+    ws = tmp_path / "ws"
+    (ws / "app" / "actions").mkdir(parents=True)
+    grader_root = tmp_path / "grader"
+    bp = {
+        "vertical": "product",
+        "capabilities": [
+            {"id": "gross_profit", "input_schema": {
+                "revenue": {"minimum": 100, "maximum": 1000},
+                "cogs": {"minimum": 1, "maximum": 50},
+            }},
+            {"id": uncovered},
+        ],
+    }
+    grade = fg.grade_functions(bp, ws, grader_root=grader_root)
+    d = grade.to_dict()["vault"]
+    assert isinstance(d["seed"], int)
+    assert "gross_profit" in {e["capability_id"] for e in d["entries"]}
+    assert uncovered in {g["capability_id"] for g in d["gaps"]}
+    assert (grader_root / vault.VAULT_REL / "vault.json").is_file()
+    gp = next(e for e in d["entries"] if e["capability_id"] == "gross_profit")
+    assert gp["expected"] == pytest.approx(gp["inputs"]["revenue"] - gp["inputs"]["cogs"])
+
+
 @pytest.mark.parametrize("sub", ["app", "nested/dir"])
 def test_writing_the_vault_into_the_writer_tree_is_refused(sub, tmp_path):
     """Isolation is enforced, not trusted: a grader root inside the writer
