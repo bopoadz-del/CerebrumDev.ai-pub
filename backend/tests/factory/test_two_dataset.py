@@ -53,3 +53,41 @@ def test_verdict_both_absent_is_not_gradable(ea, eb):
 def test_differ_with_no_kernel_expected_is_ok(oa, ob):
     # No kernel prediction (gap): differing outputs are enough; can't check computation.
     assert two_dataset.verdict(oa, ob, None, None) == two_dataset.OK
+
+
+def _workspace(tmp_path, handles):
+    ws = tmp_path / "ws"
+    (ws / "app" / "actions").mkdir(parents=True)
+    (ws / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (ws / "app" / "actions" / "__init__.py").write_text("", encoding="utf-8")
+    for cid, body in handles.items():
+        (ws / "app" / "actions" / f"{cid}.py").write_text(body, encoding="utf-8")
+    return ws
+
+
+_GOOD = "def handle(p):\n    return {'result': p['base'] * p['rate'] - p['discount']}\n"
+_HARDWIRED = "def handle(p):\n    return {'result': 42}\n"
+_WRONG = "def handle(p):\n    return {'result': p['base'] * p['rate']}\n"  # forgets discount
+_SPECIFIC = "def handle(p):\n    if p['base'] > 1000:\n        return {'result': p['base']}\n    return None\n"
+
+
+@pytest.mark.parametrize("ia, ib", [
+    ({"base": 100.0, "rate": 2.0, "discount": 10.0}, {"base": 50.0, "rate": 3.0, "discount": 5.0}),
+    ({"base": 2000.0, "rate": 1.0, "discount": 1.0}, {"base": 10.0, "rate": 2.0, "discount": 2.0}),
+])
+def test_run_two_dataset_end_to_end_verdicts(ia, ib, tmp_path):
+    ws = _workspace(tmp_path, {"good": _GOOD, "hardwired": _HARDWIRED, "wrong": _WRONG, "specific": _SPECIFIC})
+    ea = ia["base"] * ia["rate"] - ia["discount"]
+    eb = ib["base"] * ib["rate"] - ib["discount"]
+    pairs = [
+        two_dataset.DatasetPair("good", ia, ea, ib, eb),
+        two_dataset.DatasetPair("hardwired", ia, ea, ib, eb),
+        two_dataset.DatasetPair("wrong", ia, ea, ib, eb),
+        two_dataset.DatasetPair("specific", {"base": 2000.0, "rate": 1.0, "discount": 0.0}, 2000.0,
+                                {"base": 5.0, "rate": 1.0, "discount": 0.0}, 5.0),
+    ]
+    v = {c.capability_id: c.verdict for c in two_dataset.run_two_dataset(pairs, ws)}
+    assert v["good"] == two_dataset.OK
+    assert v["hardwired"] == two_dataset.HARDWIRED_CONSTANT
+    assert v["wrong"] == two_dataset.WRONG_COMPUTATION
+    assert v["specific"] == two_dataset.INPUT_SPECIFIC_BRANCH

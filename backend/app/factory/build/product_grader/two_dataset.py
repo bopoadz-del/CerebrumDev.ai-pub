@@ -18,7 +18,13 @@ mechanism) and the ``scan_hardwiring`` / prompt-leak companion are wired on top.
 
 from __future__ import annotations
 
+import json
+import secrets
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from app.factory.build.product_grader import vault
@@ -94,3 +100,91 @@ def verdict(out_a: Any, out_b: Any, expected_a: Any, expected_b: Any) -> str:
             return OK
         return WRONG_COMPUTATION
     return OK
+
+
+_RUN_TIMEOUT_S = 60
+
+#: Runs the product's handle for dataset A and B in a fresh subprocess (cwd +
+#: PYTHONPATH = the product workspace, exactly as function_grader.run_function
+#: runs the writer's code) and writes the two results to a nonce file -- never
+#: stdout, which the product can print to.
+_RUNNER = r'''
+import importlib, json, sys
+spec = json.loads(sys.stdin.read())
+out = {"nonce": spec["nonce"]}
+try:
+    handle = importlib.import_module(spec["module"]).handle
+except BaseException as exc:
+    out["a"] = None; out["b"] = None; out["error"] = type(exc).__name__
+    open(spec["out"], "w", encoding="utf-8").write(json.dumps(out)); sys.exit(0)
+def run(payload):
+    try:
+        r = handle(dict(payload))
+    except BaseException:
+        return None
+    if isinstance(r, dict):
+        for k in ("result", "value", "amount", "total"):
+            if k in r:
+                return r[k]
+        return None
+    return r
+out["a"] = run(spec["inputs_a"]); out["b"] = run(spec["inputs_b"])
+open(spec["out"], "w", encoding="utf-8").write(json.dumps(out, default=str))
+'''
+
+
+@dataclass(frozen=True)
+class FunctionCheck:
+    capability_id: str
+    verdict: str
+    out_a: Any
+    out_b: Any
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict == OK
+
+
+def run_function_pair(
+    module: str,
+    inputs_a: Mapping[str, float],
+    inputs_b: Mapping[str, float],
+    workspace: Any,
+    *,
+    python: str = sys.executable,
+) -> "tuple[Any, Any]":
+    """(out_a, out_b) for the product's handle on datasets A and B; (None, None)
+    on import/timeout/crash (absent output is a signal the verdict reads)."""
+    nonce = secrets.token_hex(16)
+    with tempfile.TemporaryDirectory(prefix="f8e-") as tmp:
+        out_path = Path(tmp) / "r.json"
+        spec = json.dumps({
+            "module": module, "inputs_a": dict(inputs_a), "inputs_b": dict(inputs_b),
+            "nonce": nonce, "out": str(out_path),
+        })
+        try:
+            subprocess.run(
+                [python, "-c", _RUNNER], input=spec, capture_output=True, text=True,
+                cwd=str(workspace), timeout=_RUN_TIMEOUT_S,
+                env={"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"},
+            )
+        except subprocess.TimeoutExpired:
+            return None, None
+        if not out_path.is_file():
+            return None, None
+        data = json.loads(out_path.read_text("utf-8"))
+        if data.get("nonce") != nonce:
+            return None, None
+        return data.get("a"), data.get("b")
+
+
+def run_two_dataset(pairs: List[DatasetPair], workspace: Any, *, python: str = sys.executable) -> List[FunctionCheck]:
+    """For each capability's A/B pair, run the built function on both datasets
+    and apply the per-function verdict."""
+    checks: List[FunctionCheck] = []
+    for pair in pairs:
+        out_a, out_b = run_function_pair(
+            f"app.actions.{pair.capability_id}", pair.inputs_a, pair.inputs_b, workspace, python=python
+        )
+        checks.append(FunctionCheck(pair.capability_id, verdict(out_a, out_b, pair.expected_a, pair.expected_b), out_a, out_b))
+    return checks
