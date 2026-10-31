@@ -314,3 +314,37 @@ def test_both_gate_sites_carry_the_exemption():
     PR red on the other, which is how this was first noticed."""
     jobs = {job_id for job_id, _ in _lockfile_steps()}
     assert {"lockfile-consistency", "backend"} <= jobs, jobs
+
+
+# -- content: requirements.txt pins must equal requirements.lock ----------
+# The path-diff twin only asks "did both files move in this PR". Under the
+# dependabot exemption a txt-only bump merges, and from then on no diff ever
+# shows the drift again. These compare file contents instead.
+
+REQ_TXT = REPO_ROOT / "backend" / "requirements.txt"
+REQ_LOCK = REPO_ROOT / "backend" / "requirements.lock"
+
+
+def test_pin_drift_flags_a_version_mismatch(checker):
+    findings = checker.pin_drift("sqlalchemy==2.1.4\n", "SQLAlchemy==2.0.52\n")
+    assert len(findings) == 1
+    assert "sqlalchemy==2.1.4" in findings[0] and "2.0.52" in findings[0]
+
+
+def test_pin_drift_accepts_equal_pins_across_name_spellings(checker):
+    assert checker.pin_drift(
+        "prometheus-client==0.21.1\npsycopg[binary]==3.3.6\nnumpy<2.5\n",
+        "prometheus_client==0.21.1\npsycopg==3.3.6\nnumpy==2.4.6\n",
+    ) == []
+
+
+def test_pin_drift_flags_a_pin_missing_from_the_lock(checker):
+    findings = checker.pin_drift("foo==1.0.0\n", "bar==2.0.0\n")
+    assert len(findings) == 1 and "(missing)" in findings[0]
+
+
+def test_repo_requirements_txt_agrees_with_requirements_lock(checker):
+    findings = checker.pin_drift(
+        REQ_TXT.read_text(encoding="utf-8"), REQ_LOCK.read_text(encoding="utf-8")
+    )
+    assert findings == [], "\n".join(findings)

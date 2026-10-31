@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from typing import Iterable, Sequence
@@ -64,6 +65,46 @@ def inconsistencies(changed: Iterable[str]) -> list[str]:
             "and must not merge. Update the lock in the same commit/PR "
             "(lock-only and manifest+lock are OK)."
         )
+    return findings
+
+
+_REQ_LINE = re.compile(
+    r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;#]+)"
+)
+
+
+def canonical_name(name: str) -> str:
+    """PEP 503 normalisation: ``Prometheus_Client`` == ``prometheus-client``."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def exact_pins(text: str) -> dict[str, str]:
+    """``name==version`` pins in a requirements/lock text, keyed canonically."""
+    pins: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _REQ_LINE.match(line.split("#", 1)[0])
+        if match:
+            pins[canonical_name(match.group(1))] = match.group(2)
+    return pins
+
+
+def pin_drift(requirements_text: str, lock_text: str) -> list[str]:
+    """Content check: every exact pin in requirements.txt must equal the lock.
+
+    The path-only diff check cannot see drift that was merged under the
+    dependabot exemption (manifest moved, lock never did). This compares the
+    files themselves, so drift already on the branch is a finding.
+    """
+    lock = exact_pins(lock_text)
+    findings: list[str] = []
+    for name, version in sorted(exact_pins(requirements_text).items()):
+        locked = lock.get(name)
+        if locked != version:
+            findings.append(
+                f"lockfile-consistency: {name}=={version} in requirements.txt but "
+                f"requirements.lock has {name}=={locked if locked else '(missing)'}. "
+                "Regenerate requirements.lock."
+            )
     return findings
 
 
