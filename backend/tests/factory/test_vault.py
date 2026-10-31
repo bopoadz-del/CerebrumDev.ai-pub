@@ -88,6 +88,20 @@ def test_vault_is_written_under_the_grader_root_only(seed, tmp_path):
     assert payload[0]["seed"] == seed
 
 
+@pytest.mark.parametrize("seed", [10, 20])
+def test_build_run_splits_covered_from_kernel_gaps(seed):
+    """build_run makes a VaultEntry for each capability the resolver covers and
+    a KernelGap for each it does not -- the kernel->Store->nothing split."""
+    defs = {"net_total": DEF}  # only this capability resolves to a definition
+    resolve = lambda cid: defs.get(cid)  # noqa: E731
+    caps = ["net_total", "uncovered_a", "uncovered_b"]
+    entries, gaps = vault.build_run(caps, resolve, {"net_total": SCHEMA}, seed)
+    assert [e.capability_id for e in entries] == ["net_total"]
+    assert {g.capability_id for g in gaps} == {"uncovered_a", "uncovered_b"}
+    assert all(g.to_dict()["gradable"] is False for g in gaps)
+    assert entries[0].seed == seed
+
+
 @pytest.mark.parametrize("seed", [4, 44])
 def test_writer_has_no_read_path_to_the_vault(seed, tmp_path):
     """The writer runs with the product workspace as its root; the vault sits

@@ -30,7 +30,7 @@ import random
 import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 from app.cerebrum_product_kernel.formulas.evaluator import MissingInput, safe_eval
 
@@ -152,6 +152,28 @@ def build_entry(
         inputs=inputs,
         expected=expected,
     )
+
+
+def build_run(
+    capabilities: List[str],
+    resolve: "Callable[[str], Optional[Mapping[str, Any]]]",
+    input_schemas: Mapping[str, Mapping[str, Any]],
+    seed: int,
+) -> "tuple[List[VaultEntry], List[KernelGap]]":
+    """Build the vault for one grading run: a VaultEntry per capability the
+    ``resolve`` callable maps to a kernel/Store definition, a KernelGap for every
+    one it maps to ``None``. ``resolve`` is the kernel->Store->nothing lookup
+    (``formula_resolution`` + the kernel's resolved set); kept as a parameter so
+    this stays pure and does not hard-wire a resolution path."""
+    entries: List[VaultEntry] = []
+    gaps: List[KernelGap] = []
+    for cid in capabilities:
+        entry = build_entry(cid, resolve(cid), (input_schemas or {}).get(cid) or {}, seed)
+        if isinstance(entry, VaultEntry):
+            entries.append(entry)
+        else:
+            gaps.append(entry)
+    return entries, gaps
 
 
 def vault_dir(grader_root: Union[Path, str]) -> Path:
