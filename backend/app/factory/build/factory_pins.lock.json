@@ -7,7 +7,7 @@
     "uvicorn": "0.54.0",
     "pydantic": "2.14.1",
     "anyio": "4.15.1",
-    "sqlalchemy": "2.1.4",
+    "sqlalchemy": "2.1.6",
     "alembic": "1.20.0",
     "psycopg": "3.3.6",
     "pytest": "9.1.1",
@@ -114,7 +114,7 @@
       ]
     },
     "sqlalchemy": {
-      "version": "2.1.4",
+      "version": "2.1.6",
       "requires_dist": [
         "typing-extensions>=4.6.0",
         "greenlet>=1; extra == \"asyncio\"",
