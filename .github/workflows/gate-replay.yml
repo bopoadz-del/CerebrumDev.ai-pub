@@ -111,7 +111,7 @@ jobs:
       - id: pick
         name: Select by the vendored replay_select.py on the handed-over record
         run: python3 .github/gate_replay/replay_in_factory.py select --out selection.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: replay-selection
           path: selection.json
@@ -154,7 +154,7 @@ jobs:
             mkdir -p "overlay/$(dirname "$rel")"
             cp "product/$rel" "overlay/$rel"
           done < changed.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: overlay-${{ matrix.label }}
           path: overlay/
@@ -227,7 +227,7 @@ jobs:
           python -m app.factory.build.gate_replay verdict "$GITHUB_WORKSPACE/product" \
             "$GITHUB_WORKSPACE/result/store_gate.json" --branch "$BRANCH" \
             --out "$GITHUB_WORKSPACE/routing/$LABEL.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: routing-${{ matrix.label }}
           path: routing/

@@ -211,7 +211,7 @@ jobs:
       # repros passed or not, so a red cycle still shows what it built.
       - name: Keep the exports and their manifests
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-cycle-repros
           path: cycle/
@@ -270,7 +270,7 @@ jobs:
 
       - name: Keep the cycle report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-cycle-report
           path: |
