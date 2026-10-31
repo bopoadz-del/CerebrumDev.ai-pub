@@ -32,6 +32,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
+from app.factory.build.product_grader import vault
+
 #: ORDERS_1710Z-B: "graded on at least 4-5 of its functions".
 MIN_FUNCTIONS = 4
 MUTANTS: Sequence[str] = ("constant_return", "drop_rule")
@@ -63,6 +65,9 @@ class FunctionGrade:
     functions: List[FunctionResult]
     min_functions: int = MIN_FUNCTIONS
     errors: List[str] = field(default_factory=list)
+    #: F-8d writer-blind vault for this run: {seed, entries, gaps}. None when no
+    #: grader root was given (the vault is a Factory-owned, grader-root artifact).
+    vault: "Dict[str, Any] | None" = None
 
     def __post_init__(self) -> None:
         # MIN_FUNCTIONS is a floor, not a default: a caller can ask for more
@@ -96,6 +101,7 @@ class FunctionGrade:
             "graded": len(self.functions),
             "failing": self.failing,
             "functions": [dict(asdict(f), ok=f.ok) for f in self.functions],
+            **({"vault": self.vault} if self.vault is not None else {}),
         }
 
 
@@ -236,14 +242,103 @@ def _read_result(path: Path, nonce: str) -> Dict[str, Any] | None:
     return data if isinstance(data, dict) and data.get("nonce") == nonce else None
 
 
+def _input_schemas(blueprint: Mapping[str, Any]) -> Dict[str, Any]:
+    """Each capability's declared ActionSpec ``input_schema`` (for the vault's
+    per-input ranges), keyed by capability id."""
+    out: Dict[str, Any] = {}
+    for cap in blueprint.get("capabilities") or []:
+        cid = str(cap.get("id") or "")
+        if cid:
+            out[cid] = cap.get("input_schema") or {}
+    return out
+
+
+def _store_formula(cid: str, store_index: Sequence[Mapping[str, Any]]) -> Dict[str, Any] | None:
+    """The Store pack formula for ``cid`` with ``expression`` + ``inputs``, read
+    from the pack it was indexed from; None when the pack row carries no
+    computable expression (then it is a kernel gap, never hand-oracled)."""
+    for row in [r for r in store_index if str(r.get("id")) == str(cid)]:
+        try:
+            data = json.loads(Path(str(row.get("source") or "")).read_text("utf-8"))
+        except (OSError, ValueError):
+            return None
+        for spec in data.get("formulas") or []:
+            if str((spec or {}).get("formula_id")) == str(cid) and (spec or {}).get("expression"):
+                return {
+                    "id": cid,
+                    "key": f"store:{cid}",
+                    "expression": spec["expression"],
+                    "inputs": list(spec.get("inputs") or []),
+                }
+    return None
+
+
+def _definition_resolver(vertical: str, store_root: Any):
+    """A kernel -> Store -> nothing lookup: capability id -> a definition with
+    ``expression`` + ``inputs``, or None. No hard-wired ids; the layer is decided
+    by ``formula_resolution.resolve_layer`` over the live kernel/Store indexes."""
+    from app.cerebrum_product_kernel.formulas import definition_index, resolve_definitions
+    from app.factory.build.formula_resolution import (
+        LAYER_KERNEL,
+        LAYER_STORE,
+        resolve_layer,
+        store_coverage_index,
+    )
+
+    resolved = resolve_definitions()
+    kernel_index = definition_index(resolved)
+    store_index = store_coverage_index(vertical, store_root)
+
+    def resolve(cid: str) -> Dict[str, Any] | None:
+        layer = resolve_layer(cid, kernel_index, store_index)["layer"]
+        if layer == LAYER_KERNEL:
+            return resolved.get(cid)
+        if layer == LAYER_STORE:
+            return _store_formula(cid, store_index)
+        return None
+
+    return resolve
+
+
+def _build_vault(
+    blueprint: Mapping[str, Any], workspace: Path, grader_root: Path | str, store_root: Any
+) -> Dict[str, Any]:
+    """F-8d: the writer-blind vault for this run -- seeded inputs + kernel/Store
+    computed expected per gradeable capability -- stored under the grader root
+    (isolated from the writer), with kernel gaps recorded as candidate rows."""
+    cids = [str(c.get("id") or "") for c in (blueprint.get("capabilities") or []) if c.get("id")]
+    resolve = _definition_resolver(str(blueprint.get("vertical") or ""), store_root)
+    seed = vault.new_seed()
+    entries, gaps = vault.build_run(cids, resolve, _input_schemas(blueprint), seed)
+    vault.write_vault(entries, grader_root, product_workspace=workspace)
+    # record_kernel_gaps no-ops on an empty list, so the call is unconditional
+    # (no redundant guard to drop).
+    vault.record_kernel_gaps(
+        gaps, Path(grader_root) / vault.VAULT_REL / "new_domain_candidates.jsonl"
+    )
+    return {
+        "seed": seed,
+        "entries": [e.to_dict() for e in entries],
+        "gaps": [g.to_dict() for g in gaps],
+    }
+
+
 def grade_functions(
     blueprint: Mapping[str, Any],
     workspace: Path | str,
     *,
     python: str = sys.executable,
     min_functions: int = MIN_FUNCTIONS,
+    grader_root: Path | str | None = None,
+    store_root: Any = None,
 ) -> FunctionGrade:
     ws = Path(workspace)
     fns = derive_functions(blueprint, ws)
     results = [run_function(f, ws, python=python) for f in fns]
-    return FunctionGrade(results, min_functions=min_functions)
+    grade = FunctionGrade(results, min_functions=min_functions)
+    # F-8d: when a grader root is given, also build the writer-blind vault
+    # (seeded inputs + kernel-computed expected) and record it on the grade so
+    # grade_record carries the seed + set into grade.json under layer1.functions.
+    if grader_root is not None:
+        grade.vault = _build_vault(blueprint, ws, grader_root, store_root)
+    return grade
