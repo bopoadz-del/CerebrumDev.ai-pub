@@ -177,7 +177,26 @@ class _OpenDesk:
 OPEN_CAP = "open_desk"
 
 
-def test_a_no_required_field_capability_refuses_a_contentless_payload(monkeypatch):
+def _open_desk_auth(monkeypatch):
+    """The real emitted guard, with MODELS carrying a no-required-field cap."""
+    mod = types.ModuleType("app.models")
+    mod.MODELS = {OPEN_CAP: _OpenDesk}
+    monkeypatch.setitem(sys.modules, "app.models", mod)
+    return _auth_module()
+
+
+# Empty, undeclared-only, and declared-but-blank payloads all store nothing.
+CONTENTLESS_PAYLOADS = [
+    {},
+    {"": None},
+    {"x" * 300: "y" * 2000},
+    {"note": ""},
+    {"note": None},
+]
+
+
+@pytest.mark.parametrize("junk", CONTENTLESS_PAYLOADS)
+def test_a_no_required_field_capability_refuses_a_contentless_payload(monkeypatch, junk):
     """negative_floor asks a capability that declares no required field to
     REFUSE an empty payload ("Nothing at all is not a record"); the guard must,
     or that floor is unwinnable by construction.
@@ -190,21 +209,20 @@ def test_a_no_required_field_capability_refuses_a_contentless_payload(monkeypatc
     no capability or vertical."""
     from fastapi import HTTPException
 
-    mod = types.ModuleType("app.models")
-    mod.MODELS = {OPEN_CAP: _OpenDesk}
-    monkeypatch.setitem(sys.modules, "app.models", mod)
-    auth = _auth_module()
+    auth = _open_desk_auth(monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        auth.reject_invalid_payload(OPEN_CAP, junk)
+    assert exc.value.status_code == VALIDATION_REFUSAL_STATUS, junk
 
-    # Empty, undeclared-only, and declared-but-blank all store nothing.
-    for junk in ({}, {"": None}, {"x" * 300: "y" * 2000}, {"note": ""}, {"note": None}):
-        with pytest.raises(HTTPException) as exc:
-            auth.reject_invalid_payload(OPEN_CAP, junk)
-        assert exc.value.status_code == VALIDATION_REFUSAL_STATUS, junk
 
-    # A payload that sets a declared field to a real value is accepted
-    # (reject_invalid_payload returns None, no raise).
-    auth.reject_invalid_payload(OPEN_CAP, {"note": "hello"})
-    auth.reject_invalid_payload(OPEN_CAP, {"status": "open"})
+@pytest.mark.parametrize("ok_payload", [{"note": "hello"}, {"status": "open"}])
+def test_a_no_required_field_capability_accepts_a_payload_that_sets_a_field(
+    monkeypatch, ok_payload
+):
+    """A payload that sets a declared field to a real value is accepted:
+    reject_invalid_payload returns None and does not raise."""
+    auth = _open_desk_auth(monkeypatch)
+    auth.reject_invalid_payload(OPEN_CAP, ok_payload)
 
 
 def test_a_closed_vocabulary_is_adopted_in_the_named_field_only(tmp_path, product_models):
