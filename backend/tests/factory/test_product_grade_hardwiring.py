@@ -77,3 +77,13 @@ def test_schema_rejects_a_malformed_hardwiring_section(bad):
     g = build_grade(product_id="p", functions=_FN_OK, ui=_UI_OK, layer2=_L2_PASS)
     g["hardwiring"] = bad
     assert any("hardwiring" in e for e in _schema_errors(g))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda g: g.pop("certified"),            # a required field is missing
+    lambda g: g.update({"surprise": 1}),     # an unknown field (not hardwiring)
+])
+def test_schema_flags_missing_or_unknown_fields(mutate):
+    g = build_grade(product_id="p", functions=_FN_OK, ui=_UI_OK, layer2=_L2_PASS)
+    mutate(g)
+    assert any("missing or unknown" in e for e in _schema_errors(g))
