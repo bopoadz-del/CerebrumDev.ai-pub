@@ -19,7 +19,6 @@ mechanism) and the ``scan_hardwiring`` / prompt-leak companion are wired on top.
 from __future__ import annotations
 
 import json
-import secrets
 import subprocess
 import sys
 import tempfile
@@ -111,7 +110,7 @@ _RUN_TIMEOUT_S = 60
 _RUNNER = r'''
 import importlib, json, sys
 spec = json.loads(sys.stdin.read())
-out = {"nonce": spec["nonce"]}
+out = {}
 try:
     handle = importlib.import_module(spec["module"]).handle
 except BaseException as exc:
@@ -140,10 +139,6 @@ class FunctionCheck:
     out_a: Any
     out_b: Any
 
-    @property
-    def ok(self) -> bool:
-        return self.verdict == OK
-
 
 def run_function_pair(
     module: str,
@@ -155,12 +150,14 @@ def run_function_pair(
 ) -> "tuple[Any, Any]":
     """(out_a, out_b) for the product's handle on datasets A and B; (None, None)
     on import/timeout/crash (absent output is a signal the verdict reads)."""
-    nonce = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="f8e-") as tmp:
+        # The result file lives in a fresh temp dir OUTSIDE the product workspace
+        # (the product's cwd), so the product cannot write to it -- that
+        # isolation, not a nonce, is what keeps the result the grader's own.
         out_path = Path(tmp) / "r.json"
         spec = json.dumps({
             "module": module, "inputs_a": dict(inputs_a), "inputs_b": dict(inputs_b),
-            "nonce": nonce, "out": str(out_path),
+            "out": str(out_path),
         })
         try:
             subprocess.run(
@@ -168,12 +165,8 @@ def run_function_pair(
                 cwd=str(workspace), timeout=_RUN_TIMEOUT_S,
                 env={"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"},
             )
-        except subprocess.TimeoutExpired:
-            return None, None
-        if not out_path.is_file():
-            return None, None
-        data = json.loads(out_path.read_text("utf-8"))
-        if data.get("nonce") != nonce:
+            data = json.loads(out_path.read_text("utf-8"))
+        except (subprocess.TimeoutExpired, OSError, ValueError):
             return None, None
         return data.get("a"), data.get("b")
 
