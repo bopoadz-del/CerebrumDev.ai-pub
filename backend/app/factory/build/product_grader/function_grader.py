@@ -257,14 +257,9 @@ def _store_formula(cid: str, store_index: Sequence[Mapping[str, Any]]) -> Dict[s
     """The Store pack formula for ``cid`` with ``expression`` + ``inputs``, read
     from the pack it was indexed from; None when the pack row carries no
     computable expression (then it is a kernel gap, never hand-oracled)."""
-    for row in store_index:
-        if str(row.get("id")) != str(cid):
-            continue
-        src = row.get("source")
-        if not src:
-            return None
+    for row in [r for r in store_index if str(r.get("id")) == str(cid)]:
         try:
-            data = json.loads(Path(src).read_text("utf-8"))
+            data = json.loads(Path(str(row.get("source") or "")).read_text("utf-8"))
         except (OSError, ValueError):
             return None
         for spec in data.get("formulas") or []:
@@ -316,10 +311,11 @@ def _build_vault(
     seed = vault.new_seed()
     entries, gaps = vault.build_run(cids, resolve, _input_schemas(blueprint), seed)
     vault.write_vault(entries, grader_root, product_workspace=workspace)
-    if gaps:
-        vault.record_kernel_gaps(
-            gaps, Path(grader_root) / vault.VAULT_REL / "new_domain_candidates.jsonl"
-        )
+    # record_kernel_gaps no-ops on an empty list, so the call is unconditional
+    # (no redundant guard to drop).
+    vault.record_kernel_gaps(
+        gaps, Path(grader_root) / vault.VAULT_REL / "new_domain_candidates.jsonl"
+    )
     return {
         "seed": seed,
         "entries": [e.to_dict() for e in entries],

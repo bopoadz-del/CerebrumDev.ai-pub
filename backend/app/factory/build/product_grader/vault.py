@@ -30,7 +30,7 @@ import random
 import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 from app.cerebrum_product_kernel.formulas.evaluator import MissingInput, safe_eval
 

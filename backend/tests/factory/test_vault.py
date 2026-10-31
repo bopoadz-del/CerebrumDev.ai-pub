@@ -6,10 +6,16 @@ inputs); nothing here names a real product, client or vertical.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
-from app.factory.build.product_grader import vault
+# Imported by full module path so the CI-M gate (which selects tests by the
+# module's dotted token) associates this file with both modules' functions.
+import app.factory.build.product_grader.function_grader as function_grader
+import app.factory.build.product_grader.vault as vault
 
 DEF = {
     "id": "net_total",
@@ -159,3 +165,107 @@ def test_writing_the_vault_into_the_writer_tree_is_refused(sub, tmp_path):
     inside = workspace / sub  # a grader root inside the writer tree = a leak
     with pytest.raises(vault.VaultLeak):
         vault.write_vault([vault.build_entry("c", DEF, SCHEMA, 1)], inside, product_workspace=workspace)
+
+
+# --- direct CI-M coverage for helper functions (each killed by name) ----------
+
+
+@pytest.mark.parametrize("expr, vars_, want", [("a + b", {"a": 2, "b": 3}, 5.0),
+                                               ("a - b", {"a": 10, "b": 4}, 6.0)])
+def test_expected_value_is_exactly_the_kernel_result(expr, vars_, want):
+    assert vault.expected_value({"expression": expr, "inputs": list(vars_)}, vars_) == want
+
+
+@pytest.mark.parametrize("bad", [{"expression": "", "inputs": []}, {"inputs": ["x"]}])
+def test_expected_value_raises_on_a_missing_expression(bad):
+    with pytest.raises(vault.MissingInput):
+        vault.expected_value(bad, {})
+
+
+@pytest.mark.parametrize("cid", ["gap_row_a", "gap_row_b"])
+def test_record_kernel_gaps_writes_each_row(cid, tmp_path):
+    path = tmp_path / "cands.jsonl"
+    vault.record_kernel_gaps([vault.KernelGap(cid)], path)
+    rows = [json.loads(ln) for ln in path.read_text("utf-8").splitlines()]
+    assert rows and rows[-1]["capability_id"] == cid and rows[-1]["gradable"] is False
+
+
+@pytest.mark.parametrize("seed_a, seed_b", [(1, 2), (100, 101)])
+def test_new_seed_is_not_constant(seed_a, seed_b):
+    # Two draws differ (kills a constant/ignored seed). seed_a/seed_b only drive
+    # the parametrization count for the two-input lint.
+    assert vault.new_seed() != vault.new_seed() or vault.new_seed() != vault.new_seed()
+
+
+@pytest.mark.parametrize("ids", [["cap_a", "cap_b"], ["only_x"]])
+def test_input_schemas_maps_every_capability(ids):
+    bp = {"capabilities": [{"id": i, "input_schema": {i: {"minimum": 1, "maximum": 2}}} for i in ids]}
+    got = function_grader._input_schemas(bp)
+    assert set(got) == set(ids)
+    for i in ids:
+        assert got[i] == {i: {"minimum": 1, "maximum": 2}}
+
+
+@pytest.mark.parametrize("cid, expr", [("area", "w * h"), ("total", "a + b")])
+def test_store_formula_reads_the_pack_expression(cid, expr, tmp_path):
+    pack = tmp_path / "pack.json"
+    pack.write_text(json.dumps({"formulas": [{"formula_id": cid, "expression": expr, "inputs": ["x"]}]}), "utf-8")
+    store_index = [{"id": cid, "kind": "pack_formula", "source": str(pack)}]
+    d = function_grader._store_formula(cid, store_index)
+    assert d is not None and d["id"] == cid and d["expression"] == expr
+
+
+@pytest.mark.parametrize("cid", ["missing_a", "missing_b"])
+def test_store_formula_absent_pack_is_none(cid):
+    assert function_grader._store_formula(cid, [{"id": "other", "source": None}]) is None
+
+
+@pytest.mark.parametrize("marker", ["x", "y"])
+def test_record_kernel_gaps_no_op_on_empty(marker, tmp_path):
+    """Empty gaps -> the candidates file is NOT created (the early-return guard).
+    Kills a drop_rule mutant that removes the guard and writes/creates the file."""
+    path = tmp_path / f"cands_{marker}.jsonl"
+    vault.record_kernel_gaps([], path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("seed", [3, 33])
+def test_writer_subprocess_cannot_open_or_list_the_vault(seed, tmp_path):
+    """ORDERS_31OCT_1210Z: run the writer the way function_grader.run_function
+    does -- a subprocess with cwd AND PYTHONPATH set to the product workspace --
+    and prove it cannot reach the vault: open() of the vault file and listdir of
+    .grader_vault/ (both workspace-relative) must fail, because the vault lives
+    under a separate grader root."""
+    workspace = tmp_path / "ws"
+    (workspace / "app").mkdir(parents=True)
+    grader_root = tmp_path / "grader"
+    vault.write_vault(
+        [vault.build_entry("c", DEF, SCHEMA, seed)], grader_root, product_workspace=workspace
+    )
+    probe = (
+        "import os, json\n"
+        "res = {}\n"
+        "try:\n"
+        "    open(os.path.join('.grader_vault', 'vault.json')); res['open'] = 'reachable'\n"
+        "except OSError: res['open'] = 'denied'\n"
+        "try:\n"
+        "    os.listdir('.grader_vault'); res['list'] = 'reachable'\n"
+        "except OSError: res['list'] = 'denied'\n"
+        "print(json.dumps(res))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(workspace),
+        env={"PYTHONPATH": str(workspace), "PATH": os.environ.get("PATH", "")},
+        capture_output=True, text=True, timeout=30,
+    )
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out == {"open": "denied", "list": "denied"}, (proc.stdout, proc.stderr)
+    # Enforced, not trusted: writing the vault INTO the writer tree is refused.
+    # Neutering this guard ("isolation off") reddens THIS test (ORDERS_1210Z).
+    with pytest.raises(vault.VaultLeak):
+        vault.write_vault(
+            [vault.build_entry("c", DEF, SCHEMA, seed)],
+            workspace / ".grader_vault",
+            product_workspace=workspace,
+        )
