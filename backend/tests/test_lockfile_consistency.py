@@ -325,26 +325,74 @@ REQ_TXT = REPO_ROOT / "backend" / "requirements.txt"
 REQ_LOCK = REPO_ROOT / "backend" / "requirements.lock"
 
 
-def test_pin_drift_flags_a_version_mismatch(checker):
-    findings = checker.pin_drift("sqlalchemy==2.1.4\n", "SQLAlchemy==2.0.52\n")
-    assert len(findings) == 1
-    assert "sqlalchemy==2.1.4" in findings[0] and "2.0.52" in findings[0]
+@pytest.mark.parametrize(
+    "req, lock, expected",
+    [
+        ("sqlalchemy==2.1.4\n", "SQLAlchemy==2.0.52\n", ("sqlalchemy==2.1.4", "2.0.52")),
+        ("stripe==16.0.0\n", "stripe==15.6.1\n", ("stripe==16.0.0", "15.6.1")),
+        # extras pin: the [binary] group must not drop the pin out of the check
+        ("psycopg[binary]==3.3.6\n", "psycopg==3.3.5\n", ("psycopg==3.3.6", "3.3.5")),
+        # spacing around ==
+        ("foo == 1.1\n", "foo==1.0\n", ("foo==1.1", "foo==1.0")),
+        # indented line
+        ("    foo==1.1\n", "foo==1.0\n", ("foo==1.1", "foo==1.0")),
+        # environment marker after ;
+        ('foo==1.1;python_version<"3.13"\n', "foo==1.0\n", ("foo==1.1", "foo==1.0")),
+    ],
+)
+def test_pin_drift_flags_a_version_mismatch(checker, req, lock, expected):
+    findings = checker.pin_drift(req, lock)
+    assert len(findings) == 1, findings
+    for part in expected:
+        assert part in findings[0], findings[0]
 
 
-def test_pin_drift_accepts_equal_pins_across_name_spellings(checker):
-    assert checker.pin_drift(
-        "prometheus-client==0.21.1\npsycopg[binary]==3.3.6\nnumpy<2.5\n",
-        "prometheus_client==0.21.1\npsycopg==3.3.6\nnumpy==2.4.6\n",
-    ) == []
+@pytest.mark.parametrize(
+    "req, lock",
+    [
+        ("prometheus-client==0.21.1\nnumpy<2.5\n", "prometheus_client==0.21.1\nnumpy==2.4.6\n"),
+        ("psycopg[binary]==3.3.6\n", "psycopg==3.3.6\n"),
+        # dotted names normalise to hyphens (PEP 503)
+        ("zope.interface==7.0\n", "zope-interface==7.0\n"),
+        # trailing comment with no space is not part of the version
+        ("foo==1.0#pinned\n", "foo==1.0\n"),
+        ('foo==1.0;python_version<"3.13"\n', "foo==1.0\n"),
+    ],
+)
+def test_pin_drift_accepts_equal_pins(checker, req, lock):
+    assert checker.pin_drift(req, lock) == []
 
 
-def test_pin_drift_flags_a_pin_missing_from_the_lock(checker):
-    findings = checker.pin_drift("foo==1.0.0\n", "bar==2.0.0\n")
+@pytest.mark.parametrize(
+    "req, lock, missing",
+    [("foo==1.0.0\n", "bar==2.0.0\n", "foo"), ("baz==3.0\n", "", "baz")],
+)
+def test_pin_drift_flags_a_pin_missing_from_the_lock(checker, req, lock, missing):
+    findings = checker.pin_drift(req, lock)
     assert len(findings) == 1 and "(missing)" in findings[0]
+    assert findings[0].startswith(f"lockfile-consistency: {missing}==")
 
 
-def test_repo_requirements_txt_agrees_with_requirements_lock(checker):
-    findings = checker.pin_drift(
-        REQ_TXT.read_text(encoding="utf-8"), REQ_LOCK.read_text(encoding="utf-8")
-    )
-    assert findings == [], "\n".join(findings)
+@pytest.mark.parametrize(
+    "req, lock, order",
+    [
+        ("zeta==2\nalpha==2\n", "zeta==1\nalpha==1\n", ["alpha", "zeta"]),
+        ("b==2\na==2\nc==2\n", "a==1\nb==1\nc==1\n", ["a", "b", "c"]),
+    ],
+)
+def test_pin_drift_findings_are_sorted_by_name(checker, req, lock, order):
+    names = [f.split()[1].split("==")[0] for f in checker.pin_drift(req, lock)]
+    assert names == order
+
+
+@pytest.mark.parametrize("bump_first_pin, expected_count", [(False, 0), (True, 1)])
+def test_repo_requirements_txt_agrees_with_requirements_lock(
+    checker, bump_first_pin, expected_count
+):
+    """The shipped pair must agree; the same pair with one pin moved must not."""
+    req = REQ_TXT.read_text(encoding="utf-8")
+    if bump_first_pin:
+        name, version = next(iter(checker.exact_pins(req).items()))
+        req = req + f"\n{name}=={version}.post999\n"
+    findings = checker.pin_drift(req, REQ_LOCK.read_text(encoding="utf-8"))
+    assert len(findings) == expected_count, "\n".join(findings)
