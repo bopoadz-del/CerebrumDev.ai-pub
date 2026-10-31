@@ -51,19 +51,61 @@ def layer1_ok(functions: Mapping[str, Any], ui: Mapping[str, Any]) -> bool:
     return functions.get("ok") is True and ui.get("ok") is True
 
 
+def hardwiring_section(
+    function_verdicts: Mapping[str, str],
+    forbidden_hits: Mapping[str, Any],
+    prompt_leaks: Any,
+) -> Dict[str, Any]:
+    """F-8e grade section. ``function_verdicts``: {capability_id: verdict} from
+    the two-dataset check; ``forbidden_hits``: {relpath: [literals]} baked into
+    the product source; ``prompt_leaks``: literals shared by the writer prompt
+    and the source. A FAIL verdict (anything but the two-dataset OK / BOTH_ABSENT),
+    a baked literal, or a prompt leak is a finding. ``clean`` == no findings."""
+    from app.factory.build.product_grader.two_dataset import BOTH_ABSENT, OK
+
+    findings: List[Dict[str, Any]] = []
+    for cid, verdict in sorted(function_verdicts.items()):
+        if verdict not in (OK, BOTH_ABSENT):
+            findings.append({"kind": "function", "capability": str(cid), "verdict": str(verdict)})
+    for path, lits in sorted(forbidden_hits.items()):
+        findings.append({"kind": "forbidden_literal", "file": str(path), "literals": [str(x) for x in lits]})
+    if prompt_leaks:
+        findings.append({"kind": "prompt_leak", "literals": [str(x) for x in prompt_leaks]})
+    return {"ran": True, "clean": not findings, "findings": findings}
+
+
+def _hardwiring_tasks(hardwiring: Optional[Mapping[str, Any]]) -> List[str]:
+    if not hardwiring:
+        return []
+    out: List[str] = []
+    for f in hardwiring.get("findings") or []:
+        if f.get("kind") == "function":
+            out.append(f"de-hardwire {f.get('capability')}: {f.get('verdict')}")
+        elif f.get("kind") == "forbidden_literal":
+            out.append(f"remove baked literals from {f.get('file')}: {f.get('literals')}")
+        elif f.get("kind") == "prompt_leak":
+            out.append(f"stop leaking the prompt into the source: {f.get('literals')}")
+    return out
+
+
 def build_grade(
-    *, product_id: str, functions: Mapping[str, Any], ui: Mapping[str, Any], layer2: Mapping[str, Any]
+    *, product_id: str, functions: Mapping[str, Any], ui: Mapping[str, Any], layer2: Mapping[str, Any],
+    hardwiring: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     l1 = layer1_ok(functions, ui)
     fails = open_fails(layer2)
-    return {
+    hw_ok = hardwiring is None or (hardwiring.get("ran") is True and hardwiring.get("clean") is True)
+    grade: Dict[str, Any] = {
         "schema": SCHEMA,
         "product_id": product_id,
         "layer1": {"ok": l1, "functions": dict(functions), "ui": dict(ui)},
         "layer2": dict(layer2, open_fails=fails),
-        "next_tasks": [f"re-run writer on: {q}" for q in fails],
-        "certified": l1 and layer2.get("ran") is True and bool(layer2.get("verdicts")) and not fails,
+        "next_tasks": [f"re-run writer on: {q}" for q in fails] + _hardwiring_tasks(hardwiring),
+        "certified": l1 and layer2.get("ran") is True and bool(layer2.get("verdicts")) and not fails and hw_ok,
     }
+    if hardwiring is not None:
+        grade["hardwiring"] = dict(hardwiring)
+    return grade
 
 
 def _schema_errors(grade: Any) -> List[str]:
@@ -72,8 +114,18 @@ def _schema_errors(grade: Any) -> List[str]:
         return ["record is not a mapping"]
     errs: List[str] = []
     want = {"schema", "product_id", "layer1", "layer2", "next_tasks", "certified"}
-    if set(grade) != want:
-        errs.append(f"fields {sorted(set(grade) ^ want)} missing or unknown")
+    missing = want - set(grade)
+    unknown = set(grade) - want - {"hardwiring"}  # hardwiring is an optional F-8e section
+    if missing or unknown:
+        errs.append(f"fields {sorted(missing | unknown)} missing or unknown")
+    hw = grade.get("hardwiring")
+    if hw is not None and (
+        not isinstance(hw, Mapping)
+        or not isinstance(hw.get("ran"), bool)
+        or not isinstance(hw.get("clean"), bool)
+        or not isinstance(hw.get("findings"), list)
+    ):
+        errs.append("hardwiring is not {ran: bool, clean: bool, findings: list}")
     if grade.get("schema") != SCHEMA:
         errs.append("schema is not product_grade.v1")
     if not isinstance(grade.get("product_id"), str) or not grade["product_id"].strip():
