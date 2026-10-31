@@ -3,7 +3,7 @@ pytest>=7.0.0
 pytest-asyncio>=1.4.0
 
 # Steward factory kit tests import steward_runtime modules and exercise generated products.
-sqlalchemy>=2.1.4
+sqlalchemy>=2.1.6
 alembic>=1.19.2
 pgvector>=0.5.1
 
