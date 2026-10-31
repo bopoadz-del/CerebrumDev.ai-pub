@@ -48,6 +48,19 @@ CEILING_S = 7200.0
 
 INSPECT_NOTE_KIND = "budget_inspect"
 
+#: No-progress (idle) wall. A coder leg that has produced NO visible work --
+#: no file growth, no reported step, no log growth -- for this long has stalled
+#: INSIDE its time wall (the "model call did not finish" case). It is stopped
+#: distinct from the time wall, so a slow BUT STREAMING build (whose log/files
+#: are still growing) is never cut. The threshold is config
+#: (``FACTORY_CODER_IDLE_WALL_S``); its default is the direct-call idle band
+#: (``llm_watchdog.DEFAULT_CALL_TIMEOUT_S``), not a fresh literal.
+CODER_IDLE_WALL_ENV = "FACTORY_CODER_IDLE_WALL_S"
+
+#: Named blocker so a stall reads AS a stall -- not FACTORY_CODE_CLI_UNUSED
+#: (the CLI was used, it stalled) and not a bare timeout.
+NAMED_BLOCKER_CODER_STALLED = "FACTORY_CODE_CLI_STALLED"
+
 def _timed_out_keys(failure_kinds: Mapping[str, Any]) -> List[str]:
     """Keys whose recorded failure kind is a timeout (failure_kinds.TIMEOUT).
 
@@ -355,6 +368,66 @@ def next_stage_wall(
     return None
 
 
+def coder_idle_wall_s() -> float:
+    """Seconds of no visible coder progress that count as a stall. From
+    ``FACTORY_CODER_IDLE_WALL_S``; defaults to the direct-call idle band so it
+    is one tunable, not a fresh magic number. A non-positive / unparseable
+    override is floored at 1s (a 0 wall would kill instantly); the band is the
+    default, never a floor, so test-scale and ops tuning stay free."""
+    import os
+
+    from app.factory.llm_watchdog import DEFAULT_CALL_TIMEOUT_S
+
+    raw = os.environ.get(CODER_IDLE_WALL_ENV)
+    if raw is None:
+        return float(DEFAULT_CALL_TIMEOUT_S)
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return float(DEFAULT_CALL_TIMEOUT_S)
+
+
+def coder_idle_stalled(
+    snapshot: Mapping[str, Any], *, idle_s: Optional[float] = None
+) -> bool:
+    """True when a LIVE coder leg has shown no visible progress for at least the
+    idle wall. Keyed on ``snapshot['coder_seconds_since_progress']`` -- seconds
+    since the last file growth, reported step, or log growth, stamped by the
+    runner. A missing / None / unparseable signal means 'cannot tell' -> False:
+    a stall is NEVER asserted on an absent signal, so an orchestrator that does
+    not yet stamp it sees no behaviour change (no premature kill). Only a leg the
+    runner marks in-flight can stall."""
+    if not (snapshot.get("cli_in_flight") or snapshot.get("slot_waiting")):
+        return False
+    since = snapshot.get("coder_seconds_since_progress")
+    if since is None:
+        return False
+    try:
+        since = float(since)
+    except (TypeError, ValueError):
+        return False
+    threshold = coder_idle_wall_s() if idle_s is None else float(idle_s)
+    return since >= threshold
+
+
+def coder_stall_reason(snapshot: Mapping[str, Any], stage: str) -> str:
+    """The named-blocker detail for a stalled leg -- a stall, with the idle age
+    and the work seen, not a bare timeout."""
+    since = snapshot.get("coder_seconds_since_progress")
+    try:
+        since_txt = f"{float(since):.0f}s"
+    except (TypeError, ValueError):
+        since_txt = "unknown"
+    return (
+        f"{NAMED_BLOCKER_CODER_STALLED}: inspect {stage} -- the coder leg "
+        f"produced no visible work for {since_txt} (idle wall "
+        f"{coder_idle_wall_s():.0f}s; written={snapshot.get('agent_written')}, "
+        f"phase={snapshot.get('phase_done')}/{snapshot.get('phase_total')}). "
+        "The model call is not progressing -- stop this leg; do not hold a "
+        "stalled call open to the time wall."
+    )
+
+
 def inspect_decision(
     *,
     elapsed_s: float,
@@ -380,6 +453,14 @@ def inspect_decision(
         new_wall = None
         decision = "already_pilot_ready"
         reason = f"inspect {stage}: pilot_ready already true"
+    elif coder_idle_stalled(snapshot):
+        # A live leg that has produced no visible work for the idle wall has
+        # stalled inside its time wall. Deny any bump and stop it -- distinct
+        # from UNUSED (it was used) and from the time wall (a streaming build
+        # whose files/log still grow never reaches here).
+        new_wall = None
+        decision = "coder_stalled"
+        reason = coder_stall_reason(snapshot, stage)
     elif new_wall:
         decision = "continue_stage_2"
         reason = (
