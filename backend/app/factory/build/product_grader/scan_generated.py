@@ -29,34 +29,25 @@ def _string_constants(tree: ast.AST) -> set:
     return {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
 
 
-def _compared_literals(tree: ast.AST) -> set:
-    """String literals used as a comparison operand: ``x == "lit"``, ``"lit" in x``."""
-    out: set = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Compare):
-            for operand in [node.left, *node.comparators]:
-                if isinstance(operand, ast.Constant) and isinstance(operand.value, str):
-                    out.add(operand.value)
-    return out
-
-
 def forbidden_hits(product_root, forbidden: Iterable) -> Dict[str, List[str]]:
     """{relpath: sorted forbidden literals found in that product .py}. A file
     with none is omitted; an empty result means the product hardwired none of
-    the forbidden domain literals."""
+    the forbidden domain literals.
+
+    A forbidden literal is caught wherever it appears as a string constant --
+    a bare assignment, or a branch comparison operand (``if x == "<client>"``),
+    which is itself a string constant -- so one constant scan covers both."""
     forbid = _forbidden(forbidden)
     hits: Dict[str, List[str]] = {}
     root = Path(product_root)
     for py in sorted(root.rglob("*.py")):
-        if "__pycache__" in py.parts:
-            continue
         try:
             tree = ast.parse(py.read_text("utf-8", "replace"))
         except SyntaxError:
             # Unparseable product source is graded elsewhere; it cannot hide a
             # literal from a later parse, so it is not a hit here.
             continue
-        found = (_string_constants(tree) | _compared_literals(tree)) & forbid
+        found = _string_constants(tree) & forbid
         if found:
             hits[str(py.relative_to(root).as_posix())] = sorted(found)
     return hits
