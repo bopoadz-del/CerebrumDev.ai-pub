@@ -87,3 +87,28 @@ def test_schema_flags_missing_or_unknown_fields(mutate):
     g = build_grade(product_id="p", functions=_FN_OK, ui=_UI_OK, layer2=_L2_PASS)
     mutate(g)
     assert any("missing or unknown" in e for e in _schema_errors(g))
+
+
+@pytest.mark.parametrize("notmap", [None, [1, 2], "a-string"])
+def test_schema_errors_rejects_a_non_mapping(notmap):
+    assert _schema_errors(notmap) == ["record is not a mapping"]
+
+
+@pytest.mark.parametrize("corrupt", [
+    lambda g: g.update({"schema": "wrong"}),              # 129 schema
+    lambda g: g.update({"product_id": "   "}),            # 131 blank product_id
+    lambda g: g.update({"certified": "yes"}),             # 133 certified not bool
+    lambda g: g.update({"next_tasks": [1]}),              # 135 next_tasks not strings
+    lambda g: g.update({"layer1": "nope"}),               # 138 layer1 not a mapping
+    lambda g: g["layer1"].update({"ok": "yes"}),          # 141 layer1.ok not bool
+    lambda g: g["layer1"]["functions"].update({"ok": 1}),  # 144 layer1.functions.ok
+    lambda g: g.update({"layer2": "nope"}),               # 146 layer2 not a mapping
+    lambda g: g["layer2"].update({"ran": "yes"}),         # 149 layer2.ran not bool
+    lambda g: g["layer2"].update({"verdicts": "nope"}),   # 152 verdicts not a list
+    lambda g: g["layer2"].update({"open_fails": [1]}),    # 157 open_fails not strings
+])
+def test_schema_errors_flags_each_corrupt_field(corrupt):
+    # Every validated field, so no branch of _schema_errors is uncovered.
+    g = build_grade(product_id="p", functions=_FN_OK, ui=_UI_OK, layer2=_L2_PASS)
+    corrupt(g)
+    assert _schema_errors(g), "corrupt field must be rejected"
