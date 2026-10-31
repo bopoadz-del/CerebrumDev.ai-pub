@@ -42,6 +42,18 @@ VAULT_REL = ".grader_vault"
 KERNEL_GAP = "not gradable -- kernel gap"
 
 
+class VaultLeak(Exception):
+    """The vault would be reachable from the writer's workspace -- refused."""
+
+
+def _within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class VaultEntry:
     """The seeded inputs and kernel-computed expected result for one function."""
@@ -150,9 +162,25 @@ def vault_dir(grader_root: Union[Path, str]) -> Path:
     return directory
 
 
-def write_vault(entries: List[VaultEntry], grader_root: Union[Path, str]) -> Path:
+def write_vault(
+    entries: List[VaultEntry],
+    grader_root: Union[Path, str],
+    product_workspace: Optional[Union[Path, str]] = None,
+) -> Path:
     """Persist the seed + generated set under the grader's own root. The returned
-    path's contents are what grade.json carries for reproducibility."""
+    path's contents are what grade.json carries for reproducibility.
+
+    When ``product_workspace`` is given, writer isolation is ENFORCED (not
+    trusted): the grader root must sit outside the writer's workspace -- the
+    writer runs with that workspace as its cwd/PYTHONPATH (see
+    ``function_grader.run_function``), so a vault under it would be readable.
+    A build that tried to put the vault in the product tree raises
+    :class:`VaultLeak` here, before any input is generated."""
+    if product_workspace is not None and _within(Path(grader_root), Path(product_workspace)):
+        raise VaultLeak(
+            f"vault root {Path(grader_root)} is inside the writer workspace "
+            f"{Path(product_workspace)}"
+        )
     out = vault_dir(grader_root) / "vault.json"
     out.write_text(
         json.dumps([e.to_dict() for e in entries], indent=2, sort_keys=True, default=str),

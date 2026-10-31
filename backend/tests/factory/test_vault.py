@@ -86,3 +86,31 @@ def test_vault_is_written_under_the_grader_root_only(seed, tmp_path):
     assert out.is_file()
     payload = json.loads(out.read_text("utf-8"))
     assert payload[0]["seed"] == seed
+
+
+@pytest.mark.parametrize("seed", [4, 44])
+def test_writer_has_no_read_path_to_the_vault(seed, tmp_path):
+    """The writer runs with the product workspace as its root; the vault sits
+    under a separate grader root, so a writer-relative open() cannot reach it."""
+    workspace = tmp_path / "product_ws"
+    workspace.mkdir()
+    grader_root = tmp_path / "grader"  # separate root, not under the workspace
+    out = vault.write_vault(
+        [vault.build_entry("c", DEF, SCHEMA, seed)], grader_root, product_workspace=workspace
+    )
+    assert not vault._within(out, workspace)  # vault is outside the writer tree
+    writer_view = workspace / vault.VAULT_REL / "vault.json"
+    assert not writer_view.exists()
+    with pytest.raises(FileNotFoundError):
+        open(writer_view)
+
+
+@pytest.mark.parametrize("sub", ["app", "nested/dir"])
+def test_writing_the_vault_into_the_writer_tree_is_refused(sub, tmp_path):
+    """Isolation is enforced, not trusted: a grader root inside the writer
+    workspace is refused before any input is written."""
+    workspace = tmp_path / "product_ws"
+    workspace.mkdir()
+    inside = workspace / sub  # a grader root inside the writer tree = a leak
+    with pytest.raises(vault.VaultLeak):
+        vault.write_vault([vault.build_entry("c", DEF, SCHEMA, 1)], inside, product_workspace=workspace)
