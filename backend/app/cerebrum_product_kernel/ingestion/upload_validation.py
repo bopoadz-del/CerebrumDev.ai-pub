@@ -1,7 +1,9 @@
-"""Upload allowlist + validators for the client ``+`` attach (F-1a).
+"""Upload allowlist + validators for the client ``+`` attach (F-1a / F-10b).
 
-The F-1 owner scope (ORDERS_0733Z): accept PDF / DOCX / XLSX / CSV / TXT / MD;
-photos, video, CAD, zip/rar stay 415. The machinery mirrors
+The owner scope (Oct 4 / Oct 28, restated ORDERS_01NOV_2033Z/2052Z): accept
+PDF / DOCX / XLSX ONLY; photos, video, CAD, zip/rar, and the formerly-allowed
+.csv/.txt/.md/.doc/.json all stay 415 — a format on the allowlist must be
+ingestible, and only these three are. The machinery mirrors
 ``app.routers.upload`` EXACTLY — extension allowlist as the primary control, a
 content-type cross-check that treats ``octet-stream`` as absent, an incremental
 chunked read with a per-file byte cap (``MAX_UPLOAD_FILE_BYTES``, default
@@ -21,9 +23,10 @@ from typing import Optional
 
 from fastapi import HTTPException, UploadFile
 
-#: The F-1 allowlist. Anything outside it (.png/.jpg photos, video, .dwg CAD,
-#: .zip/.rar archives, …) is refused 415 by the extension check below.
-DEFAULT_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".txt", ".md"}
+#: The allowlist: PDF / DOCX / XLSX only. Anything outside it (.png/.jpg
+#: photos, video, .dwg CAD, .zip/.rar archives, and .csv/.txt/.md/.doc/.json)
+#: is refused 415 by the extension check below.
+DEFAULT_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
 
 MAX_UPLOAD_FILE_BYTES_ENV = "MAX_UPLOAD_FILE_BYTES"
 MAX_UPLOAD_FILE_BYTES_DEFAULT = 20 * 1024 * 1024  # 20 MiB
@@ -44,9 +47,6 @@ _EXT_CONTENT_TYPES = {
         "application/zip",
         "application/vnd.ms-excel",
     ),
-    ".csv": ("text/", "application/csv", "application/vnd.ms-excel"),
-    ".txt": ("text/",),
-    ".md": ("text/",),
 }
 
 _UNINFORMATIVE_CONTENT_TYPES = {"application/octet-stream", "binary/octet-stream"}

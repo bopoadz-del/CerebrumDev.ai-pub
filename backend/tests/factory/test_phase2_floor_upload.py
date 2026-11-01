@@ -127,6 +127,13 @@ def test_floor_upload_wrong_type_415(client):
     assert resp.status_code == 415, resp.text
 
 
+def test_floor_upload_rejects_a_formerly_allowed_text_type_415(client):
+    # F-10b: the allowlist is PDF/DOCX/XLSX only; .csv/.txt/.md (once accepted)
+    # now 415 -- a format on the allowlist must be ingestible.
+    resp = _upload(client, "sess_floor_upload", "rates.csv", b"a,b\n1,2\n", "text/csv")
+    assert resp.status_code == 415, resp.text
+
+
 def test_floor_upload_oversize_413(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
     monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))

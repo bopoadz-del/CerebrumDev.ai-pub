@@ -4,6 +4,7 @@ import tempfile
 
 import pytest
 
+import app.core.upload_processor  # noqa: F401  dotted token so CI-M associates this file
 from app.core import upload_processor
 from app.core.session_store import create_session, get_session
 
@@ -386,8 +387,58 @@ class TestFileType:
     def test_text_extension(self):
         assert upload_processor._file_type("/docs/notes.txt") == "text"
 
+    def test_xlsx_extension(self):
+        assert upload_processor._file_type("/docs/budget.xlsx") == "xlsx"
+
     def test_unknown_extension(self):
         assert upload_processor._file_type("/docs/data.xyz") == "unknown"
+
+
+class TestParseXlsx:
+    """F-10b: .xlsx extraction -- each sheet headed by its name, rows to text."""
+
+    @staticmethod
+    def _make_xlsx(path, sheets):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for name, rows in sheets.items():
+            ws = wb.create_sheet(title=name)
+            for row in rows:
+                ws.append(row)
+        wb.save(path)
+
+    @pytest.mark.parametrize(
+        "sheets, must_contain",
+        [
+            (
+                {"Budget": [["Item", "Cost"], ["Crane", 1200]]},
+                ["# Budget", "Item", "Cost", "Crane", "1200"],
+            ),
+            (
+                {"Schedule": [["Task", "Days"], ["Pour", 5]], "Rates": [["Rate", 0.1]]},
+                ["# Schedule", "Task", "Pour", "5", "# Rates", "Rate", "0.1"],
+            ),
+        ],
+    )
+    def test_parse_xlsx_local_two_workbooks(self, tmp_path, sheets, must_contain):
+        from app.core.upload_processor import _parse_xlsx_local
+
+        p = tmp_path / "book.xlsx"
+        self._make_xlsx(str(p), sheets)
+        text = _parse_xlsx_local(str(p))
+        for token in must_contain:
+            assert token in text, (token, text)
+
+    @pytest.mark.asyncio
+    async def test_parse_document_routes_an_xlsx(self, tmp_path):
+        from app.core.upload_processor import parse_document
+
+        p = tmp_path / "data.xlsx"
+        self._make_xlsx(str(p), {"S1": [["alpha", "beta"]]})
+        text = await parse_document(str(p))
+        assert "# S1" in text and "alpha" in text and "beta" in text
 
 
 class TestChunkText:
