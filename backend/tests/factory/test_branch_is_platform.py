@@ -300,6 +300,38 @@ def test_start_over_creates_nothing_when_the_head_cannot_be_tagged(tmp_path, mon
 
 
 @pytest.mark.parametrize(
+    "generation, expect",
+    [
+        ({"product_id": "vineyard"}, "Start over rebuilds vineyard from scratch"),
+        (None, "Start over rebuilds from scratch"),
+    ],
+)
+def test_start_over_confirm_prompt_offers_continue_and_creates_nothing(generation, expect):
+    """The confirm reply: a refusal (ok False) that asks for a second click and
+    offers Continue -- it names the product when there is one, and nothing in it
+    creates or archives a workspace."""
+    from app.factory import platform_chat_flow
+
+    class _PD:
+        pass
+
+    class _State:
+        product_design = _PD()
+
+    _State.product_design.generation = generation
+    reply = platform_chat_flow.start_over_confirm_prompt(_State())
+
+    assert reply["ok"] is False
+    assert reply["confirm_required"] is True
+    assert reply["awaiting_action"] == "start_over"
+    assert reply["sse"] == "info"
+    assert reply["stream_delta"] is True
+    assert expect in reply["summary"]
+    assert "Press Start over again" in reply["summary"]  # the confirming click
+    assert "Continue instead" in reply["summary"]  # the resume offer
+
+
+@pytest.mark.parametrize(
     "value, confirmed",
     [(None, False), ("confirmed", True)],
 )
