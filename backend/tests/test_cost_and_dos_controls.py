@@ -428,8 +428,8 @@ class TestUploadCaps:
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
             files=[
-                ("files", ("notes.txt", io.BytesIO(b"hello"), "text/plain")),
-                ("files", ("more.md", io.BytesIO(b"# hi"), "text/markdown")),
+                ("files", ("notes.pdf", io.BytesIO(b"hello"), "application/octet-stream")),
+                ("files", ("more.docx", io.BytesIO(b"# hi"), "application/octet-stream")),
             ],
         )
         assert resp.status_code == 200, resp.text
@@ -445,7 +445,7 @@ class TestUploadCaps:
 
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
-            files=[("files", ("big.txt", io.BytesIO(b"x" * 200_000), "text/plain"))],
+            files=[("files", ("big.pdf", io.BytesIO(b"x" * 200_000), "application/octet-stream"))],
         )
 
         assert resp.status_code == 413, resp.text
@@ -462,8 +462,8 @@ class TestUploadCaps:
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
             files=[
-                ("files", ("small.txt", io.BytesIO(b"ok"), "text/plain")),
-                ("files", ("big.txt", io.BytesIO(b"x" * 200_000), "text/plain")),
+                ("files", ("small.pdf", io.BytesIO(b"ok"), "application/octet-stream")),
+                ("files", ("big.pdf", io.BytesIO(b"x" * 200_000), "application/octet-stream")),
             ],
         )
 
@@ -493,7 +493,7 @@ class TestUploadCaps:
         payload = b"q" * (4 * 1024 * 1024)
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
-            files=[("files", ("big.txt", io.BytesIO(payload), "text/plain"))],
+            files=[("files", ("big.pdf", io.BytesIO(payload), "application/octet-stream"))],
         )
 
         assert resp.status_code == 200, resp.text
@@ -509,7 +509,7 @@ class TestUploadCaps:
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
             files=[
-                ("files", (f"f{i}.txt", io.BytesIO(b"x"), "text/plain"))
+                ("files", (f"f{i}.pdf", io.BytesIO(b"x"), "application/octet-stream"))
                 for i in range(5)
             ],
         )
@@ -540,8 +540,8 @@ class TestUploadCaps:
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
             files=[
-                ("files", ("notes.md", io.BytesIO(b"# hi"), "application/octet-stream")),
-                ("files", ("rows.csv", io.BytesIO(b"a,b"), "application/octet-stream")),
+                ("files", ("notes.pdf", io.BytesIO(b"# hi"), "application/octet-stream")),
+                ("files", ("rows.xlsx", io.BytesIO(b"a,b"), "application/octet-stream")),
             ],
         )
         assert resp.status_code == 200, resp.text
@@ -551,7 +551,9 @@ class TestUploadCaps:
         client, session_id, files_dir, started = upload_client
         resp = client.post(
             f"/v1/sessions/{session_id}/upload",
-            files=[("files", ("thing.png", io.BytesIO(b"MZ"), "application/x-msdownload"))],
+            # An allowed extension carried by a clearly-wrong content-type: .pdf
+            # declared image/png is a mismatch (not octet-stream), so 415.
+            files=[("files", ("thing.pdf", io.BytesIO(b"MZ"), "image/png"))],
         )
         assert resp.status_code == 415, resp.text
         assert _stored(files_dir) == []
