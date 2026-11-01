@@ -522,6 +522,16 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
             async for ev in _yield_platform_result(result):
                 yield ev
             return
+        # A fresh workspace is irreversible for this run: a bare Start over
+        # (a mis-click, or read as "build"/"continue") is answered with a
+        # confirm that offers Continue instead; only the confirming second
+        # click (value == START_OVER_CONFIRM) reaches start_over().
+        if value != platform_chat_flow.START_OVER_CONFIRM:
+            result = platform_chat_flow.start_over_confirm_prompt(state)
+            _record(result)
+            async for ev in _yield_platform_result(result):
+                yield ev
+            return
         try:
             require_remaining(getattr(state, "user_id", None), "generation")
         except TrialLimitExceeded as exc:

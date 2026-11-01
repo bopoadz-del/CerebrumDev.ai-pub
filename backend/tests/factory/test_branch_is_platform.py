@@ -299,6 +299,54 @@ def test_start_over_creates_nothing_when_the_head_cannot_be_tagged(tmp_path, mon
     assert reply["ok"] is False and created == []
 
 
+@pytest.mark.parametrize(
+    "value, confirmed",
+    [(None, False), ("confirmed", True)],
+)
+def test_start_over_reaches_a_fresh_workspace_only_when_confirmed(
+    tmp_path, monkeypatch, value, confirmed
+):
+    """Two inputs, one rule: the typed START_OVER action rebuilds from scratch
+    ONLY on the confirming second click. A bare Start over (a mis-click, or read
+    as build/continue) is answered with a confirm that offers Continue -- it
+    never reaches start_over(), so nothing is archived or created."""
+    import asyncio
+
+    from app.factory import platform_chat_flow
+    from app.factory.floor_actions import FloorAction
+    from app.routers import chat as chat_router
+
+    sid = f"sess_plt_confirm_{int(confirmed)}"
+    _out, state = _failed_platform(tmp_path, sid)
+    reached: list = []
+    monkeypatch.setattr(
+        platform_chat_flow,
+        "start_over",
+        lambda st: reached.append(1) or {"ok": True, "sse": "generation", "summary": "rebuilt"},
+    )
+    # The confirming path spends a generation; the quota layer is not what this
+    # test exercises, so it is neutralised.
+    monkeypatch.setattr(chat_router, "require_remaining", lambda *a, **k: None)
+    monkeypatch.setattr(chat_router, "require_within_limit", lambda *a, **k: None)
+
+    async def _drive():
+        out: list = []
+        async for ev in chat_router._typed_action(
+            sid, state, "", FloorAction.START_OVER, value, lambda r: None
+        ):
+            out.append(str(ev))
+        return "".join(out)
+
+    text = asyncio.run(_drive())
+
+    if confirmed:
+        assert reached == [1], "the confirming click must reach start_over()"
+    else:
+        assert reached == [], "a bare Start over must not reach start_over()"
+        assert "Press Start over again" in text  # the confirm...
+        assert "Continue instead" in text  # ...offering Continue (resume)
+
+
 def _callers(path: Path, name: str) -> set:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = set()

@@ -630,6 +630,10 @@ export function Floor({
   const [newSessionError, setNewSessionError] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [controlBusy, setControlBusy] = useState(false)
+  // Start over rebuilds from scratch and cannot be undone, so the typed action
+  // is confirmed first: the button arms an inline confirm that offers Continue
+  // (resume at the failing stage) instead. Only the confirm sends start_over.
+  const [confirmStartOver, setConfirmStartOver] = useState(false)
   const cliHonesty = useFactoryCodeCliHonesty()
   const bottomRef = useRef<HTMLDivElement>(null)
   // Approve appends a pending factory bubble before the generation SSE.
@@ -1435,16 +1439,49 @@ export function Floor({
               >
                 Continue with new answers
               </button>
-              <button
-                type="button"
-                className="ghost"
-                data-testid="floor-start-over"
-                title="Build this platform again from the approved feature list on a fresh workspace. The current head is kept as an archive tag; nothing is deleted."
-                disabled={busy || accessPaused}
-                onClick={() => void sendTyped({ action: 'start_over' })}
-              >
-                Start over
-              </button>
+              {!confirmStartOver ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  data-testid="floor-start-over"
+                  title="Build this platform again from the approved feature list on a fresh workspace. The current head is kept as an archive tag; nothing is deleted."
+                  disabled={busy || accessPaused}
+                  onClick={() => setConfirmStartOver(true)}
+                >
+                  Start over
+                </button>
+              ) : (
+                <span className="start-over-confirm" data-testid="floor-start-over-confirm">
+                  <span className="muted" data-testid="floor-start-over-confirm-text">
+                    This rebuilds from scratch — the current work is archived. Continue instead?
+                  </span>
+                  <button
+                    type="button"
+                    className="ghost"
+                    data-testid="floor-start-over-continue"
+                    title="Resume this platform at its failing stage with a fresh rework budget. Nothing is rebuilt from scratch."
+                    disabled={busy || accessPaused}
+                    onClick={() => {
+                      setConfirmStartOver(false)
+                      void sendTyped({ action: 'continue' })
+                    }}
+                  >
+                    Continue instead
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="floor-start-over-confirm-button"
+                    title="Confirm: archive the current head and rebuild from scratch on a fresh workspace. This cannot be undone."
+                    disabled={busy || accessPaused}
+                    onClick={() => {
+                      setConfirmStartOver(false)
+                      void sendTyped({ action: 'start_over', value: 'confirmed' })
+                    }}
+                  >
+                    Rebuild from scratch
+                  </button>
+                </span>
+              )}
             </div>
           )}
           {downloadError && <div className="error-box">{downloadError}</div>}

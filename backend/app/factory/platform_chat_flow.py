@@ -1480,6 +1480,39 @@ def start_over(
     return reply
 
 
+#: The typed token the Floor sends on the SECOND, confirming Start-over click.
+#: A fresh workspace is irreversible for the current run (the old head is only
+#: archived), so a bare Start over -- a mis-click, or a user who read it as
+#: "build"/"continue" -- must never reach start_over(): it is answered with
+#: start_over_confirm_prompt instead, and only ``value == START_OVER_CONFIRM``
+#: lets the rebuild through. Resume (Continue) stays the sole default after a
+#: failure; Start over is the one door to a fresh workspace AND it is confirmed.
+START_OVER_CONFIRM = "confirmed"
+
+
+def start_over_confirm_prompt(state: Any) -> Dict[str, Any]:
+    """Start over asked without confirmation: offer Continue (resume) and ask
+    for an explicit second click. Nothing is created or archived here."""
+    pd = getattr(state, "product_design", None)
+    product_id = ""
+    if pd is not None:
+        product_id = str((getattr(pd, "generation", None) or {}).get("product_id") or "")
+    name = f" {product_id}" if product_id else ""
+    return {
+        "ok": False,
+        "sse": "info",
+        "awaiting_action": "start_over",
+        "confirm_required": True,
+        "summary": (
+            f"Start over rebuilds{name} from scratch on a new workspace — the "
+            "current work is archived, not deleted, and the rebuild cannot be "
+            "undone. Continue instead resumes the run at its failing stage. "
+            "Press Start over again to confirm the rebuild."
+        ),
+        "stream_delta": True,
+    }
+
+
 def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
     """The typed "Take a copy" on a FAILED build: the as-is export, whose
     MANIFEST.json names FAILED(gate, check, finding) and ``certified: false``.
