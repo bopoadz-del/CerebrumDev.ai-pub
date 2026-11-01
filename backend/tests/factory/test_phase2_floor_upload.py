@@ -127,10 +127,14 @@ def test_floor_upload_wrong_type_415(client):
     assert resp.status_code == 415, resp.text
 
 
-def test_floor_upload_rejects_a_formerly_allowed_text_type_415(client):
+@pytest.mark.parametrize(
+    "name, ctype",
+    [("rates.csv", "text/csv"), ("notes.txt", "text/plain")],
+)
+def test_floor_upload_rejects_a_formerly_allowed_text_type_415(client, name, ctype):
     # F-10b: the allowlist is PDF/DOCX/XLSX only; .csv/.txt/.md (once accepted)
     # now 415 -- a format on the allowlist must be ingestible.
-    resp = _upload(client, "sess_floor_upload", "rates.csv", b"a,b\n1,2\n", "text/csv")
+    resp = _upload(client, "sess_floor_upload", name, b"a,b\n1,2\n", ctype)
     assert resp.status_code == 415, resp.text
 
 

@@ -387,8 +387,9 @@ class TestFileType:
     def test_text_extension(self):
         assert upload_processor._file_type("/docs/notes.txt") == "text"
 
-    def test_xlsx_extension(self):
-        assert upload_processor._file_type("/docs/budget.xlsx") == "xlsx"
+    @pytest.mark.parametrize("path", ["/docs/budget.xlsx", "/tmp/Q3-Costs.xlsx"])
+    def test_xlsx_extension(self, path):
+        assert upload_processor._file_type(path) == "xlsx"
 
     def test_unknown_extension(self):
         assert upload_processor._file_type("/docs/data.xyz") == "unknown"
