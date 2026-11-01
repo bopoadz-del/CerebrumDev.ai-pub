@@ -33,22 +33,20 @@ def _session_storage_dir(session_id: str) -> Path:
 def _file_type(file_path: str) -> str:
     mime, _ = mimetypes.guess_type(file_path)
     ext = Path(file_path).suffix.lower()
+    # Allowlist is PDF/DOCX/XLSX (F-10b): no "image"/"text" types -- those
+    # branches were unreachable once .csv/.txt/.md/.json and images left the
+    # upload allowlist, and process_upload's only caller is the allowlisted
+    # route.
     if ext == ".xlsx" or mime == (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     ):
         return "xlsx"
-    if mime:
-        if mime.startswith("image/"):
-            return "image"
-        if mime == "application/pdf" or ext == ".pdf":
-            return "pdf"
-        if mime in (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/msword",
-        ) or ext in (".docx", ".doc"):
-            return "docx"
-    if ext in (".txt", ".md", ".json", ".csv"):
-        return "text"
+    if mime == "application/pdf" or ext == ".pdf":
+        return "pdf"
+    if mime == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) or ext == ".docx":
+        return "docx"
     return "unknown"
 
 
@@ -95,13 +93,6 @@ async def parse_document(file_path: str) -> str:
         if not text.strip():
             text = _parse_pdf_local(file_path)
 
-    elif doc_type == "image":
-        try:
-            result = await _execute_block("ocr", {"file_path": file_path})
-            text = _extract_text_from_result(result)
-        except Exception as exc:
-            logger.warning("OCR block failed for %s: %s", file_path, exc)
-
     elif doc_type == "docx":
         try:
             result = await _execute_block("pdf", {"file_path": file_path})
@@ -113,10 +104,6 @@ async def parse_document(file_path: str) -> str:
 
     elif doc_type == "xlsx":
         text = _parse_xlsx_local(file_path)
-
-    elif doc_type == "text":
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
 
     else:
         # Try OCR / PDF block as a last resort
