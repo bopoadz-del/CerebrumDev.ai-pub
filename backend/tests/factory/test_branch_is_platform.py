@@ -310,7 +310,11 @@ def test_start_over_confirm_prompt_offers_continue_and_creates_nothing(generatio
     """The confirm reply: a refusal (ok False) that asks for a second click and
     offers Continue -- it names the product when there is one, and nothing in it
     creates or archives a workspace."""
-    from app.factory import platform_chat_flow
+    # Import from the dotted module path: the mutation gate
+    # (scripts/mutation_gate.py tests_for) only runs this file against
+    # start_over_confirm_prompt when the file carries the token
+    # ``app.factory.platform_chat_flow``.
+    from app.factory.platform_chat_flow import start_over_confirm_prompt
 
     class _PD:
         pass
@@ -319,7 +323,7 @@ def test_start_over_confirm_prompt_offers_continue_and_creates_nothing(generatio
         product_design = _PD()
 
     _State.product_design.generation = generation
-    reply = platform_chat_flow.start_over_confirm_prompt(_State())
+    reply = start_over_confirm_prompt(_State())
 
     assert reply["ok"] is False
     assert reply["confirm_required"] is True
