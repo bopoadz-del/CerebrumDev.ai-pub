@@ -45,6 +45,7 @@ from app.core import accounts_store, rate_limit  # noqa: E402
 from app.core.request_limits import BodySizeLimitMiddleware  # noqa: E402
 from app.factory import product_architect  # noqa: E402
 from app.main import app as real_app  # noqa: E402
+import app.routers.upload  # noqa: F401,E402  dotted token so CI-M associates this file
 
 
 # --------------------------------------------------------------------------- #
@@ -558,6 +559,25 @@ class TestUploadCaps:
         assert resp.status_code == 415, resp.text
         assert _stored(files_dir) == []
         assert not started
+
+    @pytest.mark.parametrize("ext", [".pdf", ".docx", ".xlsx"])
+    def test_upload_allowed_lists_each_accepted_type(self, upload_client, ext):
+        # F-10b: the Floor "+" derives its accept-set from this endpoint; it
+        # mirrors allowed_extensions() so the picker and the 415 cannot drift.
+        client, session_id, _files_dir, _ = upload_client
+        resp = client.get(f"/v1/sessions/{session_id}/upload/allowed")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert ext in body["extensions"]
+        assert ext in body["accept"]
+        assert body["max_files"] >= 1 and body["max_file_bytes"] >= 1
+
+    @pytest.mark.parametrize("ext", [".txt", ".png"])
+    def test_upload_allowed_excludes_removed_types(self, upload_client, ext):
+        client, session_id, _files_dir, _ = upload_client
+        body = client.get(f"/v1/sessions/{session_id}/upload/allowed").json()
+        assert ext not in body["extensions"]
+        assert ext not in body["accept"]
 
 
 # --------------------------------------------------------------------------- #
