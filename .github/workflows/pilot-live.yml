@@ -68,13 +68,45 @@ jobs:
             ref=$(aws ecs describe-task-definition --task-definition "$td" \
                    --query "taskDefinition.containerDefinitions[0].secrets[?name=='SMOKE_GATE_TOKEN'].valueFrom | [0]" \
                    --output text)
-            case "$ref" in
-              arn:aws:secretsmanager:*) val=$(aws secretsmanager get-secret-value --secret-id "$ref" --query SecretString --output text 2>/dev/null || echo "") ;;
-              arn:aws:ssm:*|/*)        val=$(aws ssm get-parameter --with-decryption --name "${ref##*parameter}" --query Parameter.Value --output text 2>/dev/null || echo "") ;;
-            esac
-            if { [ -z "$val" ] || [ "$val" = "None" ]; } && [ -n "$ref" ] && [ "$ref" != "None" ]; then
-              echo "::error title=Pilot::SMOKE_GATE_TOKEN is a ref the CI role could not read -- grant it read on ${ref} (IAM)"
-              exit 1
+            if [ -n "$ref" ] && [ "$ref" != "None" ]; then
+              case "$ref" in
+                arn:aws:secretsmanager:*)
+                  # ECS valueFrom for a JSON-keyed secret is
+                  #   arn:...:secret:NAME-xxxxx:JSONKEY:VERSIONSTAGE:VERSIONID
+                  # get-secret-value takes the base secret ARN (colon-fields 1-7);
+                  # the JSON key (field 8), when present, is pulled from SecretString.
+                  base=$(printf '%s' "$ref" | cut -d: -f1-7)
+                  key=$(printf '%s' "$ref" | cut -d: -f8)
+                  err=$(aws secretsmanager get-secret-value --secret-id "$base" \
+                          --query SecretString --output text 2>&1 >/tmp/sv) || true
+                  if [ -s /tmp/sv ]; then
+                    if [ -n "$key" ]; then
+                      val=$(jq -r --arg k "$key" '.[$k] // empty' /tmp/sv 2>/dev/null) || val=""
+                    fi
+                    if [ -z "$val" ]; then val=$(cat /tmp/sv); fi
+                  fi
+                  rm -f /tmp/sv
+                  if [ -z "$val" ] || [ "$val" = "None" ]; then
+                    echo "::error title=Pilot::could not read SMOKE_GATE_TOKEN from ${base} (key=${key:-<whole>}): ${err:-empty} -- if AccessDenied, grant the CI role secretsmanager:GetSecretValue on that secret"
+                    exit 1
+                  fi
+                  ;;
+                arn:aws:ssm:*|/*)
+                  name="${ref##*:parameter}"; [ -n "$name" ] || name="$ref"
+                  err=$(aws ssm get-parameter --with-decryption --name "$name" \
+                          --query Parameter.Value --output text 2>&1 >/tmp/sv) || true
+                  if [ -s /tmp/sv ]; then val=$(cat /tmp/sv); fi
+                  rm -f /tmp/sv
+                  if [ -z "$val" ] || [ "$val" = "None" ]; then
+                    echo "::error title=Pilot::could not read SMOKE_GATE_TOKEN from SSM ${name}: ${err:-empty} -- if AccessDenied, grant the CI role ssm:GetParameter"
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "::error title=Pilot::unrecognized SMOKE_GATE_TOKEN secret ref: ${ref}"
+                  exit 1
+                  ;;
+              esac
             fi
           fi
           if [ -z "$val" ] || [ "$val" = "None" ]; then
