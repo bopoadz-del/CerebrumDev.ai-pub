@@ -10,9 +10,11 @@ is recorded failed and the new request proceeds.
 
 Full dotted import so the mutation gate selects this module.
 """
+import asyncio
 import io
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app.routers.upload  # noqa: F401  dotted token for CI-M
@@ -82,3 +84,26 @@ def test_processing_marker_blocks_only_while_a_task_is_live(
         assert resp.json()["detail"] == "Upload already in progress"
     else:
         assert resp.json()["files_received"] == 1
+
+
+@pytest.mark.parametrize("empty", [[], None])
+def test_empty_upload_is_rejected_before_any_save(client, empty):
+    """An upload carrying no files is refused with 400 at the guard
+    (``if not files: raise HTTPException(400, "No files provided")``).
+
+    That guard is the SHALLOWEST ``raise`` in ``upload_files``, so it is the
+    one the mutation gate's ``swallow_exception`` turns into ``pass`` -- the
+    survivor the valid-file tests above never reach. It is exercised by a
+    direct call rather than over HTTP because FastAPI's ``File(...)`` rejects a
+    fileless multipart with a 422 of its own before the handler runs, leaving
+    the guard unreachable through the TestClient. A fresh session's upload
+    status is not "processing", so control falls straight through to the guard.
+    Two empty forms (an empty list and a missing value) are both refused.
+    """
+    from app.core.session_store import get_session
+
+    state = get_session(_SESSION)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(upload_router.upload_files(files=empty, state=state))
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "No files provided"
