@@ -83,6 +83,14 @@ FRAMEWORK_EXTRAS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
         "outbound HTTP from the runtime (not the test client, which is dev-only)",
         (r"\bhttpx\.(AsyncClient|Client)\b",),
     ),
+    (
+        "fastembed>=0.9",
+        "local product retrieval embeddings (BAAI/bge-small-en-v1.5 via the "
+        "kernel's embeddings_local); onnxruntime comes with it. Without it a "
+        "vendored-kernel product cannot embed its own corpus and every "
+        "project_rag query comes back empty.",
+        (r"\bfrom\s+fastembed\b", r"\bimport\s+fastembed\b", r"\bTextEmbedding\b", r"\bembeddings_local\b"),
+    ),
 )
 
 #: where product source lives. ``tests`` is included on purpose: the release

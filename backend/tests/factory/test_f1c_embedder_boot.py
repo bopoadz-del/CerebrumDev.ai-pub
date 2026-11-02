@@ -22,6 +22,7 @@ import app.core.llm_embeddings as llm_embeddings
 from app.cerebrum_product_kernel.ingestion import engine_install, retrieval_index
 from app.core.rag_embedding_providers import (
     LLM_SEMANTIC_V1,
+    LOCAL_BGE_SMALL_V1,
     RagEmbeddingProvider,
     get_provider,
     register_provider,
@@ -193,16 +194,20 @@ def test_engine_installed_via_app_lifespan(tmp_path, monkeypatch):
         retrieval_index.set_engine_provider(None)
 
 
-# ── M8: default provider = LLM_SEMANTIC_V1 when the env is unset ────────────────
+# ── M8: default provider = LOCAL_BGE_SMALL_V1 when the env is unset ─────────────
+# ORDERS_02NOV_2320Z: the default is the LOCAL model (bge-small-en-v1.5 via
+# fastembed), NOT the LLM /embeddings egress — DeepSeek, the chat provider, has
+# no /embeddings endpoint (404), which stalled the first live pilot build.
 
 
-def test_default_provider_is_llm_semantic_when_env_unset(monkeypatch):
-    """A mutant defaulting to 'none' or the hash provider reddens this."""
+def test_default_provider_is_local_bge_when_env_unset(monkeypatch):
+    """A mutant defaulting to the LLM egress, 'none', or the hash provider reddens
+    this. The default must be the local semantic model."""
     monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)
-    assert engine_install._default_provider_id() == LLM_SEMANTIC_V1
+    assert engine_install._default_provider_id() == LOCAL_BGE_SMALL_V1
     embedder = engine_install.resolve_embedder()
     assert embedder is not None
-    assert embedder._provider.provider_id == LLM_SEMANTIC_V1
+    assert embedder._provider.provider_id == LOCAL_BGE_SMALL_V1
     assert embedder.semantic is True
 
 
