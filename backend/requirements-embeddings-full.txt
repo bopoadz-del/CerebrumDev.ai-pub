@@ -8,4 +8,4 @@
 sentence-transformers>=6.1.0
 
 # High-quality local PDF -> Markdown extraction (pulls torch + ~1.35 GB weights).
-marker-pdf>=2.0.0
+marker-pdf>=2.1.0
