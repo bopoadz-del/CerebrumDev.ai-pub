@@ -21,9 +21,11 @@ Each stage prints one line PASS/FAIL + evidence; any FAIL exits non-zero. A
 PILOT_RESULT.md is written (job artifact + GitHub step summary).
 
 Usage: python3 scripts/pilot_runner.py [base_url]
-Live tests run only through repo-secret-backed GitHub workflows (pilot-live.yml);
-no lane holds live tokens. With no verified-principal secret, the run SKIPS the
-gated stages (PASS, annotated) exactly like post_deploy_smoke.
+Live tests run only through the repo-secret-backed GitHub workflow (pilot-live.yml);
+no lane holds live tokens -- the workflow resolves SMOKE_GATE_TOKEN from the live
+ECS task definition at run time (masked) and exports it to the env. STRICT
+(ORDERS_1808Z): with no verified principal the run FAILS (exit 1), never a
+skip-pass -- a pilot that cannot run its stages must go RED, not green.
 """
 from __future__ import annotations
 
@@ -210,28 +212,47 @@ def record(stage: str, ok: bool, evidence: str) -> None:
     RESULTS.append((stage, ok, evidence))
 
 
+def principal_required_result(has_creds: bool) -> Check:
+    """STRICT (ORDERS_1808Z): the pilot REQUIRES a verified principal.
+
+    A missing principal is a FAIL (the pilot cannot run its five stages), never
+    a skip-pass. Returns (ok, evidence).
+    """
+    if has_creds:
+        return True, "verified principal present"
+    return False, (
+        "no verified-principal secret (SMOKE_GATE_TOKEN, or SMOKE_EMAIL+SMOKE_PASSWORD) "
+        "-- pilot is strict and cannot run"
+    )
+
+
 def run_pilot(base: str) -> int:
     smoke.BASE = base
     print(f"pilot run against {base}\n")
     if not smoke.wait_for_ready():
         record("surface ready", False, "health/ready/version did not come up")
-        return finish(skipped=False)
+        return finish()
 
-    if not smoke.has_gated_credentials():
-        print("PILOT SKIP: no verified-principal secret (SMOKE_GATE_TOKEN or SMOKE_EMAIL+PASSWORD)")
-        print("::notice title=Pilot::gated stages skipped -- no live principal secret")
-        return finish(skipped=True)
+    ok0, ev0 = principal_required_result(smoke.has_gated_credentials())
+    record("0 PRINCIPAL", ok0, ev0)
+    if not ok0:
+        # STRICT (ORDERS_1808Z): a missing verified principal is a FAIL, never a
+        # skip-pass. The pilot's whole job is to run the five stages, so "could
+        # not run" goes RED, not green -- unlike post_deploy_smoke, which
+        # skip-passes so an absent secret never fails the deploy pipeline.
+        print("::error title=Pilot::no verified-principal secret -- pilot cannot run (strict)")
+        return finish()
 
     token, _b = smoke.verified_tokens()
     if not token:
         record("login", False, "verified-principal login failed")
-        return finish(skipped=False)
+        return finish()
 
     s, r = smoke.req("POST", "/v1/sessions/", {}, token=token)
     sid = (r or {}).get("session_id")
     record("session create", s in (200, 201) and bool(sid), f"http={s}")
     if not sid:
-        return finish(skipped=False)
+        return finish()
 
     # Stage 1 -- UPLOAD + INDEX (before the build)
     paths = [FIXTURES / DOC_PDF, FIXTURES / DOC_XLSX]
@@ -277,23 +298,21 @@ def run_pilot(base: str) -> int:
     run_ok = s5a in (200, 201) and bool(first.get("ok"))
     record("5 PRODUCT RUN + RESUME", run_ok and ok5, f"run_http={s5a} ok={first.get('ok')} {ev5}")
 
-    return finish(skipped=False, sid=sid, base=base)
+    return finish()
 
 
-def render_result_md(skipped: bool) -> str:
+def render_result_md() -> str:
     lines = ["# PILOT_RESULT -- Harbourline Civil Works", ""]
-    if skipped:
-        lines.append("SKIPPED: no verified-principal secret; gated stages not run.")
-        return "\n".join(lines) + "\n"
     for stage, ok, ev in RESULTS:
         lines.append(f"- **{'PASS' if ok else 'FAIL'}** {stage} — {ev}")
     failed = [s for s, ok, _ in RESULTS if not ok]
-    lines += ["", f"**{'FAIL' if failed else 'PASS'}**: {len(RESULTS) - len(failed)}/{len(RESULTS)} stages green"]
+    verdict = "FAIL" if (failed or not RESULTS) else "PASS"
+    lines += ["", f"**{verdict}**: {len(RESULTS) - len(failed)}/{len(RESULTS)} stages green"]
     return "\n".join(lines) + "\n"
 
 
-def finish(skipped: bool, sid: str = "", base: str = "") -> int:
-    md = render_result_md(skipped)
+def finish() -> int:
+    md = render_result_md()
     try:
         (REPO_ROOT / "PILOT_RESULT.md").write_text(md, encoding="utf-8")
     except OSError:
@@ -306,9 +325,8 @@ def finish(skipped: bool, sid: str = "", base: str = "") -> int:
         except OSError:
             pass
     print("\n" + md)
-    if skipped:
-        return 0
-    return 0 if all(ok for _s, ok, _e in RESULTS) and RESULTS else 1
+    # STRICT: green only when there is >=1 stage and every stage passed.
+    return 0 if RESULTS and all(ok for _s, ok, _e in RESULTS) else 1
 
 
 def main() -> None:

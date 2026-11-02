@@ -1,17 +1,15 @@
 name: Pilot (live)
 
-# One full Harbourline Civil Works pilot build against the LIVE deployment,
-# per ORDERS_02NOV_1420Z + DECISION_FACTORY_pilot_run_plan. It logs in with the
-# same repo-secret-backed resolver post-deploy-smoke uses (SMOKE_GATE_TOKEN, else
-# SMOKE_EMAIL+SMOKE_PASSWORD) -- no lane holds a live token, no value is printed.
-# Uploads the two synthetic fixtures before the build, then drives the five
-# stages with per-stage PASS/FAIL checks (upload+index, F-10c-a brief citations,
-# build->STORE, F-10c-b corpus seed, product run + resume-not-restart).
+# One full Harbourline Civil Works pilot build against the LIVE deployment, per
+# ORDERS_02NOV_1420Z/1808Z + DECISION_FACTORY_pilot_run_plan. It resolves the
+# verified-principal token at RUN TIME from the live ECS task definition (where
+# the value already lives), masks it, and exports it to the env for pilot_runner
+# -- no lane holds a live token, nobody pastes anything, the value never reaches
+# logs, artifacts or the bus. STRICT: a missing principal FAILS (exit 1), never a
+# skip-pass. Uploads the two synthetic fixtures before the build, then drives the
+# five stages with per-stage PASS/FAIL checks.
 #
-# Fires on every successful deploy-aws, and on manual dispatch. Without a
-# verified-principal secret in the repo the gated stages are skipped (PASS,
-# annotated) exactly as post_deploy_smoke does -- a missing secret must not fail
-# the pipeline.
+# Fires on every successful deploy-aws, and on manual dispatch.
 
 on:
   workflow_run:
@@ -31,6 +29,11 @@ concurrency:
   group: pilot-live
   cancel-in-progress: false
 
+env:
+  AWS_REGION: us-west-2
+  ECS_CLUSTER: cerebrum
+  ECS_SERVICE: cerebrumdev-backend
+
 jobs:
   pilot:
     name: Pilot build on live
@@ -42,12 +45,53 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Resolve SMOKE_GATE_TOKEN from the live task definition (same cluster /
+      # service deploy-aws targets). The value is masked before anything else and
+      # exported to the env; it is never echoed raw. A plain `environment` value,
+      # or a secretsmanager / ssm `secrets` ref, are both handled. If the token is
+      # absent -> fail loud (owner configures it on the live service); if the CI
+      # role cannot read the ref -> fail loud naming the ARN (an IAM read grant).
+      - name: Resolve SMOKE_GATE_TOKEN from the live task definition
+        run: |
+          td=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+                 --query 'services[0].taskDefinition' --output text)
+          val=$(aws ecs describe-task-definition --task-definition "$td" \
+                 --query "taskDefinition.containerDefinitions[0].environment[?name=='SMOKE_GATE_TOKEN'].value | [0]" \
+                 --output text)
+          if [ -z "$val" ] || [ "$val" = "None" ]; then
+            ref=$(aws ecs describe-task-definition --task-definition "$td" \
+                   --query "taskDefinition.containerDefinitions[0].secrets[?name=='SMOKE_GATE_TOKEN'].valueFrom | [0]" \
+                   --output text)
+            case "$ref" in
+              arn:aws:secretsmanager:*) val=$(aws secretsmanager get-secret-value --secret-id "$ref" --query SecretString --output text 2>/dev/null || echo "") ;;
+              arn:aws:ssm:*|/*)        val=$(aws ssm get-parameter --with-decryption --name "${ref##*parameter}" --query Parameter.Value --output text 2>/dev/null || echo "") ;;
+            esac
+            if { [ -z "$val" ] || [ "$val" = "None" ]; } && [ -n "$ref" ] && [ "$ref" != "None" ]; then
+              echo "::error title=Pilot::SMOKE_GATE_TOKEN is a ref the CI role could not read -- grant it read on ${ref} (IAM)"
+              exit 1
+            fi
+          fi
+          if [ -z "$val" ] || [ "$val" = "None" ]; then
+            echo "::error title=Pilot::SMOKE_GATE_TOKEN is not configured on the live ${ECS_SERVICE} task definition -- configure it on the live Factory service"
+            exit 1
+          fi
+          echo "::add-mask::$val"
+          echo "SMOKE_GATE_TOKEN=$val" >> "$GITHUB_ENV"
+          echo "resolved SMOKE_GATE_TOKEN from the live task definition (masked, exported to env)"
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - name: Run the live pilot
+      - name: Run the live pilot (strict)
         env:
-          SMOKE_GATE_TOKEN: ${{ secrets.SMOKE_GATE_TOKEN }}
+          # SMOKE_GATE_TOKEN comes from the resolve step via $GITHUB_ENV (do not
+          # re-map it from a repo secret here -- that would override it with "").
           SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
           SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
           SMOKE_READY_WAIT_S: "1200"

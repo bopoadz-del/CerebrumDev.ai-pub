@@ -82,6 +82,18 @@ def test_corpus_seed_ok(upload, ledger, expected):
 
 
 @pytest.mark.parametrize(
+    "has_creds, expected",
+    [
+        (True, True),    # principal present -> OK
+        (False, False),  # STRICT: missing principal -> FAIL, never a skip-pass
+    ],
+)
+def test_principal_required_result_is_strict(has_creds, expected):
+    ok, _ev = pilot.principal_required_result(has_creds)
+    assert ok is expected
+
+
+@pytest.mark.parametrize(
     "first, second, expected",
     [
         ({"generation": {"output_dir": "/ws/p1"}}, {"generation": {"output_dir": "/ws/p1"}, "already_complete": True}, True),
