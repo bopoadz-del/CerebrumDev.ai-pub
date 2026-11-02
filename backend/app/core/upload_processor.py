@@ -33,18 +33,20 @@ def _session_storage_dir(session_id: str) -> Path:
 def _file_type(file_path: str) -> str:
     mime, _ = mimetypes.guess_type(file_path)
     ext = Path(file_path).suffix.lower()
-    if mime:
-        if mime.startswith("image/"):
-            return "image"
-        if mime == "application/pdf" or ext == ".pdf":
-            return "pdf"
-        if mime in (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/msword",
-        ) or ext in (".docx", ".doc"):
-            return "docx"
-    if ext in (".txt", ".md", ".json", ".csv"):
-        return "text"
+    # Allowlist is PDF/DOCX/XLSX (F-10b): no "image"/"text" types -- those
+    # branches were unreachable once .csv/.txt/.md/.json and images left the
+    # upload allowlist, and process_upload's only caller is the allowlisted
+    # route.
+    if ext == ".xlsx" or mime == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ):
+        return "xlsx"
+    if mime == "application/pdf" or ext == ".pdf":
+        return "pdf"
+    if mime == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) or ext == ".docx":
+        return "docx"
     return "unknown"
 
 
@@ -91,13 +93,6 @@ async def parse_document(file_path: str) -> str:
         if not text.strip():
             text = _parse_pdf_local(file_path)
 
-    elif doc_type == "image":
-        try:
-            result = await _execute_block("ocr", {"file_path": file_path})
-            text = _extract_text_from_result(result)
-        except Exception as exc:
-            logger.warning("OCR block failed for %s: %s", file_path, exc)
-
     elif doc_type == "docx":
         try:
             result = await _execute_block("pdf", {"file_path": file_path})
@@ -107,9 +102,8 @@ async def parse_document(file_path: str) -> str:
         if not text.strip():
             text = _parse_docx_local(file_path)
 
-    elif doc_type == "text":
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
+    elif doc_type == "xlsx":
+        text = _parse_xlsx_local(file_path)
 
     else:
         # Try OCR / PDF block as a last resort
@@ -183,6 +177,36 @@ def _parse_docx_local(file_path: str) -> str:
         return "\n".join(p.text for p in doc.paragraphs)
     except Exception as exc:
         logger.error("Local DOCX parse failed for %s: %s", file_path, exc)
+        return ""
+
+
+def _parse_xlsx_local(file_path: str) -> str:
+    """Extract an .xlsx workbook to text (F-10b): each sheet becomes a block
+    headed by its name, one line per non-empty row with cells tab-joined.
+    Formulas are read by their last-computed value (``data_only``); images and
+    charts are not read. Returns "" on any parse error, like the other helpers.
+    """
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        try:
+            parts: List[str] = []
+            for sheet in wb.worksheets:
+                rows: List[str] = []
+                for row in sheet.iter_rows(values_only=True):
+                    cells = [
+                        str(c).strip() for c in row if c is not None and str(c).strip()
+                    ]
+                    if cells:
+                        rows.append("\t".join(cells))
+                if rows:
+                    parts.append(f"# {sheet.title}\n" + "\n".join(rows))
+            return "\n\n".join(parts)
+        finally:
+            wb.close()
+    except Exception as exc:
+        logger.error("Local XLSX parse failed for %s: %s", file_path, exc)
         return ""
 
 

@@ -40,49 +40,33 @@ MAX_UPLOAD_FILE_BYTES_ENV = "MAX_UPLOAD_FILE_BYTES"
 MAX_UPLOAD_FILE_BYTES_DEFAULT = 20 * 1024 * 1024  # 20 MiB
 ALLOWED_EXTENSIONS_ENV = "ALLOWED_UPLOAD_EXTENSIONS"
 
-# Scoped to what core.upload_processor can actually consume (pdf / docx / text
-# / image), plus the plain-text formats it reads directly. Anything else is a
-# file we would store but never use.
+# PDF / DOCX / XLSX only (owner Oct 4 / Oct 28, restated ORDERS_01NOV_2033Z/
+# 2052Z): every listed format is consumable by core.upload_processor; photos,
+# .doc/.txt/.md/.csv/.json and everything else are refused 415 (a format on the
+# allowlist must be ingestible, and only these three are).
 DEFAULT_ALLOWED_EXTENSIONS = {
     ".pdf",
-    ".doc",
     ".docx",
-    ".txt",
-    ".md",
-    ".csv",
-    ".json",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".tif",
-    ".tiff",
+    ".xlsx",
 }
 
 # Declared content types that may legitimately accompany each extension.
-# OOXML arrives as a zip and legacy Office as an OLE compound, so the mapping
-# is deliberately loose; the extension allowlist is the primary control and
-# this only catches an obvious mismatch (an .exe renamed and declared as such).
+# OOXML (.docx/.xlsx) arrives as a zip, so the mapping is deliberately loose;
+# the extension allowlist is the primary control and this only catches an
+# obvious mismatch (an .exe renamed and declared as such).
 _EXT_CONTENT_TYPES = {
     ".pdf": ("application/pdf", "application/octet-stream"),
-    ".doc": ("application/msword", "application/x-ole", "application/octet-stream"),
     ".docx": (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/zip",
         "application/octet-stream",
     ),
-    ".txt": ("text/",),
-    ".md": ("text/",),
-    ".csv": ("text/", "application/csv", "application/vnd.ms-excel"),
-    ".json": ("application/json", "text/"),
-    ".png": ("image/png",),
-    ".jpg": ("image/jpeg",),
-    ".jpeg": ("image/jpeg",),
-    ".gif": ("image/gif",),
-    ".webp": ("image/webp",),
-    ".tif": ("image/tiff",),
-    ".tiff": ("image/tiff",),
+    ".xlsx": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/zip",
+        "application/vnd.ms-excel",
+        "application/octet-stream",
+    ),
 }
 
 _CHUNK_BYTES = 1024 * 1024

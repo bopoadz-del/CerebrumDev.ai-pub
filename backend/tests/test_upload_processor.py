@@ -4,6 +4,7 @@ import tempfile
 
 import pytest
 
+import app.core.upload_processor  # noqa: F401  dotted token so CI-M associates this file
 from app.core import upload_processor
 from app.core.session_store import create_session, get_session
 
@@ -14,6 +15,22 @@ def _chroma_isolation(monkeypatch, tmp_path):
     import app.core.chroma_store as chroma_store
     monkeypatch.setattr(chroma_store, "CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
     chroma_store._chroma_client = None
+
+
+def _write_doc(path, text):
+    """Write ``text`` (paragraphs separated by blank lines) as a one-sheet .xlsx,
+    one row per paragraph. The upload allowlist is PDF/DOCX/XLSX (F-10b), so the
+    process_upload samples are .xlsx (parsed by _parse_xlsx_local) rather than
+    the removed .txt path. Chunking is unaffected: chunk_text splits on newlines
+    and the extractor emits one line per row."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Doc"
+    for para in [p.strip() for p in text.split("\n\n") if p.strip()]:
+        ws.append([para])
+    wb.save(str(path))
 
 
 class TestEmbedChunks:
@@ -141,8 +158,8 @@ class TestProcessUpload:
         monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
 
         create_session("sess_embed_ok", "u1")
-        txt = tmp_path / "doc.txt"
-        txt.write_text("Line one.\n\nLine two.\n\nLine three.", encoding="utf-8")
+        txt = tmp_path / "doc.xlsx"
+        _write_doc(txt, "Line one.\n\nLine two.\n\nLine three.")
         await upload_processor.process_upload("sess_embed_ok", [str(txt)])
 
         state = get_session("sess_embed_ok")
@@ -165,11 +182,11 @@ class TestProcessUpload:
         monkeypatch.setattr(upload_processor, "_execute_block", _failing_zvec)
 
         create_session("sess_onnx_fallback", "u1")
-        txt = tmp_path / "doc.txt"
-        txt.write_text(
+        txt = tmp_path / "doc.xlsx"
+        _write_doc(
+            txt,
             "The quick brown fox jumps over the lazy dog.\n\n"
             "A second paragraph provides more content to chunk.",
-            encoding="utf-8",
         )
         await upload_processor.process_upload("sess_onnx_fallback", [str(txt)])
 
@@ -195,7 +212,7 @@ class TestProcessUpload:
 
         monkeypatch.setattr(upload_processor, "_execute_block", _failing_zvec)
 
-        txt = tmp_path / "doc.txt"
+        txt = tmp_path / "doc.xlsx"
         long_paragraphs = [
             f"Paragraph {i} has a substantial amount of content so that the chunking "
             "logic, which targets roughly eight hundred characters per chunk, is forced "
@@ -203,7 +220,7 @@ class TestProcessUpload:
             "single chunk. We need at least three chunks for the stale-tail assertion."
             for i in range(5)
         ]
-        txt.write_text("\n\n".join(long_paragraphs), encoding="utf-8")
+        _write_doc(txt, "\n\n".join(long_paragraphs))
 
         create_session("sess_onnx_reupload", "u1")
         await upload_processor.process_upload("sess_onnx_reupload", [str(txt)])
@@ -212,7 +229,7 @@ class TestProcessUpload:
         assert first_count == len(first_state.chunks)
         assert first_state.embedding_meta["provider"] == "fastembed"
 
-        txt.write_text("Only one paragraph remains.", encoding="utf-8")
+        _write_doc(txt, "Only one paragraph remains.")
         await upload_processor.process_upload("sess_onnx_reupload", [str(txt)])
         second_state = get_session("sess_onnx_reupload")
         second_count = chroma_store.count_chunks("sess_onnx_reupload")
@@ -227,8 +244,8 @@ class TestProcessUpload:
         monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
 
         create_session("sess_embed_fail", "u1")
-        txt = tmp_path / "doc.txt"
-        txt.write_text("Line one.\n\nLine two.", encoding="utf-8")
+        txt = tmp_path / "doc.xlsx"
+        _write_doc(txt, "Line one.\n\nLine two.")
         await upload_processor.process_upload("sess_embed_fail", [str(txt)])
 
         state = get_session("sess_embed_fail")
@@ -249,8 +266,8 @@ class TestProcessUpload:
         monkeypatch.setattr(upload_processor, "embed_chunks", _fail_embed)
 
         create_session("sess_reupload", "u1")
-        txt = tmp_path / "doc.txt"
-        txt.write_text("First upload.\n\nSecond paragraph.", encoding="utf-8")
+        txt = tmp_path / "doc.xlsx"
+        _write_doc(txt, "First upload.\n\nSecond paragraph.")
         await upload_processor.process_upload("sess_reupload", [str(txt)])
 
         degraded = get_session("sess_reupload")
@@ -290,10 +307,10 @@ class TestProcessUpload:
 
         monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
 
-        file_a = tmp_path / "alpha.txt"
-        file_a.write_text("Alpha one.\n\nAlpha two.\n\nAlpha three.", encoding="utf-8")
-        file_b = tmp_path / "beta.txt"
-        file_b.write_text("Beta one.\n\nBeta two.", encoding="utf-8")
+        file_a = tmp_path / "alpha.xlsx"
+        _write_doc(file_a, "Alpha one.\n\nAlpha two.\n\nAlpha three.")
+        file_b = tmp_path / "beta.xlsx"
+        _write_doc(file_b, "Beta one.\n\nBeta two.")
 
         create_session("sess_two_files", "u1")
         await upload_processor.process_upload("sess_two_files", [str(file_a), str(file_b)])
@@ -304,7 +321,7 @@ class TestProcessUpload:
 
         reloaded = chroma_store.load_session_upload("sess_two_files")
         assert reloaded is not None
-        assert sorted(reloaded["source_files"]) == ["alpha.txt", "beta.txt"]
+        assert sorted(reloaded["source_files"]) == ["alpha.xlsx", "beta.xlsx"]
 
     @pytest.mark.asyncio
     async def test_reupload_same_file_with_fewer_chunks_removes_stale_tail(self, monkeypatch, tmp_path):
@@ -320,7 +337,7 @@ class TestProcessUpload:
 
         monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
 
-        txt = tmp_path / "doc.txt"
+        txt = tmp_path / "doc.xlsx"
         # Make each paragraph long enough that chunk_text splits into >2 chunks.
         long_paragraphs = [
             f"Paragraph {i} has a substantial amount of content so that the chunking "
@@ -329,7 +346,7 @@ class TestProcessUpload:
             "single chunk. We need at least three chunks for the stale-tail assertion."
             for i in range(10)
         ]
-        txt.write_text("\n\n".join(long_paragraphs), encoding="utf-8")
+        _write_doc(txt, "\n\n".join(long_paragraphs))
 
         create_session("sess_stale_tail", "u1")
         await upload_processor.process_upload("sess_stale_tail", [str(txt)])
@@ -339,7 +356,7 @@ class TestProcessUpload:
         assert first_count > 2
 
         # Truncate the same file to fewer paragraphs and re-upload.
-        txt.write_text("Only one paragraph remains.\n\nSecond final paragraph.", encoding="utf-8")
+        _write_doc(txt, "Only one paragraph remains.\n\nSecond final paragraph.")
         await upload_processor.process_upload("sess_stale_tail", [str(txt)])
 
         second_state = get_session("sess_stale_tail")
@@ -380,14 +397,65 @@ class TestFileType:
     def test_docx_extension(self):
         assert upload_processor._file_type("/docs/manual.docx") == "docx"
 
-    def test_image_extension(self):
-        assert upload_processor._file_type("/docs/scan.png") == "image"
+    @pytest.mark.parametrize("path", ["/docs/scan.png", "/docs/notes.txt"])
+    def test_disallowed_types_are_unknown(self, path):
+        # F-10b: images and .txt/.md/.csv left the allowlist, so _file_type no
+        # longer classifies them (the "image"/"text" branches are gone).
+        assert upload_processor._file_type(path) == "unknown"
 
-    def test_text_extension(self):
-        assert upload_processor._file_type("/docs/notes.txt") == "text"
+    @pytest.mark.parametrize("path", ["/docs/budget.xlsx", "/tmp/Q3-Costs.xlsx"])
+    def test_xlsx_extension(self, path):
+        assert upload_processor._file_type(path) == "xlsx"
 
     def test_unknown_extension(self):
         assert upload_processor._file_type("/docs/data.xyz") == "unknown"
+
+
+class TestParseXlsx:
+    """F-10b: .xlsx extraction -- each sheet headed by its name, rows to text."""
+
+    @staticmethod
+    def _make_xlsx(path, sheets):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for name, rows in sheets.items():
+            ws = wb.create_sheet(title=name)
+            for row in rows:
+                ws.append(row)
+        wb.save(path)
+
+    @pytest.mark.parametrize(
+        "sheets, must_contain",
+        [
+            (
+                {"Budget": [["Item", "Cost"], ["Crane", 1200]]},
+                ["# Budget", "Item", "Cost", "Crane", "1200"],
+            ),
+            (
+                {"Schedule": [["Task", "Days"], ["Pour", 5]], "Rates": [["Rate", 0.1]]},
+                ["# Schedule", "Task", "Pour", "5", "# Rates", "Rate", "0.1"],
+            ),
+        ],
+    )
+    def test_parse_xlsx_local_two_workbooks(self, tmp_path, sheets, must_contain):
+        from app.core.upload_processor import _parse_xlsx_local
+
+        p = tmp_path / "book.xlsx"
+        self._make_xlsx(str(p), sheets)
+        text = _parse_xlsx_local(str(p))
+        for token in must_contain:
+            assert token in text, (token, text)
+
+    @pytest.mark.asyncio
+    async def test_parse_document_routes_an_xlsx(self, tmp_path):
+        from app.core.upload_processor import parse_document
+
+        p = tmp_path / "data.xlsx"
+        self._make_xlsx(str(p), {"S1": [["alpha", "beta"]]})
+        text = await parse_document(str(p))
+        assert "# S1" in text and "alpha" in text and "beta" in text
 
 
 class TestChunkText:
@@ -411,19 +479,9 @@ class TestChunkText:
 
 
 class TestParseDocument:
-    @pytest.mark.asyncio
-    async def test_parse_text_file(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        ) as f:
-            f.write("Hello from CerebrumDev.ai")
-            path = f.name
-        try:
-            text = await upload_processor.parse_document(path)
-            assert "Hello from CerebrumDev.ai" in text
-        finally:
-            os.unlink(path)
-
+    # The .txt parse test was removed with the "text" branch (F-10b): the upload
+    # allowlist is PDF/DOCX/XLSX; xlsx routing is covered by
+    # TestParseXlsx::test_parse_document_routes_an_xlsx.
     @pytest.mark.asyncio
     async def test_pdf_prefers_marker_block_then_pdf_block(self, monkeypatch):
         """The PDF parser should try the marker block, then the pdf block, then fallbacks."""
