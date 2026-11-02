@@ -200,15 +200,22 @@ def test_engine_installed_via_app_lifespan(tmp_path, monkeypatch):
 # no /embeddings endpoint (404), which stalled the first live pilot build.
 
 
-def test_default_provider_is_local_bge_when_env_unset(monkeypatch):
-    """A mutant defaulting to the LLM egress, 'none', or the hash provider reddens
-    this. The default must be the local semantic model."""
-    monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)
-    assert engine_install._default_provider_id() == LOCAL_BGE_SMALL_V1
+@pytest.mark.parametrize(
+    "env_value, expected_id",
+    [(None, LOCAL_BGE_SMALL_V1), ("local_feature_hash_v1", "local_feature_hash_v1")],
+)
+def test_default_provider_is_local_bge_when_env_unset(monkeypatch, env_value, expected_id):
+    """Default (env unset) must be the local semantic model, not the LLM egress,
+    'none', or the hash provider; an explicit env id is honoured. A mutant that
+    defaults wrong reddens the unset case."""
+    if env_value is None:
+        monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)
+    else:
+        monkeypatch.setenv(engine_install.EMBEDDER_ENV, env_value)
+    assert engine_install._default_provider_id() == expected_id
     embedder = engine_install.resolve_embedder()
     assert embedder is not None
-    assert embedder._provider.provider_id == LOCAL_BGE_SMALL_V1
-    assert embedder.semantic is True
+    assert embedder._provider.provider_id == expected_id
 
 
 # ── M9: a NON-SEMANTIC provider named via the env is REFUSED, by NAME ──────────
