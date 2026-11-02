@@ -5,22 +5,21 @@ name: Dependabot auto-merge
 # ci.yml has passed. A MAJOR bump is a behaviour change wearing a version number
 # -- it is never auto-armed and always needs a human review + merge.
 #
-# FAIL-CLOSED (added 2026-11-02, ORDERS_1024Z/1040Z): on 2026-11-02 a grouped
-# patch/minor bump auto-merged RED to master. Root cause: `--auto` waits for the
-# *required* checks, but master had NO branch protection, so there were no
-# required checks to wait on and GitHub merged immediately -- past a red suite
-# (requirements.txt bumped without requirements.lock -> lockfile-consistency +
-# pin-guard failed). Arming now requires BOTH guards below to pass; otherwise a
-# human reviews and merges. This never loosens the merge -- it only refuses to
-# arm when the merge would not actually be gated.
+# FAIL-CLOSED (2026-11-02, ORDERS_1024Z/1040Z/1131Z): a grouped patch/minor bump
+# auto-merged RED to master. Root cause: `--auto` waits for the *required* checks,
+# but master had NO branch protection, so there were none to wait on and GitHub
+# merged immediately -- past a red suite. The guard below refuses to arm unless the
+# base branch actually has required status checks for --auto to gate on. A lock
+# twin is already enforced by the required "Lockfile consistency" check, so a
+# second workflow-level lock guard here would be redundant and is intentionally
+# NOT added -- it would also make this pull_request_target job inspect PR file
+# paths, which the design forbids (see the test that asserts exactly that).
 #
 # pull_request_target runs with a token against the BASE commit; this workflow
 # never checks out, builds, or executes any code from the pull request, and never
-# reads the PR tree or any file's CONTENTS -- it reads bump metadata, the base
-# branch's protection, and the changed-file NAME LIST via the API only. Do not
-# add `actions/checkout` with a PR ref, do not read requirements.* contents, and
-# never replace `--auto` (which waits for the required checks) with a bare or
-# `--admin` merge (which would bypass them).
+# reads the PR tree. It reads bump metadata and the base branch's protection only.
+# Do not add `actions/checkout` with a PR ref, and never replace `--auto` (which
+# waits for the required checks) with a bare or `--admin` merge.
 
 on:
   pull_request_target:
@@ -47,12 +46,11 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # FAIL-CLOSED GUARD 1 -- the base branch MUST carry branch protection with
-      # at least one required status check. Without it, `gh pr merge --auto` has
+      # FAIL-CLOSED GUARD -- the base branch MUST carry branch protection with at
+      # least one required status check. Without it, `gh pr merge --auto` has
       # nothing to wait on and merges IMMEDIATELY (that is how a red group reached
       # master). If protection/required-checks are absent OR the token cannot read
-      # them, `ok=false` and we DO NOT arm (fail closed -- erring toward a human
-      # merge is always safe).
+      # them, ok=false and we DO NOT arm (erring toward a human merge is safe).
       - name: Require branch protection with required checks on the base
         id: protection
         env:
@@ -67,50 +65,30 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
           if [ "$count" -ge 1 ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
 
-      # FAIL-CLOSED GUARD 2 -- a bump that edits backend/requirements.txt MUST also
-      # edit backend/requirements.lock in the SAME PR. A txt-without-lock bump
-      # reds lockfile-consistency on master (exactly today's failure). We read
-      # only the changed-file NAME LIST via the API -- never the file contents and
-      # never the PR tree.
-      - name: Require requirements.lock to move with requirements.txt
-        id: lockstep
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          repo='${{ github.repository }}'
-          num='${{ github.event.pull_request.number }}'
-          files=$(gh api --paginate "repos/$repo/pulls/$num/files" --jq '.[].filename')
-          if printf '%s\n' "$files" | grep -qx 'backend/requirements.txt'; then txt=1; else txt=0; fi
-          if printf '%s\n' "$files" | grep -qx 'backend/requirements.lock'; then lock=1; else lock=0; fi
-          echo "txt=$txt lock=$lock" >> "$GITHUB_OUTPUT"
-          if [ "$txt" = 1 ] && [ "$lock" = 0 ]; then echo "ok=false" >> "$GITHUB_OUTPUT"; else echo "ok=true" >> "$GITHUB_OUTPUT"; fi
-
-      # Patch + minor (grouped bumps report the group's highest semver change
-      # here) arm the native merge queue ONLY when BOTH fail-closed guards pass.
-      # --auto then holds the PR until every required ci.yml check is green; it
-      # never bypasses them.
+      # Patch + minor (grouped bumps report the group's highest semver change here)
+      # arm the native merge queue ONLY when the guard passes. --auto then holds the
+      # PR until every required ci.yml check is green; it never bypasses them.
       - name: Arm auto-merge for patch and minor
         if: >-
           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
            steps.meta.outputs.update-type == 'version-update:semver-minor') &&
-          steps.protection.outputs.ok == 'true' &&
-          steps.lockstep.outputs.ok == 'true'
+          steps.protection.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
           echo "::notice title=Auto-merge armed::Patch/minor bump queued behind required CI checks."
 
-      # Fail-closed: a patch/minor bump that a guard blocked -- a human reviews and
-      # merges after CI is green. The message says which guard refused.
-      - name: Not armed -- fail-closed guard blocked
+      # Fail-closed: a patch/minor bump whose base has no required checks -- a human
+      # reviews and merges after CI is green, because --auto would otherwise merge
+      # ungated.
+      - name: Not armed -- base has no required checks
         if: >-
           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
            steps.meta.outputs.update-type == 'version-update:semver-minor') &&
-          (steps.protection.outputs.ok != 'true' ||
-           steps.lockstep.outputs.ok != 'true')
+          steps.protection.outputs.ok != 'true'
         run: |
-          echo "::warning title=Auto-merge NOT armed (fail-closed)::base '${{ github.event.pull_request.base.ref }}' required-checks=${{ steps.protection.outputs.ok }} (count=${{ steps.protection.outputs.count }}); requirements.lock-moved-with-txt=${{ steps.lockstep.outputs.ok }}. Review and merge by hand once CI is green."
+          echo "::warning title=Auto-merge NOT armed (fail-closed)::base '${{ github.event.pull_request.base.ref }}' has no required status checks (count=${{ steps.protection.outputs.count }}); --auto would merge ungated. Review and merge by hand once CI is green."
 
       # A major bump is never auto-armed: a human reviews and merges it.
       - name: Major bump needs human review
