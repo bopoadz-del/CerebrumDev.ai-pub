@@ -1,4 +1,4 @@
-fastapi==0.162.0
+fastapi==0.143.2
 uvicorn==0.54.0
 pydantic==2.14.1
 python-multipart==0.0.32
@@ -22,11 +22,11 @@ sqlalchemy==2.1.6
 psycopg[binary]==3.3.6
 
 # Accounts DB migrations (Alembic). Runs at container boot; see backend/alembic/.
-alembic==1.20.1
+alembic==1.20.0
 
 # Billing (P3): Stripe subscription checkout + webhooks. Account state changes
 # only through accounts_store.set_subscription; this SDK is the transport.
-stripe==16.1.0
+stripe==16.0.1
 
 # Observability: error tracking + performance. Activates when SENTRY_DSN is
 # set; inert otherwise. See backend/.env.example.
@@ -69,7 +69,7 @@ onnxruntime==1.29.0
 # PRODUCTION image, not only in requirements-dev.txt: without it every
 # production build failed its TESTER gate with "suite is red" and zero
 # findings -- a missing test runner masquerading as bad generated code.
-pytest==9.2.0
+pytest==9.1.1
 
 anyio==4.15.1
 click==8.5.0

@@ -1,17 +1,17 @@
 -r requirements.txt
-pytest>=9.2.0
+pytest>=7.0.0
 pytest-asyncio>=1.4.0
 
 # Steward factory kit tests import steward_runtime modules and exercise generated products.
 sqlalchemy>=2.1.4
-alembic>=1.20.1
+alembic>=1.19.2
 pgvector>=0.5.1
 
 # Static analysis gate (pyflakes only -- see ruff.toml for why).
 ruff>=0.17.1
 
 # Incremental typecheck. Scope is backend/mypy.ini (not the whole tree).
-mypy>=2.4.1
+mypy>=2.4.0
 
 # The Store gate's audit_clean runs bandit over every product's app/; the
 # factory's own test of the emitted persistence modules runs the same scan
