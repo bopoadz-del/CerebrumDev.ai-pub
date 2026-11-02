@@ -411,6 +411,17 @@ class TestFileType:
         assert upload_processor._file_type("/docs/data.xyz") == "unknown"
 
 
+@pytest.mark.asyncio
+async def test_process_upload_unknown_session_returns_cleanly():
+    # F-10c: the unknown-session guard returns early; dropping it would
+    # AttributeError on a None state. No session is created for this id, so a
+    # clean return (no exception) proves the guard runs.
+    from app.core.session_store import get_session
+
+    await upload_processor.process_upload("sess_f10c_unknown_xyz", ["/tmp/nope.pdf"])
+    assert get_session("sess_f10c_unknown_xyz") is None
+
+
 class TestParseXlsx:
     """F-10b: .xlsx extraction -- each sheet headed by its name, rows to text."""
 
