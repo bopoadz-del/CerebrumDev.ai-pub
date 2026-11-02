@@ -363,6 +363,41 @@ def apply_refinement(
 
 # --- Flow actions ------------------------------------------------------------
 
+#: Chars of uploaded document text folded into the draft brief (F-10c-a).
+_UPLOAD_DIGEST_CAP = 4000
+
+
+def uploaded_docs_digest(state: Any) -> str:
+    """A labelled digest of the session's uploaded documents for the draft, or
+    "" when nothing was uploaded — so a no-upload draft is byte-identical.
+
+    Chunks are grouped under their source filename and cited as
+    ``document:<filename>`` so the drafting attributes a requirement to the
+    document it came from (F-10c ruling) and never invents one."""
+    chunks = list(getattr(state, "chunks", None) or [])
+    names = list(getattr(state, "source_files", None) or [])
+    by_doc: Dict[str, list] = {}
+    for i, text in enumerate(chunks):
+        name = names[i] if i < len(names) else "uploaded"
+        by_doc.setdefault(name, []).append(text)
+    budget = _UPLOAD_DIGEST_CAP
+    parts: list = []
+    for name in sorted(by_doc):
+        if budget <= 0:
+            break
+        body = "\n".join(by_doc[name]).strip()[:budget]
+        if not body:
+            continue
+        budget -= len(body)
+        parts.append(f"document:{name}:\n{body}")
+    if not parts:
+        return ""
+    return (
+        "\n\n--- Uploaded project documents (use as source requirements; cite "
+        "each as document:<filename>, never invent) ---\n" + "\n\n".join(parts)
+    )
+
+
 def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     """Draft a blueprint from a chat brief and park it on the session.
 
@@ -370,10 +405,14 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     Returns the summary payload streamed back to the chat.
     """
     pd = state.product_design
+    # F-10c-a: fold any uploaded documents into the brief the draft is built
+    # from, cited as document:<filename>. The digest is "" when nothing was
+    # uploaded, so brief_for_draft == message and the draft is byte-identical.
+    brief_for_draft = message + uploaded_docs_digest(state)
     # The vertical is the user's own choice from the Floor (persisted on the
     # session), never read out of the message.
-    bp = draft_blueprint_from_brief(message, vertical_hint=getattr(pd, "vertical", None))
-    pd.brief = message
+    bp = draft_blueprint_from_brief(brief_for_draft, vertical_hint=getattr(pd, "vertical", None))
+    pd.brief = brief_for_draft
     pd.blueprint = bp.model_dump(mode="json")
     pd.plan = None
     pd.blueprint_approved = False
@@ -397,7 +436,7 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
             bp,
             plan=None,
             chat_turns=turns,
-            brief=message,
+            brief=brief_for_draft,
             domain_pack=synthesize_domain_pack(bp, type("P", (), {"capabilities": bp.capabilities})()),
         )
         pd.intake_blueprint = intake
