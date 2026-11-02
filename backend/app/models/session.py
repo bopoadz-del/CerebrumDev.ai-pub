@@ -105,6 +105,10 @@ class SessionState(BaseModel):
     # Indexed data stored with the session for later packaging
     corpus: Optional[str] = None
     chunks: List[str] = Field(default_factory=list)
+    # F-10c: the source filename per chunk (parallel to ``chunks``), so an
+    # uploaded document can be credited as ``document:<filename>`` when its
+    # content informs the draft. Empty when nothing was uploaded.
+    source_files: List[str] = Field(default_factory=list)
     embeddings: List[List[float]] = Field(default_factory=list)
     embedding_meta: Optional[dict] = None
     index_status: Optional[str] = None

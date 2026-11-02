@@ -421,6 +421,7 @@ async def process_upload(session_id: str, file_paths: List[str]):
 
     state.corpus = "\n\n".join(all_chunks)
     state.chunks = all_chunks
+    state.source_files = source_files  # F-10c: per-chunk filename, parallel to chunks
     state.upload.total_chunks = len(all_chunks)
     state.upload.progress = 0.45
     state.upload.message = "Chunking text..."
