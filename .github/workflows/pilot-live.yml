@@ -1,0 +1,64 @@
+name: Pilot (live)
+
+# One full Harbourline Civil Works pilot build against the LIVE deployment,
+# per ORDERS_02NOV_1420Z + DECISION_FACTORY_pilot_run_plan. It logs in with the
+# same repo-secret-backed resolver post-deploy-smoke uses (SMOKE_GATE_TOKEN, else
+# SMOKE_EMAIL+SMOKE_PASSWORD) -- no lane holds a live token, no value is printed.
+# Uploads the two synthetic fixtures before the build, then drives the five
+# stages with per-stage PASS/FAIL checks (upload+index, F-10c-a brief citations,
+# build->STORE, F-10c-b corpus seed, product run + resume-not-restart).
+#
+# Fires on every successful deploy-aws, and on manual dispatch. Without a
+# verified-principal secret in the repo the gated stages are skipped (PASS,
+# annotated) exactly as post_deploy_smoke does -- a missing secret must not fail
+# the pipeline.
+
+on:
+  workflow_run:
+    workflows: [deploy-aws]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Live API base (empty = api.cerebrum-dev.com)."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pilot-live
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    name: Pilot build on live
+    # Only after a SUCCESSFUL deploy, or a manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Run the live pilot
+        env:
+          SMOKE_GATE_TOKEN: ${{ secrets.SMOKE_GATE_TOKEN }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          SMOKE_READY_WAIT_S: "1200"
+          SMOKE_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: >-
+          python3 scripts/pilot_runner.py
+          ${{ github.event.inputs.base || vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
+      - name: Upload PILOT_RESULT
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-result
+          path: PILOT_RESULT.md
+          if-no-files-found: ignore
