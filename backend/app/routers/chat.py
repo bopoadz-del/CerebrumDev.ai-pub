@@ -503,6 +503,12 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
         result = platform_chat_flow.approve_and_generate(state)
         if result.get("ok") and not result.get("already_running") and result.get("sse") != "error":
             require_within_limit(getattr(state, "user_id", None), "generation")
+            # F-10c-b: an approved build seeds the product's own corpus from the
+            # session's uploaded documents (best-effort, idempotent, no-op
+            # without uploads) so the built platform retrieves them.
+            from app.factory.build.upload_corpus_seed import seed_uploaded_corpus_best_effort
+
+            seed_uploaded_corpus_best_effort(state)
         if result.get("ok") and not result.get("sse"):
             result = {**result, "sse": "generation"}
         _record(result)

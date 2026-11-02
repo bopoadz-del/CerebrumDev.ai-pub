@@ -641,12 +641,6 @@ def approve_and_generate(
         return reply
     _record_generation(pd, result, triggered_by=triggered_by, resumed=False)
     pd.last_error = None
-    # F-10c-b: seed the product's own corpus (owner tenant) from the session's
-    # uploaded documents so the built platform retrieves them. Best-effort,
-    # idempotent (upsert by chunk id), no-op when nothing was uploaded.
-    from app.factory.build.upload_corpus_seed import seed_uploaded_corpus_best_effort
-
-    seed_uploaded_corpus_best_effort(state)
 
     trigger_line = (
         "The chat LLM started the coding agent. "
