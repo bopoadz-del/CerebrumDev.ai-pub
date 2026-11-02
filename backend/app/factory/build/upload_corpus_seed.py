@@ -14,6 +14,7 @@ separately so this stays unit-testable without the build pipeline.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -65,19 +66,52 @@ def seed_product_corpus_from_session(
     return ingest(identity, rows)
 
 
-def seed_uploaded_corpus_best_effort(state: Any) -> Any:
-    """Generate/handoff hook (F-10c-b): seed the owner-tenant product corpus
-    from the session's uploads. The tenant is the session owner (user_id).
-
-    Best-effort by contract: a retrieval-backend problem must NEVER break the
-    build, so it is caught and logged. No-op when there is no owner tenant
-    (nothing to scope the corpus to).
+def record_corpus_finding(state: Any, reason: str) -> str:
+    """Record a VISIBLE finding that the uploaded documents did NOT reach the
+    product corpus, and return its text. The user is always told: it is set on
+    ``state.upload`` (the surface the Floor renders) and appended as a NOTE to
+    the handoff build ledger. Never a silent log line.
     """
+    finding = f"documents were not indexed into the product corpus: {reason}"
+    up = state.upload
+    up.message = finding
+    up.failed_files = list(up.failed_files or []) + [finding]
+    out = (getattr(getattr(state, "product_design", None), "generation", None) or {}).get("output_dir")
+    if out:
+        from app.factory.build.ledger import BuildLedger, EventKind
+
+        BuildLedger(Path(out) / "build_ledger.jsonl").append(
+            EventKind.NOTE, detail=finding, payload={"corpus_seed_finding": reason}
+        )
+    return finding
+
+
+def seed_uploaded_corpus(
+    state: Any,
+    *,
+    seed: Optional[Callable[..., Any]] = None,
+) -> Any:
+    """Generate/handoff hook (F-10c-b): seed the owner-tenant product corpus
+    from the session's uploads (tenant = session owner).
+
+    The build always CONTINUES, but the user is ALWAYS told. A missing owner
+    tenant, a seed error, or an ingest ``not_indexed`` reason is recorded as a
+    VISIBLE finding (``record_corpus_finding`` -> Floor + handoff ledger) and
+    returned -- never a silent ``None``. No-op (returns ``None``) only when
+    nothing was uploaded, so a no-upload build is unchanged. ``seed`` is
+    injectable for tests.
+    """
+    rows = session_chunk_rows(state)
+    if not rows:
+        return None  # nothing uploaded -> nothing to seed, nothing to tell
     identity = str(getattr(state, "user_id", "") or "")
     if not identity:
-        return None
+        return record_corpus_finding(state, "no owner tenant was resolved for the session")
+    seed = seed or seed_product_corpus_from_session
     try:
-        return seed_product_corpus_from_session(state, identity)
-    except Exception:  # noqa: BLE001 — seeding never fails the build
-        logger.warning("F-10c-b: product-corpus seed failed", exc_info=True)
-        return None
+        outcome = seed(state, identity)
+    except Exception as exc:  # recorded as a finding, NOT swallowed
+        return record_corpus_finding(state, f"{type(exc).__name__}: {exc}")
+    if getattr(outcome, "state", "") == "not_indexed":
+        return record_corpus_finding(state, str(getattr(outcome, "detail", "retrieval backend unavailable")))
+    return outcome
