@@ -22,7 +22,7 @@ sqlalchemy==2.1.6
 psycopg[binary]==3.3.6
 
 # Accounts DB migrations (Alembic). Runs at container boot; see backend/alembic/.
-alembic==1.20.0
+alembic==1.20.1
 
 # Billing (P3): Stripe subscription checkout + webhooks. Account state changes
 # only through accounts_store.set_subscription; this SDK is the transport.
