@@ -406,9 +406,13 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     """
     pd = state.product_design
     # F-10c-a: fold any uploaded documents into the brief the draft is built
-    # from, cited as document:<filename>. The digest is "" when nothing was
-    # uploaded, so brief_for_draft == message and the draft is byte-identical.
-    brief_for_draft = message + uploaded_docs_digest(state)
+    # from, cited as document:<filename>. With nothing uploaded the digest is
+    # "", the guard is skipped, and brief_for_draft == message, so the draft is
+    # byte-identical.
+    brief_for_draft = message
+    digest = uploaded_docs_digest(state)
+    if digest:
+        brief_for_draft = message + digest
     # The vertical is the user's own choice from the Floor (persisted on the
     # session), never read out of the message.
     bp = draft_blueprint_from_brief(brief_for_draft, vertical_hint=getattr(pd, "vertical", None))
