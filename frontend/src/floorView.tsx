@@ -41,6 +41,7 @@ import { LevelGradeStrip } from './levelGradeView'
 import { VerticalPicker } from './verticalPicker'
 import { LocalePicker } from './localePicker'
 import { IntakeLine } from './intakeLine'
+import { FloorUpload } from './FloorUpload'
 import { displayProductName, humanizeProductId, latestBlueprintIn } from './productDisplay'
 
 interface Capability {
@@ -1519,6 +1520,10 @@ export function Floor({
           send(input)
         }}
       >
+        <FloorUpload
+          sessionId={sessionId}
+          disabled={busy || coderBuilding || accessPaused}
+        />
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}

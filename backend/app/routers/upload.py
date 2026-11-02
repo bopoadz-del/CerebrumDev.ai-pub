@@ -255,3 +255,18 @@ async def upload_result(state: SessionState = Depends(require_owned_session)):
         "failed_files": state.upload.failed_files,
         "message": state.upload.message,
     }
+
+
+@router.get("/{session_id}/upload/allowed")
+async def upload_allowed(state: SessionState = Depends(require_owned_session)):
+    """The accept-set + caps the Floor "+" derives its file picker from, so the
+    frontend never hardwires the format list (F-10b): it mirrors the same
+    ``allowed_extensions()`` the POST route enforces, so the picker and the 415
+    can never drift apart."""
+    exts = sorted(allowed_extensions())
+    return {
+        "extensions": exts,
+        "accept": ",".join(exts),
+        "max_files": max_upload_files(),
+        "max_file_bytes": max_upload_file_bytes(),
+    }
