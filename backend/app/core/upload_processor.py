@@ -415,7 +415,7 @@ async def process_upload(session_id: str, file_paths: List[str]):
 
 
 async def _parse_chunk_embed_store(
-    session_id: str, state: "SessionState", file_paths: List[str]
+    session_id: str, state: Any, file_paths: List[str]
 ) -> None:
     """The parse -> chunk -> embed -> store pipeline, split out so
     ``process_upload`` can guarantee a terminal upload.status whatever
