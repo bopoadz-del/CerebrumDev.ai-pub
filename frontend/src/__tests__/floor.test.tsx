@@ -961,12 +961,55 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // Never green: the only export is the labelled as-is copy.
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
+    // Start over is confirmed first: the button arms an inline confirm that
+    // offers Continue instead; the first click must NOT send start_over.
     const startOver = screen.getByTestId('floor-start-over')
     fireEvent.click(startOver)
+    expect(await screen.findByTestId('floor-start-over-confirm')).toHaveTextContent(
+      /rebuilds from scratch/i,
+    )
+    expect(chatStreamMock).not.toHaveBeenCalledWith(
+      'sess_failed_platform', '', expect.any(Function), undefined, undefined,
+      expect.objectContaining({ action: 'start_over' }),
+    )
+    // Only the confirming click rebuilds, and it carries the confirm token.
+    fireEvent.click(screen.getByTestId('floor-start-over-confirm-button'))
     await waitFor(() =>
       expect(chatStreamMock).toHaveBeenCalledWith(
-        'sess_failed_platform', '', expect.any(Function), undefined, undefined, { action: 'start_over' },
+        'sess_failed_platform', '', expect.any(Function), undefined, undefined,
+        { action: 'start_over', value: 'confirmed' },
       ),
+    )
+  })
+
+  it('Start over: Continue instead resumes (continue), never a fresh workspace', async () => {
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({
+        state: 'failed',
+        cycle: 'code',
+        pilot_ready: false,
+        certified: false,
+        detail: 'FAILED(TESTER, suite_green, a test failed)',
+        failed: { gate: 'TESTER', check: 'suite_green', finding: 'a test failed' },
+        failed_label: 'FAILED(TESTER, suite_green, a test failed)',
+      })
+    })
+    getMock.mockResolvedValue({
+      blueprint: LLM_BLUEPRINT,
+      blueprint_approved: true,
+      generation: { engine: 'runner', product_id: 'vineyard', triggered_by: 'chat_llm' },
+    })
+    render(<Floor sessionId="sess_failed_resume" goPlatforms={() => {}} />)
+    fireEvent.click(await screen.findByTestId('floor-start-over'))
+    fireEvent.click(await screen.findByTestId('floor-start-over-continue'))
+    await waitFor(() =>
+      expect(chatStreamMock).toHaveBeenCalledWith(
+        'sess_failed_resume', '', expect.any(Function), undefined, undefined, { action: 'continue' },
+      ),
+    )
+    expect(chatStreamMock).not.toHaveBeenCalledWith(
+      'sess_failed_resume', '', expect.any(Function), undefined, undefined,
+      expect.objectContaining({ action: 'start_over' }),
     )
   })
 
