@@ -8,16 +8,18 @@ WORKDIR /app
 # Write the PGDG ASCII key and point apt signed-by at it. Slim images often
 # omit the gpg binary even when gnupg is listed, which failed CI in ~20s.
 # SQLAlchemy fallback in app.core.backup still covers a mismatch if apt pins drift.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Network fetches are retried so a transient apt/curl miss (curl exit 18 /
+# apt fetch failure) is not a red build: curl --retry, apt Acquire::Retries.
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     build-essential gcc g++ cmake git ca-certificates curl util-linux bash nodejs npm \
     && mkdir -p /usr/share/keyrings \
-    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
       -o /usr/share/keyrings/pgdg.asc \
     && . /etc/os-release \
     && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client-18 \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends postgresql-client-18 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.lock backend/requirements.txt backend/requirements-marker.txt ./
