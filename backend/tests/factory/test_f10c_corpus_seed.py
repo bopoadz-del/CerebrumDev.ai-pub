@@ -9,6 +9,7 @@ import pytest
 import app.factory.build.upload_corpus_seed as seed_mod  # noqa: F401  dotted token for CI-M
 from app.factory.build.upload_corpus_seed import (
     seed_product_corpus_from_session,
+    seed_uploaded_corpus_best_effort,
     session_chunk_rows,
 )
 from app.models.session import SessionState
@@ -65,3 +66,29 @@ def test_seed_calls_ingest_only_when_documents_were_uploaded(chunks, names, shou
     else:
         assert calls == []  # nothing uploaded -> the product corpus is untouched
         assert out is None
+
+
+@pytest.mark.parametrize("user_id, seeds", [("tenant-owner", True), ("", False)])
+def test_best_effort_hook_seeds_only_with_an_owner_tenant(monkeypatch, user_id, seeds):
+    calls = []
+    monkeypatch.setattr(
+        seed_mod, "seed_product_corpus_from_session",
+        lambda state, identity, **k: calls.append(identity) or {"state": "indexed"},
+    )
+    s = SessionState(session_id="sess_hook", user_id=user_id)
+    s.chunks = ["ACA is SAR 39,098,392.98."]
+    s.source_files = ["contract.pdf"]
+    seed_uploaded_corpus_best_effort(s)
+    assert calls == (["tenant-owner"] if seeds else [])
+
+
+def test_best_effort_hook_never_raises_into_the_build(monkeypatch):
+    def _boom(state, identity, **k):
+        raise RuntimeError("retrieval backend down")
+
+    monkeypatch.setattr(seed_mod, "seed_product_corpus_from_session", _boom)
+    s = SessionState(session_id="sess_hook2", user_id="t")
+    s.chunks = ["x"]
+    s.source_files = ["a.pdf"]
+    # Must swallow the error -> the build is never broken by seeding.
+    assert seed_uploaded_corpus_best_effort(s) is None

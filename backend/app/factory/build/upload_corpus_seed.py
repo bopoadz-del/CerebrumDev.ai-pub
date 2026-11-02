@@ -13,7 +13,10 @@ separately so this stays unit-testable without the build pipeline.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def session_chunk_rows(state: Any) -> List[Dict[str, Any]]:
@@ -60,3 +63,21 @@ def seed_product_corpus_from_session(
 
         ingest = retrieval_index.ingest_parsed_chunks
     return ingest(identity, rows)
+
+
+def seed_uploaded_corpus_best_effort(state: Any) -> Any:
+    """Generate/handoff hook (F-10c-b): seed the owner-tenant product corpus
+    from the session's uploads. The tenant is the session owner (user_id).
+
+    Best-effort by contract: a retrieval-backend problem must NEVER break the
+    build, so it is caught and logged. No-op when there is no owner tenant
+    (nothing to scope the corpus to).
+    """
+    identity = str(getattr(state, "user_id", "") or "")
+    if not identity:
+        return None
+    try:
+        return seed_product_corpus_from_session(state, identity)
+    except Exception:  # noqa: BLE001 — seeding never fails the build
+        logger.warning("F-10c-b: product-corpus seed failed", exc_info=True)
+        return None
