@@ -509,6 +509,63 @@ export const product = {
       `/v1/sessions/${sid}/product/coder-control`,
       { action },
     ),
+  // F-10b: the Floor "+" derives its accept-set from the backend and never
+  // hardwires the format list; upload/status/result drive the progress + list.
+  uploadAllowed: (sid: string) =>
+    req<UploadAllowed>('GET', `/v1/sessions/${sid}/upload/allowed`),
+  uploadFiles: (sid: string, files: File[]) =>
+    uploadMultipart(`/v1/sessions/${sid}/upload`, files),
+  uploadStatus: (sid: string) =>
+    req<UploadStatus>('GET', `/v1/sessions/${sid}/upload/status`),
+  uploadResult: (sid: string) =>
+    req<UploadResult>('GET', `/v1/sessions/${sid}/upload/result`),
+}
+
+export interface UploadAllowed {
+  extensions: string[]
+  accept: string
+  max_files: number
+  max_file_bytes: number
+}
+
+export interface UploadStatus {
+  status: string
+  source_name?: string | null
+  total_chunks?: number | null
+  message?: string | null
+}
+
+export interface UploadResult {
+  status: string
+  total_chunks?: number | null
+  failed_files?: unknown[] | null
+  message?: string | null
+}
+
+/** Multipart POST (one in-flight upload): the browser sets the multipart
+ *  boundary, so Content-Type must NOT be forced to JSON. */
+async function uploadMultipart(path: string, files: File[]): Promise<{ files_received?: number; job_id?: string; status?: string }> {
+  const form = new FormData()
+  for (const f of files) form.append('files', f, f.name)
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: authHeaders(false),
+    credentials: 'include',
+    body: form,
+  })
+  const text = await res.text()
+  let data: unknown
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    data = { raw: text }
+  }
+  if (!res.ok) {
+    const d = data as { detail?: unknown; error?: unknown } | null
+    const msg = d?.detail ?? d?.error ?? res.statusText
+    throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg))
+  }
+  return (data ?? {}) as { files_received?: number; job_id?: string; status?: string }
 }
 
 export type AcceptanceScore = {
