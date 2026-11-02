@@ -74,48 +74,67 @@ export function FloorUpload({ sessionId, disabled }: Props) {
   const busy = phase === 'uploading' || phase === 'processing'
   const canAttach = !disabled && !busy && accept !== ''
 
+  // The transient message is a SIBLING of the "+" control, not its child:
+  // inside the composer's flex row the message takes a full-width line of its
+  // own (`.floor-upload__message`), so a long error can never shrink into a
+  // sliver over the button or push the row — and the page — sideways on a
+  // phone.
   return (
-    <span className="floor-upload" data-testid="floor-upload">
-      <button
-        type="button"
-        className="floor-upload__add"
-        data-testid="floor-upload-add"
-        aria-label="Attach documents (PDF, DOCX, XLSX)"
-        title={
-          accept
-            ? `Attach documents — ${accept.replace(/\./g, '').replace(/,/g, ', ').toUpperCase()} only`
-            : 'Attach documents'
-        }
-        disabled={!canAttach}
-        onClick={() => inputRef.current?.click()}
-      >
-        +
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        accept={accept}
-        hidden
-        data-testid="floor-upload-input"
-        onChange={(e) => {
-          const files = Array.from(e.target.files || [])
-          e.target.value = '' // allow re-selecting the same file
-          void onPick(files)
-        }}
-      />
+    <>
+      <span className="floor-upload" data-testid="floor-upload">
+        <button
+          type="button"
+          className="floor-upload__add"
+          data-testid="floor-upload-add"
+          aria-label="Attach documents (PDF, DOCX, XLSX)"
+          title={
+            accept
+              ? `Attach documents — ${accept.replace(/\./g, '').replace(/,/g, ', ').toUpperCase()} only`
+              : 'Attach documents'
+          }
+          disabled={!canAttach}
+          onClick={() => inputRef.current?.click()}
+        >
+          +
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept={accept}
+          hidden
+          data-testid="floor-upload-input"
+          onChange={(e) => {
+            const files = Array.from(e.target.files || [])
+            e.target.value = '' // allow re-selecting the same file
+            void onPick(files)
+          }}
+        />
+      </span>
       {busy && (
-        <span className="floor-upload__status" data-testid="floor-upload-status">
+        <span
+          className="floor-upload__status floor-upload__message"
+          data-testid="floor-upload-status"
+          aria-live="polite"
+        >
           {phase === 'uploading' ? 'Uploading…' : 'Reading documents…'}
         </span>
       )}
       {phase === 'error' && (
-        <span className="error-box" data-testid="floor-upload-error">
+        <span
+          className="error-box floor-upload__message"
+          data-testid="floor-upload-error"
+          aria-live="polite"
+        >
           {message || 'Upload failed.'}
         </span>
       )}
       {phase === 'done' && (
-        <span className="floor-upload__result" data-testid="floor-upload-result">
+        <span
+          className="floor-upload__result floor-upload__message"
+          data-testid="floor-upload-result"
+          aria-live="polite"
+        >
           {names.join(', ')} — {result?.total_chunks ?? 0} chunk
           {(result?.total_chunks ?? 0) === 1 ? '' : 's'} indexed
           {result?.failed_files && result.failed_files.length > 0
@@ -123,6 +142,6 @@ export function FloorUpload({ sessionId, disabled }: Props) {
             : ''}
         </span>
       )}
-    </span>
+    </>
   )
 }

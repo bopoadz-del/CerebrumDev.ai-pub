@@ -395,6 +395,31 @@ async def process_upload(session_id: str, file_paths: List[str]):
     state.upload.message = "Parsing documents..."
     update_session(session_id, state)
 
+    try:
+        await _parse_chunk_embed_store(session_id, state, file_paths)
+    except Exception as exc:
+        # The terminal write is the CONTRACT of this task: the POST route's
+        # 409 guard reads upload.status, so a death between "processing" and
+        # the terminal state would wedge the session behind "Upload already
+        # in progress" forever. Record the failure VISIBLY on the state the
+        # Floor polls, then re-raise so the task registry logs it too --
+        # never a silent swallow.
+        logger.exception("Upload processing died for session %s", session_id)
+        state.upload.status = "failed"
+        state.upload.progress = 1.0
+        state.upload.message = (
+            f"Upload processing failed: {type(exc).__name__}: {exc}"
+        )
+        update_session(session_id, state)
+        raise
+
+
+async def _parse_chunk_embed_store(
+    session_id: str, state: "SessionState", file_paths: List[str]
+) -> None:
+    """The parse -> chunk -> embed -> store pipeline, split out so
+    ``process_upload`` can guarantee a terminal upload.status whatever
+    happens inside it."""
     failed: List[str] = []
     all_chunks: List[str] = []
     source_files: List[str] = []
