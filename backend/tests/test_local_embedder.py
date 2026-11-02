@@ -90,11 +90,12 @@ def test_model_loads_the_named_embedder(monkeypatch, name):
 
 # -- the real model, best-effort (skips cleanly if weights cannot download) -----
 
-def test_real_fastembed_smoke_optional():
+@pytest.mark.parametrize("text", ["real embedder smoke", "a second real passage"])
+def test_real_fastembed_smoke_optional(text):
     pytest.importorskip("fastembed")
     el._model.cache_clear()
     try:
-        vecs = el.embed_texts(["real embedder smoke"])
+        vecs = el.embed_texts([text])
     except Exception as exc:  # noqa: BLE001 -- weights unavailable offline; not a failure
         pytest.skip(f"fastembed weights unavailable: {type(exc).__name__}")
     finally:
