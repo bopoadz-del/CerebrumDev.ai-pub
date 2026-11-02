@@ -57,7 +57,7 @@ def _wedge(monkeypatch, task_status: str) -> None:
 
 def _post(client):
     return client.post(
-        f"/v1/sessions/{_SESSION}/product/ingestion/upload",
+        f"/v1/sessions/{_SESSION}/upload",
         files={"files": ("plan.pdf", io.BytesIO(_PDF_BYTES), "application/pdf")},
     )
 
