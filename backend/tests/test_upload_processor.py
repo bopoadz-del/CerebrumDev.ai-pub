@@ -540,3 +540,53 @@ class TestParseDocument:
             assert calls == ["marker", "pdf"]
         finally:
             os.unlink(path)
+
+
+class TestProcessUploadTerminalGuarantee:
+    """A death anywhere inside the pipeline must still leave a TERMINAL
+    upload.status. A strand at "processing" is what wedged the Floor behind a
+    permanent 409 "Upload already in progress" (mobile incident 2026-11-02):
+    the POST route's guard reads upload.status, so the terminal write is the
+    contract of this task, not a nicety."""
+
+    @pytest.fixture(autouse=True)
+    def _use_temp_storage(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("crash_point", ["embed", "store"])
+    async def test_a_crash_records_failed_never_a_stuck_processing(
+        self, monkeypatch, tmp_path, crash_point
+    ):
+        # Two different unguarded failure points: a non-ValueError from the
+        # embedding stage, and a vector-store write blowing up after a clean
+        # embed. Both used to leave upload.status == "processing" forever.
+        if crash_point == "embed":
+            async def _boom(chunks):
+                raise RuntimeError("embedding backend exploded")
+
+            monkeypatch.setattr(upload_processor, "embed_chunks", _boom)
+        else:
+            async def _ok(chunks):
+                return [[0.0] * 8 for _ in chunks], {
+                    "provider": "test", "backend": "fake",
+                    "dimensions": 8, "model": "m",
+                }
+
+            def _store_boom(*args, **kwargs):
+                raise RuntimeError("vector store exploded")
+
+            monkeypatch.setattr(upload_processor, "embed_chunks", _ok)
+            monkeypatch.setattr(upload_processor, "store_chunks", _store_boom)
+
+        sid = f"sess_crash_{crash_point}"
+        create_session(sid, "u1")
+        doc = tmp_path / "doc.xlsx"
+        _write_doc(doc, "Line one.\n\nLine two.")
+        with pytest.raises(RuntimeError):
+            await upload_processor.process_upload(sid, [str(doc)])
+
+        state = get_session(sid)
+        assert state.upload.status == "failed"  # terminal — never "processing"
+        assert "Upload processing failed" in state.upload.message
+        assert "RuntimeError" in state.upload.message

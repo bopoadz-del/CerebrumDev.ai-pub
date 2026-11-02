@@ -338,8 +338,20 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   flex-wrap: wrap;
 }
 .typing { color: var(--gold); letter-spacing: 2px; }
-.composer { display: flex; gap: 10px; padding: 16px 0 20px; border-top: 1px solid var(--line); }
-.composer input { flex: 1; }
+/* The composer is one wrapping flex row. The text input is the only item
+   allowed to flex, and min-width: 0 lets it shrink below its intrinsic
+   placeholder width — without it the long "Try: …" placeholder forces the row
+   (and the whole page) wider than a phone screen, which is exactly the
+   sideways-panning bug. The "+" and Send never shrink. */
+.composer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px 0 20px; border-top: 1px solid var(--line); }
+.composer input { flex: 1 1 140px; min-width: 0; }
+.composer button[type='submit'] { flex-shrink: 0; }
+.floor-upload { display: inline-flex; align-items: center; flex-shrink: 0; }
+/* An upload status / error / result takes a FULL row of its own, above the
+   controls (100% basis wraps it; order -1 lifts it over the input row), so it
+   can never share — or overlap — the "+" button's sliver of space. */
+.composer > .floor-upload__message { flex: 1 1 100%; order: -1; min-width: 0; }
+.floor-upload__status, .floor-upload__result { color: var(--dim); font-size: 13px; }
 .composer-paused { margin: -8px 0 16px; }
 
 /* key-value */

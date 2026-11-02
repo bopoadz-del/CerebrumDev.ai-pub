@@ -28,7 +28,7 @@ from ..models.session import SessionState
 from ..core.session_guard import require_owned_session
 from ..core.session_store import update_session
 from ..core.upload_processor import process_upload
-from ..core.background import start_task
+from ..core.background import start_task, get_task_status
 
 router = APIRouter()
 
@@ -161,7 +161,21 @@ async def upload_files(
     session_id = state.session_id
 
     if state.upload.status == "processing":
-        raise HTTPException(status_code=409, detail="Upload already in progress")
+        # "processing" in the persisted state is only a real conflict while a
+        # live background task is actually running it. If the worker died
+        # mid-parse (crash, OOM, deploy rollout killing in-flight tasks) the
+        # terminal write never happened and the marker is an ORPHAN -- and the
+        # task registry (in-memory, reset with the process) no longer shows a
+        # running task. A stale marker must never wedge the session behind a
+        # permanent 409: record the interruption and let this request proceed
+        # as a fresh upload.
+        if get_task_status(session_id).get("status") == "running":
+            raise HTTPException(status_code=409, detail="Upload already in progress")
+        state.upload.status = "failed"
+        state.upload.message = (
+            "A previous upload was interrupted before it finished; starting over."
+        )
+        update_session(session_id, state)
 
     file_cap = max_upload_files()
     size_cap = max_upload_file_bytes()
