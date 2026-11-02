@@ -409,3 +409,64 @@ def test_pin_drift_flags_a_drifting_pin_with_a_trailing_comment(checker, req, lo
     """The comment strip keeps the pin, not the comment: drift is still seen."""
     findings = checker.pin_drift(req, lock)
     assert len(findings) == 1, findings
+
+
+# -- PR B: the --base path judges the requirements twin by END STATE ---------
+# A revert that restores txt<->lock agreement must PASS even though the lock did
+# not move in the diff (that delta-only reading red-lit the dependabot revert
+# #138); a txt bump that leaves the lock behind must still FAIL (#244 stays
+# blocked). end_state_findings is the wired-in check; _reader injects content.
+
+
+def _reader_for(txt: str, lock: str):
+    content = {"backend/requirements.txt": txt, "backend/requirements.lock": lock}
+    return lambda path: content[path]
+
+
+@pytest.mark.parametrize(
+    "changed, txt, lock, should_fail",
+    [
+        # 1) txt bumped, lock left behind -> end state disagrees -> FAIL (#244)
+        (["backend/requirements.txt"], "fastapi==0.162.0\n", "fastapi==0.143.2\n", True),
+        # 2) txt restored to agree with the lock -> PASS (the revert #138 case;
+        #    delta-only wrongly failed because the lock did not move)
+        (["backend/requirements.txt"], "fastapi==0.143.2\n", "fastapi==0.143.2\n", False),
+        # 3) lock-only change -> txt not in the change set -> PASS
+        (["backend/requirements.lock"], "fastapi==0.162.0\n", "fastapi==0.143.2\n", False),
+        # 4) txt + lock both bumped and agreeing -> PASS
+        (
+            ["backend/requirements.txt", "backend/requirements.lock"],
+            "fastapi==0.162.0\n",
+            "fastapi==0.162.0\n",
+            False,
+        ),
+    ],
+)
+def test_end_state_findings_judge_agreement_not_delta(checker, changed, txt, lock, should_fail):
+    findings = checker.end_state_findings(changed, "HEAD", _reader=_reader_for(txt, lock))
+    assert bool(findings) == should_fail, findings
+
+
+@pytest.mark.parametrize(
+    "head_txt, expected_rc",
+    [
+        # base = a "bad" commit (txt ahead of lock); head restores agreement ->
+        # exit 0. The old path-delta reading exited 1 here (txt moved, lock did
+        # not) -- this case kills that behaviour.
+        ("foo==1.0.0\n", 0),
+        # head still disagrees with the lock -> exit 1 (#244 stays blocked).
+        ("foo==1.2.0\n", 1),
+    ],
+)
+def test_git_base_judges_end_state_not_delta(tmp_path, head_txt, expected_rc):
+    repo = _init_repo(tmp_path)  # base: txt foo==1.0.0, lock foo==1.0.0 (agree)
+    # a bad base commit: bump txt only, lock left behind (the b009d2d shape)
+    (repo / "backend" / "requirements.txt").write_text("foo==1.1.0\n", encoding="utf-8")
+    _git(repo, "add", "backend/requirements.txt")
+    _git(repo, "commit", "-m", "bad base: txt ahead of lock")
+    # the PR head against that base: change txt again
+    (repo / "backend" / "requirements.txt").write_text(head_txt, encoding="utf-8")
+    _git(repo, "add", "backend/requirements.txt")
+    _git(repo, "commit", "-m", "PR head")
+    proc = _run("--base", "HEAD~1", cwd=repo)
+    assert proc.returncode == expected_rc, (proc.stdout, proc.stderr)
