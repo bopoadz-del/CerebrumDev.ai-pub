@@ -64,13 +64,22 @@ def test_llm_semantic_provider_is_semantic_and_input_derived(monkeypatch):
 
 
 def test_embed_texts_refuses_when_egress_unconfigured(monkeypatch):
-    """No base_url/key/model -> a surfaced EmbeddingEgressError, never empty."""
+    """No base_url/key/model -> a surfaced EmbeddingEgressError BEFORE any egress
+    call. Kills swallow_exception (the first `raise` -> `pass`): if the config
+    guard is swallowed, execution falls through and calls the provider, so the
+    `calls == []` assertion fails even though a later shape-check still raises."""
+    calls = []
     monkeypatch.setattr(
         llm_embeddings, "get_llm_config",
         lambda: {"base_url": "", "api_key": "", "model": ""},
     )
+    monkeypatch.setattr(
+        llm_embeddings, "_request_embeddings",
+        lambda *a, **k: (calls.append(1), {"data": []})[1],
+    )
     with pytest.raises(llm_embeddings.EmbeddingEgressError):
         llm_embeddings.embed_texts(["anything"])
+    assert calls == []  # the config guard short-circuits before any egress call
 
 
 def test_embed_texts_empty_input_never_calls_the_provider(monkeypatch):
