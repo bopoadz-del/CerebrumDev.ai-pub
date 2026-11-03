@@ -62,6 +62,11 @@ def _rehydrate_from_chroma(session_id: str) -> Optional[SessionState]:
         phase_status="in_progress",
     )
     state.chunks = data.get("chunks", [])
+    # Restore the per-chunk source filenames alongside chunks (F-10c / F2): the
+    # draft brief's uploaded_docs_digest cites document:<filename> from these.
+    # Without this a rehydrated session has chunks but empty source_files, so
+    # every chunk falls back to "document:uploaded" and the brief cites nothing.
+    state.source_files = data.get("source_files", [])
     state.embeddings = data.get("embeddings", [])
     state.embedding_meta = data.get("embedding_meta")
     if state.embedding_meta is None:
