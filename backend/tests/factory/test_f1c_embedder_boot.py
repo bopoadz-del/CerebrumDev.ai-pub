@@ -73,6 +73,30 @@ def test_embed_texts_refuses_when_egress_unconfigured(monkeypatch):
         llm_embeddings.embed_texts(["anything"])
 
 
+@pytest.mark.parametrize("status", [404, 503])
+def test_embed_texts_carries_the_egress_http_status(monkeypatch, status):
+    """A provider HTTP error surfaces as EmbeddingEgressError.status_code, so a
+    caller classifies by protocol status (404 = no /embeddings endpoint, 5xx =
+    transient) instead of matching message text. Two statuses so a mutant that
+    drops the status (always None) or stores a constant is killed."""
+    import httpx
+
+    monkeypatch.setattr(
+        llm_embeddings, "get_llm_config",
+        lambda: {"base_url": "https://egress.test/v1", "api_key": "k", "model": "m"},
+    )
+
+    def _boom(url, headers, payload, timeout):
+        request = httpx.Request("POST", url)
+        response = httpx.Response(status, request=request)
+        raise httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+    monkeypatch.setattr(llm_embeddings, "_request_embeddings", _boom)
+    with pytest.raises(llm_embeddings.EmbeddingEgressError) as ei:
+        llm_embeddings.embed_texts(["anything"])
+    assert ei.value.status_code == status
+
+
 # ── the engine installed at host boot ──────────────────────────────────────────
 
 

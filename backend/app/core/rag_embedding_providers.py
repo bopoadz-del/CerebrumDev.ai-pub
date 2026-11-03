@@ -14,6 +14,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Dict, List, Optional
 
 LOCAL_FEATURE_HASH_V1 = "local_feature_hash_v1"
@@ -29,11 +30,24 @@ LOCAL_BGE_SMALL_V1 = "local_bge_small_v1"
 LLM_SEMANTIC_V1 = "llm_semantic_v1"
 
 
+def _egress_status(exc: Exception) -> Optional[int]:
+    """The HTTP status carried by an egress error, from the error itself
+    (EmbeddingEgressError.status_code) or its underlying response, if any."""
+    code = getattr(exc, "status_code", None)
+    if code is None:
+        resp = getattr(exc, "response", None) or getattr(
+            getattr(exc, "__cause__", None), "response", None
+        )
+        code = getattr(resp, "status_code", None)
+    return int(code) if isinstance(code, int) else None
+
+
 def _looks_like_no_embeddings_endpoint(exc: Exception) -> bool:
-    """True when an egress error means the provider has no /embeddings endpoint
-    (a 404), as opposed to a transient/credential failure."""
-    text = f"{type(exc).__name__}: {exc}".lower()
-    return "404" in text or "not found" in text or "no embeddings" in text
+    """True when an egress error means the provider has no /embeddings endpoint,
+    decided by the egress HTTP status (404), not by matching message text — a
+    404 is "route absent", distinct from a transient 5xx or a 401/403 credential
+    failure, which must re-raise as themselves."""
+    return _egress_status(exc) == HTTPStatus.NOT_FOUND
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*", re.UNICODE)
 
