@@ -146,6 +146,26 @@ def test_llm_semantic_probe_raises_clear_error_on_404(monkeypatch, status, expec
     assert (EMBEDDER_ENV in str(ei.value)) is expect_config_error
 
 
+def test_llm_semantic_probe_reraises_a_transient_error(monkeypatch):
+    """A non-404 probe error must PROPAGATE, not be swallowed. The seam fails
+    ONCE (the probe) then succeeds, so a swallow_exception mutant on the probe's
+    bare `raise` -- which would set _probed and fall through to the succeeding
+    call -- returns vectors instead of raising, and this test catches it."""
+    import app.core.llm_embeddings as egress
+
+    seq = [egress.EmbeddingEgressError("transient 503", status_code=503)]
+
+    def _seam(texts):
+        if seq:
+            raise seq.pop(0)
+        return [[0.1, 0.2, 0.3]]
+
+    monkeypatch.setattr(egress, "embed_texts", _seam, raising=False)
+    provider = reg._LlmSemanticProviderV1()  # fresh so the probe is un-cached
+    with pytest.raises(egress.EmbeddingEgressError):
+        provider.embed_texts(["x"])
+
+
 @pytest.mark.parametrize(
     "status, expected",
     [(404, True), (401, False)],

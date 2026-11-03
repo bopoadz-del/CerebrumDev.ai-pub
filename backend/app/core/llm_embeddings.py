@@ -89,10 +89,10 @@ def embed_texts(texts: List[str], *, timeout: float = 60.0) -> List[List[float]]
     payload: Dict[str, Any] = {"model": model, "input": rows}
     try:
         data = _request_embeddings(url, headers, payload, timeout)
-    except EmbeddingEgressError:
-        raise
     except Exception as exc:  # noqa: BLE001 — surfaced, never swallowed here
-        # Carry the provider's HTTP status when the failure was a response
+        # _request_embeddings only ever raises transport/HTTP errors (never an
+        # EmbeddingEgressError), so one except is enough. Carry the provider's
+        # HTTP status when the failure was a response
         # (httpx.HTTPStatusError.response.status_code), so the caller classifies
         # by status, not by message text.
         status = getattr(getattr(exc, "response", None), "status_code", None)

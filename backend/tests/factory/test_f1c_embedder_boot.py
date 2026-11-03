@@ -73,6 +73,23 @@ def test_embed_texts_refuses_when_egress_unconfigured(monkeypatch):
         llm_embeddings.embed_texts(["anything"])
 
 
+def test_embed_texts_empty_input_never_calls_the_provider(monkeypatch):
+    """Empty input short-circuits to [] with NO network call. Kills the drop_rule
+    on the empty-input guard: without `if not rows: return []`, the empty list
+    reaches _request_embeddings (calls != [])."""
+    calls = []
+    monkeypatch.setattr(
+        llm_embeddings, "get_llm_config",
+        lambda: {"base_url": "https://egress.test/v1", "api_key": "k", "model": "m"},
+    )
+    monkeypatch.setattr(
+        llm_embeddings, "_request_embeddings",
+        lambda *a, **k: (calls.append(1), {"data": []})[1],
+    )
+    assert llm_embeddings.embed_texts([]) == []
+    assert calls == []
+
+
 @pytest.mark.parametrize("status", [404, 503])
 def test_embed_texts_carries_the_egress_http_status(monkeypatch, status):
     """A provider HTTP error surfaces as EmbeddingEgressError.status_code, so a
