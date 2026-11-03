@@ -82,10 +82,11 @@ def test_embed_texts_refuses_when_egress_unconfigured(monkeypatch):
     assert calls == []  # the config guard short-circuits before any egress call
 
 
-def test_embed_texts_empty_input_never_calls_the_provider(monkeypatch):
-    """Empty input short-circuits to [] with NO network call. Kills the drop_rule
-    on the empty-input guard: without `if not rows: return []`, the empty list
-    reaches _request_embeddings (calls != [])."""
+@pytest.mark.parametrize("empty", [[], None])
+def test_embed_texts_empty_input_never_calls_the_provider(monkeypatch, empty):
+    """Empty input ([] or None) short-circuits to [] with NO network call. Kills
+    the drop_rule on the empty-input guard: without `if not rows: return []`, the
+    empty input reaches _request_embeddings (calls != [])."""
     calls = []
     monkeypatch.setattr(
         llm_embeddings, "get_llm_config",
@@ -95,7 +96,7 @@ def test_embed_texts_empty_input_never_calls_the_provider(monkeypatch):
         llm_embeddings, "_request_embeddings",
         lambda *a, **k: (calls.append(1), {"data": []})[1],
     )
-    assert llm_embeddings.embed_texts([]) == []
+    assert llm_embeddings.embed_texts(empty) == []
     assert calls == []
 
 
