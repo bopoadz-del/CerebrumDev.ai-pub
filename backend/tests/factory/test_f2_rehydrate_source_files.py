@@ -52,6 +52,16 @@ def test_load_session_upload_returns_per_chunk_source_files(monkeypatch, metadat
     assert len(data["source_files"]) == len(data["chunks"])  # parallel to chunks
 
 
+def test_load_session_upload_is_none_without_a_collection(monkeypatch):
+    """No collection -> None, BEFORE touching Chroma. Kills the drop_rule on the
+    `if not collection_exists: return None` guard: dropping that return falls
+    through and returns a dict for a session that has no stored upload."""
+    monkeypatch.setattr(chroma_store, "collection_exists", lambda sid: False)
+    monkeypatch.setattr(chroma_store, "_get_chroma_client", lambda: _Client())
+    monkeypatch.setattr(chroma_store, "load_chunks", lambda sid: (["x"], [], [{"source_file": "a.pdf"}]))
+    assert chroma_store.load_session_upload("sess_absent") is None
+
+
 @pytest.mark.parametrize(
     "source_files",
     [
