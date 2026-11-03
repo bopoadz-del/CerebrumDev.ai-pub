@@ -14,11 +14,11 @@ import numpy as np
 import pytest
 
 import app.core.embeddings_local as el  # dotted token so CI-M associates this file
+import app.core.rag_embedding_providers as reg  # dotted token so CI-M associates this file
 from app.cerebrum_product_kernel.ingestion.engine_install import (
     EMBEDDER_ENV,
     _default_provider_id,
 )
-from app.core import rag_embedding_providers as reg
 
 
 class _StubModel:
@@ -155,3 +155,53 @@ def test_looks_like_no_embeddings_endpoint_classifies(status, expected):
 
     exc = EmbeddingEgressError("egress failed", status_code=status)
     assert reg._looks_like_no_embeddings_endpoint(exc) is expected
+
+
+class _Resp:
+    def __init__(self, status: int) -> None:
+        self.status_code = status
+
+
+class _HasResponse(Exception):
+    """A raw egress error that carries a response (no status_code attr) — the
+    shape _egress_status must still read, directly and through __cause__."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__("provider error")
+        self.response = _Resp(status)
+
+
+def _wrapped_in_cause(status: int) -> Exception:
+    outer = RuntimeError("wrapped, no response of its own")
+    try:
+        raise _HasResponse(status)
+    except _HasResponse as inner:
+        outer.__cause__ = inner
+    return outer
+
+
+def _status_exc(source: str, status):
+    from app.core.llm_embeddings import EmbeddingEgressError
+
+    if source == "attr":
+        return EmbeddingEgressError("direct", status_code=status)
+    if source == "response":
+        return _HasResponse(status)
+    if source == "cause":
+        return _wrapped_in_cause(status)
+    return RuntimeError("no status anywhere")  # source == "none"
+
+
+@pytest.mark.parametrize(
+    "source, status, expected",
+    [
+        ("attr", 404, 404),       # status_code on the error itself
+        ("response", 500, 500),   # first `or` operand: exc.response.status_code
+        ("cause", 404, 404),      # second `or` operand: exc.__cause__.response.status_code
+        ("none", None, None),     # nothing anywhere -> None (never a wrong int)
+    ],
+)
+def test_egress_status_reads_from_attr_response_or_cause(source, status, expected):
+    # Kills _egress_status constant_return (distinct returns) and drop_rule (the
+    # None-guard and the response/__cause__ walk are both exercised).
+    assert reg._egress_status(_status_exc(source, status)) == expected
