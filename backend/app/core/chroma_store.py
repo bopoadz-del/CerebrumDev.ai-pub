@@ -263,7 +263,11 @@ def load_session_upload(session_id: str) -> Optional[Dict[str, Any]]:
         embedding_meta = json.loads(embedding_meta_json) if embedding_meta_json else None
 
         chunks, embeddings, metadatas = load_chunks(session_id)
-        source_files = sorted({m.get("source_file") for m in metadatas if m.get("source_file")})
+        # Per-chunk source filename, PARALLEL to chunks (load_chunks returns
+        # metadatas in chunk order), so a rehydrated session can cite
+        # document:<filename> per chunk. A deduped/sorted set here would break
+        # that 1:1 correspondence -- the draft digest zips names[i] to chunks[i].
+        source_files = [str((m or {}).get("source_file") or "") for m in metadatas]
         return {
             "chunks": chunks,
             "embeddings": embeddings,
