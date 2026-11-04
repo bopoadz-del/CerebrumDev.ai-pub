@@ -235,7 +235,7 @@ def classify(fake_dispatch):
     from app.factory.build.block_obligations import resource_obligations
 
     ns: Dict[str, Any] = {"RESOURCE_OBLIGATIONS": dict(resource_obligations())}
-    exec(_lift_from_probe({"_classify_refusal", "_default_action"}), ns)
+    exec(_lift_from_probe({"_classify_refusal", "_default_action", "_available_actions"}), ns)
     return ns["_classify_refusal"]
 
 
@@ -282,6 +282,36 @@ def test_action_in_both_places_is_named(classify):
     )
     assert note is not None
     assert "the action travelled inside the payload" in note
+
+
+def test_unknown_action_lists_the_blocks_available_actions(classify):
+    """A block refused with no action= and advertises its actions: the writer is
+    told which ones to choose from, so it stops re-sending none and burning both
+    rework rounds (the live build that stalled at WRITER). Actions come from the
+    refusal answer, never a per-block constant."""
+    note = classify(
+        "nodefault_block",
+        {"steps": []},  # no "action" key -> not the payload-leak branch
+        None,
+        {"status": "error", "error_kind": "input", "error": "Unknown action: None",
+         "blocks": {"validation": {"available": ["validate_block", "security_scan", "certify"]}}},
+    )
+    assert note is not None
+    assert "CONTRACT: unknown action" in note
+    assert "choose one of:" in note
+    assert "validate_block" in note
+
+
+def test_unknown_action_with_no_advertised_actions_still_named(classify):
+    """The same refusal with no available list: still named unknown action, just
+    without the hint (two inputs so the hint branch is killable)."""
+    note = classify(
+        "nodefault_block", {"steps": []}, None,
+        {"status": "error", "error_kind": "input", "error": "Unknown action: None"},
+    )
+    assert note is not None
+    assert "CONTRACT: unknown action" in note
+    assert "choose one of:" not in note
 
 
 def test_missing_precondition_is_named(classify):
