@@ -722,26 +722,25 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   padding: 8px 10px;
   font-size: 13px;
   margin: 0 0 10px;
-  /* A failure line carries the step's detail, which can be a long serialised
-     payload; wrap it anywhere so it never runs off the right edge on a phone
-     (J1, ORDERS_04NOV_2000Z). */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-width: 100%;
 }
 .coder-rework-line {
   color: #ffb27d;
   background: #1f1508;
   border: 1px solid #8a5530;
   border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+/* Every Floor line that carries model- or payload-authored text must wrap; a
+   long unbroken token must never widen the column on a phone (J1). */
+.coder-failure-line, .coder-rework-line, .coder-recovered-line,
+.coder-phase-label, .coder-last, .coder-heartbeat {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
   max-width: 100%;
-  padding: 8px 10px;
-  font-size: 13px;
-  margin: 0 0 10px;
+  min-width: 0;
 }
 .coder-takeover.stale {
   border-color: #8a7030;

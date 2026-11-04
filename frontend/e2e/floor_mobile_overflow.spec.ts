@@ -1,9 +1,10 @@
 /**
  * J1 (ORDERS_04NOV_2000Z): the Floor must not scroll sideways at phone width.
  * The owner saw a build-failure line run off the right edge mid-word on a phone,
- * because .coder-failure-line did not wrap. This loads the Floor at 390x844,
- * injects a failure line carrying a long unbroken serialised payload (the exact
- * shape that overflowed), and asserts there is no horizontal page scroll.
+ * because the text carriers in the run feed did not wrap. This loads the Floor at
+ * 390x844, injects a failure line (carrying a long unbroken serialised payload)
+ * into the REAL run container (.floor), and asserts neither the page nor any
+ * element inside the Floor extends past the viewport.
  */
 import { expect, test, type Page } from '@playwright/test'
 
@@ -39,13 +40,15 @@ async function mockFloor(page: Page) {
 test('the Floor does not scroll sideways at phone width, even with a long failure line', async ({ page }) => {
   await mockFloor(page)
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/')
-  // The signed-in shell is present once the rail renders.
-  await expect(page.locator('.shell')).toBeVisible()
+  await page.goto(`/floor/${SID}`)
 
-  // Inject the failure line shape that ran off the edge on the owner's phone.
+  // The failure line renders inside .floor (floorView.tsx), not directly in
+  // <main>; exercise that real ancestor chain so an unwrapped intermediate
+  // container cannot hide behind a <main>-only check.
+  await expect(page.locator('.floor')).toBeVisible()
   await page.evaluate(() => {
-    const host = document.querySelector('main') || document.body
+    const host = document.querySelector('.floor')
+    if (!host) throw new Error('.floor container not rendered')
     const el = document.createElement('p')
     el.className = 'coder-failure-line'
     el.textContent =
@@ -54,9 +57,20 @@ test('the Floor does not scroll sideways at phone width, even with a long failur
     host.appendChild(el)
   })
 
-  const overflow = await page.evaluate(() => {
+  // No horizontal PAGE scroll.
+  const pageOverflow = await page.evaluate(() => {
     const se = document.scrollingElement as Element
     return se.scrollWidth - se.clientWidth
   })
-  expect(overflow).toBeLessThanOrEqual(1) // no horizontal page scroll at 390px
+  expect(pageOverflow).toBeLessThanOrEqual(1)
+
+  // And nothing INSIDE the Floor extends past the viewport (a card that scrolls
+  // sideways internally is broken to the owner but green to a page-only check).
+  const inner = await page.evaluate(() => {
+    const vw = document.documentElement.clientWidth
+    return [...document.querySelectorAll('.floor, .floor *')]
+      .filter((e) => e.getBoundingClientRect().right > vw + 1)
+      .map((e) => `${(e as HTMLElement).className}:${Math.round(e.getBoundingClientRect().right)}>${vw}`)
+  })
+  expect(inner).toEqual([])
 })
