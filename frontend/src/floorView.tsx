@@ -317,7 +317,8 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
   const current = build?.current_phase?.id
   const failedAt = build?.failure?.location || build?.failure?.phase
   const failedReason = build?.failure?.reason || 'unknown'
-  const failedDetail = build?.failure?.detail || ''
+  // J2: the title shows the one-line summary, never the raw payload.
+  const failedSummary = build?.failure?.summary || failedReason
   // A failure on a run that is still moving is a rework round -- the phase
   // sent the work back and the machine is fixing it. Red is reserved for a
   // run that actually stopped; live 2026-09-30 TESTER suite_red painted the
@@ -338,9 +339,9 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
               .join(' ')}
             title={
               failed
-                ? `${kernelName(phase)} failed — ${failedReason}${failedDetail ? ': ' + failedDetail : ''}`
+                ? `${kernelName(phase)} failed — ${failedSummary}`
                 : rework
-                  ? `${kernelName(phase)} sent it back to the coder — ${failedReason}${failedDetail ? ': ' + failedDetail : ''}`
+                  ? `${kernelName(phase)} sent it back to the coder — ${failedSummary}`
                   : undefined
             }
             data-testid={
@@ -1240,8 +1241,27 @@ export function Floor({
                   {liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'Build'}{' '}
                   failed
                 </strong>
-                {liveCoderBuild.failure.reason ? ` — ${liveCoderBuild.failure.reason}` : ''}
-                {liveCoderBuild.failure.detail ? `: ${liveCoderBuild.failure.detail}` : ''}
+                {liveCoderBuild.failure.summary
+                  ? ` — ${liveCoderBuild.failure.summary}`
+                  : liveCoderBuild.failure.reason
+                    ? ` — ${liveCoderBuild.failure.reason}`
+                    : ''}
+                {liveCoderBuild.failure.ref ? (
+                  <span className="coder-failure-ref" data-testid="floor-failure-ref">
+                    {' '}(ref <code>{liveCoderBuild.failure.ref}</code>
+                    <button
+                      type="button"
+                      className="coder-failure-copy"
+                      title="Copy the reference"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(liveCoderBuild.failure?.ref || '')
+                      }}
+                    >
+                      copy
+                    </button>
+                    )
+                  </span>
+                ) : null}
               </p>
             ) : (
               // The run is still moving: a mid-fail is a rework round, not a
@@ -1251,8 +1271,12 @@ export function Floor({
                   {liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'A phase'}{' '}
                   sent it back to the coder
                 </strong>
-                {liveCoderBuild.failure.reason ? ` — ${liveCoderBuild.failure.reason}` : ''}
-                {liveCoderBuild.failure.detail ? `: ${liveCoderBuild.failure.detail}` : ''}
+                {liveCoderBuild.failure.summary
+                  ? ` — ${liveCoderBuild.failure.summary}`
+                  : liveCoderBuild.failure.reason
+                    ? ` — ${liveCoderBuild.failure.reason}`
+                    : ''}
+                {liveCoderBuild.failure.ref ? ` (ref ${liveCoderBuild.failure.ref})` : ''}
                 {' — rework in progress.'}
               </p>
             ))}

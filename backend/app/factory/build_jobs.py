@@ -845,6 +845,50 @@ def _crash_failure(trail: list) -> "Dict[str, Any] | None":
     return dict(running)
 
 
+# J2 (ORDERS_04NOV_2000Z): the Floor shows a plain-English SUMMARY and a REF, not
+# the raw payload. The map is keyed by the stable failure KIND (a bounded build
+# enum, like an HTTP status -> message), never a product or case; an unmapped
+# code falls back to a generic sentence + the ref, never the payload. The full
+# detail stays on the row for the build record (J3), off the Floor string.
+_FAILURE_SUMMARIES = {
+    "docker_unavailable": "The build could not reach Docker to package the product.",
+    "build_thread_crashed": "The build stopped unexpectedly; the full cause is in the record.",
+    "timeout": "A build step ran past its time budget before finishing.",
+    "budget_skipped": "A build step was skipped because the run was out of budget.",
+    "writer_behaviour_failed": "A generated capability did not accept its own request.",
+    "writer_no_output": "The coder produced no output for this step.",
+}
+
+
+def _failure_ref(failure: Dict[str, Any]) -> str:
+    """A short, stable id the full detail is filed under (J3) and the Floor
+    shows beside the summary. Derived from the row, so the same failure yields
+    the same ref on every poll."""
+    import hashlib
+
+    seed = "|".join(str(failure.get(k) or "") for k in ("phase", "location", "timestamp", "reason"))
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+
+
+def _floor_failure(failure: "Dict[str, Any] | None") -> "Dict[str, Any] | None":
+    """Attach the Floor's code / summary / ref to a failure row (J2). ``code`` is
+    the stable reason token; ``summary`` is one sentence from ``_FAILURE_SUMMARIES``
+    or a generic fallback that names neither the payload nor a brace; ``ref`` is
+    where the full detail is filed. ``detail`` is left on the row for the record;
+    the API that feeds the Floor carries code/summary/ref, not detail."""
+    if not failure:
+        return failure
+    code = (str(failure.get("reason") or "").strip().split(":", 1)[0].strip() or "build_failed")
+    failure["code"] = code
+    failure["ref"] = _failure_ref(failure)
+    summary = _FAILURE_SUMMARIES.get(code)
+    if not summary:
+        where = str(failure.get("location") or failure.get("phase") or "A build step").strip()
+        summary = f"{where} was refused during the build; the full detail is in the build record."
+    failure["summary"] = summary
+    return failure
+
+
 def _advisory_checks(events: Any) -> List[Dict[str, Any]]:
     from app.factory.build.brief_gates import advisory_checks
 
@@ -932,7 +976,7 @@ def build_status(
     current_role = interrupted or resume
     if terminal is None and _crash_marker_path(output_dir).is_file():
         trail, failure = _phase_trail(events)
-        failure = failure or _crash_failure(trail)
+        failure = _floor_failure(failure or _crash_failure(trail))
         return _with_level_grade(
             {
                 "state": "failed",
@@ -1070,6 +1114,9 @@ def build_status(
                 failure["detail"] = sanitize_for_status(terminal.detail) or (
                     failure.get("detail") or ""
                 )
+    # J2: the Floor failure row carries code / summary / ref; the raw detail
+    # stays on the row for the build record (J3), never in the Floor string.
+    failure = _floor_failure(failure)
     # A run whose verdict is SUCCESS has no current failure. _phase_trail
     # keeps the FIRST failure on purpose -- while the build runs, what went
     # wrong in round 1 is what the operator needs -- but once the run ends
