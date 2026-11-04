@@ -29,11 +29,17 @@ def test_none_stays_none():
     assert _floor_failure(None) is None
 
 
-def test_code_is_the_stable_token_before_the_colon():
-    f = _floor_failure(_row())
+@pytest.mark.parametrize(
+    "reason, expected_code",
+    [
+        ("writer_behaviour_failed: no capability accepted its own schema", "writer_behaviour_failed"),
+        ("docker_unavailable", "docker_unavailable"),
+    ],
+)
+def test_code_is_the_stable_token_before_the_colon(reason, expected_code):
     # The compound reason the owner photographed collapses to a stable code the
     # UI can branch on -- never the whole technical phrase.
-    assert f["code"] == "writer_behaviour_failed"
+    assert _floor_failure(_row(reason=reason))["code"] == expected_code
 
 
 @pytest.mark.parametrize(
@@ -66,17 +72,38 @@ def test_summary_never_carries_the_raw_payload():
     assert "Unknown action" not in f["summary"]
 
 
-def test_detail_is_retained_for_the_record():
+@pytest.mark.parametrize(
+    "detail",
+    [
+        '{"error":"RuntimeError: Unknown action: None"}',
+        "plain failure text without braces",
+    ],
+)
+def test_detail_is_retained_for_the_record(detail):
     # J3 files the full detail under the ref; _floor_failure must not drop it.
-    f = _floor_failure(_row())
-    assert f["detail"] == '{"error":"RuntimeError: Unknown action: None"}'
+    assert _floor_failure(_row(detail=detail))["detail"] == detail
 
 
-def test_ref_is_short_and_stable():
-    a = _failure_ref(_row())
-    b = _failure_ref(_row())
+@pytest.mark.parametrize(
+    "row",
+    [
+        _row(),
+        _row(reason="packager_failed", timestamp="2026-11-05T01:00:00Z", phase="PACKAGER"),
+    ],
+)
+def test_ref_is_short_and_stable(row):
     # Same row -> same ref on every poll (so the Floor's ref matches the record).
-    assert a == b
-    assert len(a) == 10
-    # A different failure yields a different ref.
-    assert _failure_ref(_row(reason="other", timestamp="t2")) != a
+    assert _failure_ref(row) == _failure_ref(dict(row))
+    assert len(_failure_ref(row)) == 10
+
+
+@pytest.mark.parametrize(
+    "a_reason, b_reason",
+    [
+        ("writer_no_output", "docker_unavailable"),
+        ("timeout", "build_thread_crashed"),
+    ],
+)
+def test_distinct_failures_get_distinct_refs(a_reason, b_reason):
+    # Two different failures never collide on the same ref.
+    assert _failure_ref(_row(reason=a_reason)) != _failure_ref(_row(reason=b_reason))
