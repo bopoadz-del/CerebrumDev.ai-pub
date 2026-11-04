@@ -417,12 +417,23 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     # THIS request, so a cited=[] brief is traced to the state, not guessed —
     # (1) the source_files the state carries, (2) whether the digest folded into
     # the brief. Filenames only; no document content. Rides on the draft result.
+    import os as _os
+    import socket as _socket
+
     _diag_names = list(getattr(state, "source_files", None) or [])
+    _diag_upload = getattr(state, "upload", None)
     _brief_diag = {
         "chunks": len(list(getattr(state, "chunks", None) or [])),
         "source_files_count": len(_diag_names),
         "source_files": _diag_names[:8],
         "digest_folded": bool(digest),
+        # Discriminators (ORDERS_1810Z): which store the drafter's state came
+        # from, the process serving the draft, and the process that uploaded —
+        # so the pilot tells cross-worker staleness (memory + worker!=upload)
+        # from a non-persisting upload (disk/chroma + chunks=0) in one read.
+        "loaded_from": getattr(state, "loaded_from", None),
+        "worker": f"{_socket.gethostname()}:{_os.getpid()}",
+        "upload_worker": getattr(_diag_upload, "worker", None),
     }
     # The vertical is the user's own choice from the Floor (persisted on the
     # session), never read out of the message.

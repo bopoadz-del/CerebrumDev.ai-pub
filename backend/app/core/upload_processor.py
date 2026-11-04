@@ -1,5 +1,6 @@
 import hashlib
 import os
+import socket
 import httpx
 import logging
 import mimetypes
@@ -447,6 +448,9 @@ async def _parse_chunk_embed_store(
     state.corpus = "\n\n".join(all_chunks)
     state.chunks = all_chunks
     state.source_files = source_files  # F-10c: per-chunk filename, parallel to chunks
+    # Diagnostic (ORDERS_1810Z): stamp the process that persisted these chunks,
+    # so a draft served elsewhere can be told apart from a stale cross-worker read.
+    state.upload.worker = f"{socket.gethostname()}:{os.getpid()}"
     state.upload.total_chunks = len(all_chunks)
     state.upload.progress = 0.45
     state.upload.message = "Chunking text..."

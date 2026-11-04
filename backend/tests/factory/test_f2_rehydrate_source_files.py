@@ -92,3 +92,27 @@ def test_rehydrate_restores_source_files_parallel_to_chunks(monkeypatch, source_
     # while chunks are present -> this assertion reddens that mutant.
     assert state.source_files == source_files
     assert len(state.source_files) == len(state.chunks)
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [("memory", "memory"), ("disk", "disk")],
+)
+def test_get_session_stamps_loaded_from(monkeypatch, path, expected):
+    # Diagnostic (ORDERS_1810Z): get_session records which store it resolved
+    # from, so a draft can tell a cross-worker stale memory hit from a fresh
+    # load. Two paths -> distinct stamps kill constant_return/drop_rule.
+    from app.models.session import SessionState
+
+    sid = f"sess_lf_{path}"
+    session_store._session_store.pop(sid, None)
+    if path == "memory":
+        session_store._session_store[sid] = SessionState(session_id=sid, user_id="u")
+    else:  # disk
+        monkeypatch.setattr(
+            session_store, "load_session_state",
+            lambda s: SessionState(session_id=s, user_id="u"),
+        )
+    got = session_store.get_session(sid)
+    assert got is not None
+    assert got.loaded_from == expected

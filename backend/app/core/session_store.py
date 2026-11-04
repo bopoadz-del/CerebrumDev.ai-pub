@@ -88,17 +88,22 @@ def get_session(session_id: str) -> Optional[SessionState]:
     """Return session state from memory, disk snapshot, or ChromaDB."""
     state = _session_store.get(session_id)
     if state is not None:
+        state.loaded_from = "memory"  # diagnostic (ORDERS_1810Z): see SessionState
         return state
 
     # Try the persisted JSON snapshot first.
     state = load_session_state(session_id)
     if state is not None:
+        state.loaded_from = "disk"
         _session_store[session_id] = state
         logger.info("Restored session %s from disk snapshot", session_id)
         return state
 
     # Snapshot missing; try to rebuild from vector index alone.
-    return _rehydrate_from_chroma(session_id)
+    state = _rehydrate_from_chroma(session_id)
+    if state is not None:
+        state.loaded_from = "chroma"
+    return state
 
 
 def update_session(session_id: str, state: SessionState) -> SessionState:

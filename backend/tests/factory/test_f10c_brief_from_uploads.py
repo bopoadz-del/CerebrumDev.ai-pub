@@ -73,9 +73,13 @@ def test_draft_result_carries_brief_diag(chunks, names, exp_chunks, exp_folded):
     # ORDERS_1735Z trace: the draft result reports the state the drafter saw —
     # source_files it carried and whether the digest folded — so a live cited=[]
     # is diagnosable from the artifact, not guessed.
-    res = draft_from_chat(_state(chunks, names), "Build a contracts platform")
+    s = _state(chunks, names)
+    s.loaded_from = "memory"  # discriminator (ORDERS_1810Z): must pass through
+    res = draft_from_chat(s, "Build a contracts platform")
     diag = res["_brief_diag"]
     assert diag["chunks"] == exp_chunks
     assert diag["source_files"] == names[:8]
     assert diag["source_files_count"] == len(names)
     assert diag["digest_folded"] is exp_folded
+    assert diag["loaded_from"] == "memory"  # kills drop/const on the discriminator
+    assert ":" in diag["worker"]  # host:pid of the drafting process
