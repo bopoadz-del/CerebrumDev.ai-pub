@@ -288,6 +288,23 @@ def _default_action(block_id):
         return None
 
 
+def _available_actions(answer):
+    """The actions a refusing block advertised, from the answer it returned —
+    top-level ``available`` or the one nested under a refusing sub-block. None
+    when the block named none. Read at runtime; never a hardcoded per-block map."""
+    if not isinstance(answer, dict):
+        return None
+    top = answer.get("available")
+    if isinstance(top, list) and top:
+        return top
+    blocks = answer.get("blocks")
+    if isinstance(blocks, dict):
+        for sub in blocks.values():
+            if isinstance(sub, dict) and isinstance(sub.get("available"), list) and sub["available"]:
+                return sub["available"]
+    return None
+
+
 def _classify_refusal(block_id, payload, action, answer):
     """Name the mismatch, or return None when the answer is not a refusal."""
     # A refusal is a TYPED answer: an error envelope whose kind is not
@@ -313,9 +330,18 @@ def _classify_refusal(block_id, payload, action, answer):
             "(CONTRACT: unknown action)" % (block_id, text[:90])
         )
     if action is None and _default_action(block_id) is None:
+        # Name the actions the block itself advertised in its refusal, so the
+        # writer picks a valid one instead of re-sending none and burning both
+        # rework rounds on the same "unknown action". The list is the block's
+        # own (read from the answer at runtime), never a per-block constant.
+        avail = _available_actions(answer)
+        hint = (
+            " The block dispatches on a required action=; choose one of: %s."
+            % ", ".join(str(a) for a in avail[:12])
+        ) if avail else ""
         return (
-            "%s: called with no action= keyword. Answered %r "
-            "(CONTRACT: unknown action)" % (block_id, text[:90])
+            "%s: called with no action= keyword.%s Answered %r "
+            "(CONTRACT: unknown action)" % (block_id, hint, text[:90])
         )
 
     # (b) the record is one level too deep for a block that reads it flat.
