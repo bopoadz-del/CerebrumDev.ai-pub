@@ -301,7 +301,10 @@ h3 { margin: 0 0 10px; }
 .rail-foot { color: var(--dim); font-size: 11px; display: flex; align-items: center; gap: 6px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 
-main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+/* min-width:0 lets the Floor column shrink below its content's intrinsic width,
+   so a long unbroken token (a serialised error) wraps instead of pushing the
+   row past the viewport (J1, ORDERS_04NOV_2000Z). */
+main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
 .page { padding: 28px; overflow-y: auto; }
 .already-signed-in { margin: 10px 0 0; }
 .page-head { margin-bottom: 20px; }
@@ -719,12 +722,23 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   padding: 8px 10px;
   font-size: 13px;
   margin: 0 0 10px;
+  /* A failure line carries the step's detail, which can be a long serialised
+     payload; wrap it anywhere so it never runs off the right edge on a phone
+     (J1, ORDERS_04NOV_2000Z). */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
 }
 .coder-rework-line {
   color: #ffb27d;
   background: #1f1508;
   border: 1px solid #8a5530;
   border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
   padding: 8px 10px;
   font-size: 13px;
   margin: 0 0 10px;
