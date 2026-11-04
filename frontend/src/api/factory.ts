@@ -612,14 +612,19 @@ export type PhaseTrailEntry = {
   detail?: string
 }
 
-/** F3: the first failing/aborted phase, with its named reason and location. */
+/** F3: the first failing/aborted phase. J2 (ORDERS_04NOV_2000Z): the Floor shows
+ *  a one-line `summary` and the `ref` the full detail is filed under, never the
+ *  raw payload — so `detail` is no longer on the wire type. `code` is the stable
+ *  reason token the UI decides on; phase/location/reason stay for the F3 trail. */
 export type BuildFailure = {
   phase?: string
   outcome?: string
   reason?: string
   location?: string
   timestamp?: string | null
-  detail?: string
+  code?: string
+  summary?: string
+  ref?: string
 }
 
 /** One line of the coding agent's own narration. */

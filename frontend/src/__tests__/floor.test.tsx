@@ -1399,6 +1399,11 @@ describe('Factory Floor — architect LLM then coding agent', () => {
           phase: 'WRITER',
           location: 'WRITER',
           reason: 'writer_no_output',
+          code: 'writer_no_output',
+          summary: 'The coder produced no output for this step.',
+          ref: 'abc1234567',
+          // J2: detail still arrives on the wire (J3 files it) but the Floor
+          // must NOT render it — the assertion below proves that.
           detail: 'zero agent-authored artifacts in the workspace',
         },
         phase_trail: [
@@ -1427,9 +1432,15 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByTestId('floor-phase-failed-WRITER')).toBeInTheDocument()
     // The pill names the phase, not a generic "pilot failed".
     expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('WRITER failed')
-    // The reason token is rendered, with the gate's own words.
+    // J2: the line shows a one-line summary and the ref the full detail is
+    // filed under -- not the raw payload. Stronger than before, never weaker.
     expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(
-      'WRITER failed — writer_no_output: zero agent-authored artifacts in the workspace',
+      'WRITER failed — The coder produced no output for this step. (ref abc1234567)',
+    )
+    expect(screen.getByTestId('floor-failure-ref')).toBeInTheDocument()
+    // The detail that was photographed off the owner's phone must not leak.
+    expect(screen.getByTestId('floor-failure-line')).not.toHaveTextContent(
+      'zero agent-authored artifacts in the workspace',
     )
   })
 
