@@ -47,6 +47,7 @@ def test_code_is_the_stable_token_before_the_colon(reason, expected_code):
     [
         ("docker_unavailable", _FAILURE_SUMMARIES["docker_unavailable"]),
         ("writer_no_output", _FAILURE_SUMMARIES["writer_no_output"]),
+        ("packager_failed", _FAILURE_SUMMARIES["packager_failed"]),
     ],
 )
 def test_mapped_code_gets_its_sentence(code, expected):
@@ -61,6 +62,18 @@ def test_unmapped_code_falls_back_to_a_generic_sentence_with_no_payload():
     assert "PACKAGER" in f["summary"]
     assert f["summary"].endswith(".")
     assert "{" not in f["summary"] and "RuntimeError" not in f["summary"]
+
+
+@pytest.mark.parametrize("code", ["some_brand_new_kind", "an_unmapped_producer_kind"])
+def test_the_generic_fallback_records_which_code_it_fell_back_from(code, caplog):
+    # The fallback is not silent: it logs the unmapped code (same channel J3
+    # uses) so the table can grow from evidence. packager_failed is NOT used
+    # here -- s4(d) maps it, so it no longer takes the fallback path.
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO):
+        _floor_failure(_row(reason=code))
+    assert any(getattr(r, "code", None) == code for r in caplog.records)
 
 
 def test_summary_never_carries_the_raw_payload():

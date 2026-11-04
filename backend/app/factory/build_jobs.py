@@ -857,6 +857,7 @@ _FAILURE_SUMMARIES = {
     "budget_skipped": "A build step was skipped because the run was out of budget.",
     "writer_behaviour_failed": "A generated capability did not accept its own request.",
     "writer_no_output": "The coder produced no output for this step.",
+    "packager_failed": "The build failed while packaging the product for delivery.",
 }
 
 
@@ -883,6 +884,16 @@ def _floor_failure(failure: "Dict[str, Any] | None") -> "Dict[str, Any] | None":
     failure["ref"] = _failure_ref(failure)
     summary = _FAILURE_SUMMARIES.get(code)
     if not summary:
+        # The code is an open set -- reason tokens are produced across 20+
+        # modules under app/factory/, so the generic fallback is the product
+        # for an unmapped code, not an error path (ORDERS_04NOV_2300Z s4). But
+        # it is never SILENT: log the code so the table grows from the kinds
+        # that actually occur, through the same "full reporting in the code"
+        # channel J3 writes. The Floor still never crashes on an unknown code.
+        logger.info(
+            "floor failure summary fell back to generic",
+            extra={"code": code, "ref": failure["ref"], "phase": failure.get("phase")},
+        )
         where = str(failure.get("location") or failure.get("phase") or "A build step").strip()
         summary = f"{where} was refused during the build; the full detail is in the build record."
     failure["summary"] = summary
