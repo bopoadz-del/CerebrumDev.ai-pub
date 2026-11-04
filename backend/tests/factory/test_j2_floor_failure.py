@@ -93,7 +93,8 @@ def test_summary_never_carries_the_raw_payload():
     ],
 )
 def test_detail_is_retained_for_the_record(detail):
-    # J3 files the full detail under the ref; _floor_failure must not drop it.
+    # _floor_failure leaves detail on the row (failure_triple reads it as its
+    # finding fallback); the wire strip removes it -- see the boundary test.
     assert _floor_failure(_row(detail=detail))["detail"] == detail
 
 
@@ -120,3 +121,48 @@ def test_ref_is_short_and_stable(row):
 def test_distinct_failures_get_distinct_refs(a_reason, b_reason):
     # Two different failures never collide on the same ref.
     assert _failure_ref(_row(reason=a_reason)) != _failure_ref(_row(reason=b_reason))
+
+
+@pytest.mark.parametrize(
+    "code, detail",
+    [
+        ("writer_no_output", "zero agent-authored artifacts TRIPWIRE_7f3a9c"),
+        ("writer_behaviour_failed", '{"error":"RuntimeError: Unknown action: None"} TRIPWIRE_7f3a9c'),
+    ],
+)
+def test_the_detail_reaches_the_record_and_never_the_wire(tmp_path, code, detail):
+    """ORDERS_04NOV_2300Z s3 GATE: the full detail is filed in the record under
+    the ref the Floor shows, and is nowhere in what the wire serialises.
+
+    build_status's dict is exactly what every wire exit serialises (the route
+    and the chat responses that embed ``"build": build_status(...)``), so
+    json.dumps(build_status(out)) is the whole response body -- a stronger
+    check than one route, and without the session/route fixture."""
+    import json
+
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.ledger import BuildLedger, EventKind
+    from app.factory.build_jobs import build_status, failure_records
+
+    out = tmp_path / "prod"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="boundary", inputs_hash="h")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER, detail="WRITER")
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.WRITER,
+        detail=detail,
+        payload={"reason": code, "location": "WRITER"},
+    )
+    # No terminal event: a live rework, the owner's actual scenario.
+
+    status = build_status(out)
+    ref = status["failure"]["ref"]
+
+    # J3: the full detail IS filed, under the ref the Floor shows.
+    entry = next(r for r in failure_records(out) if r["ref"] == ref)
+    assert "TRIPWIRE_7f3a9c" in json.dumps(entry["detail"])
+
+    # J2: and it is nowhere in what the browser is sent.
+    assert "TRIPWIRE_7f3a9c" not in json.dumps(status)
