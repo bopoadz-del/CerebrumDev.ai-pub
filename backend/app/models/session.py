@@ -30,6 +30,9 @@ class UploadResult(BaseModel):
     indexed_collection: Optional[str] = None
     failed_files: List[str] = Field(default_factory=list)
     message: Optional[str] = None
+    #: Diagnostic (ORDERS_1810Z): the process that ran the upload (host:pid), so
+    #: a draft served by a different worker can be told apart from a stale read.
+    worker: Optional[str] = None
 
 
 class DeploymentResult(BaseModel):
@@ -112,6 +115,10 @@ class SessionState(BaseModel):
     embeddings: List[List[float]] = Field(default_factory=list)
     embedding_meta: Optional[dict] = None
     index_status: Optional[str] = None
+    #: Diagnostic (ORDERS_1810Z): which store get_session resolved this state
+    #: from on the request that holds it -- "memory" | "disk" | "chroma". Lets a
+    #: draft tell a cross-worker stale memory hit apart from a fresh load.
+    loaded_from: Optional[str] = None
     # Phase 3: AI chat + chain generation + rule injection
     chat_history: List[Dict[str, str]] = Field(default_factory=list)
     proposed_chain: Optional[Dict[str, Any]] = None

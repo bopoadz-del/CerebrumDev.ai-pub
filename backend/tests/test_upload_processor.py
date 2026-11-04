@@ -172,6 +172,9 @@ class TestProcessUpload:
         }
         assert len(state.embeddings) == state.upload.total_chunks
         assert state.upload.status == "completed"
+        # Diagnostic (ORDERS_1810Z): the upload stamps the process that persisted
+        # the chunks, as host:pid. Dropping the stamp leaves it None.
+        assert state.upload.worker and ":" in state.upload.worker
 
     @pytest.mark.asyncio
     async def test_uses_onnx_fallback_when_zvec_fails(self, monkeypatch, tmp_path, _fake_fastembed):
