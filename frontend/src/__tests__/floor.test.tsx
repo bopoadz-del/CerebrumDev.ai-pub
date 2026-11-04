@@ -1434,12 +1434,15 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('WRITER failed')
     // J2: the line shows a one-line summary and the ref the full detail is
     // filed under -- not the raw payload. Stronger than before, never weaker.
-    expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(
-      'WRITER failed — The coder produced no output for this step. (ref abc1234567)',
+    const failureLine = screen.getByTestId('floor-failure-line')
+    expect(failureLine).toHaveTextContent(
+      'WRITER failed — The coder produced no output for this step.',
     )
-    expect(screen.getByTestId('floor-failure-ref')).toBeInTheDocument()
+    // The ref is shown beside the summary (its own node, so the copy control's
+    // label does not bleed into this match).
+    expect(screen.getByTestId('floor-failure-ref')).toHaveTextContent('abc1234567')
     // The detail that was photographed off the owner's phone must not leak.
-    expect(screen.getByTestId('floor-failure-line')).not.toHaveTextContent(
+    expect(failureLine).not.toHaveTextContent(
       'zero agent-authored artifacts in the workspace',
     )
   })
