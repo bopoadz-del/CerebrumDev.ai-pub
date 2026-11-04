@@ -34,7 +34,9 @@ from . import retrieval_index
 from .chroma_vector_store import ChromaVectorStore
 
 #: Env that may NAME the registered embedding provider to drive retrieval. The
-#: DEFAULT is the real semantic provider; it is NEVER "none".
+#: DEFAULT is the LOCAL semantic model (local_bge_small_v1 = BAAI/bge-small-en-v1.5
+#: via fastembed) — never the LLM /embeddings egress (DeepSeek has none), never
+#: "none".
 EMBEDDER_ENV = "PRODUCT_RETRIEVAL_EMBEDDER"
 
 
@@ -56,10 +58,10 @@ class _ProviderEmbedder:
 
 
 def _default_provider_id() -> str:
-    from app.core.rag_embedding_providers import LLM_SEMANTIC_V1
+    from app.core.rag_embedding_providers import LOCAL_BGE_SMALL_V1
 
     named = os.getenv(EMBEDDER_ENV, "").strip()
-    return named or LLM_SEMANTIC_V1
+    return named or LOCAL_BGE_SMALL_V1
 
 
 def resolve_embedder() -> Optional[Embedder]:

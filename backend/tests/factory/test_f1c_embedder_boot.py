@@ -22,6 +22,7 @@ import app.core.llm_embeddings as llm_embeddings
 from app.cerebrum_product_kernel.ingestion import engine_install, retrieval_index
 from app.core.rag_embedding_providers import (
     LLM_SEMANTIC_V1,
+    LOCAL_BGE_SMALL_V1,
     RagEmbeddingProvider,
     get_provider,
     register_provider,
@@ -63,13 +64,64 @@ def test_llm_semantic_provider_is_semantic_and_input_derived(monkeypatch):
 
 
 def test_embed_texts_refuses_when_egress_unconfigured(monkeypatch):
-    """No base_url/key/model -> a surfaced EmbeddingEgressError, never empty."""
+    """No base_url/key/model -> a surfaced EmbeddingEgressError BEFORE any egress
+    call. Kills swallow_exception (the first `raise` -> `pass`): if the config
+    guard is swallowed, execution falls through and calls the provider, so the
+    `calls == []` assertion fails even though a later shape-check still raises."""
+    calls = []
     monkeypatch.setattr(
         llm_embeddings, "get_llm_config",
         lambda: {"base_url": "", "api_key": "", "model": ""},
     )
+    monkeypatch.setattr(
+        llm_embeddings, "_request_embeddings",
+        lambda *a, **k: (calls.append(1), {"data": []})[1],
+    )
     with pytest.raises(llm_embeddings.EmbeddingEgressError):
         llm_embeddings.embed_texts(["anything"])
+    assert calls == []  # the config guard short-circuits before any egress call
+
+
+@pytest.mark.parametrize("empty", [[], None])
+def test_embed_texts_empty_input_never_calls_the_provider(monkeypatch, empty):
+    """Empty input ([] or None) short-circuits to [] with NO network call. Kills
+    the drop_rule on the empty-input guard: without `if not rows: return []`, the
+    empty input reaches _request_embeddings (calls != [])."""
+    calls = []
+    monkeypatch.setattr(
+        llm_embeddings, "get_llm_config",
+        lambda: {"base_url": "https://egress.test/v1", "api_key": "k", "model": "m"},
+    )
+    monkeypatch.setattr(
+        llm_embeddings, "_request_embeddings",
+        lambda *a, **k: (calls.append(1), {"data": []})[1],
+    )
+    assert llm_embeddings.embed_texts(empty) == []
+    assert calls == []
+
+
+@pytest.mark.parametrize("status", [404, 503])
+def test_embed_texts_carries_the_egress_http_status(monkeypatch, status):
+    """A provider HTTP error surfaces as EmbeddingEgressError.status_code, so a
+    caller classifies by protocol status (404 = no /embeddings endpoint, 5xx =
+    transient) instead of matching message text. Two statuses so a mutant that
+    drops the status (always None) or stores a constant is killed."""
+    import httpx
+
+    monkeypatch.setattr(
+        llm_embeddings, "get_llm_config",
+        lambda: {"base_url": "https://egress.test/v1", "api_key": "k", "model": "m"},
+    )
+
+    def _boom(url, headers, payload, timeout):
+        request = httpx.Request("POST", url)
+        response = httpx.Response(status, request=request)
+        raise httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+    monkeypatch.setattr(llm_embeddings, "_request_embeddings", _boom)
+    with pytest.raises(llm_embeddings.EmbeddingEgressError) as ei:
+        llm_embeddings.embed_texts(["anything"])
+    assert ei.value.status_code == status
 
 
 # ── the engine installed at host boot ──────────────────────────────────────────
@@ -193,17 +245,28 @@ def test_engine_installed_via_app_lifespan(tmp_path, monkeypatch):
         retrieval_index.set_engine_provider(None)
 
 
-# ── M8: default provider = LLM_SEMANTIC_V1 when the env is unset ────────────────
+# ── M8: default provider = LOCAL_BGE_SMALL_V1 when the env is unset ─────────────
+# ORDERS_02NOV_2320Z: the default is the LOCAL model (bge-small-en-v1.5 via
+# fastembed), NOT the LLM /embeddings egress — DeepSeek, the chat provider, has
+# no /embeddings endpoint (404), which stalled the first live pilot build.
 
 
-def test_default_provider_is_llm_semantic_when_env_unset(monkeypatch):
-    """A mutant defaulting to 'none' or the hash provider reddens this."""
-    monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)
-    assert engine_install._default_provider_id() == LLM_SEMANTIC_V1
+@pytest.mark.parametrize(
+    "env_value, expected_id",
+    [(None, LOCAL_BGE_SMALL_V1), ("local_feature_hash_v1", "local_feature_hash_v1")],
+)
+def test_default_provider_is_local_bge_when_env_unset(monkeypatch, env_value, expected_id):
+    """Default (env unset) must be the local semantic model, not the LLM egress,
+    'none', or the hash provider; an explicit env id is honoured. A mutant that
+    defaults wrong reddens the unset case."""
+    if env_value is None:
+        monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)
+    else:
+        monkeypatch.setenv(engine_install.EMBEDDER_ENV, env_value)
+    assert engine_install._default_provider_id() == expected_id
     embedder = engine_install.resolve_embedder()
     assert embedder is not None
-    assert embedder._provider.provider_id == LLM_SEMANTIC_V1
-    assert embedder.semantic is True
+    assert embedder._provider.provider_id == expected_id
 
 
 # ── M9: a NON-SEMANTIC provider named via the env is REFUSED, by NAME ──────────

@@ -20,7 +20,7 @@ can stub it with a deterministic, input-derived fake and never touch the wire.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -34,7 +34,17 @@ EMBEDDINGS_MODEL_ENV = "CEREBRUM_EMBEDDINGS_MODEL"
 
 
 class EmbeddingEgressError(RuntimeError):
-    """The embeddings egress is not configured, or the provider refused."""
+    """The embeddings egress is not configured, or the provider refused.
+
+    ``status_code`` carries the egress HTTP status when the failure came from a
+    provider response (e.g. 404 = no /embeddings endpoint, 401 = bad key), so a
+    caller can classify the failure by protocol status rather than by matching
+    message text. ``None`` when the failure was not an HTTP response (config
+    missing, connection error, bad shape)."""
+
+    def __init__(self, *args: object, status_code: Optional[int] = None) -> None:
+        super().__init__(*args)
+        self.status_code = status_code
 
 
 def embeddings_model(cfg: Dict[str, Any]) -> str:
@@ -79,10 +89,16 @@ def embed_texts(texts: List[str], *, timeout: float = 60.0) -> List[List[float]]
     payload: Dict[str, Any] = {"model": model, "input": rows}
     try:
         data = _request_embeddings(url, headers, payload, timeout)
-    except EmbeddingEgressError:
-        raise
     except Exception as exc:  # noqa: BLE001 — surfaced, never swallowed here
-        raise EmbeddingEgressError(f"embeddings egress failed: {exc}") from exc
+        # _request_embeddings only ever raises transport/HTTP errors (never an
+        # EmbeddingEgressError), so one except is enough. Carry the provider's
+        # HTTP status when the failure was a response
+        # (httpx.HTTPStatusError.response.status_code), so the caller classifies
+        # by status, not by message text.
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        raise EmbeddingEgressError(
+            f"embeddings egress failed: {exc}", status_code=status
+        ) from exc
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list) or len(items) != len(rows):
         raise EmbeddingEgressError(

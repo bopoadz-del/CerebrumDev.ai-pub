@@ -165,7 +165,12 @@ def real_engine(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
     monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
     monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
-    monkeypatch.delenv(engine_install.EMBEDDER_ENV, raising=False)  # default provider
+    # The product default is now the LOCAL bge-small embedder (no egress), so
+    # these egress-failure tests must pin the EGRESS embedder explicitly — the
+    # one whose /embeddings call _break_egress breaks.
+    from app.core.rag_embedding_providers import LLM_SEMANTIC_V1
+
+    monkeypatch.setenv(engine_install.EMBEDDER_ENV, LLM_SEMANTIC_V1)
     engine_install.install_default_engine()
     yield
     retrieval_index.set_engine_provider(None)

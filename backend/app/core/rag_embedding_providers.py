@@ -14,14 +14,40 @@ import math
 import os
 import re
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Dict, List, Optional
 
 LOCAL_FEATURE_HASH_V1 = "local_feature_hash_v1"
-#: The one REAL semantic provider. It embeds through THIS repo's single LLM
-#: egress (app.core.llm_embeddings -> the provider's /embeddings endpoint). It
-#: is ``semantic``, which is what lets it drive the RetrievalEngine — a keyword
-#: matcher is refused there.
+#: The real semantic provider backed by a LOCAL model (BAAI/bge-small-en-v1.5
+#: via fastembed, app.core.embeddings_local). The DEFAULT product embedder: it
+#: needs no LLM /embeddings egress, so a chat provider without one (DeepSeek)
+#: never stalls a build. ``semantic`` -> drives the RetrievalEngine.
+LOCAL_BGE_SMALL_V1 = "local_bge_small_v1"
+#: A semantic provider that embeds through THIS repo's LLM egress
+#: (app.core.llm_embeddings -> the provider's /embeddings endpoint). Selectable
+#: ONLY when the configured provider actually serves /embeddings; it fails loud
+#: (never silently) when it does not. Not the default.
 LLM_SEMANTIC_V1 = "llm_semantic_v1"
+
+
+def _egress_status(exc: Exception) -> Optional[int]:
+    """The HTTP status carried by an egress error, from the error itself
+    (EmbeddingEgressError.status_code) or its underlying response, if any."""
+    code = getattr(exc, "status_code", None)
+    if code is None:
+        resp = getattr(exc, "response", None) or getattr(
+            getattr(exc, "__cause__", None), "response", None
+        )
+        code = getattr(resp, "status_code", None)
+    return int(code) if isinstance(code, int) else None
+
+
+def _looks_like_no_embeddings_endpoint(exc: Exception) -> bool:
+    """True when an egress error means the provider has no /embeddings endpoint,
+    decided by the egress HTTP status (404), not by matching message text — a
+    404 is "route absent", distinct from a transient 5xx or a 401/403 credential
+    failure, which must re-raise as themselves."""
+    return _egress_status(exc) == HTTPStatus.NOT_FOUND
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*", re.UNICODE)
 
@@ -132,17 +158,70 @@ class _LlmSemanticProviderV1(RagEmbeddingProvider):
             maximum_input_characters=self._MAX_CHARS,
             production_approved=True,
         )
+        #: Probe the egress once, lazily (first embed), so selecting this
+        #: provider against a chat host with no /embeddings fails LOUD, not
+        #: silently or as an opaque 404 deep in a build.
+        self._probed = False
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         # Lazy import keeps this module free of a hard egress dependency and
-        # lets a test stub app.core.llm_embeddings._request_embeddings.
+        # lets a test stub app.core.llm_embeddings.embed_texts.
         from app.core.llm_embeddings import embed_texts as _embed
 
+        if not self._probed:
+            try:
+                _embed(["embeddings endpoint probe"])
+            except Exception as exc:  # noqa: BLE001 -- classified below, never swallowed
+                if _looks_like_no_embeddings_endpoint(exc):
+                    raise RuntimeError(
+                        "PRODUCT_RETRIEVAL_EMBEDDER=llm_semantic_v1, but the configured "
+                        f"chat provider has no /embeddings endpoint ({str(exc)[:200]}). "
+                        "Set PRODUCT_RETRIEVAL_EMBEDDER=local_bge_small_v1 (the local model), "
+                        "or point the LLM egress at a provider that serves /embeddings."
+                    ) from exc
+                raise
+            self._probed = True
         return _embed(list(texts or []))
+
+
+class _LocalBgeSmallProviderV1(RagEmbeddingProvider):
+    """The DEFAULT product embedder: BAAI/bge-small-en-v1.5 run locally via
+    fastembed (app.core.embeddings_local). Genuine 384-dim semantic vectors,
+    L2-normalised, no LLM /embeddings egress -- so a chat provider without an
+    embeddings endpoint (DeepSeek) never stalls a build. ``semantic = True`` ->
+    retrieval-grade; ``production_approved = True``. The model is imported lazily
+    so importing this module loads no native wheel."""
+
+    semantic = True
+
+    _VERSION = "1"
+    _DIMENSIONS = 384
+    _MAX_CHARS = 200_000
+    _MAX_BATCH = 64
+
+    def __init__(self) -> None:
+        super().__init__(
+            provider_id=LOCAL_BGE_SMALL_V1,
+            provider_version=self._VERSION,
+            algorithm="bge-small-en-v1.5-fastembed",
+            dimensions=self._DIMENSIONS,
+            distance_metric="cosine",
+            normalization="l2",
+            maximum_batch_size=self._MAX_BATCH,
+            maximum_input_characters=self._MAX_CHARS,
+            production_approved=True,
+        )
+
+    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        from app.core.embeddings_local import embed_texts as _embed
+
+        vecs = _embed(list(texts or []))
+        return [[float(x) for x in row] for row in vecs]
 
 
 _PROVIDERS: Dict[str, RagEmbeddingProvider] = {
     LOCAL_FEATURE_HASH_V1: _LocalFeatureHashProviderV1(),
+    LOCAL_BGE_SMALL_V1: _LocalBgeSmallProviderV1(),
     LLM_SEMANTIC_V1: _LlmSemanticProviderV1(),
 }
 
