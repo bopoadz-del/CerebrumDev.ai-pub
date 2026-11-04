@@ -413,6 +413,17 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     digest = uploaded_docs_digest(state)
     if digest:
         brief_for_draft = message + digest
+    # Diagnostic (ORDERS_04NOV_1735Z): capture exactly what the drafter saw on
+    # THIS request, so a cited=[] brief is traced to the state, not guessed —
+    # (1) the source_files the state carries, (2) whether the digest folded into
+    # the brief. Filenames only; no document content. Rides on the draft result.
+    _diag_names = list(getattr(state, "source_files", None) or [])
+    _brief_diag = {
+        "chunks": len(list(getattr(state, "chunks", None) or [])),
+        "source_files_count": len(_diag_names),
+        "source_files": _diag_names[:8],
+        "digest_folded": bool(digest),
+    }
     # The vertical is the user's own choice from the Floor (persisted on the
     # session), never read out of the message.
     bp = draft_blueprint_from_brief(brief_for_draft, vertical_hint=getattr(pd, "vertical", None))
@@ -483,6 +494,7 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
         "summary": summary,
         "intake_blueprint": pd.intake_blueprint,
         "plain_language": plain,
+        "_brief_diag": _brief_diag,
     }
 
 

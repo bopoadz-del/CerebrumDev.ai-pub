@@ -59,3 +59,23 @@ def test_draft_from_chat_folds_uploads_and_is_byte_identical_without_them(
         assert "Accepted Contract Amount is SAR 39,098,392.98." in brief
     else:
         assert brief == msg  # byte-identical with no uploaded documents
+
+
+@pytest.mark.parametrize(
+    "chunks, names, exp_chunks, exp_folded",
+    [
+        ([], [], 0, False),
+        (["Time for Completion is 730 days.", "LD rate is 0.1%."],
+         ["contract.pdf", "contract.pdf"], 2, True),
+    ],
+)
+def test_draft_result_carries_brief_diag(chunks, names, exp_chunks, exp_folded):
+    # ORDERS_1735Z trace: the draft result reports the state the drafter saw —
+    # source_files it carried and whether the digest folded — so a live cited=[]
+    # is diagnosable from the artifact, not guessed.
+    res = draft_from_chat(_state(chunks, names), "Build a contracts platform")
+    diag = res["_brief_diag"]
+    assert diag["chunks"] == exp_chunks
+    assert diag["source_files"] == names[:8]
+    assert diag["source_files_count"] == len(names)
+    assert diag["digest_folded"] is exp_folded

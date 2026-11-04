@@ -33,6 +33,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -264,10 +265,14 @@ def run_pilot(base: str) -> int:
 
     # Stage 2 -- BRIEF (F-10c-a document:<filename> citations)
     raw, turns = smoke.chat_until_drafted(sid, token, PROJECT_BRIEF)
+    # ORDERS_1735Z: surface the drafter's own view of the state (_brief_diag rides
+    # on the draft result) so cited=[] is traced to the state, not guessed.
+    diag_m = re.search(r'"_brief_diag"\s*:\s*(\{[^{}]*\})', raw or "")
+    diag = diag_m.group(1) if diag_m else "none"
     _ps, product = smoke.req("GET", f"/v1/sessions/{sid}/product", token=token)
     product = product if isinstance(product, dict) else {}
     ok2, ev2 = brief_cites_documents(product, [DOC_PDF, DOC_XLSX])
-    record("2 BRIEF (F-10c-a)", ok2, f"turns={turns} {ev2}")
+    record("2 BRIEF (F-10c-a)", ok2, f"turns={turns} {ev2} draft_state={diag}")
 
     # Stage 3 -- BUILD through STORE + export zip
     smoke.chat(sid, token, "", action="set_build_level", value=BUILD_LEVEL)
