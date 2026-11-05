@@ -944,6 +944,27 @@ def failure_records(output_dir: Path | str) -> List[Dict[str, Any]]:
     return records
 
 
+def _floor_safe_text(value: Any) -> Any:
+    """Cut a serialised payload out of a string the Floor shows, keeping the
+    human prefix. A reason/check line can carry a JSON blob (``... HTTP 400:
+    {"ok":false,...}``); the owner asked for less error detail on the UI, and
+    that detail is kept in the record. The blob begins at the first ``{``; a
+    newline or an overlong tail is cut too. Non-strings pass through unchanged."""
+    if not isinstance(value, str) or not value:
+        return value
+    out = value
+    brace = out.find("{")
+    if brace != -1:
+        out = out[:brace]
+    newline = out.find("\n")
+    if newline != -1:
+        out = out[:newline]
+    out = out.rstrip(" :-—\t").strip()
+    if len(out) > 200:
+        out = out[:200].rstrip(" :-—\t").strip()
+    return out
+
+
 def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:
     """Remove the raw ``detail`` from everything the Floor is sent (J2 + J3).
 
@@ -980,6 +1001,29 @@ def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:
             if detail in last_event:
                 status["last_event"] = summary
                 break
+    # The rework/decisions list renders the decision's own text (d.check) and
+    # the failure/trail rows can fall back to `reason`; a WRITER contract
+    # refusal carries the serialised payload INSIDE those strings (the big JSON
+    # dump the owner photographed under "REWORK WRITER round 1/2"). reason is
+    # not a detail field, so J2/J3's detail strip never reached it -- sanitise
+    # every Floor-facing text field here.
+    for key in ("failure", "recovered_failure"):
+        row = status.get(key)
+        if isinstance(row, dict):
+            for f in ("reason", "check", "finding", "location"):
+                if isinstance(row.get(f), str):
+                    row[f] = _floor_safe_text(row[f])
+    if isinstance(trail, list):
+        for entry in trail:
+            if isinstance(entry, dict) and isinstance(entry.get("reason"), str):
+                entry["reason"] = _floor_safe_text(entry["reason"])
+    decisions = status.get("decisions")
+    if isinstance(decisions, list):
+        for d in decisions:
+            if isinstance(d, dict):
+                for f, v in list(d.items()):
+                    if isinstance(v, str):
+                        d[f] = _floor_safe_text(v)
     return status
 
 

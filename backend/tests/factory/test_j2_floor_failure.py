@@ -185,3 +185,55 @@ def test_failure_records_is_empty_without_a_ledger(tmp_path, sub):
     out = tmp_path / sub
     out.mkdir()
     assert failure_records(out) == []
+
+
+@pytest.mark.parametrize(
+    "raw, expect",
+    [
+        (
+            'track_management: baseline POST returned HTTP 400: {"ok":false,"error":"x"}',
+            "track_management: baseline POST returned HTTP 400",
+        ),
+        (
+            'workflow refused: RuntimeError {"error":"Unknown action: None"}',
+            "workflow refused: RuntimeError",
+        ),
+    ],
+)
+def test_floor_safe_text_cuts_the_payload_keeps_the_prefix(raw, expect):
+    from app.factory.build_jobs import _floor_safe_text
+
+    out = _floor_safe_text(raw)
+    assert out == expect
+    assert "{" not in out
+
+
+@pytest.mark.parametrize("val", [12, None])
+def test_floor_safe_text_passes_non_strings_through(val):
+    from app.factory.build_jobs import _floor_safe_text
+
+    assert _floor_safe_text(val) == val
+
+
+@pytest.mark.parametrize(
+    "check, clean",
+    [
+        (
+            'track_management: baseline POST returned HTTP 400: {"ok":false}',
+            "track_management: baseline POST returned HTTP 400",
+        ),
+        ('workflow refused {"blocks":{}}', "workflow refused"),
+    ],
+)
+def test_strip_floor_detail_cleans_the_decisions_list(check, clean):
+    # The rework/decisions list (floorView d.check) carried the raw payload the
+    # owner photographed under "REWORK WRITER round 1/2". It is sanitised here.
+    from app.factory.build_jobs import _strip_floor_detail
+
+    out = _strip_floor_detail(
+        {"decisions": [{"class": "REWORK", "gate": "WRITER", "check": check}]}
+    )
+    d = out["decisions"][0]
+    assert d["check"] == clean
+    assert "{" not in d["check"]
+    assert d["class"] == "REWORK"  # short fields untouched
