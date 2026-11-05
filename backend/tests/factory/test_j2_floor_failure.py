@@ -195,8 +195,8 @@ def test_failure_records_is_empty_without_a_ledger(tmp_path, sub):
             "track_management: baseline POST returned HTTP 400",
         ),
         (
-            "block: called with no action= keyword. Answered 'abc' (CONTRACT: unknown action)",
-            "block: called with no action= keyword.",
+            'workflow refused: RuntimeError {"error":"Unknown action: None"}',
+            "workflow refused: RuntimeError",
         ),
     ],
 )
@@ -205,7 +205,7 @@ def test_floor_safe_text_cuts_the_payload_keeps_the_prefix(raw, expect):
 
     out = _floor_safe_text(raw)
     assert out == expect
-    assert "{" not in out and "Answered" not in out
+    assert "{" not in out
 
 
 @pytest.mark.parametrize("val", [12, None])

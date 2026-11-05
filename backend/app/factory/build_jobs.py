@@ -947,17 +947,18 @@ def failure_records(output_dir: Path | str) -> List[Dict[str, Any]]:
 def _floor_safe_text(value: Any) -> Any:
     """Cut a serialised payload out of a string the Floor shows, keeping the
     human prefix. A reason/check line can carry a JSON blob (``... HTTP 400:
-    {"ok":false,...}``) or an ``Answered <payload>`` slice; the owner asked for
-    less error detail on the UI, and that detail is kept in the record. The blob
-    starts at the first ``{``; the slice at `` Answered ``; a newline or an
-    overlong tail is cut too. Non-strings pass through unchanged."""
+    {"ok":false,...}``); the owner asked for less error detail on the UI, and
+    that detail is kept in the record. The blob begins at the first ``{``; a
+    newline or an overlong tail is cut too. Non-strings pass through unchanged."""
     if not isinstance(value, str) or not value:
         return value
     out = value
-    for marker in ("{", "\n", " Answered "):
-        i = out.find(marker)
-        if i != -1:
-            out = out[:i]
+    brace = out.find("{")
+    if brace != -1:
+        out = out[:brace]
+    newline = out.find("\n")
+    if newline != -1:
+        out = out[:newline]
     out = out.rstrip(" :-—\t").strip()
     if len(out) > 200:
         out = out[:200].rstrip(" :-—\t").strip()
