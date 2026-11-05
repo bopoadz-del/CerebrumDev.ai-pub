@@ -929,11 +929,9 @@ def failure_records(output_dir: Path | str) -> List[Dict[str, Any]]:
     from app.factory.build.ledger import BuildLedger
 
     path = _ledger_path(output_dir)
-    if not path.is_file():
-        return []
     try:
         events = BuildLedger(path).events()
-    except Exception:  # noqa: BLE001 -- a torn ledger yields no record, not a 500
+    except Exception:  # noqa: BLE001 -- no ledger yet, or a torn one: no record, not a 500
         return []
     trail, _ = _phase_trail(events)
     records: List[Dict[str, Any]] = []

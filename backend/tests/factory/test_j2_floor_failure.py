@@ -166,3 +166,22 @@ def test_the_detail_reaches_the_record_and_never_the_wire(tmp_path, code, detail
 
     # J2: and it is nowhere in what the browser is sent.
     assert "TRIPWIRE_7f3a9c" not in json.dumps(status)
+
+
+@pytest.mark.parametrize("not_a_dict", [["a", "list"], "a string"])
+def test_strip_floor_detail_passes_a_non_dict_through_untouched(not_a_dict):
+    # The isinstance guard must hold: a non-dict status is returned as-is, never
+    # .get()'d (which would crash). Pins the guard against drop_rule.
+    from app.factory.build_jobs import _strip_floor_detail
+
+    assert _strip_floor_detail(not_a_dict) == not_a_dict
+
+
+@pytest.mark.parametrize("sub", ["no_ledger_a", "no_ledger_b"])
+def test_failure_records_is_empty_without_a_ledger(tmp_path, sub):
+    # No ledger (or a torn one) yields no record, not a 500.
+    from app.factory.build_jobs import failure_records
+
+    out = tmp_path / sub
+    out.mkdir()
+    assert failure_records(out) == []
