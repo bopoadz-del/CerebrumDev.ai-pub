@@ -1402,9 +1402,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
           code: 'writer_no_output',
           summary: 'The coder produced no output for this step.',
           ref: 'abc1234567',
-          // J2: detail still arrives on the wire (J3 files it) but the Floor
-          // must NOT render it — the assertion below proves that.
-          detail: 'zero agent-authored artifacts in the workspace',
+          // J2 + J3: detail is stripped from the wire (filed in the record
+          // under the ref), so the fixture no longer carries it.
         },
         phase_trail: [
           { phase: 'COLLECTOR', outcome: 'passed' },

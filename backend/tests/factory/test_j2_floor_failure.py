@@ -47,6 +47,7 @@ def test_code_is_the_stable_token_before_the_colon(reason, expected_code):
     [
         ("docker_unavailable", _FAILURE_SUMMARIES["docker_unavailable"]),
         ("writer_no_output", _FAILURE_SUMMARIES["writer_no_output"]),
+        ("packager_failed", _FAILURE_SUMMARIES["packager_failed"]),
     ],
 )
 def test_mapped_code_gets_its_sentence(code, expected):
@@ -61,6 +62,18 @@ def test_unmapped_code_falls_back_to_a_generic_sentence_with_no_payload():
     assert "PACKAGER" in f["summary"]
     assert f["summary"].endswith(".")
     assert "{" not in f["summary"] and "RuntimeError" not in f["summary"]
+
+
+@pytest.mark.parametrize("code", ["some_brand_new_kind", "an_unmapped_producer_kind"])
+def test_the_generic_fallback_records_which_code_it_fell_back_from(code, caplog):
+    # The fallback is not silent: it logs the unmapped code (same channel J3
+    # uses) so the table can grow from evidence. packager_failed is NOT used
+    # here -- s4(d) maps it, so it no longer takes the fallback path.
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO):
+        _floor_failure(_row(reason=code))
+    assert any(getattr(r, "code", None) == code for r in caplog.records)
 
 
 def test_summary_never_carries_the_raw_payload():
@@ -80,7 +93,8 @@ def test_summary_never_carries_the_raw_payload():
     ],
 )
 def test_detail_is_retained_for_the_record(detail):
-    # J3 files the full detail under the ref; _floor_failure must not drop it.
+    # _floor_failure leaves detail on the row (failure_triple reads it as its
+    # finding fallback); the wire strip removes it -- see the boundary test.
     assert _floor_failure(_row(detail=detail))["detail"] == detail
 
 
@@ -107,3 +121,67 @@ def test_ref_is_short_and_stable(row):
 def test_distinct_failures_get_distinct_refs(a_reason, b_reason):
     # Two different failures never collide on the same ref.
     assert _failure_ref(_row(reason=a_reason)) != _failure_ref(_row(reason=b_reason))
+
+
+@pytest.mark.parametrize(
+    "code, detail",
+    [
+        ("writer_no_output", "zero agent-authored artifacts TRIPWIRE_7f3a9c"),
+        ("writer_behaviour_failed", '{"error":"RuntimeError: Unknown action: None"} TRIPWIRE_7f3a9c'),
+    ],
+)
+def test_the_detail_reaches_the_record_and_never_the_wire(tmp_path, code, detail):
+    """ORDERS_04NOV_2300Z s3 GATE: the full detail is filed in the record under
+    the ref the Floor shows, and is nowhere in what the wire serialises.
+
+    build_status's dict is exactly what every wire exit serialises (the route
+    and the chat responses that embed ``"build": build_status(...)``), so
+    json.dumps(build_status(out)) is the whole response body -- a stronger
+    check than one route, and without the session/route fixture."""
+    import json
+
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.ledger import BuildLedger, EventKind
+    from app.factory.build_jobs import build_status, failure_records
+
+    out = tmp_path / "prod"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="boundary", inputs_hash="h")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER, detail="WRITER")
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.WRITER,
+        detail=detail,
+        payload={"reason": code, "location": "WRITER"},
+    )
+    # No terminal event: a live rework, the owner's actual scenario.
+
+    status = build_status(out)
+    ref = status["failure"]["ref"]
+
+    # J3: the full detail IS filed, under the ref the Floor shows.
+    entry = next(r for r in failure_records(out) if r["ref"] == ref)
+    assert "TRIPWIRE_7f3a9c" in json.dumps(entry["detail"])
+
+    # J2: and it is nowhere in what the browser is sent.
+    assert "TRIPWIRE_7f3a9c" not in json.dumps(status)
+
+
+@pytest.mark.parametrize("not_a_dict", [["a", "list"], "a string"])
+def test_strip_floor_detail_passes_a_non_dict_through_untouched(not_a_dict):
+    # The isinstance guard must hold: a non-dict status is returned as-is, never
+    # .get()'d (which would crash). Pins the guard against drop_rule.
+    from app.factory.build_jobs import _strip_floor_detail
+
+    assert _strip_floor_detail(not_a_dict) == not_a_dict
+
+
+@pytest.mark.parametrize("sub", ["no_ledger_a", "no_ledger_b"])
+def test_failure_records_is_empty_without_a_ledger(tmp_path, sub):
+    # No ledger (or a torn one) yields no record, not a 500.
+    from app.factory.build_jobs import failure_records
+
+    out = tmp_path / sub
+    out.mkdir()
+    assert failure_records(out) == []

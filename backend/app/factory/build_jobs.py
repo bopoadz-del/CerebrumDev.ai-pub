@@ -506,10 +506,13 @@ def next_fresh_output(requested: Path | str) -> Path:
 
 
 def _with_level_grade(status: Dict[str, Any], output_dir: Path | str) -> Dict[str, Any]:
-    """Attach a fail-closed Level grade. Import late to avoid a cycle."""
+    """Attach a fail-closed Level grade, then strip the raw failure detail from
+    the Floor-facing status (J2 + J3). This is the single wire choke point for
+    build_status; level grading reads only failure.phase, never the detail, so
+    the strip runs after it. Import late to avoid a cycle."""
     from app.factory.build.level_grade import attach_level_grade
 
-    return attach_level_grade(status, output_dir)
+    return _strip_floor_detail(attach_level_grade(status, output_dir))
 
 
 def _cycle_fields(ledger: Any, terminal: Any) -> Dict[str, Any]:
@@ -846,10 +849,12 @@ def _crash_failure(trail: list) -> "Dict[str, Any] | None":
 
 
 # J2 (ORDERS_04NOV_2000Z): the Floor shows a plain-English SUMMARY and a REF, not
-# the raw payload. The map is keyed by the stable failure KIND (a bounded build
-# enum, like an HTTP status -> message), never a product or case; an unmapped
-# code falls back to a generic sentence + the ref, never the payload. The full
-# detail stays on the row for the build record (J3), off the Floor string.
+# the raw payload. The map is keyed by the reason CODE; an unmapped code falls
+# back to a generic sentence + the ref (never the payload) and logs the code so
+# the table grows from evidence. The code is an OPEN set -- reason tokens are
+# produced across 20+ modules under app/factory/, not a declarable enum
+# (ORDERS_04NOV_2300Z s4). The full detail is filed in the ledger (the record),
+# read back by failure_records(); the wire strips it (_strip_floor_detail).
 _FAILURE_SUMMARIES = {
     "docker_unavailable": "The build could not reach Docker to package the product.",
     "build_thread_crashed": "The build stopped unexpectedly; the full cause is in the record.",
@@ -857,7 +862,16 @@ _FAILURE_SUMMARIES = {
     "budget_skipped": "A build step was skipped because the run was out of budget.",
     "writer_behaviour_failed": "A generated capability did not accept its own request.",
     "writer_no_output": "The coder produced no output for this step.",
+    "packager_failed": "The build failed while packaging the product for delivery.",
 }
+
+
+def _failure_code(reason: Any) -> str:
+    """The stable reason token the UI branches on and the summary table is
+    keyed by: the part before the first colon of the reason. Shared by the
+    Floor row (_floor_failure) and the record (failure_records) so a ref maps
+    to the same code in both."""
+    return str(reason or "").strip().split(":", 1)[0].strip() or "build_failed"
 
 
 def _failure_ref(failure: Dict[str, Any]) -> str:
@@ -874,19 +888,99 @@ def _floor_failure(failure: "Dict[str, Any] | None") -> "Dict[str, Any] | None":
     """Attach the Floor's code / summary / ref to a failure row (J2). ``code`` is
     the stable reason token; ``summary`` is one sentence from ``_FAILURE_SUMMARIES``
     or a generic fallback that names neither the payload nor a brace; ``ref`` is
-    where the full detail is filed. ``detail`` is left on the row for the record;
-    the API that feeds the Floor carries code/summary/ref, not detail."""
+    where the full detail is filed. ``detail`` is deliberately LEFT on the row
+    here -- failure_triple (build_jobs.py:1264) reads it as its finding fallback
+    and runs before the wire boundary -- and is removed from the Floor-facing
+    status at that boundary by ``_strip_floor_detail`` (via _with_level_grade)."""
     if not failure:
         return failure
-    code = (str(failure.get("reason") or "").strip().split(":", 1)[0].strip() or "build_failed")
+    code = _failure_code(failure.get("reason"))
     failure["code"] = code
     failure["ref"] = _failure_ref(failure)
     summary = _FAILURE_SUMMARIES.get(code)
     if not summary:
+        # The code is an open set -- reason tokens are produced across 20+
+        # modules under app/factory/, so the generic fallback is the product
+        # for an unmapped code, not an error path (ORDERS_04NOV_2300Z s4). But
+        # it is never SILENT: log the code so the table grows from the kinds
+        # that actually occur, through the same "full reporting in the code"
+        # channel J3 writes. The Floor still never crashes on an unknown code.
+        logger.info(
+            "floor failure summary fell back to generic",
+            extra={"code": code, "ref": failure["ref"], "phase": failure.get("phase")},
+        )
         where = str(failure.get("location") or failure.get("phase") or "A build step").strip()
         summary = f"{where} was refused during the build; the full detail is in the build record."
     failure["summary"] = summary
     return failure
+
+
+def failure_records(output_dir: Path | str) -> List[Dict[str, Any]]:
+    """J3: the full per-failure detail, filed under the same ``ref`` the Floor
+    shows. The Floor status carries code/summary/ref and no detail (stripped at
+    the wire by ``_strip_floor_detail``); a lane turns a ref into the full
+    detail by reading this off the ledger -- the job record, fsynced per event:
+
+        from app.factory.build_jobs import failure_records
+        detail = next(r["detail"] for r in failure_records(output_dir)
+                      if r["ref"] == ref)
+
+    Secrets are redacted (sanitize_for_status), nothing is truncated."""
+    from app.factory.build.ledger import BuildLedger
+
+    path = _ledger_path(output_dir)
+    try:
+        events = BuildLedger(path).events()
+    except Exception:  # noqa: BLE001 -- no ledger yet, or a torn one: no record, not a 500
+        return []
+    trail, _ = _phase_trail(events)
+    records: List[Dict[str, Any]] = []
+    for entry in trail:
+        if entry.get("outcome") in ("failed", "aborted") and entry.get("detail"):
+            rec = dict(entry)
+            rec["ref"] = _failure_ref(entry)
+            rec["code"] = _failure_code(entry.get("reason"))
+            records.append(rec)
+    return records
+
+
+def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove the raw ``detail`` from everything the Floor is sent (J2 + J3).
+
+    The owner asked for less error detail on the UI; the full detail is kept in
+    the ledger and read back through ``failure_records`` under the same ref.
+    This is the single wire choke point -- _with_level_grade wraps every
+    build_status return -- and it runs AFTER the server-side consumers that
+    need the detail (failure_triple at build_jobs.py:1264 reads failure.detail
+    as its finding fallback). Stripping inside _floor_failure, as first ordered,
+    would blank the FAILED finding; the wire boundary is the correct place."""
+    if not isinstance(status, dict):
+        return status
+    stripped: List[tuple] = []  # (detail, summary) removed from the Floor rows
+    for key in ("failure", "recovered_failure"):
+        row = status.get(key)
+        if isinstance(row, dict):
+            detail = row.pop("detail", None)
+            if isinstance(detail, str) and detail:
+                stripped.append((detail, row.get("summary") or ""))
+    # Only the FAILED/ABORTED trail entries carry the raw payload; a passed or
+    # handed-off entry's detail is short and informational ("handed off",
+    # "round-tripped a record") and the owner never complained of it -- keep it.
+    trail = status.get("phase_trail")
+    if isinstance(trail, list):
+        for entry in trail:
+            if isinstance(entry, dict) and entry.get("outcome") in ("failed", "aborted"):
+                entry.pop("detail", None)
+    # The liveness field ("Last:" on the Floor) echoes the last event's detail;
+    # when that event is the failure it is the same raw payload, so show the
+    # summary there instead of leaking the payload by another route.
+    last_event = status.get("last_event")
+    if isinstance(last_event, str) and last_event:
+        for detail, summary in stripped:
+            if detail in last_event:
+                status["last_event"] = summary
+                break
+    return status
 
 
 def _advisory_checks(events: Any) -> List[Dict[str, Any]]:

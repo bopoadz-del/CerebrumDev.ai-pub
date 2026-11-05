@@ -157,7 +157,11 @@ class TestCrashFailureNaming:
         status = build_status(tmp_path / "build")
 
         assert status["failure"]["reason"] == "build_thread_crashed"
-        assert "UnicodeDecodeError" in status["failure"]["detail"]
+        # J2 (ORDERS_04NOV_2300Z): the raw detail is stripped from the Floor
+        # failure row; the crash still reaches the Floor as a summary and in
+        # full via the terminal detail (and in the record under the ref).
+        assert "detail" not in status["failure"]
+        assert status["failure"].get("summary")
         assert "UnicodeDecodeError" in status["detail"]
 
     def test_a_crash_marker_without_terminal_event_still_names_the_phase(self, tmp_path):
