@@ -25,6 +25,7 @@ from tests.conftest import (  # noqa: F401
 # claiming to drive the same socket.
 
 import importlib  # noqa: E402
+import os  # noqa: E402
 import sys  # noqa: E402
 
 import yaml  # noqa: E402
@@ -156,11 +157,19 @@ def green_product_grade(monkeypatch):
     monkeypatch.setattr(grade_record, "certification_refusal", lambda root: None)
 
 
-@pytest.fixture(autouse=True)
-def _internal_audit_off_by_default(monkeypatch):
+@pytest.fixture(autouse=True, scope="session")
+def _internal_audit_off_by_default():
     """The writer-side internal audit is env-gated (FACTORY_INTERNAL_AUDIT)
     and defaults ON in production. The suite runs with it OFF: loop-driving
     tests exercise phase and rework mechanics, not the audit, whose own
     behaviour is covered in test_internal_audit.py (which opts back in per
-    test by deleting the env var)."""
-    monkeypatch.setenv("FACTORY_INTERNAL_AUDIT", "0")
+    test by deleting the env var). Session-scoped so module/session fixtures
+    that build a platform are covered too -- a function-scoped gate would
+    miss them (they run before function fixtures)."""
+    previous = os.environ.get("FACTORY_INTERNAL_AUDIT")
+    os.environ["FACTORY_INTERNAL_AUDIT"] = "0"
+    yield
+    if previous is None:
+        os.environ.pop("FACTORY_INTERNAL_AUDIT", None)
+    else:
+        os.environ["FACTORY_INTERNAL_AUDIT"] = previous

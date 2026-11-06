@@ -210,8 +210,8 @@ def render_product(workspace: Path | str) -> str:
     blocks: List[str] = []
     budget = _TOTAL_CHARS
     for py in sorted(root.rglob("*")):
-        if not py.is_file():
-            continue
+        # Non-files (directories) reach read_text and raise OSError, which
+        # the except skips -- one exclusion path, no redundant guard.
         rel_parts = py.relative_to(root).parts
         if set(rel_parts) & set(_RENDER_EXCLUDED_DIRS):
             continue
@@ -409,7 +409,12 @@ def run_internal_audit(
     if functions is not None:
         resolve = fg._definition_resolver(vertical, store_root)
         schemas = fg._input_schemas(blueprint)
-        seed_a = vault.new_seed()
+        # The A/B seeds derive from the SAME vault the function grade built
+        # (writer-blind, kernel-computed) -- the deterministic checks own
+        # nothing of their own, so they cannot exist without a function
+        # grade to hang off.
+        vault_record = functions.vault or {}
+        seed_a = int(vault_record.get("seed") or vault.new_seed())
         pairs = two_dataset.build_datasets(cids, resolve, schemas, seed_a, seed_a + 1)
         checks = two_dataset.run_two_dataset(pairs, root, python=python)
         verdicts = {check.capability_id: check.verdict for check in checks}

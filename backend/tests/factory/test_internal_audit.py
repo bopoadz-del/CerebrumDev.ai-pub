@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from app.factory.build import internal_audit as ia
+# Imported by full module path so the CI-M mutation gate (which selects
+# tests by the module's dotted token) associates this file with every
+# function in internal_audit.py.
+import app.factory.build.internal_audit as ia
 from app.factory.build.product_grader import grade_record, layer2
 
 READS_INPUT = (
@@ -107,6 +110,123 @@ def test_render_product_includes_app_and_frontend_only_bounded():
         assert "should never appear" not in rendered
 
 
+# --- the smallest helpers (mutation-gate coverage) ---------------------------
+
+
+@pytest.mark.parametrize("env_value,expected", [("0", False), ("1", True)])
+def test_audit_enabled_reads_the_switch(monkeypatch, env_value, expected):
+    monkeypatch.setenv(ia.DISABLE_ENV, env_value)
+    assert ia.audit_enabled() is expected
+
+
+class _ModelBlueprint:
+    def __init__(self, payload):
+        self.__dict__.update(payload)
+
+    def model_dump(self):
+        return dict(self.__dict__)
+
+
+@pytest.mark.parametrize(
+    "blueprint", [{"vertical": "alpha"}, _ModelBlueprint({"vertical": "beta"})]
+)
+def test_as_mapping_accepts_a_mapping_and_a_model_object(blueprint):
+    expected = {"vertical": "alpha" if isinstance(blueprint, dict) else "beta"}
+    assert ia._as_mapping(blueprint) == expected
+
+
+@pytest.mark.parametrize(
+    "blueprint",
+    [
+        {"client": "Alpha Co"},
+        {"vertical": "beta", "product_id": "p-1"},
+        _ModelBlueprint({"client": "Gamma Co"}),
+    ],
+)
+def test_structured_literals_reads_the_schema_fields(blueprint):
+    if isinstance(blueprint, _ModelBlueprint):
+        expected = {"Gamma Co"}
+    else:
+        expected = {v for v in blueprint.values() if isinstance(v, str) and v.strip()}
+    assert ia._structured_literals(blueprint) == expected
+
+
+@pytest.mark.parametrize("text", ["one, two. three;", 'a "quoted" b'])
+def test_tokens_split_on_whitespace_and_strip_punctuation(text):
+    tokens = ia._tokens(text)
+    assert len(tokens) == 3
+    assert all(t.strip(".,;:()[]{}\"'`") == t for t in tokens)
+
+
+@pytest.mark.parametrize(
+    "functions,ui", [
+        ({"ok": True}, {"ok": True}),
+        ({"ok": False}, {"ok": True}),
+    ]
+)
+def test_layer2_layer1_view_reports_the_combined_ok(functions, ui):
+    view = ia._layer2_layer1_view(functions, ui)
+    assert view["ok"] is (functions["ok"] is True and ui["ok"] is True)
+
+
+@pytest.mark.parametrize("root_name", ["build-one", "build-two"])
+def test_boot_env_puts_the_product_workspace_first_on_pythonpath(tmp_path, monkeypatch, root_name):
+    import os
+
+    root = tmp_path / root_name
+    root.mkdir()
+    monkeypatch.setenv("PYTHONPATH", "elsewhere")
+    env = ia._boot_env(tmp_path / "scratch", root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(root)
+    assert str(tmp_path / "scratch") == env["STORAGE_PATH"]
+
+
+@pytest.mark.parametrize("attempts", [2, 3])
+def test_free_port_returns_distinct_in_range_ports(attempts):
+    ports = [ia._free_port() for _ in range(attempts)]
+    assert all(0 < p < 65536 for p in ports)
+    assert len(set(ports)) == attempts
+
+
+@pytest.mark.parametrize("reason", ["", "the UI grader is unavailable"])
+def test_ui_not_run_shape_is_never_a_pass(reason):
+    ui = ia._UiNotRun(reason)
+    assert ui.ran is False
+    assert ui.ok is False
+    assert ui.failing == []
+    assert ui.errors == ([reason] if reason else [])
+    assert ui.to_dict() == {"ok": False, "ran": False, "failing": [], "steps": []}
+
+
+@pytest.mark.parametrize(
+    "answer", [[{"question": "q", "verdict": "PASS", "evidence": "e"}], []]
+)
+def test_complete_via_chat_config_returns_the_raw_json_text(monkeypatch, answer):
+    import app.factory.product_architect as architect
+
+    monkeypatch.setattr(architect, "_llm_json_call", lambda messages, **kwargs: answer)
+    assert ia._complete_via_chat_config([{"role": "system", "content": "x"}]) == json.dumps(answer)
+
+
+@pytest.mark.parametrize("workspace_kind", ["no_app_main", "missing_dir"])
+def test_boot_product_failure_paths_are_named_not_raised(tmp_path, workspace_kind):
+    if workspace_kind == "no_app_main":
+        root = tmp_path / "w"
+        (root / "app").mkdir(parents=True)
+        (root / "app" / "__init__.py").write_text("")
+    else:
+        root = tmp_path / "does-not-exist"
+    proc, reason = ia.boot_product(root)
+    assert proc is None
+    assert reason
+    if workspace_kind == "no_app_main":
+        # The early-exit reason is a short named phrase (7 words); the
+        # timeout reason (what a dropped early-exit check would produce)
+        # is longer (8 words). The shape check, not the words, is the
+        # contract.
+        assert len(reason.split()) < 8
+
+
 # --- the audit itself --------------------------------------------------------
 
 
@@ -133,16 +253,17 @@ def test_green_audit_writes_the_grade_and_returns_no_refusal(tmp_path):
     assert grade_record.certification_refusal(ws) is not None
 
 
-def test_red_function_grade_returns_writer_findings_with_derived_checks(tmp_path):
-    ws = _workspace(tmp_path, {i: (CONSTANT if i == "invoice_total" else READS_INPUT) for i in IDS})
+@pytest.mark.parametrize("bad_cid", ["invoice_total", "visit_log"])
+def test_red_function_grade_returns_writer_findings_with_derived_checks(tmp_path, bad_cid):
+    ws = _workspace(tmp_path, {i: (CONSTANT if i == bad_cid else READS_INPUT) for i in IDS})
     bp = _bp(IDS)
     result = ia.run_internal_audit(
         blueprint=bp, workspace=ws, product_id="invented-product", complete_l2=_passing_l2(bp)
     )
     assert result.unavailable is None
     assert result.writer_refusal is not None
-    assert "function grade FAIL: invoice_total" in result.findings
-    assert "audit.function.invoice_total" in result.checks
+    assert f"function grade FAIL: {bad_cid}" in result.findings
+    assert f"audit.function.{bad_cid}" in result.checks
     # every finding has its own derived check (distinct failure keys)
     assert len(result.checks) == len(result.findings)
     assert len(set(result.checks)) == len(result.checks)
@@ -238,22 +359,24 @@ def smoke_blueprint():
     )
 
 
-def _red_product(workspace: Path) -> None:
+def _red_product(workspace: Path, constant: tuple = ("analytics_surface", "dashboard_surface")) -> None:
     actions = workspace / "app" / "actions"
     actions.mkdir(parents=True, exist_ok=True)
     (workspace / "app" / "__init__.py").write_text("")
     (actions / "__init__.py").write_text("")
     for cid in ("analytics_surface", "dashboard_surface"):
-        (actions / f"{cid}.py").write_text(CONSTANT)
+        body = CONSTANT if cid in constant else READS_INPUT
+        (actions / f"{cid}.py").write_text(body)
 
 
-def test_runner_audit_returns_a_failed_verdict_for_a_red_tree(smoke_blueprint, tmp_path, monkeypatch):
+@pytest.mark.parametrize("constant_cids", [("analytics_surface", "dashboard_surface"), ("analytics_surface",)])
+def test_runner_audit_returns_a_failed_verdict_for_a_red_tree(smoke_blueprint, tmp_path, monkeypatch, constant_cids):
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.delenv(ia.DISABLE_ENV, raising=False)
     workspace = tmp_path / "w"
     workspace.mkdir()
-    _red_product(workspace)
+    _red_product(workspace, constant=constant_cids)
     runner = RoleRunner(smoke_blueprint, workspace)
     monkeypatch.setattr(ia, "_complete_via_chat_config", _passing_l2(_bp(IDS)))
     outcome = runner._writer_internal_audit()
@@ -289,14 +412,17 @@ def _outage_audit(**kwargs):
     return ia.InternalAuditResult(grade={}, writer_refusal=None, unavailable="grader could not run (test)")
 
 
-def _red_audit(**kwargs):
-    return ia.InternalAuditResult(
-        grade={},
-        writer_refusal="audit RED (test)",
-        unavailable=None,
-        findings=("function grade FAIL: zorblat_check",),
-        checks=("audit.function.zorblat_check",),
-    )
+def _red_audit_for(capability):
+    def red(**kwargs):
+        return ia.InternalAuditResult(
+            grade={},
+            writer_refusal=f"audit RED (test) on {capability}",
+            unavailable=None,
+            findings=(f"function grade FAIL: {capability}",),
+            checks=(f"audit.function.{capability}",),
+        )
+
+    return red
 
 
 def _fake_pass_harness(monkeypatch):
@@ -326,14 +452,15 @@ def test_a_loop_run_stops_when_the_audit_cannot_run(smoke_blueprint, tmp_path, m
     assert outcome.detail.startswith("internal audit unavailable")
 
 
-def test_a_loop_run_reworks_the_writer_when_the_audit_is_red(smoke_blueprint, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capability", ["zorblat_check", "plinket_check"])
+def test_a_loop_run_reworks_the_writer_when_the_audit_is_red(smoke_blueprint, tmp_path, monkeypatch, capability):
     """A red audit sends the writer back through the normal rework path,
     and the same red twice stops by the same-failure-twice rule."""
     from app.factory.build.ledger import EventKind
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.delenv(ia.DISABLE_ENV, raising=False)
-    monkeypatch.setattr(ia, "run_internal_audit", _red_audit)
+    monkeypatch.setattr(ia, "run_internal_audit", _red_audit_for(capability))
     roles = _fake_pass_harness(monkeypatch)
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
     outcome = runner.run()
@@ -342,4 +469,4 @@ def test_a_loop_run_reworks_the_writer_when_the_audit_is_red(smoke_blueprint, tm
     assert len(reworks) == 1
     assert reworks[0].payload["gate"] == ia.AUDIT_GATE
     assert reworks[0].payload["source"] == "WRITER"
-    assert "function grade FAIL: zorblat_check" in reworks[0].payload["findings"]
+    assert f"function grade FAIL: {capability}" in reworks[0].payload["findings"]
