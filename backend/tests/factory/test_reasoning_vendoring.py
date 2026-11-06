@@ -287,10 +287,25 @@ def test_a_real_store_kit_vendors_and_the_emitted_kernel_gates_with_it(
 def test_a_real_datacentre_build_arrives_holding_its_answers(tmp_path, store_root, monkeypatch):
     """datacentre has no question sheet and needs none: its own register,
     design_basis.yaml, is filled in from the completed encoding sheet for
-    facility_01. A platform built on it must arrive with those 17 figures in hand.
-    Reporting it as an un-interviewed domain, which an earlier version did, called
-    the one answered domain in the Store an empty one."""
-    store_root["root"] = _store_declaring("datacentre", "design_basis.yaml")
+    facility_01. A platform built on it must arrive with those 17 figures in
+    hand. K-S5 (client content out) moved the filled register out of the Store
+    into a test fixture; the Store now ships the NULL register, so this test
+    builds the kit from the fixture."""
+    real_kit = _store_declaring(
+        "datacentre", "design_basis.yaml", "manifest.yaml", "invariants.yaml"
+    ) / "app" / "blocks" / "datacentre"
+    fixture = REAL_STORE / "tests/fixtures/kits/datacentre/design_basis.yaml"
+    assert fixture.is_file(), "the filled datacentre register fixture left the Store"
+    blocks = tmp_path / "store" / "app" / "blocks" / "datacentre"
+    blocks.mkdir(parents=True, exist_ok=True)
+    for name in ("manifest.yaml", "invariants.yaml"):
+        (blocks / name).write_text(
+            (real_kit / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    (blocks / "design_basis.yaml").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    store_root["root"] = tmp_path / "store"
 
     product = tmp_path / "product"
     ctx = FakeCtx(product, vertical="datacentre")
