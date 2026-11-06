@@ -158,6 +158,53 @@ def test_render_product_includes_app_and_frontend_only_bounded():
 # --- independence (The_Level #6) ---------------------------------------------
 
 
+@pytest.mark.parametrize("content", ['[{"question": "q", "verdict": "PASS", "evidence": "e"}]', "[]"])
+def test_grader_complete_returns_the_models_raw_content(monkeypatch, content):
+    """Layer 2's completion posts to the dedicated grader endpoint and
+    returns the model's raw content text."""
+    import httpx
+
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "grader-key")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.graderco.example/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "grader-model-1")
+    calls: list = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": content}}]}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json=None, headers=None):
+            calls.append((url, json, headers))
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    assert grader._grader_complete([{"role": "system", "content": "x"}]) == content
+    assert calls
+
+
+@pytest.mark.parametrize("missing_env", [grader.GRADER_LLM_KEY_ENV, grader.GRADER_LLM_BASE_URL_ENV])
+def test_grader_complete_refuses_without_a_complete_config(monkeypatch, missing_env):
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "grader-key")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.graderco.example/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "grader-model-1")
+    monkeypatch.delenv(missing_env)
+    with pytest.raises(RuntimeError):
+        grader._grader_complete([{"role": "system", "content": "x"}])
+
+
 @pytest.mark.parametrize(
     "provider,model,version",
     [("DeepSeek", "deepseek-v3", ""), ("graderco", "g-1", "1.0")],
@@ -176,6 +223,9 @@ def test_provider_token_is_the_registrable_root(host, expected):
 def test_self_grading_is_refused_with_the_identities_quoted(monkeypatch):
     from app.factory import code_cli
 
+    # The writer's own identity: the DeepSeek coder path, as production
+    # configures it (DEEPSEEK_API_KEY selects the deepseek provider).
+    monkeypatch.setenv(code_cli.DEEPSEEK_API_KEY_ENV, "writer-key")
     writer = grader.writer_identity()
     monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
     monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.deepseek.com/v1")
@@ -307,14 +357,80 @@ def test_boot_product_failure_paths_are_named_not_raised(tmp_path, workspace_kin
 # --- the grader itself --------------------------------------------------------
 
 
-def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grader, green_ui):
+@pytest.mark.parametrize("ui_modules", [["portal"], ["map", "board"]])
+def test_grade_ui_without_a_booted_product_is_recorded_not_run(tmp_path, ui_modules):
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    bp = _bp(IDS, ui_modules=ui_modules)
+    ui, ran, not_run = grader._grade_ui(bp, ws, ws.parent / "g", None)
+    assert ran is False
+    assert not_run
+    assert ui.ok is False
+
+
+@pytest.mark.parametrize("boot_url", ["http://127.0.0.1:9", "http://127.0.0.1:10"])
+def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
+    """When the product boots, the UI layer grades the BOOTED url -- the boot
+    block's effect is observable, so dropping it fails this test."""
+    import app.factory.build.product_grader as pg
+
+    class _Proc:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr(grader, "boot_product", lambda root: (_Proc(), boot_url))
+    recorded: dict = {}
+
+    class _Ui:
+        @property
+        def ran(self):
+            return True
+
+        @property
+        def failing(self):
+            return []
+
+        @property
+        def errors(self):
+            return []
+
+        @property
+        def ok(self):
+            return True
+
+        def to_dict(self):
+            return {"ok": True, "ran": True, "failing": [], "steps": []}
+
+    class _UiGrader:
+        @staticmethod
+        def grade_ui(blueprint, workdir, *, base_url):
+            recorded["base_url"] = base_url
+            return _Ui()
+
+        @staticmethod
+        def UiGrade(steps, errors):
+            return grader._UiNotRun(errors[0] if errors else "")
+
+    monkeypatch.setattr(pg, "ui_grader", _UiGrader)
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    bp = _bp(IDS)
+    ui, ran, not_run = grader._grade_ui(bp, ws, ws.parent / "g", None)
+    assert ran is True
+    assert recorded["base_url"] == boot_url
+    assert ui.ok is True
+
+
+@pytest.mark.parametrize("brief_summary", ["a generic brief about entries and amounts", "another brief about owners"])
+def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grader, green_ui, brief_summary):
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
     verdict = grader.run_grader(
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
-        compiled_brief={"summary": "a generic brief about entries and amounts"},
+        compiled_brief={"summary": brief_summary},
     )
     assert verdict.tier == grader.CERTIFIED
     assert verdict.ok
@@ -324,10 +440,11 @@ def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grad
     assert grade_record.certification_refusal(ws) is None
 
 
-def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path, green_ui):
+@pytest.mark.parametrize("product_id", ["invented-product", "invented-product-two"])
+def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path, green_ui, product_id):
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
-    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id=product_id)
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert any("may not grade the writer's tree" in item for item in verdict.items)
@@ -347,24 +464,26 @@ def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, inde
     assert f"function grade FAIL: {bad_cid}" in verdict.items
 
 
-def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path, green_ui, monkeypatch):
+@pytest.mark.parametrize("crash_message", ["grader exploded", "grader blew up"])
+def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path, green_ui, monkeypatch, crash_message):
     from app.factory.build.product_grader import function_grader as fg
 
     def boom(*args, **kwargs):
-        raise RuntimeError("grader exploded")
+        raise RuntimeError(crash_message)
 
     monkeypatch.setattr(fg, "grade_functions", boom)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
-    assert any("grader exploded" in item for item in verdict.items)
+    assert any(crash_message in item for item in verdict.items)
     assert (ws / "grade.json").is_file()
     assert grade_record.certification_refusal(ws) is not None
 
 
-def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_grader, green_ui, monkeypatch):
-    monkeypatch.setattr(grader, "_grader_complete", lambda messages: "not json")
+@pytest.mark.parametrize("bad_answer", ["not json", "{}"])
+def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_grader, green_ui, monkeypatch, bad_answer):
+    monkeypatch.setattr(grader, "_grader_complete", lambda messages: bad_answer)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.ERROR
@@ -372,12 +491,13 @@ def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_gra
     assert any("Layer 2 did not run" in item for item in verdict.items)
 
 
-def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, independent_grader, green_ui):
-    brief = 'The client "Acme Trading Co" runs 240 invoices through the portal.'
+@pytest.mark.parametrize("literal", ["Acme Trading Co", "Nimbus"])
+def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, independent_grader, green_ui, literal):
+    brief = f'The client "{literal}" runs 240 invoices through the portal.'
     ws = _workspace(
         tmp_path,
         {i: READS_INPUT for i in IDS},
-        extra={"app/constants.py": 'CLIENT = "Acme Trading Co"\n'},
+        extra={"app/constants.py": f'CLIENT = "{literal}"\n'},
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
@@ -388,16 +508,17 @@ def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, in
         prompt_text="",
     )
     assert verdict.tier == grader.NOT_CERTIFIED
-    assert any("Acme Trading Co" in item for item in verdict.items)
+    assert any(literal in item for item in verdict.items)
 
 
-def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independent_grader, green_ui):
-    brief = "The project is code-named Nimbus for its portal."
-    prompt = "Build the portal for the Nimbus project."
+@pytest.mark.parametrize("token", ["Nimbus", "Zephyr"])
+def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independent_grader, green_ui, token):
+    brief = f"The project is code-named {token} for its portal."
+    prompt = f"Build the portal for the {token} project."
     ws = _workspace(
         tmp_path,
         {i: READS_INPUT for i in IDS},
-        extra={"app/settings.py": 'PROJECT = "Nimbus"\n'},
+        extra={"app/settings.py": f'PROJECT = "{token}"\n'},
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
@@ -445,30 +566,44 @@ def _fake_pass_harness(monkeypatch):
     return roles
 
 
-def test_runner_ends_the_run_on_a_not_certified_verdict(smoke_blueprint, tmp_path, monkeypatch):
-    """A NOT_CERTIFIED verdict ends the run with the quoted items -- no
-    rework event, no decide(), no tester involvement."""
+@pytest.mark.parametrize("capability", ["zorblat_check", "plinket_check"])
+def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_blueprint, tmp_path, monkeypatch, capability):
+    """A NOT_CERTIFIED verdict hands the quoted items back to the WRITER in
+    the build -- the grader's own two rounds; a third failure stops the run.
+    Never the TESTER's machinery."""
     from app.factory.build import grader as grader_mod
+    from app.factory.build.authority import BuildRole
     from app.factory.build.ledger import EventKind
-    from app.factory.build.runner import Outcome, RoleRunner
+    from app.factory.build.roles import RoleResult
+    from app.factory.build.runner import RoleRunner
 
     monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
 
     def not_certified(**kwargs):
         return grader_mod.GraderVerdict(
-            tier=grader_mod.NOT_CERTIFIED, items=("function grade FAIL: zorblat_check",)
+            tier=grader_mod.NOT_CERTIFIED, items=(f"function grade FAIL: {capability}",)
         )
 
     monkeypatch.setattr(grader_mod, "run_grader", not_certified)
+    captured: list = []
     roles = _fake_pass_harness(monkeypatch)
+
+    def recording_writer(ctx):
+        captured.append(tuple(ctx.work_list))
+        return RoleResult(ok=True, detail="fake pass")
+
+    roles[BuildRole.WRITER] = recording_writer
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
     outcome = runner.run()
     assert not outcome.ok
-    assert outcome.outcome is Outcome.FAILED_GATE
-    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED:")
-    assert "function grade FAIL: zorblat_check" in outcome.detail
+    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 2 round(s)")
+    assert f"function grade FAIL: {capability}" in outcome.detail
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
-    assert reworks == []
+    assert len(reworks) == 2
+    assert all((r.payload or {}).get("gate") == grader_mod.GRADER_GATE for r in reworks)
+    assert all((r.payload or {}).get("source") == "GRADER" for r in reworks)
+    # the writer received the quoted items as its work list
+    assert any(f"function grade FAIL: {capability}" in item for wl in captured for item in wl)
 
 
 def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path, monkeypatch):

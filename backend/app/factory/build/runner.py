@@ -2798,20 +2798,75 @@ class RoleRunner:
                 # The GRADER, inside the build: the writer's tree is graded
                 # the moment its own gate passes, BEFORE the TESTER ever
                 # judges it. CERTIFIED (or a disabled grader) falls through
-                # to the ok path unchanged; any other verdict ends the run
-                # with the quoted items -- the grader verdicts, it never
-                # reworks and never shares a budget with the TESTER.
+                # to the ok path unchanged; NOT_CERTIFIED hands the quoted
+                # items back to the WRITER for repair in this build (the
+                # grader's OWN two rounds -- never the TESTER's budget, never
+                # its work list); a third failure, or an ERROR verdict, ends
+                # the run with the quoted items.
                 if verdict.ok and role is BuildRole.WRITER:
                     grade_verdict = self._writer_grader()
                     if grade_verdict is not None:
-                        return self._finish(
-                            Outcome.FAILED_GATE,
-                            f"GRADER: {grade_verdict.tier}: "
-                            + ("; ".join(grade_verdict.items)[:500] or "-"),
-                            phase=role,
-                            rework=rework_used,
-                            findings=list(grade_verdict.items),
+                        from app.factory.build.grader import ERROR, GRADER_GATE, NOT_CERTIFIED
+
+                        if grade_verdict.tier == ERROR:
+                            return self._finish(
+                                Outcome.FAILED_GATE,
+                                "GRADER: ERROR: "
+                                + ("; ".join(grade_verdict.items)[:500] or "-"),
+                                phase=role,
+                                rework=rework_used,
+                                findings=list(grade_verdict.items),
+                            )
+                        # NOT_CERTIFIED: the writer's handback, two rounds.
+                        grader_events = [
+                            e for e in self._reworks()
+                            if (e.payload or {}).get("gate") == GRADER_GATE
+                        ]
+                        rounds = len(grader_events)
+                        previous = set()
+                        for event in grader_events:
+                            previous.update((event.payload or {}).get("failure_names") or [])
+                        items = tuple(grade_verdict.items)
+                        if rounds >= REWORK_BUDGET:
+                            repeated = sorted(set(items) & previous)
+                            stop_reason = (
+                                "same failing items again: " + "; ".join(repeated)[:300]
+                                if repeated
+                                else f"grader rework budget of {REWORK_BUDGET} rounds spent"
+                            )
+                            return self._finish(
+                                Outcome.FAILED_GATE,
+                                f"GRADER: {NOT_CERTIFIED} after {rounds} round(s) "
+                                f"-- {stop_reason}: " + ("; ".join(items)[:400] or "-"),
+                                phase=role,
+                                rework=rework_used,
+                                findings=list(items),
+                            )
+                        self._grant_rework_wall(
+                            BuildRole.WRITER, build_round=self._rework_rounds_this_build() + 1
                         )
+                        self.ledger.append(
+                            EventKind.REWORK,
+                            role=BuildRole.WRITER,
+                            detail=(
+                                f"GRADER: {NOT_CERTIFIED} -- writer handback "
+                                f"round {rounds + 1}/{REWORK_BUDGET}: "
+                                + ("; ".join(items)[:400] or "-")
+                            ),
+                            payload={
+                                "gate": GRADER_GATE,
+                                "source": "GRADER",
+                                "findings": list(items),
+                                "work_list": list(items),
+                                "failure_names": list(items),
+                                "round": rounds + 1,
+                                "grader_tier": NOT_CERTIFIED,
+                            },
+                        )
+                        work_list = items
+                        done.discard(REWORK_TARGET)
+                        index = BUILD_PHASES.index(REWORK_TARGET)
+                        continue
 
                 if verdict.ok:
                     # R3: the branch of record is checkpointed after every

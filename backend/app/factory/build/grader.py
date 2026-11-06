@@ -318,9 +318,9 @@ def _provider_token(host: str) -> str:
 
 def _norm_identity(provider: str, model: str, version: str = "") -> str:
     """The identity triple, normalised for comparison: provider, model and
-    version, case- and whitespace-insensitive -- a check defeated by
-    capitalisation is not a check (The_Level #6)."""
-    return ":".join((provider, model, version)).strip().lower()
+    version, case- and whitespace-insensitive (every part stripped) -- a
+    check defeated by capitalisation is not a check (The_Level #6)."""
+    return ":".join(str(part).strip() for part in (provider, model, version)).lower()
 
 
 def writer_identity(env: Optional[Mapping[str, str]] = None) -> str:
@@ -458,18 +458,8 @@ def _grade_ui(
     """The UI layer, honestly: it runs when the product boots and the
     playwright toolchain exists; otherwise it is recorded as NOT RUN -- a
     quoted gap, never a fabricated green."""
-    ui: Any
-    ui_ran = False
     ui_not_run = ""
     boot_proc: Optional[subprocess.Popen] = None
-    try:
-        from app.factory.build.product_grader import ui_grader
-    except Exception as exc:  # noqa: BLE001 -- a missing optional dependency
-        ui_grader = None
-        ui_not_run = f"UI run did not happen: {type(exc).__name__}: {exc}"
-    if ui_grader is None:
-        ui = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
-        return ui, ui_ran, ui_not_run
     if base_url is None:
         try:
             boot_proc, booted = boot_product(root)
@@ -485,6 +475,14 @@ def _grade_ui(
             base_url = None
         else:
             base_url = booted
+    try:
+        from app.factory.build.product_grader import ui_grader
+    except Exception as exc:  # noqa: BLE001 -- a missing optional dependency
+        ui_grader = None
+        ui_not_run = ui_not_run or f"UI run did not happen: {type(exc).__name__}: {exc}"
+    if ui_grader is None:
+        ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
+        return ui, False, ui_not_run
     try:
         if base_url:
             ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url)
@@ -629,16 +627,7 @@ def run_grader(
     if outage:
         return GraderVerdict(tier=ERROR, items=(outage,), ungraded=tuple(ungraded), grade=grade)
 
-    # A Layer 2 that never answered is an outage -- a verdict about the run
-    # (the grader could not grade), never about the tree.
-    if l2.get("ran") is not True:
-        return GraderVerdict(
-            tier=ERROR,
-            items=(f"Layer 2 did not run: {'; '.join(str(q) for q in l2.get('open_fails') or [])}",),
-            ungraded=tuple(ungraded),
-            grade=grade,
-        )
-
+    # Deterministic reds, computed once and quoted whatever the tier.
     items: List[str] = []
     fn_failing = list(functions.failing)
     if not functions.ok:
@@ -648,8 +637,9 @@ def run_grader(
     if ui_ran:
         for name in ui_failing:
             items.append(f"UI step FAIL: {name}")
-    for question in l2.get("open_fails") or []:
-        items.append(f"re-run writer on: {question}")
+    if not refusal:
+        for question in l2.get("open_fails") or []:
+            items.append(f"re-run writer on: {question}")
     for finding in (hardwiring or {}).get("findings") or []:
         kind = finding.get("kind") if isinstance(finding, Mapping) else ""
         if kind == "function":
@@ -660,6 +650,26 @@ def run_grader(
             items.append(f"remove baked literals from {rel}: {finding.get('literals')}")
         elif kind == "prompt_leak":
             items.append(f"stop leaking the prompt into the source: {finding.get('literals')}")
+
+    # A refused layer is a quoted NOT_CERTIFIED gap -- the report says what
+    # it did not check, and no tier is issued over the gap.
+    if refusal:
+        return GraderVerdict(
+            tier=NOT_CERTIFIED,
+            items=(refusal,) + tuple(items),
+            ungraded=tuple(ungraded),
+            grade=grade,
+        )
+
+    # A Layer 2 that never answered is an outage -- a verdict about the run
+    # (the grader could not grade), never about the tree.
+    if l2.get("ran") is not True:
+        return GraderVerdict(
+            tier=ERROR,
+            items=(f"Layer 2 did not run: {'; '.join(str(q) for q in l2.get('open_fails') or [])}",),
+            ungraded=tuple(ungraded),
+            grade=grade,
+        )
 
     # A refused or unrun layer blocks certification: the report says what it
     # did not check, and no tier is issued over the gap.
