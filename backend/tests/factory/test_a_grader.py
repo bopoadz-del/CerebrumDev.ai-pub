@@ -598,8 +598,10 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
     assert not outcome.ok
     assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 2 round(s)")
     assert f"function grade FAIL: {capability}" in outcome.detail
-    # the run started its ledger (pins run()'s first if for CI-M)
-    assert runner.ledger.exists()
+    # the run started its ledger: the first event is RUN_STARTED (pins
+    # run()'s first if for CI-M -- start_run writes exactly that event)
+    events = list(runner.ledger.events())
+    assert events and events[0].kind is EventKind.RUN_STARTED
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
     assert len(reworks) == 2
     assert all((r.payload or {}).get("gate") == grader_mod.GRADER_GATE for r in reworks)
@@ -623,8 +625,10 @@ def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
     outcome = runner.run()
     assert outcome.ok, outcome.detail
-    # the run started its ledger (pins run()'s first if for CI-M)
-    assert runner.ledger.exists()
+    # the run started its ledger: the first event is RUN_STARTED (pins
+    # run()'s first if for CI-M -- start_run writes exactly that event)
+    events = list(runner.ledger.events())
+    assert events and events[0].kind is EventKind.RUN_STARTED
     graders = [
         e for e in runner.ledger.events()
         if e.kind is EventKind.NOTE and (e.payload or {}).get("grader_tier") == grader_mod.CERTIFIED
