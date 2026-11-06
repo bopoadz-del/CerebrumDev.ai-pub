@@ -154,3 +154,13 @@ def green_product_grade(monkeypatch):
     from app.factory.build.product_grader import grade_record
 
     monkeypatch.setattr(grade_record, "certification_refusal", lambda root: None)
+
+
+@pytest.fixture(autouse=True)
+def _internal_audit_off_by_default(monkeypatch):
+    """The writer-side internal audit is env-gated (FACTORY_INTERNAL_AUDIT)
+    and defaults ON in production. The suite runs with it OFF: loop-driving
+    tests exercise phase and rework mechanics, not the audit, whose own
+    behaviour is covered in test_internal_audit.py (which opts back in per
+    test by deleting the env var)."""
+    monkeypatch.setenv("FACTORY_INTERNAL_AUDIT", "0")
