@@ -192,6 +192,13 @@ def run_collector(ctx: RoleContext) -> RoleResult:
     for bid in resolved:
         seen.setdefault(bid, None)
 
+    # Import closure is a publish gate (Prompt 2): run the CLONER's closure
+    # rule over the pinned Store checkout NOW, so an unresolvable app.*
+    # import fails the plan with the block and module named -- the architect
+    # re-selects instead of the build dying later in CLONER.
+    if seen:
+        _collector_closure_gate(ctx, list(seen))
+
     reviews: List[Dict[str, Any]] = []
     review_model = ""
     try:
@@ -243,6 +250,29 @@ def run_collector(ctx: RoleContext) -> RoleResult:
             "intake_blueprint": intake,
         },
     )
+
+
+def _collector_closure_gate(ctx: RoleContext, block_ids: Sequence[str]) -> None:
+    """Fail the plan at COLLECTOR when a selected block's Store-runtime
+    imports do not close inside the pinned Store checkout.
+
+    Reuses the SAME closure rule CLONER runs (_closure_over_runtime), so an
+    unresolvable ``app.core.*`` / ``app.blocks.*`` reference is named at
+    planning time instead of surfacing later as a clone failure. Read-only.
+    """
+    if not ctx.blocks_root:
+        return
+    blocks_root = Path(ctx.blocks_root)
+    runtime_ids = []
+    for bid in block_ids:
+        source = _block_source_dir(bid, blocks_root)
+        if source is not None and _shim_needs_runtime(source):
+            runtime_ids.append(bid)
+    if not runtime_ids:
+        return
+    defs = _store_block_defs(blocks_root)
+    # Raises RoleError naming the block/module on any hard, unresolvable ref.
+    _closure_over_runtime(blocks_root, runtime_ids, defs)
 
 
 def _collector_block_meta(ctx: RoleContext, block_id: str) -> Dict[str, Any]:
