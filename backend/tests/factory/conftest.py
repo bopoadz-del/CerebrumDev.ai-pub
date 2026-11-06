@@ -25,7 +25,6 @@ from tests.conftest import (  # noqa: F401
 # claiming to drive the same socket.
 
 import importlib  # noqa: E402
-import os  # noqa: E402
 import sys  # noqa: E402
 
 import yaml  # noqa: E402
@@ -155,21 +154,3 @@ def green_product_grade(monkeypatch):
     from app.factory.build.product_grader import grade_record
 
     monkeypatch.setattr(grade_record, "certification_refusal", lambda root: None)
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _grader_off_by_default():
-    """The in-build GRADER is env-gated (FACTORY_GRADER) and defaults ON in
-    production. The suite runs with it OFF: loop-driving tests exercise phase
-    and rework mechanics, not the grader, whose own behaviour is covered in
-    test_grader.py (which opts back in per test by deleting the env var).
-    Session-scoped so module/session fixtures that build a platform are
-    covered too -- a function-scoped gate would miss them (they run before
-    function fixtures)."""
-    previous = os.environ.get("FACTORY_GRADER")
-    os.environ["FACTORY_GRADER"] = "0"
-    yield
-    if previous is None:
-        os.environ.pop("FACTORY_GRADER", None)
-    else:
-        os.environ["FACTORY_GRADER"] = previous

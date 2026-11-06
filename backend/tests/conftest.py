@@ -96,6 +96,24 @@ def _no_ambient_fallback_leg(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _grader_off_by_default():
+    """The in-build GRADER is env-gated (FACTORY_GRADER) and defaults ON in
+    production. The suite runs with it OFF: build-driving tests exercise
+    phase and rework mechanics, not the grader, whose own behaviour is
+    covered in test_a_grader.py (which opts back in per test by deleting the
+    env var). Session-scoped so module/session fixtures that build a
+    platform are covered too -- a function-scoped gate would miss them
+    (they run before function fixtures)."""
+    previous = os.environ.get("FACTORY_GRADER")
+    os.environ["FACTORY_GRADER"] = "0"
+    yield
+    if previous is None:
+        os.environ.pop("FACTORY_GRADER", None)
+    else:
+        os.environ["FACTORY_GRADER"] = previous
+
+
 @pytest.fixture
 def client() -> TestClient:
     """Shared FastAPI test client."""
