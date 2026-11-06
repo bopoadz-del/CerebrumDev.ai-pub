@@ -88,16 +88,6 @@ REWORK_BUDGET = 2
 #: Hard ceiling on rework rounds for the whole build, every gate together.
 REWORK_CEILING = 6
 
-
-@dataclass
-class _AuditOutcome:
-    """What the writer-side internal audit returned: a failed gate verdict
-    when the grade is RED (writer work), or a named outage when the grader
-    itself could not run (terminal -- never writer work)."""
-
-    verdict: Optional[Any] = None
-    outage: Optional[str] = None
-
 #: The four things the runner can do with a failed phase verdict. One rule
 #: (``RoleRunner.decide``) picks one, from data, and records it.
 from app.factory.build import findings as _findings  # noqa: E402
@@ -901,23 +891,24 @@ class RoleRunner:
     def _rework_rounds_this_cycle(self) -> int:
         return sum(1 for e in self._cycle_events() if e.kind is EventKind.REWORK)
 
-    def _writer_internal_audit(self) -> Optional[_AuditOutcome]:
-        """The F-8 internal audit on the writer's tree, BEFORE the TESTER
-        gate. Returns None when the audit is disabled or green, a failed
-        GateResult when the grade is RED (writer work through the normal
-        rework path), or a named outage when the grader itself could not
-        run (terminal -- the writer cannot fix the grader).
+    def _writer_grader(self) -> Optional[Any]:
+        """The GRADER: the writer's tree is graded BEFORE the TESTER judges
+        it. Returns None when the grader is disabled or the verdict is
+        CERTIFIED (the run proceeds); otherwise returns the GraderVerdict
+        for the loop to end the run on -- the grader verdicts, it never
+        reworks: no decide(), no budget, no work list.
 
-        Layer 2's completion call uses the factory chat config; the vault
-        and every grader scratch path live OUTSIDE the writer's workspace.
+        Layer 2 runs only under an independent grader identity
+        (CEREBRUM_GRADER_LLM_*); the vault and every grader scratch path
+        live OUTSIDE the writer's workspace.
         """
-        from app.factory.build.internal_audit import (
-            AUDIT_GATE,
-            audit_enabled,
-            run_internal_audit,
+        from app.factory.build.grader import (
+            GRADER_GATE,
+            grader_enabled,
+            run_grader,
         )
 
-        if not audit_enabled():
+        if not grader_enabled():
             return None
         from app.factory.build.writer_brief import writer_system_brief
 
@@ -932,7 +923,7 @@ class RoleRunner:
             or self.workspace.name
         )
         try:
-            result = run_internal_audit(
+            verdict = run_grader(
                 blueprint=self.blueprint,
                 workspace=self.workspace,
                 product_id=product_id,
@@ -944,49 +935,26 @@ class RoleRunner:
             self.ledger.append(
                 EventKind.NOTE,
                 role=BuildRole.WRITER,
-                detail=f"internal audit crashed: {type(exc).__name__}: {exc}",
-                payload={"audit_gate": AUDIT_GATE, "audit_crash": True},
+                detail=f"grader crashed: {type(exc).__name__}: {exc}",
+                payload={"grader_gate": GRADER_GATE, "grader_crash": True},
             )
-            return _AuditOutcome(outage=f"{type(exc).__name__}: {exc}")
-        if result.unavailable:
-            self.ledger.append(
-                EventKind.NOTE,
-                role=BuildRole.WRITER,
-                detail=f"internal audit unavailable: {result.unavailable}",
-                payload={"audit_gate": AUDIT_GATE, "audit_unavailable": True},
-            )
-            return _AuditOutcome(outage=result.unavailable)
-        if result.writer_refusal:
-            self.ledger.append(
-                EventKind.NOTE,
-                role=BuildRole.WRITER,
-                detail=f"internal audit RED: {result.writer_refusal}",
-                payload={"audit_gate": AUDIT_GATE, "audit_red": True},
-            )
-            return _AuditOutcome(
-                verdict=GateResult(
-                    ok=False,
-                    gate=AUDIT_GATE,
-                    detail=result.writer_refusal,
-                    reason="grade_red",
-                    findings=list(result.findings),
-                    payload={
-                        "finding_checks": list(result.checks),
-                        "finding_shape": "grade_red",
-                    },
-                )
-            )
+            from app.factory.build.grader import ERROR, GraderVerdict
+
+            return GraderVerdict(tier=ERROR, items=(f"grader crashed: {type(exc).__name__}: {exc}",))
         self.ledger.append(
             EventKind.NOTE,
             role=BuildRole.WRITER,
-            detail="internal audit green; grade.json written before TESTER",
+            detail=f"GRADER: {verdict.tier}: " + ("; ".join(verdict.items)[:400] or "-"),
             payload={
-                "audit_gate": AUDIT_GATE,
-                "ui_ran": result.ui_ran,
-                "ui_not_run": result.ui_not_run_reason or None,
+                "grader_gate": GRADER_GATE,
+                "grader_tier": verdict.tier,
+                "grader_items": list(verdict.items),
+                "grader_ungraded": list(verdict.ungraded),
             },
         )
-        return None
+        if verdict.ok:
+            return None
+        return verdict
 
     def _last_rework_failures(self) -> list:
         """Failure names that triggered the most recent rework round."""
@@ -1024,13 +992,6 @@ class RoleRunner:
 
     def _split_by_brief(self, verdict: GateResult) -> Any:
         from app.factory.build import brief_gates
-        from app.factory.build.internal_audit import AUDIT_GATE
-
-        # The internal audit is a mandatory factory gate, never an advisory:
-        # its failures are always acted on, whether or not this build's brief
-        # defined the check that caught them.
-        if str(getattr(verdict, "gate", "") or "") == AUDIT_GATE:
-            return None
 
         defined = self._brief_defined_checks()
         if defined is None:
@@ -2834,25 +2795,23 @@ class RoleRunner:
                         + list(halt.get("contract_misses") or [])[:8],
                     )
 
-                # Writer-side internal audit: the F-8 grader runs on the
-                # writer's tree the moment its own gate passes, BEFORE the
-                # TESTER ever judges it. A red grade replaces this verdict
-                # with the audit's failed one (the shared failed-gate path
-                # below sends the writer back round); a grader outage ends
-                # the run with the named reason; green (or disabled) falls
-                # through to the ok path unchanged.
+                # The GRADER, inside the build: the writer's tree is graded
+                # the moment its own gate passes, BEFORE the TESTER ever
+                # judges it. CERTIFIED (or a disabled grader) falls through
+                # to the ok path unchanged; any other verdict ends the run
+                # with the quoted items -- the grader verdicts, it never
+                # reworks and never shares a budget with the TESTER.
                 if verdict.ok and role is BuildRole.WRITER:
-                    audited = self._writer_internal_audit()
-                    if audited is not None:
-                        if audited.outage:
-                            return self._finish(
-                                Outcome.FAILED_GATE,
-                                f"internal audit unavailable: {audited.outage}",
-                                phase=role,
-                                rework=rework_used,
-                                findings=[f"audit_outage: {audited.outage}"],
-                            )
-                        verdict = audited.verdict
+                    grade_verdict = self._writer_grader()
+                    if grade_verdict is not None:
+                        return self._finish(
+                            Outcome.FAILED_GATE,
+                            f"GRADER: {grade_verdict.tier}: "
+                            + ("; ".join(grade_verdict.items)[:500] or "-"),
+                            phase=role,
+                            rework=rework_used,
+                            findings=list(grade_verdict.items),
+                        )
 
                 if verdict.ok:
                     # R3: the branch of record is checkpointed after every

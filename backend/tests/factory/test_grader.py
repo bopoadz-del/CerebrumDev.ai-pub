@@ -1,0 +1,504 @@
+"""The in-build GRADER: the writer's tree is graded BEFORE the TESTER judges it.
+
+The grader is never the thing it grades (The_Level #6): deterministic
+kernel layers grade freely; the model layer runs only under an INDEPENDENT
+grader identity, and self-grading is REFUSED with the refusal quoted. The
+grader verdicts -- it never reworks.
+
+Nothing in this file names a real product, client, vertical or capability:
+the fixtures are invented.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+# Imported by full module path so the CI-M mutation gate (which selects
+# tests by the module's dotted token) associates this file with every
+# function in grader.py.
+import app.factory.build.grader as grader
+from app.factory.build.product_grader import grade_record, layer2
+
+READS_INPUT = (
+    "def handle(payload):\n"
+    "    return {'ok': True, 'echo': sorted(payload.items())}\n"
+)
+CONSTANT = "def handle(payload):\n    return {'ok': True}\n"
+
+IDS = ["intake_form", "invoice_total", "visit_log", "tenant_notice"]
+
+
+def _workspace(tmp_path: Path, bodies: dict, extra: dict = None) -> Path:
+    actions = tmp_path / "app" / "actions"
+    actions.mkdir(parents=True)
+    (tmp_path / "app" / "__init__.py").write_text("")
+    (actions / "__init__.py").write_text("")
+    for cid, body in bodies.items():
+        (actions / f"{cid}.py").write_text(body)
+    for rel, text in (extra or {}).items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return tmp_path
+
+
+def _bp(ids, ui_modules=()):
+    return {
+        "capabilities": [{"id": i, "description": f"record the {i} entry with owner and amount"} for i in ids],
+        "ui_modules": list(ui_modules),
+    }
+
+
+def _passing_l2(blueprint):
+    """A Layer-2 completion that PASSes every generated question, quoting
+    evidence -- built from the blueprint, never hand-answered."""
+
+    def complete(messages):
+        questions = layer2.layer2_questions(blueprint)
+        return json.dumps(
+            [
+                {"question": q, "verdict": "PASS", "evidence": "the product delivers this (quoted)"}
+                for q in questions
+            ]
+        )
+
+    return complete
+
+
+@pytest.fixture()
+def independent_grader(monkeypatch):
+    """An independent grader model config (provider/model differ from the
+    writer's) plus a stubbed completion -- so Layer 2 runs without a network."""
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "grader-key")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.graderco.example/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "grader-model-1")
+    monkeypatch.setattr(grader, "_grader_complete", _passing_l2(_bp(IDS)))
+
+
+@pytest.fixture()
+def green_ui(monkeypatch):
+    """The UI layer runs and is green, without a real product or browser."""
+
+    def fake_grade_ui(blueprint, root, gradroot, base_url):
+        return grader._UiNotRun("unused"), False, ""
+
+    class _GreenUi:
+        @property
+        def ran(self):
+            return True
+
+        @property
+        def failing(self):
+            return []
+
+        @property
+        def errors(self):
+            return []
+
+        @property
+        def ok(self):
+            return True
+
+        def to_dict(self):
+            return {"ok": True, "ran": True, "failing": [], "steps": []}
+
+    monkeypatch.setattr(grader, "_grade_ui", lambda blueprint, root, gradroot, base_url: (_GreenUi(), True, ""))
+    return fake_grade_ui
+
+
+# --- derivation (no hardwiring) ---------------------------------------------
+
+
+def test_derive_forbidden_takes_brief_shapes_not_prose():
+    brief = (
+        'The client "Acme Trading Co" needs 240 invoices and a "Nimbus" portal. '
+        "Plain lowercase prose words are not fixture-shaped."
+    )
+    forbidden = grader.derive_forbidden({}, brief, "")
+    assert "Acme Trading Co" in forbidden
+    assert "Nimbus" in forbidden
+    assert "240" in forbidden
+    assert "prose" not in forbidden
+    assert "lowercase" not in forbidden
+
+
+def test_derive_forbidden_reads_structured_blueprint_values():
+    bp = {"client": "Blue Harbor Estates", "vertical": "property"}
+    forbidden = grader.derive_forbidden(bp, "some brief", "")
+    assert "Blue Harbor Estates" in forbidden
+    assert "property" in forbidden
+
+
+def test_derive_forbidden_takes_document_references_and_file_shapes():
+    brief = "See document:handover_notes.docx and the rates_sheet.xlsx values."
+    forbidden = grader.derive_forbidden({}, brief, "")
+    assert "handover_notes.docx" in forbidden
+    assert "handover_notes" in forbidden
+    assert "rates_sheet.xlsx" in forbidden
+
+
+def test_render_product_includes_app_and_frontend_only_bounded():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _workspace(root, {i: READS_INPUT for i in IDS[:2]}, extra={
+            "frontend/src/app.tsx": "export const App = () => null;",
+            ".venv/x.py": "SECRET = 'should never appear'",
+        })
+        rendered = grader.render_product(root)
+        assert "app/actions/intake_form.py" in rendered
+        assert "frontend/src/app.tsx" in rendered
+        assert "should never appear" not in rendered
+
+
+# --- independence (The_Level #6) ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provider,model,version",
+    [("DeepSeek", "deepseek-v3", ""), ("graderco", "g-1", "1.0")],
+)
+def test_identity_is_normalised_case_and_space_insensitive(provider, model, version):
+    assert grader._norm_identity(provider.upper(), " " + model + " ", version) == grader._norm_identity(
+        provider.lower(), model, version
+    )
+
+
+@pytest.mark.parametrize("host,expected", [("api.deepseek.com", "deepseek"), ("openrouter.ai", "openrouter")])
+def test_provider_token_is_the_registrable_root(host, expected):
+    assert grader._provider_token(host) == expected
+
+
+def test_self_grading_is_refused_with_the_identities_quoted(monkeypatch):
+    from app.factory import code_cli
+
+    writer = grader.writer_identity()
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.deepseek.com/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, code_cli.DEFAULT_DEEPSEEK_MODEL)
+    refusal = grader.independence_refusal(writer, grader.grader_llm_config())
+    assert refusal is not None
+    assert grader._norm_identity("deepseek", code_cli.DEFAULT_DEEPSEEK_MODEL) in refusal
+
+
+def test_an_unconfigured_grader_is_refused_not_fallbacken():
+    refusal = grader.independence_refusal(grader.writer_identity(), None)
+    assert refusal is not None
+    assert "CEREBRUM_GRADER_LLM_*" in refusal
+
+
+def test_an_independent_grader_is_not_refused(monkeypatch):
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.othermodel.example/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "other-model")
+    assert grader.independence_refusal(grader.writer_identity(), grader.grader_llm_config()) is None
+
+
+# --- the smallest helpers (mutation-gate coverage) ---------------------------
+
+
+@pytest.mark.parametrize("env_value,expected", [("0", False), ("1", True)])
+def test_grader_enabled_reads_the_switch(monkeypatch, env_value, expected):
+    monkeypatch.setenv(grader.DISABLE_ENV, env_value)
+    assert grader.grader_enabled() is expected
+
+
+class _ModelBlueprint:
+    def __init__(self, payload):
+        self.__dict__.update(payload)
+
+    def model_dump(self):
+        return dict(self.__dict__)
+
+
+@pytest.mark.parametrize(
+    "blueprint", [{"vertical": "alpha"}, _ModelBlueprint({"vertical": "beta"})]
+)
+def test_as_mapping_accepts_a_mapping_and_a_model_object(blueprint):
+    expected = {"vertical": "alpha" if isinstance(blueprint, dict) else "beta"}
+    assert grader._as_mapping(blueprint) == expected
+
+
+@pytest.mark.parametrize(
+    "blueprint",
+    [
+        {"client": "Alpha Co"},
+        {"vertical": "beta", "product_id": "p-1"},
+        _ModelBlueprint({"client": "Gamma Co"}),
+    ],
+)
+def test_structured_literals_reads_the_schema_fields(blueprint):
+    if isinstance(blueprint, _ModelBlueprint):
+        expected = {"Gamma Co"}
+    else:
+        expected = {v for v in blueprint.values() if isinstance(v, str) and v.strip()}
+    assert grader._structured_literals(blueprint) == expected
+
+
+@pytest.mark.parametrize("text", ["one, two. three;", 'a "quoted" b'])
+def test_tokens_split_on_whitespace_and_strip_punctuation(text):
+    tokens = grader._tokens(text)
+    assert len(tokens) == 3
+    assert all(t.strip(".,;:()[]{}\"'`") == t for t in tokens)
+
+
+@pytest.mark.parametrize(
+    "functions,ui",
+    [
+        ({"ok": True}, {"ok": True}),
+        ({"ok": False}, {"ok": True}),
+    ],
+)
+def test_layer2_layer1_view_reports_the_combined_ok(functions, ui):
+    view = grader._layer2_layer1_view(functions, ui)
+    assert view["ok"] is (functions["ok"] is True and ui["ok"] is True)
+
+
+@pytest.mark.parametrize("root_name", ["build-one", "build-two"])
+def test_boot_env_puts_the_product_workspace_first_on_pythonpath(tmp_path, monkeypatch, root_name):
+    root = tmp_path / root_name
+    root.mkdir()
+    monkeypatch.setenv("PYTHONPATH", "elsewhere")
+    env = grader._boot_env(tmp_path / "scratch", root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(root)
+    assert str(tmp_path / "scratch") == env["STORAGE_PATH"]
+
+
+@pytest.mark.parametrize("attempts", [2, 3])
+def test_free_port_returns_distinct_in_range_ports(attempts):
+    ports = [grader._free_port() for _ in range(attempts)]
+    assert all(0 < p < 65536 for p in ports)
+    assert len(set(ports)) == attempts
+
+
+@pytest.mark.parametrize("reason", ["", "the UI grader is unavailable"])
+def test_ui_not_run_shape_is_never_a_pass(reason):
+    ui = grader._UiNotRun(reason)
+    assert ui.ran is False
+    assert ui.ok is False
+    assert ui.failing == []
+    assert ui.errors == ([reason] if reason else [])
+    assert ui.to_dict() == {"ok": False, "ran": False, "failing": [], "steps": []}
+
+
+@pytest.mark.parametrize("workspace_kind", ["no_app_main", "missing_dir"])
+def test_boot_product_failure_paths_are_named_not_raised(tmp_path, workspace_kind):
+    if workspace_kind == "no_app_main":
+        root = tmp_path / "w"
+        (root / "app").mkdir(parents=True)
+        (root / "app" / "__init__.py").write_text("")
+    else:
+        root = tmp_path / "does-not-exist"
+    proc, reason = grader.boot_product(root)
+    assert proc is None
+    assert reason
+    if workspace_kind == "no_app_main":
+        # The early-exit reason is a short named phrase (7 words); the
+        # timeout reason (what a dropped early-exit check would produce)
+        # is longer (8 words). The shape check, not the words, is the
+        # contract.
+        assert len(reason.split()) < 8
+
+
+# --- the grader itself --------------------------------------------------------
+
+
+def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grader, green_ui):
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    bp = _bp(IDS)
+    verdict = grader.run_grader(
+        blueprint=bp,
+        workspace=ws,
+        product_id="invented-product",
+        compiled_brief={"summary": "a generic brief about entries and amounts"},
+    )
+    assert verdict.tier == grader.CERTIFIED
+    assert verdict.ok
+    assert verdict.ungraded == ()
+    assert (ws / "grade.json").is_file()
+    assert (ws / "GRADE.md").is_file()
+    assert grade_record.certification_refusal(ws) is None
+
+
+def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path, green_ui):
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    bp = _bp(IDS)
+    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id="invented-product")
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert not verdict.ok
+    assert any("may not grade the writer's tree" in item for item in verdict.items)
+    assert any(item in verdict.ungraded for item in verdict.items if "not graded" in item)
+    # the record still lands; N3 refuses an uncertified build
+    assert (ws / "grade.json").is_file()
+    assert grade_record.certification_refusal(ws) is not None
+
+
+@pytest.mark.parametrize("bad_cid", ["invoice_total", "visit_log"])
+def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, independent_grader, green_ui, bad_cid):
+    ws = _workspace(tmp_path, {i: (CONSTANT if i == bad_cid else READS_INPUT) for i in IDS})
+    bp = _bp(IDS)
+    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id="invented-product")
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert not verdict.ok
+    assert f"function grade FAIL: {bad_cid}" in verdict.items
+
+
+def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path, green_ui, monkeypatch):
+    from app.factory.build.product_grader import function_grader as fg
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("grader exploded")
+
+    monkeypatch.setattr(fg, "grade_functions", boom)
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    assert verdict.tier == grader.ERROR
+    assert not verdict.ok
+    assert any("grader exploded" in item for item in verdict.items)
+    assert (ws / "grade.json").is_file()
+    assert grade_record.certification_refusal(ws) is not None
+
+
+def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_grader, green_ui, monkeypatch):
+    monkeypatch.setattr(grader, "_grader_complete", lambda messages: "not json")
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    assert verdict.tier == grader.ERROR
+    assert not verdict.ok
+    assert any("Layer 2 did not run" in item for item in verdict.items)
+
+
+def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, independent_grader, green_ui):
+    brief = 'The client "Acme Trading Co" runs 240 invoices through the portal.'
+    ws = _workspace(
+        tmp_path,
+        {i: READS_INPUT for i in IDS},
+        extra={"app/constants.py": 'CLIENT = "Acme Trading Co"\n'},
+    )
+    bp = _bp(IDS)
+    verdict = grader.run_grader(
+        blueprint=bp,
+        workspace=ws,
+        product_id="invented-product",
+        compiled_brief={"summary": brief},
+        prompt_text="",
+    )
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert any("Acme Trading Co" in item for item in verdict.items)
+
+
+def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independent_grader, green_ui):
+    brief = "The project is code-named Nimbus for its portal."
+    prompt = "Build the portal for the Nimbus project."
+    ws = _workspace(
+        tmp_path,
+        {i: READS_INPUT for i in IDS},
+        extra={"app/settings.py": 'PROJECT = "Nimbus"\n'},
+    )
+    bp = _bp(IDS)
+    verdict = grader.run_grader(
+        blueprint=bp,
+        workspace=ws,
+        product_id="invented-product",
+        compiled_brief={"summary": brief},
+        prompt_text=prompt,
+    )
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert any("stop leaking the prompt into the source" in item for item in verdict.items)
+
+
+# --- the runner wiring -------------------------------------------------------
+
+
+@pytest.fixture()
+def smoke_blueprint():
+    from app.factory.blueprint import load_blueprint
+
+    return load_blueprint(
+        Path(__file__).resolve().parents[3] / "blueprints" / "examples" / "runner_smoke.yaml"
+    )
+
+
+def _red_product(workspace: Path, constant: tuple = ("analytics_surface", "dashboard_surface")) -> None:
+    actions = workspace / "app" / "actions"
+    actions.mkdir(parents=True, exist_ok=True)
+    (workspace / "app" / "__init__.py").write_text("")
+    (actions / "__init__.py").write_text("")
+    for cid in ("analytics_surface", "dashboard_surface"):
+        body = CONSTANT if cid in constant else READS_INPUT
+        (actions / f"{cid}.py").write_text(body)
+
+
+def _fake_pass_harness(monkeypatch):
+    """Every phase role passes instantly and every phase gate is green, so
+    the run reaches the grader step and nothing else decides."""
+    from app.factory.build import runner as runner_mod
+    from app.factory.build.gates import GateResult
+    from app.factory.build.roles import ROLE_IMPLEMENTATIONS, RoleResult
+
+    roles = {role: (lambda ctx: RoleResult(ok=True, detail="fake pass")) for role in ROLE_IMPLEMENTATIONS}
+    monkeypatch.setattr(runner_mod, "gate_for", lambda role: (lambda ctx: GateResult(ok=True, gate="fake_gate")))
+    return roles
+
+
+def test_runner_ends_the_run_on_a_not_certified_verdict(smoke_blueprint, tmp_path, monkeypatch):
+    """A NOT_CERTIFIED verdict ends the run with the quoted items -- no
+    rework event, no decide(), no tester involvement."""
+    from app.factory.build import grader as grader_mod
+    from app.factory.build.ledger import EventKind
+    from app.factory.build.runner import Outcome, RoleRunner
+
+    monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
+
+    def not_certified(**kwargs):
+        return grader_mod.GraderVerdict(
+            tier=grader_mod.NOT_CERTIFIED, items=("function grade FAIL: zorblat_check",)
+        )
+
+    monkeypatch.setattr(grader_mod, "run_grader", not_certified)
+    roles = _fake_pass_harness(monkeypatch)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    outcome = runner.run()
+    assert not outcome.ok
+    assert outcome.outcome is Outcome.FAILED_GATE
+    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED:")
+    assert "function grade FAIL: zorblat_check" in outcome.detail
+    reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
+    assert reworks == []
+
+
+def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path, monkeypatch):
+    """A CERTIFIED verdict lets the run continue past the writer -- the
+    tester runs, and no grader verdict ends the run."""
+    from app.factory.build import grader as grader_mod
+    from app.factory.build.ledger import EventKind
+    from app.factory.build.runner import RoleRunner
+
+    monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
+    monkeypatch.setattr(
+        grader_mod, "run_grader", lambda **kwargs: grader_mod.GraderVerdict(tier=grader_mod.CERTIFIED)
+    )
+    roles = _fake_pass_harness(monkeypatch)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    outcome = runner.run()
+    assert outcome.ok, outcome.detail
+    graders = [
+        e for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and (e.payload or {}).get("grader_tier") == grader_mod.CERTIFIED
+    ]
+    assert graders
+
+
+def test_runner_grader_is_none_when_the_switch_is_off(smoke_blueprint, tmp_path, monkeypatch):
+    from app.factory.build.runner import RoleRunner
+
+    workspace = tmp_path / "w"
+    workspace.mkdir()
+    _red_product(workspace)
+    runner = RoleRunner(smoke_blueprint, workspace)
+    monkeypatch.setenv(grader.DISABLE_ENV, "0")
+    assert runner._writer_grader() is None
