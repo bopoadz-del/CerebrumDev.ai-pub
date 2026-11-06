@@ -409,28 +409,33 @@ def _layer2_layer1_view(functions: Mapping[str, Any], ui: Mapping[str, Any]) -> 
 @dataclass(frozen=True)
 class _UiNotRun:
     """The UI layer when it could not run at all: the honest not-run shape
-    ``ui_grader.UiGrade`` reports when its dependencies are unavailable."""
+    ``ui_grader.UiGrade`` reports when its dependencies are unavailable.
+    Degenerate UiGrade: every property derives from the (empty) steps and
+    the reason, so a reader sees WHY it is not a pass."""
 
     reason: str = ""
+    steps: Tuple[Dict[str, Any], ...] = ()
 
     @property
     def ran(self) -> bool:
-        return False
-
-    @property
-    def failing(self) -> List[str]:
-        return []
+        return bool(self.steps)
 
     @property
     def errors(self) -> List[str]:
         return [self.reason] if self.reason else []
 
     @property
+    def failing(self) -> List[str]:
+        return [str(step.get("name") or "") for step in self.steps if not step.get("passed")] + list(
+            self.errors
+        )
+
+    @property
     def ok(self) -> bool:
-        return False
+        return self.ran and not self.failing
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"ok": False, "ran": False, "failing": [], "steps": []}
+        return {"ok": self.ok, "ran": self.ran, "failing": self.failing, "steps": list(self.steps)}
 
 
 @dataclass(frozen=True)

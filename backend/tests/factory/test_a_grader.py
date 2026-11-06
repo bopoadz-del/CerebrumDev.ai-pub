@@ -330,9 +330,10 @@ def test_ui_not_run_shape_is_never_a_pass(reason):
     ui = grader._UiNotRun(reason)
     assert ui.ran is False
     assert ui.ok is False
-    assert ui.failing == []
     assert ui.errors == ([reason] if reason else [])
-    assert ui.to_dict() == {"ok": False, "ran": False, "failing": [], "steps": []}
+    # like UiGrade, the reason flows into failing -- and never into a pass
+    assert ui.failing == ([reason] if reason else [])
+    assert ui.to_dict() == {"ok": False, "ran": False, "failing": ([reason] if reason else []), "steps": []}
 
 
 @pytest.mark.parametrize("workspace_kind", ["no_app_main", "missing_dir"])
