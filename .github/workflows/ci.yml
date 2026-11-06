@@ -71,7 +71,10 @@ jobs:
     # 40, not 25: by 2026-10-05 the suite alone was ~21.7 min (3,794 tests)
     # and #648's job was CANCELLED at 25m06s after "3794 passed" -- the same
     # runner-not-code failure, again.
-    timeout-minutes: 40
+    # 60, not 40: the Store re-pin to the public mirror (#155, store.sha
+    # 7502497) grows the product-build closure the suite exercises; the job
+    # was CANCELLED at 40m21s mid-suite with no test red -- runner, not code.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: backend
