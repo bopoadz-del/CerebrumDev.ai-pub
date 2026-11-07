@@ -248,6 +248,38 @@ def test_an_independent_grader_is_not_refused(monkeypatch):
     assert grader.independence_refusal(grader.writer_identity(), grader.grader_llm_config()) is None
 
 
+@pytest.mark.parametrize(
+    "grader_model",
+    ["deepseek-v3", "deepseek/deepseek-v3"],
+)
+def test_family_independence_refuses_a_different_host_same_vendor(monkeypatch, grader_model):
+    """F5: OpenRouter serving a deepseek model refuses against a deepseek
+    writer -- the vendor family matches even though the host/identity differ."""
+    from app.factory import code_cli
+
+    monkeypatch.setenv(code_cli.DEEPSEEK_API_KEY_ENV, "writer-key")
+    writer = grader.writer_identity()
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://openrouter.ai/api/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, grader_model)
+    refusal = grader.independence_refusal(writer, grader.grader_llm_config())
+    assert refusal is not None
+    assert "deepseek" in refusal
+
+
+@pytest.mark.parametrize(
+    "grader_model",
+    ["anthropic/claude-sonnet-4.5", "openai/gpt-4o"],
+)
+def test_family_independence_allows_a_different_vendor(monkeypatch, grader_model):
+    """F5: OpenRouter serving a different vendor is independent of a deepseek
+    writer."""
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://openrouter.ai/api/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, grader_model)
+    assert grader.independence_refusal(grader.writer_identity(), grader.grader_llm_config()) is None
+
+
 # --- the smallest helpers (mutation-gate coverage) ---------------------------
 
 
