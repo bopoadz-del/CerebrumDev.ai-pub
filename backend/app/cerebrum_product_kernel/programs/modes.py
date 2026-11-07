@@ -79,11 +79,3 @@ MODE_TEXT: dict[SessionMode, str] = {
         "REVISE with the reasons."
     ),
 }
-
-
-def mode_for_kind(kind: str) -> SessionMode:
-    """The faculty mode a session kind runs in; unknown kinds fail loudly."""
-    try:
-        return MODE_BY_KIND[kind]
-    except KeyError as exc:
-        raise ValueError(f"unknown session kind: {kind!r}") from exc
