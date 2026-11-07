@@ -2,23 +2,35 @@
 
 The generator emits ONE self-contained HTML file from a :class:`ToolSpec` and
 content data; the linter checks the contract in
-``standards/skills/single_file_tool.md`` line by line. Content never lives in
-this module: the DATA block is rendered from the caller's data at build time.
+``standards/skills/single_file_tool.md`` line by line. The static HTML/CSS/JS
+behaviour (tokens, layout, engine, views, events) lives here as constants —
+it is not track content. Only the DATA block is rendered from the caller's
+data at build time.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping, Sequence
+
+from app.cerebrum_product_kernel.programs.schema import Track
 
 _FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")
+
+#: head after <title>: <meta> + <link href="{fonts}"> + <style> + markup.
+_HEAD_TEMPLATE = '<meta name="claude:viewport-fit-sides" content="cover">\n<link rel="stylesheet" href="{fonts}">\n<style>\n/* Layout: one column tool, sticky program bar, tab strip, cards only for the working surfaces (session, memo, grade). */\n:root{\n  --bg:#f4f5f7; --panel:#ffffff; --ink:#15202b; --muted:#5b6672; --line:#d6dbe1;\n  --accent:#1f3b63; --accent-ink:#ffffff; --tint:#e7edf5; --grade:#7a1f2b; --good:#1d6b45; --warn:#9a5a00;\n  --display:"Spectral",Georgia,"Times New Roman",serif;\n  --body:"Libre Franklin","Helvetica Neue",Arial,sans-serif;\n  --mono:"IBM Plex Mono",Menlo,Consolas,monospace;\n}\n@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){\n  --bg:#12171d; --panel:#1b222b; --ink:#e8ecf1; --muted:#9aa5b1; --line:#2e3844;\n  --accent:#8fb3e6; --accent-ink:#0f1a2a; --tint:#1f2b3a; --grade:#e39aa5; --good:#6fcf97; --warn:#e3b35a; color-scheme:dark } }\n:root[data-theme="dark"]{\n  --bg:#12171d; --panel:#1b222b; --ink:#e8ecf1; --muted:#9aa5b1; --line:#2e3844;\n  --accent:#8fb3e6; --accent-ink:#0f1a2a; --tint:#1f2b3a; --grade:#e39aa5; --good:#6fcf97; --warn:#e3b35a; color-scheme:dark }\n*{box-sizing:border-box}\nbody{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5;margin:0}\nbody::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--accent)}\n.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--accent);color:var(--accent-ink);\n  padding-block:12px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}\n.bar h1{font-family:var(--display);font-weight:600;font-size:20px;margin:0 0 8px;letter-spacing:.01em;text-wrap:balance}\n.bar .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}\n.bar select,.bar input[type=date]{font:inherit;font-size:14px;padding:6px 8px;border:1px solid transparent;border-radius:4px;background:var(--panel);color:var(--ink);min-width:0}\n.bar .prog{font-family:var(--mono);font-size:12px;margin-left:auto;white-space:nowrap}\n.tabs{display:flex;gap:0;overflow-x:auto;border-bottom:1px solid var(--line);background:var(--bg);\n  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}\n.tabs button{font:inherit;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;background:none;border:0;border-bottom:3px solid transparent;color:var(--muted);padding:10px 10px 8px;cursor:pointer;white-space:nowrap}\n.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}\n.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}\nmain{padding-block:16px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:760px;margin:0 auto}\nh2{font-family:var(--display);font-weight:600;font-size:22px;margin:0 0 4px;text-wrap:balance}\nh3{font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:18px 0 6px}\np{margin:0 0 8px}\n.lead{color:var(--muted);margin-bottom:12px}\n.stack{display:flex;flex-direction:column;gap:12px}\n.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;min-width:0}\n.card.session{border-left:4px solid var(--accent)}\n.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}\n.kv dt{color:var(--muted)}\n.kv dd{margin:0;min-width:0}\n.btn{font:inherit;font-size:13px;font-weight:600;padding:7px 11px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);cursor:pointer}\n.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}\n.btn.danger{color:var(--grade);border-color:var(--grade)}\n.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}\n.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}\ntextarea{width:100%;min-height:160px;font:inherit;font-size:15px;line-height:1.5;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);resize:vertical}\ntextarea.mono{font-family:var(--mono);font-size:12px;min-height:120px}\ninput[type=number],input[type=text]{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);width:100%;min-width:0}\ninput[type=number]{font-family:var(--mono);width:64px;text-align:right}\ntable{border-collapse:collapse;width:100%;font-size:14px}\nth,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}\nth{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600}\n.tnum{font-family:var(--mono);font-variant-numeric:tabular-nums}\n.wrap{overflow-x:auto}\n.pill{display:inline-block;font-family:var(--mono);font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}\n.pill.A,.pill.B{color:var(--good);border-color:var(--good)}\n.pill.C{color:var(--warn);border-color:var(--warn)}\n.pill.R{color:var(--grade);border-color:var(--grade)}\n.grade-grid{display:grid;grid-template-columns:1fr auto;gap:8px 10px;align-items:start}\n.grade-grid label{font-size:14px}\n.grade-grid small{display:block;color:var(--muted);font-size:12px}\n.total{font-family:var(--display);font-size:28px;font-weight:600;margin-top:8px}\n.total .band{font-family:var(--mono);font-size:14px;margin-left:8px}\n.note{font-size:13px;color:var(--muted)}\n.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:4px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20}\n.toast.show{opacity:1}\n.rowlink{cursor:pointer}\n.rowlink:hover td{background:var(--tint)}\n.mic{font-size:13px}\n.ok{color:var(--good)} .bad{color:var(--grade)}\n@media (prefers-reduced-motion:reduce){.toast{transition:none}}\n</style>\n\n<div class="bar">\n  <h1>Executive Programs</h1>\n  <div class="row">\n    <select id="track" aria-label="Track"></select>\n    <input type="date" id="start" aria-label="Start date">\n    <span class="prog" id="prog">0 / 16 graded</span>\n  </div>\n</div>\n<div class="tabs" role="tablist" id="tabs">\n  <button role="tab" data-v="today" aria-selected="true">Today</button>\n  <button role="tab" data-v="calendar">Calendar</button>\n  <button role="tab" data-v="week">Week</button>\n  <button role="tab" data-v="gradebook">Gradebook</button>\n  <button role="tab" data-v="export">Export</button>\n</div>\n<main id="main"></main>\n<div class="toast" id="toast" role="status"></div>\n\n'
+
+#: JS behaviour after the DATA block: STATE -> ENGINE -> VIEWS -> EVENTS -> init.
+_STATIC_JS = '// ---------- State ----------\nconst KEY="execprog.v1";\nlet S={track:"COO",start:"",data:{}};\ntry{const r=localStorage.getItem(KEY);if(r){const o=JSON.parse(r);if(o&&o.data)S=o;}}catch(e){}\nif(!TRACKS[S.track])S.track="COO";\nif(!S.start){const d=new Date();S.start=iso(d);}\nfunction save(){try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}}\nfunction wk(n){const t=S.data[S.track]=S.data[S.track]||{};return t[n]=t[n]||{memo:"",scores:["","","","",""],verdicts:["","","","",""],note:"",defense:"",jury:""};}\nfunction iso(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}\nfunction parse(s){const p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}\nfunction addDays(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x;}\nfunction fmt(d){return DAYN[d.getDay()]+" "+d.getDate()+" "+d.toLocaleString("en-GB",{month:"short"});}\nfunction fmtLong(d){return DAYN[d.getDay()]+" "+d.getDate()+" "+d.toLocaleString("en-GB",{month:"short"})+" "+d.getFullYear();}\nfunction weekStart(n){return addDays(parse(S.start),7*(n-1));}\nfunction termOf(n){return Math.ceil(n/4);}\nfunction total(w){const s=w.scores.map(Number);if(w.scores.some(v=>v==="")||s.some(isNaN))return null;return s.reduce((a,b)=>a+b,0);}\nfunction band(t){if(t==null)return null;return t>=90?"A":t>=80?"B":t>=70?"C":"R";}\nfunction bandText(b){return b==="R"?"Rewrite":b;}\nfunction gradedCount(){let c=0;for(let n=1;n<=16;n++){if(total(wk(n))!=null)c++;}return c;}\nfunction todayWeek(){const d=parse(iso(new Date()));const s=parse(S.start);const diff=Math.floor((d-s)/864e5);if(diff<0)return 0;const n=Math.floor(diff/7)+1;return n>16?17:n;}\nfunction toast(m){const t=document.getElementById("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),1800);}\nfunction copy(text,label){const done=()=>toast(label||"Copied");\n  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(()=>fallback(text,done));}else fallback(text,done);}\nfunction fallback(text,done){const ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");done();}catch(e){toast("Select the text and copy it");}document.body.removeChild(ta);}\nfunction esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",\'"\':"&quot;"}[c]));}\n\n// ---------- Faculty prompts ----------\nconst MODES={\n framework:"Mode: LECTURE. Teach the week\'s framework from the reading in executive register, then make me restate it in five sentences for my own company. Push back on vague restatements. End by handing me the case and its decision question for Friday, and by spelling out this week\'s deliverable and its due date.",\n case_prep:"Mode: BRIEF. Hand me the case and the decision question. Help me structure a one-page position: the decision, the numbers I would want, the alternative I reject. Refuse to discuss or reveal the real outcome.",\n case_class:"Mode: SOCRATIC. Run a case class: cold-call me, change the facts mid-way, force me to commit to a decision with numbers before you reveal what actually happened. Then give the outcome and what it teaches. 120 minutes of material; do not let me off with opinions.",\n lab:"Mode: SPARRING. I am writing this week\'s deliverable about my own company. You never draft it for me. Challenge every claim without a number, cut every sentence that is not a decision, and tell me what a demanding board member would ask. If I ask you to write it, refuse and ask the next hard question instead.",\n exam:"Mode: EXAMINER. I will paste my memo. Grade it on the five criteria below, 20 points each, one line per criterion with the score, then a total and band (A 90+, B 80–89, C 70–79, below 70 rewrite). Then run a 20-minute oral quiz on the week. End with one line I can paste into my gradebook: scores, total, band, one-sentence verdict.",\n defense:"Mode: EXAMINER (term defense, 45 minutes). I will present my term paper. Attack the weakest number and the weakest assumption first. Record PASS or FAIL with one sentence of reasoning. A fail is re-sat within a week.",\n jury:"Mode: JURY (capstone, 90 minutes). I will present the capstone. You are one of three jurors; grade it as an investor and an operator would. Record ACCEPT or REVISE with the reasons."};\nfunction prompt(n,sess){const T=TRACKS[S.track],w=T.weeks[n-1],term=termOf(n);\n const lines=["FACULTY SESSION — "+T.name,"Week "+n+" of 16 · Term "+term+": "+T.terms[term-1][0]+" · Session: "+sess.name+" ("+sess.m+" min)","",\n "You are faculty, case instructor and examiner for an executive program run on the case method. Everything applies to MY company, not a textbook one. Executive level, no basics unless asked. Agreement is not teaching: push back hard.","",\n "THIS WEEK","Theme: "+w[0],"Reading: "+w[1],"Case: "+w[2],"Decision question: "+w[3],"Deliverable: "+w[4]+" ("+w[6]+" page"+(w[6]>1?"s":"")+") — "+w[5],"",\n MODES[sess.k],"","RUBRIC (20 points each)"].concat(RUBRIC.map(r=>"- "+r[0]+": "+r[1]));\n lines.push("","Start now with the first item of this session.");return lines.join("\\n");}\nfunction defensePrompt(n){const T=TRACKS[S.track],term=termOf(n);return ["FACULTY SESSION — "+T.name,"Term "+term+" defense: "+T.terms[term-1][0],"","Term outcome: "+T.terms[term-1][1],"",MODES.defense].join("\\n");}\nfunction juryPrompt(){const T=TRACKS[S.track];return ["FACULTY SESSION — "+T.name,"Capstone jury","",MODES.jury].join("\\n");}\n\n// ---------- Views ----------\nlet view="today",curWeek=null;\nfunction render(){const main=document.getElementById("main");document.getElementById("prog").textContent=gradedCount()+" / 16 graded";\n document.querySelectorAll("#tabs button").forEach(b=>b.setAttribute("aria-selected",b.dataset.v===view));\n main.innerHTML={today:vToday,calendar:vCalendar,week:vWeek,gradebook:vGradebook,export:vExport}[view]();bind(main);}\nfunction vToday(){const T=TRACKS[S.track];const n=todayWeek();const today=parse(iso(new Date()));\n if(n===0)return `<h2>Starts ${fmtLong(parse(S.start))}</h2><p class="lead">${esc(T.name)}. ${esc(T.audience)}</p><p>Before day one: get the week 1 reading, <em>${esc(T.weeks[0][1])}</em>.</p>${weekCard(1)}`;\n if(n===17)return `<h2>Program complete</h2><p class="lead">Ended ${fmtLong(addDays(weekStart(16),6))}. ${gradedCount()} of 16 memos graded.</p>`;\n const ws=weekStart(n);const off=Math.floor((today-ws)/864e5);const sess=SESSIONS.find(s=>s.d===off);const w=T.weeks[n-1];const g=wk(n);\n let h=`<h2>Week ${n} · ${esc(w[0])}</h2><p class="lead">Term ${termOf(n)}: ${esc(T.terms[termOf(n)-1][0])} · ${fmt(ws)} to ${fmt(addDays(ws,6))}</p>`;\n if(sess){h+=sessionCard(n,sess,true);}else{h+=`<div class="card"><strong>Sunday — no session.</strong> Rest, or catch up on the reading.</div>`;}\n h+=`<h3>This week\'s deliverable</h3><div class="card"><strong>${esc(w[4])}</strong> · ${w[6]} page${w[6]>1?"s":""} · due ${fmt(addDays(ws,5))}<p>${esc(w[5])}</p>`;\n const t=total(g);h+=t!=null?`<p>Graded: <span class="pill ${band(t)}">${t} · ${bandText(band(t))}</span></p>`:`<p class="note">${g.memo?"Memo drafted, not graded yet.":"No memo yet."}</p>`;\n h+=`<div class="btns"><button class="btn primary" data-go="${n}">Open week ${n}</button></div></div>`;return h;}\nfunction sessionCard(n,sess,big){const ws=weekStart(n);const d=addDays(ws,sess.d);\n return `<div class="card session"><div class="kv"><dt>Session</dt><dd><strong>${esc(sess.name)}</strong> · ${sess.m} min</dd><dt>Date</dt><dd>${fmt(d)}</dd><dt>Do</dt><dd>${esc(sessDo(sess.k))}</dd></div>\n <div class="btns"><button class="btn primary" data-prompt="${n}:${SESSIONS.indexOf(sess)}">Copy faculty prompt</button>${big?`<button class="btn" data-show="${n}:${SESSIONS.indexOf(sess)}">Show prompt</button>`:""}</div><pre class="hidden" hidden id="pv${n}-${SESSIONS.indexOf(sess)}" style="white-space:pre-wrap;font:12px/1.5 var(--mono);margin:10px 0 0"></pre></div>`;}\nfunction sessDo(k){return{framework:"Read the chapters first. Faculty lectures; you restate it for your own company.",case_prep:"Read the case cold. Write a one-page position: decision, numbers, rejected alternative.",case_class:"Oral case discussion. Defend a decision, not an opinion.",lab:"Write the deliverable about your own company. Faculty spars; it never drafts.",exam:"Paste the memo, get it graded on the rubric, then a 20-minute oral quiz. Record the grade here."}[k];}\nfunction weekCard(n){const T=TRACKS[S.track],w=T.weeks[n-1],ws=weekStart(n);return `<div class="card"><strong>Week ${n} · ${esc(w[0])}</strong><div class="note">${fmt(ws)} to ${fmt(addDays(ws,6))}</div><p>Reading: ${esc(w[1])}</p><div class="btns"><button class="btn" data-go="${n}">Open week ${n}</button></div></div>`;}\nfunction vCalendar(){const T=TRACKS[S.track];let h=`<h2>${esc(T.name)}</h2><p class="lead">16 weeks from ${fmtLong(parse(S.start))}. Weeks run Thursday to Wednesday when you start on a Thursday; change the start date in the bar.</p><div class="wrap"><table><tr><th>Wk</th><th>Dates</th><th>Theme</th><th>Grade</th></tr>`;\n for(let n=1;n<=16;n++){const ws=weekStart(n);const t=total(wk(n));if(n%4===1)h+=`<tr><td colspan="4"><h3 style="margin:8px 0 0">Term ${termOf(n)} · ${esc(T.terms[termOf(n)-1][0])}</h3></td></tr>`;\n  h+=`<tr class="rowlink" data-go="${n}"><td class="tnum">${n}</td><td class="tnum">${fmt(ws)}–${fmt(addDays(ws,6))}</td><td>${esc(T.weeks[n-1][0])}</td><td>${t!=null?`<span class="pill ${band(t)}">${bandText(band(t))}</span>`:""}</td></tr>`;}\n return h+"</table></div>";}\nfunction vWeek(){const T=TRACKS[S.track];const n=curWeek||Math.min(Math.max(todayWeek(),1),16);curWeek=n;const w=T.weeks[n-1],ws=weekStart(n),g=wk(n),term=termOf(n);\n let h=`<div class="btns" style="margin:0 0 10px"><button class="btn" data-nav="-1" ${n===1?"disabled":""}>‹ Week ${n-1}</button><button class="btn" data-nav="1" ${n===16?"disabled":""}>Week ${n+1} ›</button></div>\n <h2>Week ${n} · ${esc(w[0])}</h2><p class="lead">Term ${term}: ${esc(T.terms[term-1][0])} · ${fmt(ws)} to ${fmt(addDays(ws,6))}</p>\n <div class="kv card"><dt>Reading</dt><dd>${esc(w[1])}</dd><dt>Case</dt><dd>${esc(w[2])}</dd><dt>Question</dt><dd>${esc(w[3])}</dd><dt>Deliverable</dt><dd><strong>${esc(w[4])}</strong> · ${w[6]} page${w[6]>1?"s":""} · due ${fmt(addDays(ws,5))}<br>${esc(w[5])}</dd></div>\n <h3>Sessions</h3><div class="stack">${SESSIONS.map(s=>sessionCard(n,s,false)).join("")}</div>\n <h3>Memo</h3><div class="card"><textarea id="memo" placeholder="Write or dictate the deliverable here. It saves on this device as you type.">${esc(g.memo)}</textarea>\n <div class="btns"><button class="btn mic" id="mic" hidden>🎤 Dictate</button><button class="btn" data-copymemo="1">Copy memo</button><span class="note" id="memoWords"></span></div></div>\n <h3>Grade</h3><div class="card"><p class="note">Paste what faculty gave you: a score out of 20 per criterion and its one-line verdict.</p><div class="grade-grid">`;\n RUBRIC.forEach((r,i)=>{h+=`<div><label for="sc${i}">${esc(r[0])}<small>${esc(r[1])}</small></label><input type="text" id="vd${i}" data-vd="${i}" placeholder="Verdict line" value="${esc(g.verdicts[i])}" style="margin-top:4px"></div><div><input type="number" id="sc${i}" data-sc="${i}" min="0" max="20" value="${esc(g.scores[i])}" aria-label="${esc(r[0])} score"></div>`;});\n const t=total(g);h+=`</div><div class="total" id="tot">${t!=null?t+" <span class=\'band pill "+band(t)+"\'>"+bandText(band(t))+"</span>":"—"}</div></div>`;\n if(n%4===0&&n<16){h+=`<h3>Term ${term} defense · ${fmt(addDays(ws,6))}</h3><div class="card"><p>${esc(T.terms[term-1][1])}</p><div class="btns"><button class="btn primary" data-defense="${n}">Copy defense prompt</button></div><label style="display:block;margin-top:8px">Result <input type="text" id="defense" placeholder="PASS or FAIL, one sentence" value="${esc(g.defense)}"></label></div>`;}\n if(n===16){h+=`<h3>Capstone jury · ${fmt(addDays(ws,6))}</h3><div class="card"><p>Jury of three: faculty plus two reviewers you invite, ideally one investor and one operator. Accepted when all three accept.</p><div class="btns"><button class="btn primary" data-jury="1">Copy jury prompt</button></div><label style="display:block;margin-top:8px">Verdicts <input type="text" id="jury" placeholder="Juror 1 / Juror 2 / Juror 3" value="${esc(g.jury)}"></label></div>`;}\n return h;}\nfunction vGradebook(){const T=TRACKS[S.track];let sum=0,c=0,h=`<h2>Gradebook</h2><p class="lead">${esc(T.name)}. Memos 60%, defenses 20%, capstone 20%. Graduation: B average, four passes, capstone accepted.</p><div class="wrap"><table><tr><th>Wk</th><th>Deliverable</th><th>Total</th><th>Band</th><th>Verdict</th></tr>`;\n for(let n=1;n<=16;n++){const g=wk(n),t=total(g);if(t!=null){sum+=t;c++;}h+=`<tr class="rowlink" data-go="${n}"><td class="tnum">${n}</td><td>${esc(T.weeks[n-1][4])}</td><td class="tnum">${t!=null?t:""}</td><td>${t!=null?`<span class="pill ${band(t)}">${bandText(band(t))}</span>`:""}</td><td class="note">${esc(g.verdicts.filter(Boolean)[0]||"")}</td></tr>`;}\n h+=`</table></div><h3>Defenses</h3><div class="wrap"><table><tr><th>Term</th><th>Date</th><th>Result</th></tr>`;\n for(let k=1;k<=3;k++){const n=k*4;h+=`<tr class="rowlink" data-go="${n}"><td>Term ${k} · ${esc(T.terms[k-1][0])}</td><td class="tnum">${fmt(addDays(weekStart(n),6))}</td><td>${esc(wk(n).defense)}</td></tr>`;}\n h+=`<tr class="rowlink" data-go="16"><td>Capstone jury</td><td class="tnum">${fmt(addDays(weekStart(16),6))}</td><td>${esc(wk(16).jury)}</td></tr></table></div>`;\n const avg=c?(sum/c):null;h+=`<div class="total">${avg!=null?avg.toFixed(1)+` <span class="band pill ${band(avg)}">average of ${c}</span>`:"No grades yet"}</div>`;return h;}\nfunction vExport(){return `<h2>Export and backup</h2><p class="lead">Everything you type stays on this device. Copy a backup now and then; paste it back here on another device.</p>\n <div class="stack"><div class="card"><strong>Answers as Markdown</strong><p class="note">Memos, grades and verdicts for the current track, readable anywhere.</p><div class="btns"><button class="btn primary" data-export="md">Copy Markdown</button>${location.protocol==="file:"?`<button class="btn" data-dl="md">Download .md</button>`:""}</div></div>\n <div class="card"><strong>Backup</strong><p class="note">Both tracks, every field, as JSON.</p><div class="btns"><button class="btn" data-export="json">Copy backup</button>${location.protocol==="file:"?`<button class="btn" data-dl="json">Download .json</button>`:""}</div></div>\n <div class="card"><strong>Restore</strong><p class="note">Paste a backup here. It replaces what is on this device.</p><textarea class="mono" id="restore" placeholder=\'{"track":"COO", ...}\'></textarea><div class="btns"><button class="btn" data-restore="1">Restore from paste</button><label class="btn">Load .json file <input type="file" id="restoreFile" accept=".json,application/json" hidden></label></div></div>\n <div class="card"><strong>Clear this device</strong><p class="note">Removes every memo and grade for both tracks.</p><div class="btns"><button class="btn danger" data-clear="ask">Clear everything</button></div></div></div>`;}\nfunction markdown(){const T=TRACKS[S.track];const L=["# "+T.name,"","Started "+fmtLong(parse(S.start))+" · exported "+fmtLong(new Date()),""];\n for(let n=1;n<=16;n++){const g=wk(n),w=T.weeks[n-1],t=total(g);L.push("## Week "+n+" — "+w[0],"","Deliverable: "+w[4]+" · due "+fmt(addDays(weekStart(n),5)),"");\n  L.push(g.memo?g.memo:"_(no memo)_","");if(t!=null){L.push("Grade: "+t+" · "+bandText(band(t)));RUBRIC.forEach((r,i)=>L.push("- "+r[0]+": "+g.scores[i]+"/20 — "+g.verdicts[i]));L.push("");}\n  if(g.defense)L.push("Term "+termOf(n)+" defense: "+g.defense,"");if(g.jury)L.push("Capstone jury: "+g.jury,"");}\n return L.join("\\n");}\nfunction download(name,text){const a=document.createElement("a");a.href="data:text/plain;charset=utf-8,"+encodeURIComponent(text);a.download=name;document.body.appendChild(a);a.click();a.remove();}\n\n// ---------- Events ----------\nfunction bind(main){\n main.querySelectorAll("[data-go]").forEach(el=>el.addEventListener("click",()=>{curWeek=Number(el.dataset.go);view="week";render();window.scrollTo(0,0);}));\n main.querySelectorAll("[data-nav]").forEach(el=>el.addEventListener("click",()=>{curWeek+=Number(el.dataset.nav);render();window.scrollTo(0,0);}));\n main.querySelectorAll("[data-prompt]").forEach(el=>el.addEventListener("click",()=>{const [n,i]=el.dataset.prompt.split(":").map(Number);copy(prompt(n,SESSIONS[i]),"Faculty prompt copied");}));\n main.querySelectorAll("[data-show]").forEach(el=>el.addEventListener("click",()=>{const [n,i]=el.dataset.show.split(":").map(Number);const pre=document.getElementById("pv"+n+"-"+i);pre.textContent=prompt(n,SESSIONS[i]);pre.hidden=!pre.hidden;}));\n main.querySelectorAll("[data-defense]").forEach(el=>el.addEventListener("click",()=>copy(defensePrompt(Number(el.dataset.defense)),"Defense prompt copied")));\n main.querySelectorAll("[data-jury]").forEach(el=>el.addEventListener("click",()=>copy(juryPrompt(),"Jury prompt copied")));\n main.querySelectorAll("[data-copymemo]").forEach(el=>el.addEventListener("click",()=>copy(wk(curWeek).memo,"Memo copied")));\n const memo=main.querySelector("#memo");if(memo){const words=()=>{const c=memo.value.trim()?memo.value.trim().split(/\\s+/).length:0;main.querySelector("#memoWords").textContent=c+" words";};words();\n  memo.addEventListener("input",()=>{wk(curWeek).memo=memo.value;save();words();});setupMic(main,memo);}\n main.querySelectorAll("[data-sc]").forEach(el=>el.addEventListener("input",()=>{let v=el.value;if(v!==""){v=Math.max(0,Math.min(20,Number(v)));el.value=v;}wk(curWeek).scores[Number(el.dataset.sc)]=v===""?"":String(v);save();const t=total(wk(curWeek));main.querySelector("#tot").innerHTML=t!=null?t+" <span class=\'band pill "+band(t)+"\'>"+bandText(band(t))+"</span>":"—";document.getElementById("prog").textContent=gradedCount()+" / 16 graded";}));\n main.querySelectorAll("[data-vd]").forEach(el=>el.addEventListener("input",()=>{wk(curWeek).verdicts[Number(el.dataset.vd)]=el.value;save();}));\n const df=main.querySelector("#defense");if(df)df.addEventListener("input",()=>{wk(curWeek).defense=df.value;save();});\n const jr=main.querySelector("#jury");if(jr)jr.addEventListener("input",()=>{wk(curWeek).jury=jr.value;save();});\n main.querySelectorAll("[data-export]").forEach(el=>el.addEventListener("click",()=>copy(el.dataset.export==="md"?markdown():JSON.stringify(S,null,1),el.dataset.export==="md"?"Markdown copied":"Backup copied")));\n main.querySelectorAll("[data-dl]").forEach(el=>el.addEventListener("click",()=>el.dataset.dl==="md"?download("executive-program-"+S.track.toLowerCase()+".md",markdown()):download("executive-program-backup.json",JSON.stringify(S,null,1))));\n main.querySelectorAll("[data-restore]").forEach(el=>el.addEventListener("click",()=>restore(main.querySelector("#restore").value)));\n const rf=main.querySelector("#restoreFile");if(rf)rf.addEventListener("change",()=>{const f=rf.files[0];if(!f)return;const r=new FileReader();r.onload=()=>restore(String(r.result));r.readAsText(f);});\n main.querySelectorAll("[data-clear]").forEach(el=>el.addEventListener("click",()=>{if(el.dataset.clear==="ask"){el.textContent="Tap again to confirm";el.dataset.clear="yes";}else{S.data={};save();toast("Cleared");render();}}));\n}\nfunction restore(txt){try{const o=JSON.parse(txt);if(!o||typeof o!=="object"||!o.data)throw 0;S=o;if(!TRACKS[S.track])S.track="COO";save();initBar();toast("Restored");render();}catch(e){toast("That is not a backup from this app");}}\nfunction setupMic(main,memo){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const btn=main.querySelector("#mic");if(!SR||!btn)return;btn.hidden=false;let rec=null,on=false;\n btn.addEventListener("click",()=>{if(on){rec.stop();return;}try{rec=new SR();rec.lang="en-GB";rec.continuous=true;rec.interimResults=false;\n  rec.onresult=e=>{let t="";for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)t+=e.results[i][0].transcript+" ";if(t){memo.value=(memo.value.trim()+" "+t).trim()+" ";memo.dispatchEvent(new Event("input"));}};\n  rec.onend=()=>{on=false;btn.textContent="🎤 Dictate";};rec.onerror=()=>{on=false;btn.textContent="🎤 Dictate";btn.hidden=true;toast("Dictation is not available here; open the saved file in a browser for the mic");};\n  rec.start();on=true;btn.textContent="■ Stop dictating";}catch(e){btn.hidden=true;toast("Dictation is not available here");}});}\nfunction initBar(){const sel=document.getElementById("track");sel.innerHTML=Object.keys(TRACKS).map(k=>`<option value="${k}">${esc(TRACKS[k].name)}</option>`).join("");sel.value=S.track;document.getElementById("start").value=S.start;}\ndocument.getElementById("track").addEventListener("change",e=>{S.track=e.target.value;curWeek=null;save();render();});\ndocument.getElementById("start").addEventListener("change",e=>{if(e.target.value){S.start=e.target.value;save();render();}});\ndocument.getElementById("tabs").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;view=b.dataset.v;render();});\ninitBar();render();\n'
+
+#: Fixed session template (behaviour, not track content).
+_SESSIONS_JS = '[\n {k:"framework",name:"Framework",d:0,m:90},\n {k:"case_prep",name:"Case prep",d:1,m:60},\n {k:"case_class",name:"Case class",d:2,m:120},\n {k:"lab",name:"Lab 1",d:4,m:90},\n {k:"lab",name:"Lab 2",d:5,m:90},\n {k:"exam",name:"Exam and grade",d:6,m:60}]'
 
 
 @dataclass(frozen=True)
 class Finding:
-    """One failed contract line."""
-
     rule: str
     detail: str = ""
 
@@ -36,13 +48,11 @@ class ToolSpec:
     storage_key: str
     fonts: tuple[str, str, str]
     tokens: dict[str, str]
-    features: set[Literal["copy", "dictation", "export", "restore", "two_tap_clear"]] = field(
-        default_factory=set
-    )
+    features: set[Literal["copy", "dictation", "export", "restore", "two_tap_clear"]] = field(default_factory=set)
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[a-z0-9-]+", self.name):
-            raise ToolSpecError(f"ToolSpec.name must match [a-z0-9-]+, got {self.name!r}")
+        if not re.fullmatch(r"[A-Za-z0-9 .-]+", self.name):
+            raise ToolSpecError(f"ToolSpec.name is invalid: {self.name!r}")
         if not self.storage_key:
             raise ToolSpecError("ToolSpec.storage_key is required")
 
@@ -51,65 +61,101 @@ class ToolSpecError(ValueError):
     """A :class:`ToolSpec` is malformed."""
 
 
+def _fonts_link(spec: ToolSpec) -> str:
+    q = "&".join(f"family={f}" for f in spec.fonts)
+    return f"https://fonts.googleapis.com/css2?{q}&display=swap"
+
+
+def _reading_line(week: Any) -> str:
+    return "; ".join(r.title for r in week.readings)
+
+
+def _track_to_flat(track: Track) -> dict:
+    terms = [[t.name, t.outcome] for t in track.terms]
+    weeks = []
+    for term in track.terms:
+        for w in term.weeks:
+            weeks.append([
+                w.theme,
+                _reading_line(w),
+                w.case.title,
+                w.case.decision_question,
+                w.deliverable.title,
+                w.deliverable.brief,
+                w.deliverable.pages,
+            ])
+    return {"name": track.name, "audience": track.audience, "terms": terms, "weeks": weeks}
+
+
+def _coerce_tracks(data: Mapping[str, Any] | Sequence[Track] | Track) -> list[Track]:
+    if isinstance(data, Track):
+        return [data]
+    if isinstance(data, Mapping):
+        return [t for t in data.values() if isinstance(t, Track)]
+    return [t for t in data if isinstance(t, Track)]
+
+
+def render_single_file_tool(spec: ToolSpec, data: Mapping[str, Any] | Sequence[Track] | Track) -> str:
+    """Emit ONE self-contained HTML file: static behaviour + injected DATA."""
+    tracks = _coerce_tracks(data)
+    if not tracks:
+        raise ToolSpecError("no tracks in data")
+    flat = {t.id.upper(): _track_to_flat(t) for t in tracks}
+    rubric = [[c.name, c.full_marks] for c in tracks[0].rubric.criteria]
+    data_block = (
+        "// ---------- Tracks (data only; nothing below is specific to a track) ----------\n"
+        f"const RUBRIC={json.dumps(rubric, ensure_ascii=False)};\n"
+        f"const SESSIONS={_SESSIONS_JS};\n"
+        f'const DAYN=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];\n'
+        f"const TRACKS={json.dumps(flat, ensure_ascii=False)};\n"
+    )
+    for leaf in _string_leaves(flat):
+        if len(leaf) >= 12 and leaf in _STATIC_JS:
+            raise ToolSpecError(f"content leaked into the engine: {leaf[:40]!r}")
+    html = (
+        f"<title>{spec.name}</title>\n"
+        + _HEAD_TEMPLATE.format(fonts=_fonts_link(spec)) + "\n"
+        + "<script>\n" + data_block + _STATIC_JS + "</script>\n"
+    )
+    return html
+
+
+def _string_leaves(obj: Any):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _string_leaves(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _string_leaves(v)
+
+
 def lint_single_file_tool(html: str) -> list[Finding]:
     """Check the contract line by line; an empty result is green."""
-
     findings: list[Finding] = []
-
-    # ONE <script>.
     if len(re.findall(r"<script\b", html)) != 1:
         findings.append(Finding("single-script", "expected exactly one <script>"))
-
-    # Both dark token blocks present, with color-scheme: dark twice.
     dark_scheme = len(re.findall(r"color-scheme\s*:\s*dark", html))
     if dark_scheme < 2:
-        findings.append(
-            Finding(
-                "dark-tokens",
-                f"expected color-scheme: dark in both dark token blocks, found {dark_scheme}",
-            )
-        )
-
-    # No alert/confirm/prompt.
+        findings.append(Finding("dark-tokens", f"expected 2 dark blocks, found {dark_scheme}"))
     for call in ("alert(", "confirm(", "prompt("):
         if call in html:
             findings.append(Finding("no-native-dialogs", f"found {call}"))
-
-    # No window.print.
     if "window.print" in html:
         findings.append(Finding("no-window-print", "found window.print"))
-
-    # No external hosts except the two font hosts.
-    for m in re.finditer(r"(?:src|href)\s*=\s*[\"'](https?://[^\"']+)[\"']", html):
+    for m in re.finditer(r"(?:src|href)\s*=\s*[\"\'](https?://[^\"\']+)[\"\']", html):
         host = re.sub(r"^https?://", "", m.group(1)).split("/", 1)[0]
         if host not in _FONT_HOSTS:
             findings.append(Finding("no-external-hosts", f"external {host}"))
-
-    # No fetch.
     if re.search(r"\bfetch\s*\(", html):
         findings.append(Finding("no-fetch", "found fetch("))
-
-    # No iframes.
     if re.search(r"<iframe\b", html):
         findings.append(Finding("no-iframes", "found <iframe"))
-
-    # Every localStorage call sits inside a try. A heuristic: each
-    # localStorage.* occurrence must be followed, before the next top-level
-    # statement, by a '}catch' guard is hard to prove statically; instead flag
-    # bare localStorage access outside the STATE block's guarded helpers by
-    # checking for a visible try/catch wrapping. Kept simple: require the
-    # presence of try and catch adjacent to the storage key.
     if "localStorage" in html and not re.search(r"try\s*\{", html):
         findings.append(Finding("localstorage-try", "localStorage used with no try"))
-
-    # Clipboard call has a .catch.
     if "clipboard.writeText" in html and ".catch(" not in html:
         findings.append(Finding("clipboard-catch", "clipboard.writeText has no .catch"))
-
-    # download() only behind location.protocol === "file:".
     if "download(" in html and "location.protocol" not in html:
-        findings.append(
-            Finding("download-file-only", "download() not guarded by location.protocol")
-        )
-
+        findings.append(Finding("download-file-only", "download() not guarded by location.protocol"))
     return findings
