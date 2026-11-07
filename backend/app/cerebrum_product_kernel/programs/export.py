@@ -47,11 +47,11 @@ class State(BaseModel):
 
 
 def _fmt(d: date) -> str:
-    return f"{_DAYN[d.weekday()]} {d.day} {_MONTH_SHORT[d.month - 1]} {d.year}"
+    return f"{_DAYN[(d.weekday() + 1) % 7]} {d.day} {_MONTH_SHORT[d.month - 1]}"
 
 
 def _fmt_long(d: date) -> str:
-    return f"{_DAYN[d.weekday()]} {d.day} {_MONTH_LONG[d.month - 1]} {d.year}"
+    return f"{_fmt(d)} {d.year}"
 
 
 def _band_text(b: str | None) -> str:
