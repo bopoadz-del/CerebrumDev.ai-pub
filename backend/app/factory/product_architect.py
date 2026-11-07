@@ -422,7 +422,7 @@ def _blueprint_from_llm_payload(
         or f"Factory-drafted {vertical} product",
         "factory_scenario": FactoryScenario.CREATE_PRODUCT.value,
         "capabilities": caps,
-        "ui_modules": ["command_center", "operational_chat", "resident_engineer"],
+        "ui_modules": ["command_center", "operational_chat", "resident_engineer", "single_file_tool"],
         # Every connector a capability calls that no block supplies is a
         # declared placeholder (an honest not_implemented stub).
         "connectors": list(dict.fromkeys(c for cap in caps for c in cap["connectors"])),
@@ -688,7 +688,7 @@ def _draft_blueprint_from_brief_inner(
         "summary": brief.strip()[:500] or f"Factory-drafted {vertical} product",
         "factory_scenario": FactoryScenario.CREATE_PRODUCT.value,
         "capabilities": caps,
-        "ui_modules": ["command_center", "operational_chat", "resident_engineer"],
+        "ui_modules": ["command_center", "operational_chat", "resident_engineer", "single_file_tool"],
         "connectors": [],
         "edge_profile": "standard",
         "human_authority": True,
