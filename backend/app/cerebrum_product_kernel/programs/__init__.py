@@ -7,6 +7,10 @@ never in this package. This package is the engine: schema, calendar, rubric,
 modes, prompts and export.
 """
 
+from .calendar import Session, current_week, sessions, week_start
+from .modes import MODE_BY_KIND, MODE_TEXT, SessionMode, mode_for_kind
+from .prompts import defense_prompt, jury_prompt, session_prompt
+from .rubric import band, graduated, total, weighted_average
 from .schema import (
     Case,
     Criterion,
@@ -33,4 +37,19 @@ __all__ = [
     "Track",
     "TrackError",
     "load_track",
+    "Session",
+    "SessionMode",
+    "MODE_BY_KIND",
+    "MODE_TEXT",
+    "mode_for_kind",
+    "week_start",
+    "sessions",
+    "current_week",
+    "total",
+    "band",
+    "weighted_average",
+    "graduated",
+    "session_prompt",
+    "defense_prompt",
+    "jury_prompt",
 ]
