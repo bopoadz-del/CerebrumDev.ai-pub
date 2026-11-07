@@ -280,6 +280,22 @@ def test_family_independence_allows_a_different_vendor(monkeypatch, grader_model
     assert grader.independence_refusal(grader.writer_identity(), grader.grader_llm_config()) is None
 
 
+@pytest.mark.parametrize(
+    "model_id, family",
+    [
+        ("deepseek-v3", "deepseek"),
+        ("deepseek/deepseek-v3", "deepseek"),
+        ("anthropic/claude-sonnet-4.5", "anthropic"),
+        ("vendor-x/model-y", "vendor-x"),
+        ("  DeepSeek-Reasoner ", "deepseek"),
+        ("", ""),
+    ],
+)
+def test_model_family_is_structural(model_id, family):
+    """F5: the family token is derived from the model id, not a model list."""
+    assert grader._model_family(model_id) == family
+
+
 # --- the smallest helpers (mutation-gate coverage) ---------------------------
 
 
