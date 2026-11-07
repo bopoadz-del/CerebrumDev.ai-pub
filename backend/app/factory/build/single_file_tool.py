@@ -114,7 +114,7 @@ def render_single_file_tool(spec: ToolSpec, data: Mapping[str, Any] | Sequence[T
             raise ToolSpecError(f"content leaked into the engine: {leaf[:40]!r}")
     html = (
         f"<title>{spec.name}</title>\n"
-        + _HEAD_TEMPLATE.format(fonts=_fonts_link(spec)) + "\n"
+        + _HEAD_TEMPLATE.replace("{fonts}", _fonts_link(spec)) + "\n"
         + "<script>\n" + data_block + _STATIC_JS + "</script>\n"
     )
     return html
@@ -139,7 +139,10 @@ def lint_single_file_tool(html: str) -> list[Finding]:
     dark_scheme = len(re.findall(r"color-scheme\s*:\s*dark", html))
     if dark_scheme < 2:
         findings.append(Finding("dark-tokens", f"expected 2 dark blocks, found {dark_scheme}"))
-    for call in ("alert(", "confirm(", "prompt("):
+    # Native dialogs. "prompt(" is NOT one — the reference defines its own
+    # faculty prompt()/defensePrompt()/juryPrompt() functions, which the owner's
+    # fixture also carries, so it must not count as a finding.
+    for call in ("alert(", "confirm("):
         if call in html:
             findings.append(Finding("no-native-dialogs", f"found {call}"))
     if "window.print" in html:
