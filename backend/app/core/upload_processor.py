@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import os
 import socket
@@ -63,6 +64,21 @@ async def _execute_block(block: str, input_data: Any, params: Optional[Dict] = N
         return resp.json()
 
 
+def _content_payload(file_path: str) -> Dict[str, Any]:
+    """Block input carrying the file's CONTENT, not a path.
+
+    F4 step 2: the Store task has no mount for this factory's EFS, so a
+    ``file_path`` sent across /v1/execute is a guaranteed File-not-found and
+    every parse falls back to local. Send base64 bytes + filename instead.
+    """
+    path = Path(file_path)
+    data = path.read_bytes()
+    return {
+        "filename": path.name,
+        "content": base64.b64encode(data).decode("ascii"),
+    }
+
+
 async def parse_document(file_path: str) -> str:
     """Extract text from a document using Cerebrum-Blocks blocks with local fallbacks."""
     doc_type = _file_type(file_path)
@@ -72,7 +88,7 @@ async def parse_document(file_path: str) -> str:
         # 1. Prefer the Cerebrum-Blocks marker block for high-quality Markdown.
         if not text.strip() and MARKER_ENABLED:
             try:
-                result = await _execute_block("marker", {"file_path": file_path})
+                result = await _execute_block("marker", _content_payload(file_path))
                 text = _extract_text_from_result(result)
                 logger.info("Parsed %s with Cerebrum-Blocks marker block", file_path)
             except Exception as exc:
@@ -81,7 +97,7 @@ async def parse_document(file_path: str) -> str:
         # 2. Fall back to the generic PDF block.
         if not text.strip():
             try:
-                result = await _execute_block("pdf", {"file_path": file_path})
+                result = await _execute_block("pdf", _content_payload(file_path))
                 text = _extract_text_from_result(result)
             except Exception as exc:
                 logger.warning("PDF block failed for %s: %s", file_path, exc)
@@ -96,7 +112,7 @@ async def parse_document(file_path: str) -> str:
 
     elif doc_type == "docx":
         try:
-            result = await _execute_block("pdf", {"file_path": file_path})
+            result = await _execute_block("pdf", _content_payload(file_path))
             text = _extract_text_from_result(result)
         except Exception as exc:
             logger.warning("DOCX block failed for %s: %s", file_path, exc)
@@ -109,7 +125,7 @@ async def parse_document(file_path: str) -> str:
     else:
         # Try OCR / PDF block as a last resort
         try:
-            result = await _execute_block("pdf", {"file_path": file_path})
+            result = await _execute_block("pdf", _content_payload(file_path))
             text = _extract_text_from_result(result)
         except Exception as exc:
             logger.warning("Fallback block failed for %s: %s", file_path, exc)

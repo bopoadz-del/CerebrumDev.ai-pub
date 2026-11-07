@@ -1,3 +1,4 @@
+import base64
 import os
 import sys
 import tempfile
@@ -593,3 +594,35 @@ class TestProcessUploadTerminalGuarantee:
         assert state.upload.status == "failed"  # terminal — never "processing"
         assert "Upload processing failed" in state.upload.message
         assert "RuntimeError" in state.upload.message
+
+
+class TestParseDocumentContract:
+    """F4 step 2: the block input carries content, not the EFS file_path."""
+
+    @pytest.mark.parametrize(
+        "doc_type, raw",
+        [
+            ("pdf", b"%PDF-1.4 fake pdf bytes"),
+            ("docx", b"PK\x03\x04 fake docx bytes"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_parse_document_sends_content_not_file_path(
+        self, tmp_path, monkeypatch, doc_type, raw
+    ):
+        path = tmp_path / f"sample.{doc_type}"
+        path.write_bytes(raw)
+        captured = {}
+
+        async def _fake_execute(block, input_data, params=None):
+            captured["block"] = block
+            captured["input"] = input_data
+            return {"status": "success", "result": {"text": "extracted"}}
+
+        monkeypatch.setattr(upload_processor, "_execute_block", _fake_execute)
+        text = await upload_processor.parse_document(str(path))
+
+        assert text == "extracted"
+        assert "file_path" not in captured["input"]
+        assert captured["input"]["filename"] == f"sample.{doc_type}"
+        assert base64.b64decode(captured["input"]["content"]) == raw
