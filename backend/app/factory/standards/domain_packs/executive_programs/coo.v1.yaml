@@ -1,0 +1,247 @@
+schema_version: track.v1
+id: coo
+name: "Chief Operating Officer Program"
+audience: "Operators with 10+ years who run, or are about to run, a company's operations."
+length_weeks: 16
+hours_per_week: 9
+rubric:
+  points_each: 20
+  bands:
+    A: 90
+    B: 80
+    C: 70
+    rewrite_below: 70
+  criteria:
+    - name: Decision
+      full_marks: "One clear decision in the first sentence, with the alternative you rejected"
+    - name: Numbers
+      full_marks: "Every claim that can carry a number carries one, with its source or calculation"
+    - name: Framework
+      full_marks: "The week's framework is applied correctly and visibly shapes the decision"
+    - name: Risk
+      full_marks: "What breaks the decision, how you would know early, and the fallback"
+    - name: Execution
+      full_marks: "Who does what by when; the memo could be handed out as orders tomorrow"
+weights:
+  memos: 60
+  defenses: 20
+  capstone: 20
+terms:
+  - number: 1
+    name: "Operating foundations"
+    outcome: "You can state how your company decides, executes and adapts, and what it costs per unit of work."
+    weeks:
+      - number: 1
+        theme: "The COO role: operating model and decision rights"
+        readings:
+          - title: "High Output Management (Grove) ch. 1–6"
+            author: Grove
+        case:
+          title: "Ford 2006–10: Mulally's business plan review"
+          decision_question: "You are Mulally in week one at Ford: which single operating ritual do you install first, and what do you refuse to do until it works?"
+        deliverable:
+          title: "Operating model"
+          brief: "One page on how your company decides, executes and adapts today, and the one change you would make first."
+          pages: 1
+      - number: 2
+        theme: "Operations strategy and flow"
+        readings:
+          - title: "The Goal (Goldratt), whole"
+            author: Goldratt
+        case:
+          title: "Toyota Production System: the andon cord"
+          decision_question: "Would you give every worker the right to stop your line? What breaks first if you do, and if you don't?"
+        deliverable:
+          title: "Constraint map"
+          brief: "Map your core process, name the one bottleneck, cost it per week, and state what you subordinate to it."
+          pages: 2
+      - number: 3
+        theme: "Metrics and operating cadence"
+        readings:
+          - title: "Measure What Matters (Doerr) ch. 1–6"
+            author: Doerr
+          - title: "Working Backwards (Bryar, Carr) ch. 6"
+            author: "Bryar, Carr"
+        case:
+          title: "Amazon: the weekly business review"
+          decision_question: "Which five numbers would you put at the top of your own weekly review, and which popular number would you remove?"
+        deliverable:
+          title: "Cadence and KPIs"
+          brief: "Eight KPIs with owners, the weekly and monthly rhythm, and next quarter's OKRs."
+          pages: 2
+      - number: 4
+        theme: "Term paper: the operating model memo"
+        readings:
+          - title: "Good Strategy Bad Strategy (Rumelt) part 1"
+            author: Rumelt
+        case:
+          title: "Danaher Business System"
+          decision_question: "Is a business system transferable to a company you acquire, or does it only work where it was born? Decide and defend."
+        deliverable:
+          title: "Term 1 paper: operating model memo"
+          brief: "Three pages, with the numbers from weeks 2 and 3; defended orally."
+          pages: 3
+  - number: 2
+    name: "Execution systems"
+    outcome: "An org design, an operating cadence with stop-the-line rules, a delivery plan and a risk register that survive contact."
+    weeks:
+      - number: 5
+        theme: "Organization design and talent"
+        readings:
+          - title: "Team of Teams (McChrystal) ch. 1–8"
+            author: McChrystal
+          - title: "Who (Smart, Street)"
+            author: "Smart, Street"
+        case:
+          title: "Netflix culture memo"
+          decision_question: "Would you adopt Netflix's keeper test in your company? Who leaves in the first quarter if you do?"
+        deliverable:
+          title: "Org design and hiring plan"
+          brief: "Org chart with role charters, spans and interfaces; scorecards for the next five hires."
+          pages: 3
+      - number: 6
+        theme: "Planning, capacity and delivery"
+        readings:
+          - title: "The Phoenix Project (Kim et al.), whole"
+            author: "Kim et al."
+        case:
+          title: "Tesla Model 3 ramp 2017–18"
+          decision_question: "At the point where the automated line stalls, do you slow the ramp or add people in a tent? Decide with a cost per week."
+        deliverable:
+          title: "Capacity and delivery plan"
+          brief: "Twelve-month capacity plan and delivery schedule with the three risks that break it."
+          pages: 3
+      - number: 7
+        theme: "Quality, risk and resilience"
+        readings:
+          - title: "The Checklist Manifesto (Gawande), whole"
+            author: Gawande
+        case:
+          title: "Maersk and NotPetya 2017"
+          decision_question: "Maersk is dark worldwide: what do you restore first, and what do you run on paper? Order the first 72 hours."
+        deliverable:
+          title: "Risk register and stop rules"
+          brief: "Risk register with controls, and the stop-the-line rules for your operation."
+          pages: 3
+      - number: 8
+        theme: "Technology and AI in operations; term paper"
+        readings:
+          - title: "Competing in the Age of AI (Iansiti, Lakhani) ch. 1–4"
+            author: "Iansiti, Lakhani"
+        case:
+          title: "Klarna 2024–25: AI customer service, then rehiring"
+          decision_question: "Which of your processes would you automate first, and what quality floor would make you reverse it?"
+        deliverable:
+          title: "Automation map and Term 2 paper"
+          brief: "Automation map (which processes, which gains, which stay human) plus the four-page execution-systems paper; defended."
+          pages: 4
+  - number: 3
+    name: "Finance and growth"
+    outcome: "A cash plan, a pricing sheet, a scaling plan and a negotiated deal you can defend line by line."
+    weeks:
+      - number: 9
+        theme: "Finance for operators"
+        readings:
+          - title: "Financial Intelligence (Berman, Knight) parts 1–3"
+            author: "Berman, Knight"
+        case:
+          title: "Costco: a low-margin, high-velocity model"
+          decision_question: "Costco caps margin at about 14%: would you cap yours, and what would have to be true in your cost structure?"
+        deliverable:
+          title: "Unit economics and cash plan"
+          brief: "Unit economics of your operation and a twelve-month cash plan."
+          pages: 3
+      - number: 10
+        theme: "Pricing and unit economics"
+        readings:
+          - title: "Monetizing Innovation (Ramanujam, Tacke) ch. 1–7"
+            author: "Ramanujam, Tacke"
+        case:
+          title: "Slack: free to enterprise pricing"
+          decision_question: "Set Slack's first enterprise price before any enterprise deal exists: the number and the fence around the free tier."
+        deliverable:
+          title: "Pricing sheet"
+          brief: "Pricing at three price points with margin at each."
+          pages: 2
+      - number: 11
+        theme: "Scaling go-to-market and customer operations"
+        readings:
+          - title: "Amp It Up (Slootman), whole"
+            author: Slootman
+          - title: "Crossing the Chasm (Moore) ch. 1–4"
+            author: Moore
+        case:
+          title: "Snowflake under Slootman"
+          decision_question: "Slootman narrows focus and raises the standard on arrival: what do you cut in your company in week one, and who objects?"
+        deliverable:
+          title: "90-day scaling plan"
+          brief: "Ideal customer profile, pipeline, onboarding and support capacity for the next 90 days."
+          pages: 3
+      - number: 12
+        theme: "Partnerships, procurement and negotiation; term paper"
+        readings:
+          - title: "Never Split the Difference (Voss) ch. 1–8"
+            author: Voss
+        case:
+          title: "Microsoft and OpenAI 2019–23"
+          decision_question: "You are structuring the first billion: equity, exclusivity or compute credits? Decide and name your walk-away."
+        deliverable:
+          title: "Negotiation plan and Term 3 paper"
+          brief: "Negotiation plan and draft term sheet for one real partner or supplier, plus the four-page finance-and-growth paper; defended."
+          pages: 4
+  - number: 4
+    name: "Leadership and capstone"
+    outcome: "Your transformation plan, your working contract with the CEO and board, a crisis playbook, and the capstone."
+    weeks:
+      - number: 13
+        theme: "Leading change"
+        readings:
+          - title: "Leading Change (Kotter), whole"
+            author: Kotter
+          - title: "Hit Refresh (Nadella)"
+            author: Nadella
+        case:
+          title: "Microsoft under Nadella"
+          decision_question: "Nadella inherits a company at war with itself: which fight do you end first, and how do you prove it ended?"
+        deliverable:
+          title: "Transformation plan"
+          brief: "Transformation plan with the first 90 days sequenced."
+          pages: 3
+      - number: 14
+        theme: "Working with the CEO and the board"
+        readings:
+          - title: "The Great CEO Within (Mochary) parts 1–3"
+            author: Mochary
+          - title: "Startup Boards (Feld, Ramsinghani) ch. 1–6"
+            author: "Feld, Ramsinghani"
+        case:
+          title: "OpenAI, November 2023"
+          decision_question: "You are the COO on the Friday the board removes the CEO: what do you do in the next 24 hours, and for whom?"
+        deliverable:
+          title: "Decision rights and board pack"
+          brief: "Decision-rights chart between you, the CEO and the board; a monthly board pack template filled with real numbers."
+          pages: 3
+      - number: 15
+        theme: "Crisis and continuity"
+        readings:
+          - title: "The Hard Thing About Hard Things (Horowitz) parts 1–3"
+            author: Horowitz
+        case:
+          title: "Air Canada chatbot ruling 2024"
+          decision_question: "Your automated system has promised a customer something false: do you honour it, and what do you change by Monday?"
+        deliverable:
+          title: "Crisis playbook"
+          brief: "Crisis playbook and continuity plan for the three failures that would hurt most."
+          pages: 3
+      - number: 16
+        theme: "Capstone"
+        readings:
+          - title: "None new; re-read every term paper"
+            author: ""
+        case:
+          title: "None this week"
+          decision_question: "No case. Prepare the defense of your plan against its weakest number."
+        deliverable:
+          title: "Capstone"
+          brief: "Three-year operating plan (10 pages) and a 15-slide board deck; defended before a jury of three."
+          pages: 10
