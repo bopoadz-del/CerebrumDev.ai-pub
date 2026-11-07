@@ -99,7 +99,7 @@
       "id": "memory",
       "version": "1.0.0",
       "kit": "platform",
-      "description": "High-speed TTL/LRU cache \u2014 session storage and Redis alternative for edge deployments",
+      "description": "High-speed TTL/LRU cache — session storage and Redis alternative for edge deployments",
       "trust_tier": "platform"
     },
     {
@@ -114,6 +114,13 @@
       "version": "1.0.0",
       "kit": "private_estate_operations",
       "description": "Multi-property portfolio rollup intelligence",
+      "trust_tier": "platform"
+    },
+    {
+      "id": "program_engine",
+      "version": "1.0.0",
+      "kit": "platform",
+      "description": "Structured program engine: tracks, calendar, rubric, faculty prompts",
       "trust_tier": "platform"
     },
     {
@@ -177,6 +184,13 @@
       "version": "1.0.0",
       "kit": "platform",
       "description": "Chain blocks into pipelines with variable interpolation and scheduling",
+      "trust_tier": "platform"
+    },
+    {
+      "id": "program_engine",
+      "version": "1.0.0",
+      "kit": "platform",
+      "description": "Structured program engine: tracks, calendar, rubric, faculty prompts",
       "trust_tier": "platform"
     }
   ]
