@@ -94,6 +94,11 @@ class ProductDesignState(BaseModel):
     #: approval and never derived from a name. ``build/<platform_id>`` on
     #: cerebrum-builds is this platform's one branch of record, forever.
     platform_id: Optional[str] = None
+    #: Draft-time diagnostic (F-10c-a / ORDERS_04NOV_1735Z): what the drafter
+    #: saw on the last draft (chunks, source_files, digest_folded, loaded_from,
+    #: worker vs upload_worker). Persisted so the pilot reads it off
+    #: GET /v1/sessions/{sid}/product instead of regexing the chat stream.
+    brief_diag: Optional[Dict[str, Any]] = None
 
 
 class SessionState(BaseModel):

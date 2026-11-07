@@ -414,6 +414,7 @@ def get_product_design(
         "brief_lint": pd.brief_lint,
         "generation": live_generation,
         "last_error": last_error,
+        "brief_diag": pd.brief_diag,
     }
 
 
