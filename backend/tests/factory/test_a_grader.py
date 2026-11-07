@@ -281,19 +281,19 @@ def test_family_independence_allows_a_different_vendor(monkeypatch, grader_model
 
 
 @pytest.mark.parametrize(
-    "model_id, family",
+    "model_id, expected",
     [
         ("deepseek-v3", "deepseek"),
         ("deepseek/deepseek-v3", "deepseek"),
         ("anthropic/claude-sonnet-4.5", "anthropic"),
-        ("vendor-x/model-y", "vendor-x"),
+        ("meta-llama/llama-3", "meta-llama"),
         ("  DeepSeek-Reasoner ", "deepseek"),
         ("", ""),
     ],
 )
-def test_model_family_is_structural(model_id, family):
+def test_model_family_is_structural(model_id, expected):
     """F5: the family token is derived from the model id, not a model list."""
-    assert grader._model_family(model_id) == family
+    assert grader._model_family(model_id) == expected
 
 
 # --- the smallest helpers (mutation-gate coverage) ---------------------------
@@ -303,21 +303,6 @@ def test_model_family_is_structural(model_id, family):
 def test_grader_enabled_reads_the_switch(monkeypatch, env_value, expected):
     monkeypatch.setenv(grader.DISABLE_ENV, env_value)
     assert grader.grader_enabled() is expected
-
-
-@pytest.mark.parametrize(
-    "model_id,expected",
-    [
-        ("deepseek-v3", "deepseek"),
-        ("deepseek/deepseek-v3", "deepseek"),
-        ("anthropic/claude-sonnet-4.5", "anthropic"),
-        # A hyphenated vendor prefix distinguishes the slash branch from the
-        # leading-alphabetic-run branch (mutation gate).
-        ("meta-llama/llama-3", "meta-llama"),
-    ],
-)
-def test_model_family_is_structural(model_id, expected):
-    assert grader._model_family(model_id) == expected
 
 
 class _ModelBlueprint:
