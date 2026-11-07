@@ -1360,6 +1360,6 @@
   "schema": "factory.blocks.lock.v1",
   "store": {
     "repo": "https://github.com/bopoadz-del/Cerebrum-Blocks-pub",
-    "sha": "7502497b63d6d50167f2b17731594ce1b9ad0ec0"
+    "sha": "f14b4f76cfa048b770787dc1c7fbc8d230da3818"
   }
 }
