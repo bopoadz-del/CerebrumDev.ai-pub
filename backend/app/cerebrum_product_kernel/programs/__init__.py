@@ -8,6 +8,7 @@ modes, prompts and export.
 """
 
 from .calendar import Session, current_week, sessions, week_start
+from .export import RestoreError, State, WeekState, backup, markdown, restore
 from .modes import MODE_BY_KIND, MODE_TEXT, SessionMode, mode_for_kind
 from .prompts import defense_prompt, jury_prompt, session_prompt
 from .rubric import band, graduated, total, weighted_average
@@ -52,4 +53,10 @@ __all__ = [
     "session_prompt",
     "defense_prompt",
     "jury_prompt",
+    "State",
+    "WeekState",
+    "RestoreError",
+    "markdown",
+    "backup",
+    "restore",
 ]

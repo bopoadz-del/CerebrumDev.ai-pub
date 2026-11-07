@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "track.v1.schema.json",
+  "title": "Program Kernel track.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "audience",
+    "length_weeks",
+    "hours_per_week",
+    "rubric",
+    "weights",
+    "terms"
+  ],
+  "properties": {
+    "schema_version": { "const": "track.v1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "name": { "type": "string" },
+    "audience": { "type": "string" },
+    "length_weeks": { "type": "integer", "minimum": 4 },
+    "hours_per_week": { "type": "number" },
+    "rubric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["points_each", "bands", "criteria"],
+      "properties": {
+        "points_each": { "const": 20 },
+        "bands": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["A", "B", "C", "rewrite_below"],
+          "properties": {
+            "A": { "type": "integer" },
+            "B": { "type": "integer" },
+            "C": { "type": "integer" },
+            "rewrite_below": { "type": "integer" }
+          }
+        },
+        "criteria": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "full_marks"],
+            "properties": {
+              "name": { "type": "string" },
+              "full_marks": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memos", "defenses", "capstone"],
+      "properties": {
+        "memos": { "type": "integer" },
+        "defenses": { "type": "integer" },
+        "capstone": { "type": "integer" }
+      }
+    },
+    "terms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "name", "outcome", "weeks"],
+        "properties": {
+          "number": { "type": "integer" },
+          "name": { "type": "string" },
+          "outcome": { "type": "string" },
+          "defense_minutes": { "type": "integer", "default": 45 },
+          "weeks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["number", "theme", "readings", "case", "deliverable"],
+              "properties": {
+                "number": { "type": "integer" },
+                "theme": { "type": "string" },
+                "readings": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["title", "author"],
+                    "properties": {
+                      "title": { "type": "string" },
+                      "author": { "type": "string" },
+                      "chapters": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "case": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["title", "decision_question"],
+                  "properties": {
+                    "title": { "type": "string" },
+                    "decision_question": { "type": "string" },
+                    "public_sources": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "deliverable": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["title", "brief", "pages"],
+                  "properties": {
+                    "title": { "type": "string" },
+                    "brief": { "type": "string" },
+                    "pages": { "type": "integer", "minimum": 1 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
