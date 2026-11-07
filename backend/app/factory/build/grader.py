@@ -323,6 +323,23 @@ def _norm_identity(provider: str, model: str, version: str = "") -> str:
     return ":".join(str(part).strip() for part in (provider, model, version)).lower()
 
 
+def _model_family(model_id: str) -> str:
+    """The vendor family of a model id, structurally: the vendor prefix
+    before the first ``/``, else the leading alphabetic run of the name.
+    ``anthropic/claude-sonnet-4.5`` -> ``anthropic``; ``deepseek-v3`` ->
+    ``deepseek``. No model list is consulted."""
+    text = str(model_id or "").strip().lower()
+    if "/" in text:
+        return text.split("/", 1)[0].strip()
+    run = []
+    for ch in text:
+        if ch.isalpha():
+            run.append(ch)
+        else:
+            break
+    return "".join(run)
+
+
 def writer_identity(env: Optional[Mapping[str, str]] = None) -> str:
     """The WRITER's identity -- the target fingerprint the grader may never
     equal. The provider and model come from the coder's own configuration
@@ -372,6 +389,18 @@ def independence_refusal(writer_id: str, grader_cfg: Optional[Mapping[str, str]]
         return (
             f"layer 2 refused: grader identity {grader_id} equals the writer's identity -- "
             "the grader may never be the thing it grades"
+        )
+    # Family-level independence (F5): refuse when the grader's model VENDOR
+    # equals the writer's, even when the provider:model:version triple differs
+    # (e.g. OpenRouter serving deepseek-v3 against a deepseek writer).
+    writer_model = writer_id.split(":")[1] if ":" in (writer_id or "") else ""
+    writer_family = _model_family(writer_model)
+    grader_family = _model_family(grader_cfg["model"])
+    if grader_family and writer_family and grader_family == writer_family:
+        return (
+            f"layer 2 refused: grader model family {grader_family!r} equals the "
+            "writer's model family -- the grader may never share the writer's "
+            "model vendor"
         )
     return None
 
