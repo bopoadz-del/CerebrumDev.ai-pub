@@ -1,0 +1,247 @@
+schema_version: track.v1
+id: ceo
+name: "Chief Executive Officer Program"
+audience: "Founders and executives stepping into, or already holding, the top job."
+length_weeks: 16
+hours_per_week: 9
+rubric:
+  points_each: 20
+  bands:
+    A: 90
+    B: 80
+    C: 70
+    rewrite_below: 70
+  criteria:
+    - name: Decision
+      full_marks: "One clear decision in the first sentence, with the alternative you rejected"
+    - name: Numbers
+      full_marks: "Every claim that can carry a number carries one, with its source or calculation"
+    - name: Framework
+      full_marks: "The week's framework is applied correctly and visibly shapes the decision"
+    - name: Risk
+      full_marks: "What breaks the decision, how you would know early, and the fallback"
+    - name: Execution
+      full_marks: "Who does what by when; the memo could be handed out as orders tomorrow"
+weights:
+  memos: 60
+  defenses: 20
+  capstone: 20
+terms:
+  - number: 1
+    name: "Strategy"
+    outcome: "A strategy you can state on one page as a set of choices, with the moat you are building and a capital policy."
+    weeks:
+      - number: 1
+        theme: "Strategy as a set of choices"
+        readings:
+          - title: "Playing to Win (Lafley, Martin), whole"
+            author: "Lafley, Martin"
+        case:
+          title: "Netflix: DVD to streaming"
+          decision_question: "Hastings cannibalises a profitable business before anyone forces him to: when would you do the same, and what signal would trigger it?"
+        deliverable:
+          title: "Strategy on one page"
+          brief: "Where to play, how to win, and the three things you will not do."
+          pages: 1
+      - number: 2
+        theme: "Moats and competitive advantage"
+        readings:
+          - title: "7 Powers (Helmer), whole"
+            author: Helmer
+        case:
+          title: "Nvidia: the CUDA bet"
+          decision_question: "Nvidia funds a software platform for years with no visible return: which power was it building, and would your board let you?"
+        deliverable:
+          title: "7 Powers audit"
+          brief: "Audit of your company against the seven powers, with the one power to build next."
+          pages: 2
+      - number: 3
+        theme: "Capital allocation and the owner's mindset"
+        readings:
+          - title: "The Outsiders (Thorndike), whole"
+            author: Thorndike
+        case:
+          title: "Constellation Software: the president's letters"
+          decision_question: "Constellation refuses to grow faster than its hurdle rate allows: write your own hurdle and say what you would turn down."
+        deliverable:
+          title: "Capital allocation policy"
+          brief: "Reinvest, acquire, return or hold, with thresholds."
+          pages: 2
+      - number: 4
+        theme: "Term paper: the strategy memo"
+        readings:
+          - title: "Good Strategy Bad Strategy (Rumelt), whole"
+            author: Rumelt
+        case:
+          title: "Apple 1997: the product cull"
+          decision_question: "Jobs cuts the line to four products: which of your products or projects go, and what do you tell the people who built them?"
+        deliverable:
+          title: "Term 1 paper: strategy memo"
+          brief: "Diagnosis, guiding policy, coherent actions; three pages, defended orally."
+          pages: 3
+  - number: 2
+    name: "Building the company"
+    outcome: "A narrative, a culture, an executive team, a product bet and a revenue model."
+    weeks:
+      - number: 5
+        theme: "Vision, narrative and culture"
+        readings:
+          - title: "Amazon shareholder letters 1997–2020 (Bezos)"
+            author: Bezos
+        case:
+          title: "Netflix culture memo"
+          decision_question: "Would you publish your culture memo externally? What would you have to delete before you could?"
+        deliverable:
+          title: "Narrative and culture"
+          brief: "Company narrative (two pages) and the ten cultural rules you will enforce."
+          pages: 2
+      - number: 6
+        theme: "Hiring and the executive team"
+        readings:
+          - title: "Who (Smart, Street)"
+            author: "Smart, Street"
+          - title: "The Great CEO Within (Mochary) parts 1–3"
+            author: Mochary
+        case:
+          title: "Stripe: the first fifty hires"
+          decision_question: "Stripe hires slowly for years: at what point does slow hiring cost more than a bad hire, in your company?"
+        deliverable:
+          title: "Executive team design"
+          brief: "The five roles, their scorecards, and the first three hires."
+          pages: 3
+      - number: 7
+        theme: "Product and market"
+        readings:
+          - title: "Zero to One (Thiel)"
+            author: Thiel
+          - title: "Obviously Awesome (Dunford)"
+            author: Dunford
+        case:
+          title: "Figma versus Adobe"
+          decision_question: "Figma takes on an incumbent by changing the medium, not the feature list: what medium change is open to you?"
+        deliverable:
+          title: "Positioning and product bet"
+          brief: "Positioning statement and the product bet for the next 18 months."
+          pages: 2
+      - number: 8
+        theme: "Pricing and the revenue model; term paper"
+        readings:
+          - title: "Monetizing Innovation (Ramanujam, Tacke) ch. 1–7"
+            author: "Ramanujam, Tacke"
+        case:
+          title: "Slack: free to enterprise pricing"
+          decision_question: "Set the enterprise price and the fence around free before any enterprise deal exists."
+        deliverable:
+          title: "Revenue model and Term 2 paper"
+          brief: "Revenue model with pricing at three tiers, plus the four-page company-building paper; defended."
+          pages: 4
+  - number: 3
+    name: "Capital and markets"
+    outcome: "A financial model, a fundable round, a go-to-market plan and a deal thesis you can negotiate."
+    weeks:
+      - number: 9
+        theme: "Finance for CEOs"
+        readings:
+          - title: "Financial Intelligence for Entrepreneurs (Berman, Knight)"
+            author: "Berman, Knight"
+        case:
+          title: "WeWork S-1, 2019"
+          decision_question: "Read the S-1 as an investor: name the three numbers that should have stopped the IPO, and the equivalent numbers in your company."
+        deliverable:
+          title: "Financial model"
+          brief: "Three-year model with three scenarios and the break-even month."
+          pages: 3
+      - number: 10
+        theme: "Fundraising and the cap table"
+        readings:
+          - title: "Venture Deals (Feld, Mendelson) ch. 1–9"
+            author: "Feld, Mendelson"
+          - title: "Secrets of Sand Hill Road (Kupor)"
+            author: Kupor
+        case:
+          title: "Airbnb 2008 seed round"
+          decision_question: "Airbnb is selling cereal to stay alive: do you take the first term sheet offered, whatever its terms?"
+        deliverable:
+          title: "Round design and deck"
+          brief: "Round size, the term sheet you would sign, a 12-slide deck and a ranked investor list."
+          pages: 3
+      - number: 11
+        theme: "Sales and go-to-market leadership"
+        readings:
+          - title: "Amp It Up (Slootman)"
+            author: Slootman
+          - title: "Founding Sales (Kazanjy) parts 1–2"
+            author: Kazanjy
+        case:
+          title: "Snowflake under Slootman"
+          decision_question: "Slootman replaces most of the sales leadership on arrival: what would you have to see to do the same?"
+        deliverable:
+          title: "Go-to-market plan"
+          brief: "Ideal customer profile, first ten named accounts, sales motion, cost of a closed deal."
+          pages: 3
+      - number: 12
+        theme: "M&A, partnerships and exits; term paper"
+        readings:
+          - title: "Never Split the Difference (Voss) ch. 1–8"
+            author: Voss
+        case:
+          title: "Microsoft acquires GitHub, 2018"
+          decision_question: "GitHub's users fear Microsoft: what do you promise on day one, and what do you refuse to promise?"
+        deliverable:
+          title: "Deal thesis and Term 3 paper"
+          brief: "Partnership or acquisition thesis with a negotiation plan, plus the four-page capital plan; defended."
+          pages: 4
+  - number: 4
+    name: "Leading and capstone"
+    outcome: "Your operating system, your board, your crisis playbook, and the capstone."
+    weeks:
+      - number: 13
+        theme: "The CEO operating system and decisions"
+        readings:
+          - title: "High Output Management (Grove) ch. 1–6"
+            author: Grove
+          - title: "Thinking in Bets (Duke) ch. 1–3"
+            author: Duke
+        case:
+          title: "Ford 2006–10: Mulally"
+          decision_question: "Mulally runs the company from one weekly meeting: design yours, including who is not invited."
+        deliverable:
+          title: "Your operating system"
+          brief: "Weekly calendar, 1:1 format, decision log and personal operating rules."
+          pages: 2
+      - number: 14
+        theme: "Boards, governance and investors"
+        readings:
+          - title: "Startup Boards (Feld, Ramsinghani) ch. 1–8"
+            author: "Feld, Ramsinghani"
+        case:
+          title: "OpenAI, November 2023"
+          decision_question: "You are a director on the Friday the CEO is removed: what question should have been asked a year earlier?"
+        deliverable:
+          title: "Governance pack"
+          brief: "Board composition, reserved matters, and a monthly board pack filled with real numbers."
+          pages: 3
+      - number: 15
+        theme: "Crisis, risk and regulation"
+        readings:
+          - title: "The Hard Thing About Hard Things (Horowitz), whole"
+            author: Horowitz
+        case:
+          title: "Klarna 2024–25; Air Canada chatbot ruling 2024"
+          decision_question: "An automated decision in your company has harmed a customer: what do you say publicly in the first hour?"
+        deliverable:
+          title: "Crisis playbook and regulatory map"
+          brief: "Crisis playbook and the regulatory map for every market you sell into."
+          pages: 3
+      - number: 16
+        theme: "Capstone"
+        readings:
+          - title: "None new; re-read every term paper"
+            author: ""
+        case:
+          title: "None this week"
+          decision_question: "No case. Prepare the defense of your strategy against its weakest assumption."
+        deliverable:
+          title: "Capstone"
+          brief: "Three-year company strategy (10 pages), 15-slide board deck, one-page investor memo; defended before a jury of three."
+          pages: 10
