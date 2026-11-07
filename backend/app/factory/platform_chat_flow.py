@@ -437,6 +437,9 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     }
     # The vertical is the user's own choice from the Floor (persisted on the
     # session), never read out of the message.
+    # Persist the diagnostic so the pilot reads it off the product endpoint,
+    # not the chat stream.
+    pd.brief_diag = _brief_diag
     bp = draft_blueprint_from_brief(brief_for_draft, vertical_hint=getattr(pd, "vertical", None))
     pd.brief = brief_for_draft
     pd.blueprint = bp.model_dump(mode="json")

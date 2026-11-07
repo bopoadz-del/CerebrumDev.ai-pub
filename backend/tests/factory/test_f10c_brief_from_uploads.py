@@ -83,3 +83,16 @@ def test_draft_result_carries_brief_diag(chunks, names, exp_chunks, exp_folded):
     assert diag["digest_folded"] is exp_folded
     assert diag["loaded_from"] == "memory"  # kills drop/const on the discriminator
     assert ":" in diag["worker"]  # host:pid of the drafting process
+
+
+def test_draft_persists_brief_diag_on_product_design():
+    # F-10c-a / F4 Step 1: the pilot reads the diagnostic off the product
+    # endpoint, so draft_from_chat must park it on product_design, not only
+    # stream it back in the chat response.
+    s = _state(["Time for Completion is 730 days."], ["contract.pdf"])
+    s.loaded_from = "memory"
+    res = draft_from_chat(s, "Build a contracts platform")
+    assert s.product_design.brief_diag is not None
+    assert s.product_design.brief_diag == res["_brief_diag"]
+    assert s.product_design.brief_diag["digest_folded"] is True
+    assert s.product_design.brief_diag["source_files"] == ["contract.pdf"]
