@@ -26,7 +26,8 @@ _KERNEL_FILES = (
 
 
 def _kernel_dir() -> Path:
-    return Path(__file__).resolve().parents[3] / "app" / "cerebrum_product_kernel" / "programs"
+    # tests/factory -> backend -> repo root; the kernel lives under backend/app.
+    return Path(__file__).resolve().parents[2] / "app" / "cerebrum_product_kernel" / "programs"
 
 
 def _store_mirror_dir() -> Path | None:
