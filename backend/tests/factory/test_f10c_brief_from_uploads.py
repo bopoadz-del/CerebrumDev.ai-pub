@@ -85,14 +85,21 @@ def test_draft_result_carries_brief_diag(chunks, names, exp_chunks, exp_folded):
     assert ":" in diag["worker"]  # host:pid of the drafting process
 
 
-def test_draft_persists_brief_diag_on_product_design():
+@pytest.mark.parametrize(
+    "chunks, names, exp_digest, exp_files",
+    [
+        (["Time for Completion is 730 days."], ["contract.pdf"], True, ["contract.pdf"]),
+        ([], [], False, []),
+    ],
+)
+def test_draft_persists_brief_diag_on_product_design(chunks, names, exp_digest, exp_files):
     # F-10c-a / F4 Step 1: the pilot reads the diagnostic off the product
     # endpoint, so draft_from_chat must park it on product_design, not only
     # stream it back in the chat response.
-    s = _state(["Time for Completion is 730 days."], ["contract.pdf"])
+    s = _state(chunks, names)
     s.loaded_from = "memory"
     res = draft_from_chat(s, "Build a contracts platform")
     assert s.product_design.brief_diag is not None
     assert s.product_design.brief_diag == res["_brief_diag"]
-    assert s.product_design.brief_diag["digest_folded"] is True
-    assert s.product_design.brief_diag["source_files"] == ["contract.pdf"]
+    assert s.product_design.brief_diag["digest_folded"] is exp_digest
+    assert s.product_design.brief_diag["source_files"] == exp_files
