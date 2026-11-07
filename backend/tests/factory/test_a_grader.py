@@ -305,6 +305,21 @@ def test_grader_enabled_reads_the_switch(monkeypatch, env_value, expected):
     assert grader.grader_enabled() is expected
 
 
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("deepseek-v3", "deepseek"),
+        ("deepseek/deepseek-v3", "deepseek"),
+        ("anthropic/claude-sonnet-4.5", "anthropic"),
+        # A hyphenated vendor prefix distinguishes the slash branch from the
+        # leading-alphabetic-run branch (mutation gate).
+        ("meta-llama/llama-3", "meta-llama"),
+    ],
+)
+def test_model_family_is_structural(model_id, expected):
+    assert grader._model_family(model_id) == expected
+
+
 class _ModelBlueprint:
     def __init__(self, payload):
         self.__dict__.update(payload)
