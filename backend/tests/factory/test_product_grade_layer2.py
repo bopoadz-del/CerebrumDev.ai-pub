@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.factory.build.product_grader import layer2 as l2
+import app.factory.build.product_grader.layer2 as l2
 
 BPS = [
     {"capabilities": [{"id": "rent_roll", "description": "Roll rent."}], "ui_modules": ["portal"]},
