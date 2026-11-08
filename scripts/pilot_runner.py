@@ -206,11 +206,54 @@ def wait_upload_terminal(sid: str, token: str, wait_s: int = 600) -> Dict[str, A
 
 RESULTS: List[Tuple[str, bool, str]] = []
 
+#: F-G3 (ORDERS_08NOV_0020Z): on ANY stage FAIL the pilot prints the session id
+#: plus the last 20 ledger events (ts, phase, event, payload) into the step
+#: output and PILOT_RESULT -- a silent stop is never left unexplained.
+LAST_SID: str | None = None
+LAST_TOKEN: str | None = None
+LEDGER_TAIL: List[str] = []
+
 
 def record(stage: str, ok: bool, evidence: str) -> None:
     tag = "PASS" if ok else "FAIL"
     print(f"[{tag}] {stage} -- {evidence}")
     RESULTS.append((stage, ok, evidence))
+
+
+def render_ledger_tail(events: Any, limit: int = 20) -> List[str]:
+    """F-G3: render up to ``limit`` ledger events, one line each.
+
+    Each line carries ``ts``, the build phase (``role``), the event
+    (``kind`` + ``detail``) and the first 200 chars of ``payload``.
+    """
+    if not isinstance(events, list) or not events:
+        return ["no ledger events"]
+    lines: List[str] = []
+    for ev in events[-limit:]:
+        if not isinstance(ev, dict):
+            lines.append(str(ev)[:200])
+            continue
+        ts = str(ev.get("ts") or "")
+        role = str(ev.get("role") or "-")
+        kind = str(ev.get("kind") or "")
+        detail = str(ev.get("detail") or "")
+        payload = ev.get("payload") or {}
+        payload_s = (
+            payload if isinstance(payload, str)
+            else json.dumps(payload, ensure_ascii=False, default=str)
+        )
+        lines.append(f"{ts} phase={role} event={kind} {detail} payload={payload_s[:200]}")
+    return lines
+
+
+def fetch_ledger_tail(sid: str, token: str, limit: int = 20) -> List[str]:
+    """F-G3: last ``limit`` ledger events for a session, rendered for the report."""
+    _s, ledger = smoke.req("GET", f"/v1/sessions/{sid}/product/ledger", token=token)
+    events = (ledger or {}).get("events") if isinstance(ledger, dict) else ledger
+    if not isinstance(events, list) or not events:
+        detail = (ledger or {}).get("detail") if isinstance(ledger, dict) else None
+        return [f"no ledger events (detail={detail})"]
+    return render_ledger_tail(events, limit=limit)
 
 
 def principal_required_result(has_creds: bool) -> Check:
@@ -228,6 +271,7 @@ def principal_required_result(has_creds: bool) -> Check:
 
 
 def run_pilot(base: str) -> int:
+    global LAST_SID, LAST_TOKEN
     smoke.BASE = base
     print(f"pilot run against {base}\n")
     if not smoke.wait_for_ready():
@@ -254,6 +298,8 @@ def run_pilot(base: str) -> int:
     record("session create", s in (200, 201) and bool(sid), f"http={s}")
     if not sid:
         return finish()
+    LAST_SID = sid
+    LAST_TOKEN = token
 
     # Stage 1 -- UPLOAD + INDEX (before the build)
     paths = [FIXTURES / DOC_PDF, FIXTURES / DOC_XLSX]
@@ -313,10 +359,22 @@ def render_result_md() -> str:
     failed = [s for s, ok, _ in RESULTS if not ok]
     verdict = "FAIL" if (failed or not RESULTS) else "PASS"
     lines += ["", f"**{verdict}**: {len(RESULTS) - len(failed)}/{len(RESULTS)} stages green"]
+    if LAST_SID:
+        lines += ["", f"session_id={LAST_SID}"]
+    if LEDGER_TAIL:
+        lines += ["", "## last 20 ledger events (F-G3)"]
+        lines += [f"- {line}" for line in LEDGER_TAIL]
     return "\n".join(lines) + "\n"
 
 
 def finish() -> int:
+    # F-G3: a failure must carry its ledger tail, never a silent stop.
+    failed = [s for s, ok, _ in RESULTS if not ok]
+    if failed and LAST_SID and LAST_TOKEN and not LEDGER_TAIL:
+        try:
+            LEDGER_TAIL.extend(fetch_ledger_tail(LAST_SID, LAST_TOKEN))
+        except Exception as exc:  # noqa: BLE001 -- ledger fetch never changes the verdict
+            LEDGER_TAIL.append(f"ledger fetch error: {exc}")
     md = render_result_md()
     try:
         (REPO_ROOT / "PILOT_RESULT.md").write_text(md, encoding="utf-8")
