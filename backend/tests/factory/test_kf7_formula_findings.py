@@ -304,3 +304,35 @@ def test_y14_null_provenance_with_or_without_a_source(source, expect):
         got, raised = None, type(exc).__name__
     assert raised is None, f"a null provenance raised {raised}"
     assert got == expect
+
+
+# --- B (ORDERS_08NOV_0250Z): findings gate-fail, never a NOTE ---------------
+
+def _gate_ctx(tmp_path):
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.gates import GateContext
+
+    return GateContext(workspace=tmp_path, role=BuildRole.WRITER)
+
+
+@pytest.mark.parametrize("errors, expect_ok", [
+    ([], True),
+    ([f"imp_a: improvised without the label {IMPROVISED_LABEL!r}"], False),
+    (["s1: the Store covers this; use the Store definition"], False),
+])
+def test_gate_writer_formulas_fails_on_findings(tmp_path, errors, expect_ok):
+    from app.factory.build import gates
+
+    (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".factory" / "writer_formula_findings.json").write_text(
+        json.dumps({"errors": errors}), encoding="utf-8"
+    )
+    verdict = gates.gate_writer_formulas(_gate_ctx(tmp_path))
+    assert verdict.ok is expect_ok
+
+
+def test_gate_writer_formulas_passes_when_no_findings_file(tmp_path):
+    from app.factory.build import gates
+
+    verdict = gates.gate_writer_formulas(_gate_ctx(tmp_path))
+    assert verdict.ok is True

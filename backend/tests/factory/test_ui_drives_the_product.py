@@ -76,6 +76,14 @@ class TestThePromptStatesTheBarTheGateEnforces:
         assert "at least two capabilities driven from" in text
         assert "authority label" in text
 
+    def test_the_prompt_attaches_the_improvised_label_in_three_places(self):
+        # ORDERS_08NOV_0250Z B: the label is attached by construction, not a
+        # post-hoc string check -- code, provenance, and UI provenance.
+        text = self._prompt()
+        assert "by construction in three places" in text
+        assert "app/formulas.py" in text
+        assert "docs/provenance/provenance.json" in text
+
     def test_the_prompt_states_the_one_ui_rule(self):
         text = self._prompt()
         assert "The platform serves ONE UI" in text

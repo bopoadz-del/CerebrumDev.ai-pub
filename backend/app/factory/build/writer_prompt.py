@@ -273,6 +273,12 @@ UI (a pilot is deployed and tested, so what it serves must work):
   Every formula you write goes, one JSON row each ({{"id", "label",
   "source"}}), in app/formulas/writer_definitions.jsonl; its candidate row
   ({{"definition": id}}) in app/formulas/new_domain_candidates.jsonl.
+  An improvised formula carries the label "improvised, no Store coverage"
+  by construction in three places, not just the definition row: a comment on
+  its function in app/formulas.py, its provenance entry in
+  docs/provenance/provenance.json, and the authority label on every answer
+  the UI shows for it -- so an operator can see it is the writer's
+  improvisation, not a Store-certified formula.
   Re-writing a formula the kernel or the Store already has is a failure.
   A value the customer owns (a rate, a threshold, a limit)
   stays a named setting they can change, whatever you learn about it.
