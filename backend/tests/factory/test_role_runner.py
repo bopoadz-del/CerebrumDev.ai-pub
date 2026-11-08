@@ -471,7 +471,7 @@ def test_the_same_failure_twice_stops_before_the_budget_runs_out(blueprint, tmp_
 
 
 def test_wall_clock_budget_exhaustion_fails_the_run(blueprint, tmp_path, stub_coder):
-    """Time runs out mid-build: FAILED_BUDGET_SPENT, not a partial success."""
+    """Time runs out mid-build: FAILED_TIME_BUDGET, not a partial success."""
     ticks = iter([0.0, 0.0, 5.0] + [500.0] * 40)
 
     runner = RoleRunner(
@@ -482,7 +482,7 @@ def test_wall_clock_budget_exhaustion_fails_the_run(blueprint, tmp_path, stub_co
     )
     outcome = runner.run()
 
-    assert outcome.outcome is Outcome.FAILED_BUDGET_SPENT
+    assert outcome.outcome is Outcome.FAILED_TIME_BUDGET
     assert not outcome.ok
     assert "wall-clock budget" in outcome.detail
     assert runner.ledger.terminal_event().kind is EventKind.RUN_FAILED

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.factory import build_jobs
 from app.factory.blueprint import load_blueprint
 from app.factory.build import codewhale_worker
 from app.factory.build.budget_inspect import STAGE_1_S
@@ -61,7 +60,10 @@ def _open_codewhale_call(runner):
     )
 
 
-def test_a_heartbeat_pulse_before_the_mark_lifts_the_staged_wall(tmp_path):
+def test_a_heartbeat_pulse_before_the_mark_does_not_lift_the_strict_plan_wall(tmp_path):
+    """Strict plan-time budget (0605Z): the staged 1800s wall is the plan
+    total for its class, so the stage-1 inspect ramp (1800 -> 2700) is
+    clamped and the box never grows, even one heartbeat before the mark."""
     runner, clock = _staged_runner(tmp_path)
     _open_codewhale_call(runner)
     # The last heartbeat pulse before the box ends: 60 s before the mark.
@@ -69,13 +71,9 @@ def test_a_heartbeat_pulse_before_the_mark_lifts_the_staged_wall(tmp_path):
 
     runner._maybe_stage_inspect()
 
-    assert runner._deadline_box["at"] > STAGE_1_S, (
-        "the staged wall was still 1800s one heartbeat before the box ended"
+    assert runner._deadline_box["at"] == STAGE_1_S, (
+        "the strict plan wall kept the box at 1800s (the 2700s inspect ramp was clamped)"
     )
-    # ...and the status reader sees the lifted deadline for the open call.
-    notes = [e for e in runner.ledger.events() if e.kind is EventKind.NOTE]
-    open_note = build_jobs._open_model_call_note(notes)
-    assert float(open_note.payload["deadline_s"]) > codewhale_worker.HEARTBEAT_EVERY_S
 
 
 def test_without_a_call_in_flight_the_inspect_still_waits_for_its_mark(tmp_path):

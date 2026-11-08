@@ -69,13 +69,17 @@ def test_extend_wall_clamps_to_the_ceiling(blueprint, tmp_path):
     assert runner._deadline == pytest.approx(runner._run_started + 7200.0, abs=1.0)
 
 
-def test_an_extension_past_the_plan_wall_is_refused(blueprint, tmp_path):
-    """0605Z strict: the plan-time wall is final for its class. A stage-2
-    proposal (2700s) against a 1800s plan wall changes nothing."""
-    runner = _armed(blueprint, tmp_path, wall=1800.0, ceiling=7200.0)
-    runner._extend_wall(2700.0)
-    assert runner.budget.wall_clock_s == 1800.0
-    assert runner._deadline == pytest.approx(runner._run_started + 1800.0, abs=1.0)
+@pytest.mark.parametrize(
+    "wall, proposal",
+    [(1800.0, 2700.0), (2400.0, 2700.0), (1800.0, 9999.0)],
+)
+def test_an_extension_past_the_plan_wall_is_refused(blueprint, tmp_path, wall, proposal):
+    """0605Z strict: the plan-time wall is final for its class. A proposal
+    above the plan wall changes nothing."""
+    runner = _armed(blueprint, tmp_path, wall=wall, ceiling=7200.0)
+    runner._extend_wall(proposal)
+    assert runner.budget.wall_clock_s == wall
+    assert runner._deadline == pytest.approx(runner._run_started + wall, abs=1.0)
 
 
 def test_extend_wall_still_never_shrinks(blueprint, tmp_path):
@@ -84,14 +88,15 @@ def test_extend_wall_still_never_shrinks(blueprint, tmp_path):
     assert runner.budget.wall_clock_s == 600.0
 
 
-def test_repeated_extensions_cannot_walk_past_the_plan_wall(blueprint, tmp_path):
+@pytest.mark.parametrize("wall", [1800.0, 2400.0])
+def test_repeated_extensions_cannot_walk_past_the_plan_wall(blueprint, tmp_path, wall):
     """The shape of the old uncapped callers: elapsed + tail, over and over.
     Under the strict plan budget the wall never moves past what it was given."""
-    runner = _armed(blueprint, tmp_path, wall=1800.0, ceiling=7200.0)
-    for target in (1900.0, 2700.0, 5400.0, 5_000.0, 9_999.0):
+    runner = _armed(blueprint, tmp_path, wall=wall, ceiling=7200.0)
+    for target in (wall + 100.0, wall * 1.5, wall * 3.0, 9999.0):
         runner._extend_wall(target)
-    assert runner.budget.wall_clock_s == 1800.0
-    assert runner._deadline <= runner._run_started + 1800.0
+    assert runner.budget.wall_clock_s == wall
+    assert runner._deadline <= runner._run_started + wall
 
 
 def test_the_deadline_box_is_clamped_too(blueprint, tmp_path):

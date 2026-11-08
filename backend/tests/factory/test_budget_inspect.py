@@ -307,7 +307,8 @@ def _wall_is_inspect_or_granted(runner) -> float:
     return grants[0]["wall_before_s"]
 
 
-def test_runner_enforces_the_plan_wall_even_when_inspect_sees_agent_work(tmp_path):
+@pytest.mark.parametrize("max_rework", [1, 2])
+def test_runner_enforces_the_plan_wall_even_when_inspect_sees_agent_work(tmp_path, max_rework):
     """0605Z strict: agent work at the wall does not earn the old 30->45
     ramp -- the plan budget is final, the run fails time_budget_exceeded,
     and the refused ramp is ledgered."""
@@ -348,7 +349,7 @@ def test_runner_enforces_the_plan_wall_even_when_inspect_sees_agent_work(tmp_pat
         tmp_path / "build",
         roles=roles,
         budget=BuildBudget(
-            max_rework=1, wall_clock_s=STAGE_1_S, phase_wall_clock_s=5400
+            max_rework=max_rework, wall_clock_s=STAGE_1_S, phase_wall_clock_s=5400
         ),
         clock=clock,
         auto_pilot=True,
@@ -552,7 +553,8 @@ def test_zero_harvest_after_cli_finish_hard_stops_not_unused_inflight(tmp_path, 
     assert "in-flight" not in decided["reason"]
 
 
-def test_runner_inflight_cli_stage_1_fails_the_plan_wall(tmp_path):
+@pytest.mark.parametrize("max_rework", [1, 2])
+def test_runner_inflight_cli_stage_1_fails_the_plan_wall(tmp_path, max_rework):
     """0605Z strict: an in-flight CLI at the wall no longer earns a 30->45
     bump -- the plan budget is final and the run fails time_budget_exceeded
     with per-phase minutes, after the inspect gathered the evidence."""
@@ -594,7 +596,7 @@ def test_runner_inflight_cli_stage_1_fails_the_plan_wall(tmp_path):
         tmp_path / "build",
         roles=roles,
         budget=BuildBudget(
-            max_rework=1, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
+            max_rework=max_rework, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
         ),
         clock=clock,
         auto_pilot=True,
