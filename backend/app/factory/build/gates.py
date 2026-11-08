@@ -907,6 +907,43 @@ def gate_cloner_contract(ctx: GateContext) -> GateResult:
     )
 
 
+def gate_writer_formulas(ctx: GateContext) -> GateResult:
+    """K-F7/F-9c + ORDERS_08NOV_0250Z B: the writer's formula findings
+    gate-fail the pass, never just a NOTE.
+
+    The writer pass graded every formula it authored against the kernel and
+    the Store it was shown and wrote the errors to
+    ``.factory/writer_formula_findings.json``. A re-written kernel/Store
+    formula, an improvised formula without the ``improvised, no Store
+    coverage`` label, without a cited source, or without a
+    ``new_domain_candidates`` row is a Store-first violation -- refuse it.
+    """
+    from app.factory.build.formula_resolution import FORMULA_FINDINGS_REL
+
+    path = ctx.workspace / FORMULA_FINDINGS_REL
+    errs: List[str] = []
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            errs = [str(e) for e in (data.get("errors") or [])]
+        except (OSError, ValueError):
+            errs = []
+    if not errs:
+        return GateResult(
+            ok=True,
+            gate=WRITER_CONTRACT_CHECK,
+            detail="writer formulas resolve to the kernel/Store or are labelled improvisation",
+        )
+    return GateResult(
+        ok=False,
+        gate=WRITER_CONTRACT_CHECK,
+        reason="writer_formula_unresolved",
+        detail="; ".join(errs),
+        findings=errs,
+        payload={"formula_errors": errs, "finding_shape": "writer_formula_unresolved"},
+    )
+
+
 def gate_writer_contract(ctx: GateContext) -> GateResult:
     """WRITER: the workspace parses *and* fails closed when a block fails.
 
@@ -995,6 +1032,12 @@ def gate_writer_contract(ctx: GateContext) -> GateResult:
             findings=list(money.findings),
             payload={"money_contract": "FAIL", "money_findings": len(money.findings)},
         )
+    # K-F7/F-9c + ORDERS_08NOV_0250Z B: the writer's formula findings were
+    # graded during the writer pass; a re-written or unlabelled formula is a
+    # gate failure here, never a silent NOTE.
+    formulas = gate_writer_formulas(ctx)
+    if not formulas.ok:
+        return formulas
     # The image the product's Dockerfile builds must carry what the app loads
     # at runtime (live: cycle 2 smoke B shipped an image with no vendor/ and
     # a gate that judged the checkout certified it). Emulated -- the live
