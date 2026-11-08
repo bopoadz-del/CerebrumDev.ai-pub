@@ -307,7 +307,10 @@ def _wall_is_inspect_or_granted(runner) -> float:
     return grants[0]["wall_before_s"]
 
 
-def test_runner_ramps_to_45m_only_when_inspect_sees_agent_work(tmp_path):
+def test_runner_enforces_the_plan_wall_even_when_inspect_sees_agent_work(tmp_path):
+    """0605Z strict: agent work at the wall does not earn the old 30->45
+    ramp -- the plan budget is final, the run fails time_budget_exceeded,
+    and the refused ramp is ledgered."""
     now = {"t": 0.0}
 
     def clock():
@@ -351,6 +354,8 @@ def test_runner_ramps_to_45m_only_when_inspect_sees_agent_work(tmp_path):
         auto_pilot=True,
     )
     outcome = runner.run()
+    assert outcome.ok is False
+    assert outcome.outcome.value == "FAILED_TIME_BUDGET"
     inspects = [
         e
         for e in runner.ledger.events()
@@ -360,14 +365,21 @@ def test_runner_ramps_to_45m_only_when_inspect_sees_agent_work(tmp_path):
     decisions = [e.payload.get("decision") for e in inspects]
     assert "continue_stage_2" in decisions
     assert CEILING_S not in decisions
-    # The inspect's own bump is the staged one -- 30 -> 45 min, never the
-    # ceiling. (The replaced WRITER may fail its gate; a REWORK the rule
-    # grants then brings its own wall, ledgered as a wall_grant -- that is
-    # not the inspect, so it is checked apart.)
-    bumps = [e.payload.get("next_wall_s") for e in inspects if e.payload.get("next_wall_s")]
-    assert bumps == [STAGE_2_S]
-    assert _wall_is_inspect_or_granted(runner) == STAGE_2_S
-    # Replaced WRITER may fail later gates; the contract is the staged ramp.
+    # The inspect's proposal stays a proposal: the plan budget refuses it.
+    refused = [
+        e
+        for e in runner.ledger.events()
+        if (e.payload or {}).get("budget_ramp_refused")
+    ]
+    assert refused
+    assert refused[0].payload.get("budget_ramp_refused") == STAGE_2_S
+    terminal = runner.ledger.terminal_event()
+    assert terminal is not None
+    decision = (terminal.payload or {}).get("decision") or {}
+    assert decision.get("reason") == "time_budget_exceeded"
+    assert decision.get("phase_minutes_s")
+    # The wall never moved.
+    assert runner.budget.wall_clock_s == STAGE_1_S
     assert runner.ledger.pilot_ready() is False
     assert outcome.outcome is not None
 
@@ -540,7 +552,10 @@ def test_zero_harvest_after_cli_finish_hard_stops_not_unused_inflight(tmp_path, 
     assert "in-flight" not in decided["reason"]
 
 
-def test_runner_inflight_cli_stage_1_extends_wall_not_unused(tmp_path):
+def test_runner_inflight_cli_stage_1_fails_the_plan_wall(tmp_path):
+    """0605Z strict: an in-flight CLI at the wall no longer earns a 30->45
+    bump -- the plan budget is final and the run fails time_budget_exceeded
+    with per-phase minutes, after the inspect gathered the evidence."""
     now = {"t": 0.0}
 
     def clock():
@@ -585,29 +600,31 @@ def test_runner_inflight_cli_stage_1_extends_wall_not_unused(tmp_path):
         auto_pilot=True,
     )
     outcome = runner.run()
+    assert outcome.ok is False
+    assert outcome.outcome.value == "FAILED_TIME_BUDGET"
     inspects = [
         e
         for e in runner.ledger.events()
         if (e.payload or {}).get("budget_inspect")
     ]
-    assert inspects, "stage-1 inspect must run while CLI is in-flight"
+    assert inspects, "the wall inspect must run -- its snapshot is the evidence"
     snap = inspects[0].payload
     assert snap["decision"] == "continue_stage_2"
-    assert snap.get("next_wall_s") == STAGE_2_S
-    assert "hard-stop" not in str(snap.get("reason") or "")
     assert "not FACTORY_CODE_CLI_UNUSED" in str(snap.get("reason") or "")
-    assert _wall_is_inspect_or_granted(runner) == STAGE_2_S
-    extends = [
+    refused = [
         e
         for e in runner.ledger.events()
-        if (e.payload or {}).get("cli_wall_extended")
+        if (e.payload or {}).get("budget_ramp_refused")
     ]
-    assert extends, "Floor watchdog NOTE must follow the 30→45 bump"
-    assert extends[0].payload.get("model_call") is True
-    assert extends[0].payload.get("deadline_s")
-    # WRITER returned; later gates may fail. Do not SUCCESS a thin pilot.
+    assert refused, "the refused 30->45 proposal is recorded, never silent"
+    assert refused[0].payload.get("budget_ramp_refused") == STAGE_2_S
+    terminal = runner.ledger.terminal_event()
+    assert terminal is not None
+    decision = (terminal.payload or {}).get("decision") or {}
+    assert decision.get("reason") == "time_budget_exceeded"
+    assert "phase_minutes_s" in decision
+    assert decision.get("wall_clock_s") == STAGE_1_S
     assert runner.ledger.pilot_ready() is False
-    assert outcome.ok is False
 
 
 def test_cli_live_deadline_grows_with_inspect_bump_not_slash():

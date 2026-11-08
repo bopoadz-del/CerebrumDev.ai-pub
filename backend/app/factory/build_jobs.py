@@ -1647,13 +1647,36 @@ def _run(
     )
     max_rework = _max_rework(cycle, auto_pilot=auto)
     try:
+        # The plan is computed ONCE here and handed in: the plan-time budget
+        # class (0605Z owner ruling) comes from the planner's no-Store-block
+        # share, and the runner must build against the SAME plan whose class
+        # chose the wall.
+        from app.factory.planner import CapabilityPlanner, assert_generatable
+
+        # Same resolution the runner does for a falsy root, BEFORE planning:
+        # the planner's class computation must see the same Store the build
+        # will clone from.
+        if not blocks_root:
+            from app.factory.blocks_source import resolve_blocks_root
+
+            blocks_root = resolve_blocks_root()
+        plan = assert_generatable(CapabilityPlanner(blocks_root).plan(blueprint))
+        wall = _wall_clock_s(cycle, auto_pilot=auto)
+        if not os.getenv(BUILD_WALL_CLOCK_ENV):
+            # No operator-pinned wall: the plan class picks it (30 min small,
+            # 40 min new-platform). One config, no literals here.
+            from app.factory.build.budget_inspect import NEW_PLATFORM_WALL_S
+
+            if str(getattr(plan, "budget_class", "small") or "small") == "new_platform":
+                wall = NEW_PLATFORM_WALL_S
         runner = RoleRunner(
             blueprint,
             output_dir,
             blocks_root=blocks_root,
+            plan=plan,
             budget=BuildBudget(
                 max_rework=max_rework,
-                wall_clock_s=_wall_clock_s(cycle, auto_pilot=auto),
+                wall_clock_s=wall,
                 phase_wall_clock_s=_phase_wall_clock_s(
                     cycle, auto_pilot=auto
                 ),

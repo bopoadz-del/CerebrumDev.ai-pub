@@ -99,6 +99,9 @@ def _recording_writer(captured):
 
 
 def test_a_different_second_failure_gets_its_own_rework_round(tmp_path, stub_coder, monkeypatch):
+    """Cap 1 (ORDERS_08NOV_1330Z): the ONE rework round goes to the first
+    failure; a DIFFERENT second failure must stop with ITS finding named --
+    never a SAME_FAILURE_TWICE that hides what the writer must hear next."""
     _writer_gate_sequence(monkeypatch, [FIRST, SECOND])
     captured: list = []
     runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "build", roles=_recording_writer(captured))
@@ -106,9 +109,12 @@ def test_a_different_second_failure_gets_its_own_rework_round(tmp_path, stub_cod
 
     assert "SAME_FAILURE_TWICE" not in (outcome.detail or ""), outcome.detail
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
-    assert len(reworks) >= 2, [e.detail for e in reworks]
-    # The writer's third pass was told the SECOND finding.
-    assert any("a different thing wrong" in item for item in captured[2]), captured
+    assert len(reworks) == 1, [e.detail for e in reworks]
+    # The rework round handed the writer the FIRST finding...
+    assert any("the first thing wrong" in item for item in captured[1]), captured
+    # ...and the stop names the SECOND finding, so the next build hears it.
+    assert "a different thing wrong" in (outcome.detail or ""), outcome.detail
+    assert outcome.outcome is Outcome.FAILED_BUDGET_SPENT
 
 
 def test_the_same_failure_twice_still_stops(tmp_path, stub_coder, monkeypatch):

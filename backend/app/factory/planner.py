@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.factory.blueprint import CapabilitySpec, CapabilityStrategyHint, ProductBlueprint
 from app.factory.dual_registry import DualRegistryError, assert_dual_registered, dual_registered_ids
@@ -37,6 +37,14 @@ class ProductPlan:
     #: Blocks a blueprint named that its vertical may not attach, each with
     #: the reason. See app.factory.vertical_scope: dropped, never silently.
     vertical_scoped_out: List[Dict[str, Any]] = field(default_factory=list)
+    #: Plan-time budget class (ORDERS_08NOV_0605Z owner ruling): "small" or
+    #: "new_platform", computed here from the share of capabilities that
+    #: resolved to no Store block. The runner turns it into the plan wall
+    #: (30 min / 40 min) and writes it to the ledger at plan time.
+    budget_class: str = "small"
+    #: The measured share this class was derived from (0.0 when no viable
+    #: capabilities exist). Kept for the ledger/plan-time note, not a rule.
+    no_store_block_share: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -47,7 +55,32 @@ class ProductPlan:
             "unsupported": list(self.unsupported),
             "inventory_domain_gaps": list(self.inventory_domain_gaps),
             "vertical_scoped_out": list(self.vertical_scoped_out),
+            "budget_class": self.budget_class,
+            "no_store_block_share": self.no_store_block_share,
         }
+
+
+def _budget_class_for(planned: List[PlannedCapability]) -> Tuple[str, float]:
+    """Plan-time budget class from the capability mix (0605Z owner ruling).
+
+    "New platform, mostly new blocks" = the share of viable capabilities
+    that resolved to NO Store block exceeds the configured threshold; every
+    other plan is a small platform. UNSUPPORTED caps are excluded from both
+    sides -- a plan that carries them never generates (fail-closed), so they
+    must not water the share down.
+    """
+    from app.factory.build.budget_inspect import (
+        NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD,
+    )
+
+    viable = [c for c in planned if c.strategy != "UNSUPPORTED"]
+    if not viable:
+        return "small", 0.0
+    no_block = [c for c in viable if not c.block_ids]
+    share = len(no_block) / len(viable)
+    if share > NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD:
+        return "new_platform", share
+    return "small", share
 
 
 def assert_generatable(plan: ProductPlan) -> ProductPlan:
@@ -147,12 +180,15 @@ class CapabilityPlanner:
         if used_blocks:
             assert_dual_registered(used_blocks, self.blocks_root, self.factory_shelf)
 
+        budget_class, no_store_block_share = _budget_class_for(planned)
         return ProductPlan(
             product_id=blueprint.product_id,
             capabilities=planned,
             unsupported=unsupported,
             dual_registered_blocks=sorted(set(used_blocks)),
             fail_closed=True,
+            budget_class=budget_class,
+            no_store_block_share=no_store_block_share,
             inventory_domain_gaps=self._domain_gaps(blueprint, planned),
             vertical_scoped_out=list(getattr(self, "_last_scoped_out", [])),
         )
