@@ -130,3 +130,17 @@ def _llm_payload(requirements):
 def test_architect_llm_payload_sanitizes_requirements(requirements, expected):
     bp = _blueprint_from_llm_payload(_llm_payload(requirements), "brief", "construction", [])
     assert bp.capabilities[0].requirements == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-a-dict",
+        {},
+        {"capabilities": []},
+        {"capabilities": [{"id": ""}, 42]},
+    ],
+)
+def test_architect_llm_payload_refuses_malformed(payload):
+    with pytest.raises(ValueError):
+        _blueprint_from_llm_payload(payload, "brief", "construction", [])
