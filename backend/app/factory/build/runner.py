@@ -82,9 +82,9 @@ REWORK_SOURCE = BuildRole.TESTER
 REWORK_SOURCES = frozenset({BuildRole.TESTER, BuildRole.WRITER})
 
 #: Owner rule: two rework rounds PER GATE (WRITER gate, TESTER, Store gate);
-#: one gate's rounds never reduce another's. A gate that has used its two and
-#: fails again stops the run.
-REWORK_BUDGET = 2
+#: one gate's rounds never reduce another's. A gate that has used its one and
+#: fails again stops the run (ORDERS_08NOV_1330Z: rework cap 1).
+REWORK_BUDGET = 1
 #: Hard ceiling on rework rounds for the whole build, every gate together.
 REWORK_CEILING = 6
 
