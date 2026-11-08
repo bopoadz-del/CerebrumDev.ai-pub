@@ -913,25 +913,36 @@ def _child_env(session_id: Optional[str], cli_home: Optional[str] = None) -> Dic
     where the worker's tailer reads it — Render's HOME is not where the
     CLI writes, and an invisible log makes a live writer look dead.
     """
-    env = dict(os.environ)
-    # The CLI also reads its provider key from the environment, and prefers it
+    from app.factory.build.agent_confine import scoped_child_env
+
+    # The CLI reads its provider key from the environment, and prefers it
     # over any flag. A stale provider key left in os.environ (a rotated key)
     # must not shadow the key worker_api_key() resolved -- that shadow stalled
     # a live build at WRITER on an invalid-key auth error. Stamp the resolved
-    # key onto the vars the CLI consults so the inherited stale value cannot win.
+    # key onto the vars the CLI consults. The rest of the server environment
+    # is not copied.
+    extras: Dict[str, str] = {}
+    provider_key = None
     resolved_key = worker_api_key()
     if resolved_key:
-        env["CODEWHALE_API_KEY"] = resolved_key
+        extras["CODEWHALE_API_KEY"] = resolved_key
         provider_var = f"{worker_provider().upper()}_API_KEY"
         if provider_var.replace("_", "").isalnum():
-            env[provider_var] = resolved_key
+            extras[provider_var] = resolved_key
+            provider_key = provider_var
     sid = str(session_id or "").strip()
     if sid:
-        env["FACTORY_SESSION_ID"] = sid
-        env["FACTORY_CLI_PIVOT_SESSION_ID"] = sid
+        extras["FACTORY_SESSION_ID"] = sid
+        extras["FACTORY_CLI_PIVOT_SESSION_ID"] = sid
     if cli_home:
-        env["CODWHALE_HOME"] = cli_home
-    return env
+        extras["CODWHALE_HOME"] = cli_home
+    return scoped_child_env(
+        os.environ,
+        extras,
+        home=cli_home,
+        tmp=cli_home,
+        provider_key=provider_key,
+    )
 
 
 def run_worker_job(
@@ -1064,7 +1075,26 @@ def run_worker_job(
         # Skipped when the cli path is a test double that does not exist.
         # One cold-start retry + measured cause in the failure detail.
         if Path(cli).exists():
-            ok, detail = _preflight_probe(cli)
+            from app.factory.build.agent_confine import (
+                ConfinementUnavailable,
+                confinement_popen_kwargs,
+            )
+
+            try:
+                probe_kw = confinement_popen_kwargs(cwd, cli)
+            except ConfinementUnavailable as exc:
+                raise WorkerError(f"{WORKER_EXEC_FAILED}: {exc}") from exc
+            ok, detail = _preflight_probe(
+                cli,
+                runner=lambda argv, **kw: subprocess.run(
+                    argv,
+                    cwd=str(cwd),
+                    env=_child_env(session_id, str(cwd / ".codewhale-home")),
+                    **probe_kw,
+                    **agent_popen_kwargs(),
+                    **kw,
+                ),
+            )
             if not ok:
                 raise WorkerError(
                     f"{WORKER_EXEC_FAILED}: pre-flight probe failed for {cli}: {detail}"
@@ -1135,6 +1165,15 @@ def run_worker_job(
             except (OSError, ValueError):  # closed pipe on kill
                 pass
 
+        from app.factory.build.agent_confine import (
+            ConfinementUnavailable,
+            confinement_popen_kwargs,
+        )
+
+        try:
+            confine_kw = confinement_popen_kwargs(cwd, cli)
+        except ConfinementUnavailable as exc:
+            raise WorkerError(f"{WORKER_EXEC_FAILED}: {exc}") from exc
         try:
             proc = subprocess.Popen(
                 argv,
@@ -1147,6 +1186,7 @@ def run_worker_job(
                 env=_child_env(session_id, cli_home),
                 # The agent's shell gets its own process group: a group-wide
                 # signal it sends can never reach the Factory server.
+                **confine_kw,
                 **agent_popen_kwargs(),
             )
         except OSError as exc:

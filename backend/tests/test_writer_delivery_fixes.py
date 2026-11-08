@@ -85,7 +85,10 @@ def test_worker_argv_puts_provider_before_exec_and_key_in_env(tmp_path):
     # nothing more).
     from app.factory.build.agent_process import agent_popen_kwargs
 
-    assert captured["agent_kwargs"] == agent_popen_kwargs()
+    got_agent = dict(captured["agent_kwargs"])
+    assert callable(got_agent.pop("preexec_fn"))
+    assert got_agent.pop("close_fds") is True
+    assert got_agent == agent_popen_kwargs()
     # The slot was really taken and really given back.
     assert codewhale_worker.worker_slots_snapshot() == {"total": 0, "by_tenant": {}}
     # The child runs under an explicit per-job environment, never the live
