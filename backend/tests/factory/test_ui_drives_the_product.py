@@ -84,6 +84,13 @@ class TestThePromptStatesTheBarTheGateEnforces:
         assert "app/formulas.py" in text
         assert "docs/provenance/provenance.json" in text
 
+    def test_the_prompt_forbids_placeholder_routes(self):
+        # The emitter must never leave /v1/x: the prompt tells the writer a
+        # placeholder route is a gate failure it must replace before yielding.
+        text = self._prompt()
+        assert "Never emit a placeholder or example" in text
+        assert "/v1/x" in text
+
     def test_the_prompt_states_the_one_ui_rule(self):
         text = self._prompt()
         assert "The platform serves ONE UI" in text

@@ -244,7 +244,11 @@ UI (a pilot is deployed and tested, so what it serves must work):
   at all. A UI nothing builds is decoration, and the gate refuses it.
 - What it serves reaches the platform: at least two capabilities driven from
   the UI, not one. Every route the UI calls must answer -- the gate boots the
-  product and calls them.
+  product and calls them. Every route the console calls must be a REAL
+  capability route from this product. Never emit a placeholder or example
+  route (a route for a capability that is not in this product, like /v1/x or
+  /v1/foo) -- the ui_end_to_end gate fails it, so replace it with a real
+  capability route before you yield.
 - The formulas you ship are reachable from it: a capability the UI drives uses
   app/formulas.
 - An answer the UI asks for carries its authority label, so an operator can
