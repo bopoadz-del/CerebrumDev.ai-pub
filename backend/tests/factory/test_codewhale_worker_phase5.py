@@ -23,6 +23,7 @@ from app.factory.build.codewhale_worker import (
     WORKER_CONCURRENCY_CAPPED,
     InProcessSlotCounter,
     WorkerError,
+    _preflight_probe,
     run_worker_job,
     set_slot_counter,
     worker_cap,
@@ -183,6 +184,36 @@ def test_worker_cli_missing_is_a_named_refusal(monkeypatch):
     with pytest.raises(WorkerError) as exc:
         run_worker_job("x", "/tmp/x", tenant_store=_binding("d2"))
     assert WORKER_CLI_MISSING in str(exc.value)
+
+
+def _probe_proc(rc=0, err=""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(returncode=rc, stderr=err)
+
+
+@pytest.mark.parametrize("script, expect_ok", [
+    ([_probe_proc(0)], True),                         # healthy
+    (["timeout", _probe_proc(0)], True),              # cold start -> retry ok
+    ([_probe_proc(1, "bad"), _probe_proc(1, "bad")], False),  # exits non-zero both
+    (["timeout", "timeout"], False),                  # both time out
+])
+def test_preflight_probe_reports_its_cause(script, expect_ok):
+    import subprocess
+
+    calls = []
+
+    def _runner(*a, **k):
+        step = script[len(calls)]
+        calls.append(1)
+        if step == "timeout":
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=k.get("timeout", 10.0))
+        return step
+
+    ok, detail = _preflight_probe("/bin/cli", runner=_runner, clock=lambda: 0.0)
+    assert ok is expect_ok
+    if not ok:
+        assert "first" in detail and "retry" in detail
 
 
 def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_path):

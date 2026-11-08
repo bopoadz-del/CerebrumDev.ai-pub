@@ -226,6 +226,47 @@ class WorkerError(RuntimeError):
     """A named refusal/failure from the CodeWhale worker layer."""
 
 
+def _preflight_probe(
+    cli: str,
+    runner: Callable[..., Any] = subprocess.run,
+    clock: Callable[[], float] = time.perf_counter,
+    timeout: float = 10.0,
+) -> Tuple[bool, str]:
+    """One ``cli --version`` probe with a single cold-start retry.
+
+    Returns (ok, detail). ``ok`` is False when both attempts failed or the
+    retry exited non-zero; ``detail`` carries the measured timings and stderr
+    so a failed probe reports its cause, never a bare 'timeout' (0930Z BLOCKER).
+    """
+
+    def _once() -> Tuple[Optional[Any], float, str]:
+        started = clock()
+        try:
+            proc = runner(
+                [cli, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                stdin=subprocess.DEVNULL,
+            )
+            return proc, clock() - started, (proc.stderr or "")[-300:]
+        except subprocess.TimeoutExpired:
+            return None, clock() - started, f"timeout after {timeout}s"
+        except OSError as exc:
+            return None, clock() - started, f"{type(exc).__name__}: {exc}"
+
+    proc, first_s, first_err = _once()
+    if proc is not None and proc.returncode == 0:
+        return True, f"ok ({first_s:.1f}s)"
+    # Cold start: the first invocation warms the page cache; retry once so a
+    # healthy-but-cold binary is not rejected.
+    proc, second_s, second_err = _once()
+    if proc is not None and proc.returncode == 0:
+        return True, f"ok after retry (first {first_s:.1f}s, retry {second_s:.1f}s)"
+    rc = getattr(proc, "returncode", "timeout")
+    return False, f"first {first_s:.1f}s ({first_err}); retry {second_s:.1f}s ({second_err}); rc={rc}"
+
+
 def worker_cli_path() -> Optional[str]:
     return shutil.which("codewhale")
 
@@ -1021,24 +1062,12 @@ def run_worker_job(
         # E3 part 0: pre-flight probe — a broken binary or a config prompt
         # must fail in seconds, not sit silent for the full worker wall.
         # Skipped when the cli path is a test double that does not exist.
+        # One cold-start retry + measured cause in the failure detail.
         if Path(cli).exists():
-            try:
-                probe = subprocess.run(
-                    [cli, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10.0,
-                    stdin=subprocess.DEVNULL,
-                    **agent_popen_kwargs(),
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
+            ok, detail = _preflight_probe(cli)
+            if not ok:
                 raise WorkerError(
-                    f"{WORKER_EXEC_FAILED}: pre-flight probe failed for {cli}: {exc}"
-                ) from exc
-            if probe.returncode != 0:
-                raise WorkerError(
-                    f"{WORKER_EXEC_FAILED}: pre-flight probe exited "
-                    f"{probe.returncode}: {(probe.stderr or '')[-300:]}"
+                    f"{WORKER_EXEC_FAILED}: pre-flight probe failed for {cli}: {detail}"
                 )
         from app.factory.build.sanitize import sanitize_for_status
 
