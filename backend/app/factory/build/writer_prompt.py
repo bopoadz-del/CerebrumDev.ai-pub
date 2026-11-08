@@ -225,6 +225,12 @@ a BOQ, or any customer source of truth):
 - Every answer or record derived from an ingested source carries the
   authority label of the layer it came from, so an operator can see where it
   was sourced.
+- A clause/line id the REQUIREMENTS name must exist as a record and be
+  traceable end to end: a record is retrievable by its source document id +
+  its clause/line id, and every derived answer carries that record id. The
+  grader checks exactly that.
+- What you cannot parse (scans, unusual encodings) is a named blocker in
+  your report, never a stub that stores the filename and pretends.
 
 MONEY (country, currency, tax):
 - Country, currency and every tax rate (VAT, sales tax, withholding) come
@@ -322,7 +328,8 @@ UI (a pilot is deployed and tested, so what it serves must work):
 REQUIREMENTS COVERAGE (read the BRIEF capability by capability):
 - Each capability's REQUIREMENTS are the customer's own asks for THAT
   capability, rendered verbatim under its capability line in the BRIEF.
-  Satisfy every one of them in code and assert it with a test.
+  Satisfy every one of them in code and assert it with a test of yours —
+  one test per requirement, each constructing its own input.
 - Your final report lists, per capability, each requirement and the
   file + test that satisfies it. A requirement with no code and no test is
   unfinished work -- do not yield with one outstanding.
