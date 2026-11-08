@@ -338,3 +338,40 @@ def test_gate_writer_formulas_passes_when_no_findings_file(tmp_path):
 
     verdict = gates.gate_writer_formulas(_gate_ctx(tmp_path))
     assert verdict.ok is True
+
+
+# --- C (ORDERS_08NOV_0555Z): attach by construction, never reject -----------
+
+def _write_one_def(tmp_path, row):
+    fr = _fr()
+    (tmp_path / "app" / "formulas").mkdir(parents=True, exist_ok=True)
+    (tmp_path / fr.WRITER_DEFINITIONS_REL).write_text(json.dumps(row) + "\n", encoding="utf-8")
+    return fr
+
+
+@pytest.mark.parametrize("row", [
+    {"id": "imp_x", "source": "Ref"},
+    {"id": "imp_y", "label": "made up", "source": "Ref"},
+])
+def test_attach_improvised_metadata_labels_and_candidates(tmp_path, row):
+    fr = _write_one_def(tmp_path, row)
+    out = fr.attach_improvised_metadata(tmp_path, [], [])
+    ident = row["id"]
+    assert out["labelled"] == [ident]
+    assert out["candidates_added"] == [ident]
+    rows = fr._jsonl(tmp_path / fr.WRITER_DEFINITIONS_REL)
+    assert rows[0]["label"] == IMPROVISED_LABEL
+    cands = fr._jsonl(tmp_path / fr.WRITER_CANDIDATES_REL)
+    assert any(c.get("definition") == ident for c in cands)
+
+
+@pytest.mark.parametrize("row", [
+    {"id": "s1"},
+    {"id": "k1"},
+])
+def test_attach_improvised_metadata_leaves_covered_rows_untouched(tmp_path, row):
+    fr = _write_one_def(tmp_path, row)
+    out = fr.attach_improvised_metadata(tmp_path, [{"id": "k1"}], [{"id": "s1"}])
+    assert out["labelled"] == []
+    rows = fr._jsonl(tmp_path / fr.WRITER_DEFINITIONS_REL)
+    assert rows[0].get("label") is None
