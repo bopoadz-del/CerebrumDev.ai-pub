@@ -143,11 +143,11 @@ def writer_formula_errors(
 ) -> List[str]:
     """Grade writer-authored definition rows against the ruling.
 
-    A row whose id the kernel or Store already covers is a re-write (FAIL).
-    Any other row is improvisation and must carry ``IMPROVISED_LABEL``, a
-    non-empty source, and a candidate row naming it (FAIL otherwise).
+    Only a silent re-write is an error: a row whose id the kernel or Store
+    already covers. A real+fit improvisation is never an error for a missing
+    label/source/candidate row -- that is the Factory's own job, attached by
+    construction (ORDERS_08NOV_0555Z).
     """
-    candidates = {str(r.get("definition") or r.get("id") or "").strip() for r in candidate_rows}
     errs: List[str] = []
     for row in rows:
         ident = str(row.get("id") or row.get("key") or "").strip()
@@ -161,13 +161,11 @@ def writer_formula_errors(
         if layer == LAYER_STORE:
             errs.append(f"{ident}: the Store covers this; use the Store definition")
             continue
-        if row.get("label") != IMPROVISED_LABEL:
-            errs.append(f"{ident}: improvised without the label {IMPROVISED_LABEL!r}")
-        source = row.get("source") or (row.get("provenance") or {}).get("reference")
-        if not str(source or "").strip():
-            errs.append(f"{ident}: improvised without a cited source")
-        if ident not in candidates:
-            errs.append(f"{ident}: improvised without a new_domain_candidates row")
+        # ORDERS_08NOV_0555Z: a real+fit formula is never rejected for being
+        # improvised or for a missing label/source/candidate row -- labelling
+        # and sourcing are the Factory's own job, attached by construction,
+        # never a reason to bounce the writer. Only a silent re-write of a
+        # kernel/Store definition (above) is an error here.
     return errs
 
 

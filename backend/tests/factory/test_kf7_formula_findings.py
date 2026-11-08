@@ -71,10 +71,12 @@ GOOD = {"id": "imp_a", "label": IMPROVISED_LABEL, "source": "Book, ch. 2"}
     ({"id": "k1"}, [], ["k1: kernel covers this; use the kernel definition"]),
     ({"id": "s1", "label": IMPROVISED_LABEL, "source": "x"}, [{"definition": "s1"}],
      ["s1: the Store covers this; use the Store definition"]),
-    ({**GOOD, "label": "made up"}, [{"definition": "imp_a"}],
-     [f"imp_a: improvised without the label {IMPROVISED_LABEL!r}"]),
-    ({**GOOD, "source": "  "}, [{"definition": "imp_a"}], ["imp_a: improvised without a cited source"]),
-    (GOOD, [], ["imp_a: improvised without a new_domain_candidates row"]),
+    # ORDERS_08NOV_0555Z: improvised / missing label / missing source / missing
+    # candidate row are never an error -- labelling and sourcing are the
+    # Factory's own job, attached by construction.
+    ({**GOOD, "label": "made up"}, [{"definition": "imp_a"}], []),
+    ({**GOOD, "source": "  "}, [{"definition": "imp_a"}], []),
+    (GOOD, [], []),
 ])
 def test_writer_formula_errors(row, cands, expect):
     assert _fr().writer_formula_errors([row], [{"id": "k1"}], [{"id": "s1"}], cands) == expect
@@ -96,7 +98,7 @@ def test_s1_row_without_an_id_is_reported(row, expect):
 
 @pytest.mark.parametrize("prov, expect", [
     ({"reference": "Handbook, s. 4"}, []),
-    ({"reference": "  "}, ["imp_p: improvised without a cited source"]),
+    ({"reference": "  "}, []),
 ])
 def test_s2_provenance_reference_counts_as_the_source(prov, expect):
     row = {"id": "imp_p", "label": IMPROVISED_LABEL, "provenance": prov}
@@ -105,7 +107,7 @@ def test_s2_provenance_reference_counts_as_the_source(prov, expect):
 
 @pytest.mark.parametrize("cands, expect", [
     ([{"id": "imp_c"}], []),
-    ([{"id": "imp_other"}], ["imp_c: improvised without a new_domain_candidates row"]),
+    ([{"id": "imp_other"}], []),
 ])
 def test_s3_candidate_row_may_name_it_by_id(cands, expect):
     row = {"id": "imp_c", **IMP}
@@ -184,7 +186,7 @@ def test_n11_blank_lines_in_the_writer_jsonl_are_not_rows(tmp_path, lines, expec
 @pytest.mark.parametrize("cands, expect", [
     ([{"definition": " imp_r "}], []),
     ([{"id": "\timp_r"}], []),
-    ([{"definition": " imp_other "}], ["imp_r: improvised without a new_domain_candidates row"]),
+    ([{"definition": " imp_other "}], []),
 ])
 def test_r5_a_padded_candidate_row_still_names_it(cands, expect):
     row = {"id": "imp_r", **IMP}
@@ -282,7 +284,7 @@ def test_y2_a_covered_row_gets_exactly_one_error(kernel, store, expect):
 
 @pytest.mark.parametrize("ident, expect", [
     ("imp_def", []),
-    ("imp_other", ["imp_other: improvised without a new_domain_candidates row"]),
+    ("imp_other", []),
 ])
 def test_y6_candidate_definition_wins_over_a_differing_id(ident, expect):
     row = {"id": ident, "label": IMPROVISED_LABEL, "source": "Ref"}
@@ -294,7 +296,7 @@ def test_y6_candidate_definition_wins_over_a_differing_id(ident, expect):
 
 @pytest.mark.parametrize("source, expect", [
     ("Ref", []),
-    (None, ["imp_p: improvised without a cited source"]),
+    (None, []),
 ])
 def test_y14_null_provenance_with_or_without_a_source(source, expect):
     row = {"id": "imp_p", "label": IMPROVISED_LABEL, "source": source, "provenance": None}
@@ -317,7 +319,7 @@ def _gate_ctx(tmp_path):
 
 @pytest.mark.parametrize("errors, expect_ok", [
     ([], True),
-    ([f"imp_a: improvised without the label {IMPROVISED_LABEL!r}"], False),
+    (["imp_a: kernel covers this; use the kernel definition"], False),
     (["s1: the Store covers this; use the Store definition"], False),
 ])
 def test_gate_writer_formulas_fails_on_findings(tmp_path, errors, expect_ok):
