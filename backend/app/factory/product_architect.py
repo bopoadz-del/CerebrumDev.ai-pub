@@ -383,6 +383,29 @@ def _deterministic_closure(
     return frozenset(allowed & dual)
 
 
+def _sanitize_requirements(value: Any) -> List[str]:
+    """Keep only the customer's real clause-level asks, bounded.
+
+    The architect LLM may return junk shapes (nested dicts, blanks, whole
+    briefs). Fail-safe content handling: drop non-strings, trim, cap each
+    item and the count. Requirements are a passthrough — this function never
+    invents or rewrites them.
+    """
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text:
+            continue
+        out.append(text[:400])
+        if len(out) >= 12:
+            break
+    return out
+
+
 def _blueprint_from_llm_payload(
     data: Dict[str, Any],
     brief: str,
@@ -435,6 +458,7 @@ def _blueprint_from_llm_payload(
                 or f"Capability {cap_id}",
                 "block_ids": block_ids,
                 "strategy_hint": "REUSE" if block_ids else "GENERATE",
+                "requirements": _sanitize_requirements(item.get("requirements")),
                 "connectors": connectors,
             }
         )

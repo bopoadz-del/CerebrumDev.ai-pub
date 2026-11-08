@@ -18,7 +18,7 @@ from app.factory.blueprint import CapabilitySpec, ProductBlueprint
 from app.factory.build.brief_compiler import compile_brief
 from app.factory.build.intake_blueprint import intake_from_product_blueprint
 from app.factory.build.writer_prompt import PROMPT_VERSION, render_writer_prompt
-from app.factory.product_architect import plan_blueprint
+from app.factory.product_architect import _blueprint_from_llm_payload, plan_blueprint
 
 
 def _blueprint(requirements):
@@ -103,3 +103,30 @@ def test_writer_prompt_states_source_of_record_and_coverage(requirements):
     assert PROMPT_VERSION == "writer_worker_prompt.v16"
     assert "SOURCE OF RECORD" in text
     assert "REQUIREMENTS COVERAGE" in text
+
+
+def _llm_payload(requirements):
+    return {
+        "product_name": "Test Product",
+        "summary": "test",
+        "capabilities": [
+            {
+                "id": "contract_and_boq_source_of_record",
+                "description": "Contract and BOQ ingest",
+                "block_ids": [],
+                "requirements": requirements,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "requirements,expected",
+    [
+        (["clause 8.2", "BOQ P1-P5"], ["clause 8.2", "BOQ P1-P5"]),
+        (["  keep  ", 42, {"nested": True}, "", "x" * 500], ["keep", "x" * 400]),
+    ],
+)
+def test_architect_llm_payload_sanitizes_requirements(requirements, expected):
+    bp = _blueprint_from_llm_payload(_llm_payload(requirements), "brief", "construction", [])
+    assert bp.capabilities[0].requirements == expected
