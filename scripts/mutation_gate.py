@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import ast
 import copy
+import json
 import re
 import subprocess
 import sys
@@ -134,14 +135,39 @@ def module_tokens(path: str, src_roots: Sequence[str], repo: Path | None = None)
     return [".".join(parts)] if parts else []
 
 
-def tests_for(path: str, fn_name: str, repo: Path, test_roots: Sequence[str], src_roots: Sequence[str]) -> list[str]:
+DEFAULT_MAPPING = "scripts/mutation_test_map.json"
+
+
+def load_test_map(repo: Path, mapping_path: str) -> dict[str, dict[str, list[str]]]:
+    """Read a committed coverage-derived test map; absence degrades to {}."""
+    path = repo / mapping_path
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def tests_for(path: str, fn_name: str, repo: Path, test_roots: Sequence[str], src_roots: Sequence[str], mapping: dict[str, dict[str, list[str]]] | None = None) -> list[str]:
+    """Test files that can kill a mutant of ``fn_name``.
+
+    Prefer the coverage-derived mapping: a test that never calls the function
+    cannot kill its mutant, so dropping the rest weakens nothing. Fall back to
+    the static module/name match for a function the mapping does not yet know.
+    """
+    if mapping:
+        mapped = (mapping.get(path) or {}).get(fn_name)
+        if mapped is not None:
+            return list(mapped)
     toks = module_tokens(path, src_roots, repo)
     hits = []
     for root in test_roots:
         for t in sorted((repo / root).rglob("test_*.py")):
             text = t.read_text("utf-8", "replace")
             if any(tok and tok in text for tok in toks) and re.search(rf"\b{re.escape(fn_name)}\b", text) or any(tok and re.search(rf"import {re.escape(tok)}\b|from {re.escape(tok)} import", text) for tok in toks):
-                hits.append(str(t.relative_to(repo)))
+                hits.append(t.relative_to(repo).as_posix())
     return list(dict.fromkeys(hits))
 
 
@@ -187,7 +213,7 @@ def run_tests(repo: Path, tests: Sequence[str], workdir: str, pytest_args: Seque
     return "survived" if proc.returncode == 0 else "killed"
 
 
-def mutation_gate(repo: Path, base: str, src_roots: Sequence[str], test_roots: Sequence[str], workdir: str, pytest_args: Sequence[str]) -> list[MutantResult]:
+def mutation_gate(repo: Path, base: str, src_roots: Sequence[str], test_roots: Sequence[str], workdir: str, pytest_args: Sequence[str], mapping: dict[str, dict[str, list[str]]] | None = None) -> list[MutantResult]:
     results: list[MutantResult] = []
     for path, lines in sorted(changed_lines(base, repo, src_roots).items()):
         file = repo / path
@@ -197,7 +223,7 @@ def mutation_gate(repo: Path, base: str, src_roots: Sequence[str], test_roots: S
         tree = ast.parse(original)
         targets = [f.name for f in functions_touching(tree, lines)]
         for fname in dict.fromkeys(targets):
-            wd_rel = [str(Path(t).relative_to(workdir)) if workdir != "." else t for t in tests_for(path, fname, repo, test_roots, src_roots)]
+            wd_rel = [str(Path(t).relative_to(workdir)) if workdir != "." else t for t in tests_for(path, fname, repo, test_roots, src_roots, mapping)]
             for kind in MUTANTS:
                 mtree = copy.deepcopy(tree)
                 fn = next(f for f in functions_touching(mtree, lines) if f.name == fname)
@@ -222,10 +248,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--tests", action="append", required=True, help="test root(s)")
     ap.add_argument("--workdir", default=".", help="directory pytest runs from")
     ap.add_argument("--summary", default="")
+    ap.add_argument("--mapping", default=DEFAULT_MAPPING, help="committed coverage-derived test map (repo-relative)")
     ap.add_argument("--pytest-arg", action="append", default=[])
     a = ap.parse_args(argv)
     repo = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()).strip())
-    results = mutation_gate(repo, a.base, a.src, a.tests, a.workdir, a.pytest_arg)
+    mapping = load_test_map(repo, a.mapping)
+    results = mutation_gate(repo, a.base, a.src, a.tests, a.workdir, a.pytest_arg, mapping)
     red = [r for r in results if is_red(r.outcome)]
     lines = ["## CI-M mutation gate", "", f"Mutants run: {len(results)}; killed: {len(results) - len(red)}; red: {len(red)}", ""]
     lines += [f"- {r.outcome.upper()}: `{r.path}::{r.function}` mutant `{r.mutant}`" for r in red]
