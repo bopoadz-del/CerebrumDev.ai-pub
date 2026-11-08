@@ -16,6 +16,14 @@ from app.factory.build.acceptance_floor import (
 )
 
 #: Version log.
+#: v16 -- SOURCE OF RECORD + REQUIREMENTS COVERAGE. The grader returned
+#:   NOT_CERTIFIED on contract_and_boq_source_of_record and
+#:   claim_review_and_dispute_resolution: the writer only ever received
+#:   one-line capability descriptions, never the customer's per-capability
+#:   requirements (clause/BOQ/traceability asks), and the prompt had no
+#:   source-of-record contract for immutable document ingestion. Capability
+#:   specs now carry requirements (architect-filled), the brief renders them
+#:   verbatim, and this prompt states both contracts.
 #: v14 -- THE LOAD RULE, STATED. The WRITER gate refuses a locked block that
 #:   loads from anywhere but its locked path (image_sufficiency._misloaded);
 #:   the prompt never said so. Two cycle-9 writers loaded every block from a
@@ -112,7 +120,7 @@ from app.factory.build.acceptance_floor import (
 #:   when neither the kernel nor the Store covers it. The DEPTH rule now states
 #:   the ruling, and FORMULA SOURCES lists the kernel definition_index() and
 #:   the Store coverage index for the vertical (formula_resolution), in order.
-PROMPT_VERSION = "writer_worker_prompt.v15"
+PROMPT_VERSION = "writer_worker_prompt.v16"
 
 _TEMPLATE = """You are the WRITER role of the CerebrumDev factory, manufacturing a
 governed platform. Work headless in this checkout. Produce real, runnable
@@ -203,6 +211,20 @@ and the suite calls store.save("<capability>", ...), store.get("<capability>",
 ...) and store.list_all("<capability>", ...) with exactly that name. A table
 called anything else is a KeyError in the suite, not a style choice; if you
 want a friendlier label, make it a column.
+
+SOURCE OF RECORD (capabilities that ingest external documents -- a contract,
+a BOQ, or any customer source of truth):
+- Ingested documents are immutable. Store each ingested document as a
+  content-addressed record -- the hash of its raw bytes is its id -- and
+  never edit a stored document in place.
+- Extract the clauses, lines or items the capability's REQUIREMENTS name,
+  each carrying its provenance (source document id + the clause/line
+  reference it came from), so every derived value traces back to its source.
+- Never overwrite an ingested record: a corrected document is a NEW version
+  with a new content address; the old version stays.
+- Every answer or record derived from an ingested source carries the
+  authority label of the layer it came from, so an operator can see where it
+  was sourced.
 
 MONEY (country, currency, tax):
 - Country, currency and every tax rate (VAT, sales tax, withholding) come
@@ -296,6 +318,14 @@ UI (a pilot is deployed and tested, so what it serves must work):
   retrieval corpus: a RAG surface is empty until the customer supplies sources
   -- ship the ingest/query surface, never seed documents.
 - You have the wall. Use it: a shallow pass that ends early is sent back.
+
+REQUIREMENTS COVERAGE (read the BRIEF capability by capability):
+- Each capability's REQUIREMENTS are the customer's own asks for THAT
+  capability, rendered verbatim under its capability line in the BRIEF.
+  Satisfy every one of them in code and assert it with a test.
+- Your final report lists, per capability, each requirement and the
+  file + test that satisfies it. A requirement with no code and no test is
+  unfinished work -- do not yield with one outstanding.
 
 SPECIALISTS (five of them, and you have agents — use them):
 A platform is not one job, and a single undifferentiated pass reliably ships

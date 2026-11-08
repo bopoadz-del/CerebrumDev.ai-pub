@@ -18,6 +18,10 @@ class PlannedCapability:
     strategy: str
     block_ids: List[str] = field(default_factory=list)
     notes: str = ""
+    #: The customer's per-capability asks, copied verbatim from the
+    #: CapabilitySpec. The brief renderer reads these, never the one-line
+    #: description, when it shows what a capability must do.
+    requirements: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +125,11 @@ class CapabilityPlanner:
             cap, dropped = self._scope_to_vertical(cap, vertical)
             scoped_out.extend(dropped)
             item = self._plan_one(cap)
+            item.requirements = [
+                str(r).strip()
+                for r in (getattr(cap, "requirements", None) or [])
+                if str(r).strip()
+            ]
             planned.append(item)
             used_blocks.extend(item.block_ids)
             if item.strategy == CapabilityStrategyHint.UNSUPPORTED.value:

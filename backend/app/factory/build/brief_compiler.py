@@ -545,6 +545,15 @@ def render_slot_bodies(
             f"- {cid} [{strategy or 'planned'}]: {desc}"
             + (f"  blocks={bids}" if bids else "  (no block ids — genuine gap)")
         )
+        # The customer's per-capability asks, verbatim: the writer must see
+        # them, never only the one-line description. Deterministic passthrough
+        # -- no LLM, no summarising.
+        for req in (
+            str(r).strip()
+            for r in (getattr(cap, "requirements", None) or [])
+            if str(r).strip()
+        ):
+            cap_lines.append(f"    requirement: {req}")
 
     reuse_lines = []
     gap_lines = []

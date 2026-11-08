@@ -130,14 +130,22 @@ def intake_from_product_blueprint(
         )
         hint = getattr(cap, "strategy_hint", None) or getattr(cap, "strategy", None)
         strategy = str(hint.value if hasattr(hint, "value") else (hint or "REUSE"))
+        requirements = [
+            str(r).strip()
+            for r in (getattr(cap, "requirements", None) or [])
+            if str(r).strip()
+        ]
         caps.append(
             {
                 "customer_words": words,
                 "id": cid,
                 "block_ids": [str(b) for b in (getattr(cap, "block_ids", None) or []) if str(b).strip()],
                 "strategy": strategy,
+                "requirements": requirements,
                 "source_turn": turn,
-                "source_text": text[:400],
+                # Full turn text, not the 400-char truncation: the brief
+                # renderer reads this back verbatim as provenance.
+                "source_text": text,
             }
         )
     if not caps:

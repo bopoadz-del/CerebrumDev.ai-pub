@@ -56,6 +56,12 @@ class CapabilitySpec(BaseModel):
     #: the typed unavailable refusal until it is built -- and every generated
     #: suite expects exactly that. See app.factory.build.placeholder_connectors.
     connectors: List[str] = Field(default_factory=list)
+    #: Per-capability customer asks, verbatim where the brief gave them (a
+    #: clause list, a BOQ line set, a traceability demand). The architect
+    #: fills these at drafting time; the writer brief renders them verbatim
+    #: so a capability's requirements are never lost in a one-line
+    #: description. Empty list: the brief named nothing specific for it.
+    requirements: List[str] = Field(default_factory=list)
 
     @field_validator("connectors")
     @classmethod
