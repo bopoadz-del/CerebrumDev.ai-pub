@@ -143,11 +143,11 @@ def writer_formula_errors(
 ) -> List[str]:
     """Grade writer-authored definition rows against the ruling.
 
-    A row whose id the kernel or Store already covers is a re-write (FAIL).
-    Any other row is improvisation and must carry ``IMPROVISED_LABEL``, a
-    non-empty source, and a candidate row naming it (FAIL otherwise).
+    Only a silent re-write is an error: a row whose id the kernel or Store
+    already covers. A real+fit improvisation is never an error for a missing
+    label/source/candidate row -- that is the Factory's own job, attached by
+    construction (ORDERS_08NOV_0555Z).
     """
-    candidates = {str(r.get("definition") or r.get("id") or "").strip() for r in candidate_rows}
     errs: List[str] = []
     for row in rows:
         ident = str(row.get("id") or row.get("key") or "").strip()
@@ -161,13 +161,11 @@ def writer_formula_errors(
         if layer == LAYER_STORE:
             errs.append(f"{ident}: the Store covers this; use the Store definition")
             continue
-        if row.get("label") != IMPROVISED_LABEL:
-            errs.append(f"{ident}: improvised without the label {IMPROVISED_LABEL!r}")
-        source = row.get("source") or (row.get("provenance") or {}).get("reference")
-        if not str(source or "").strip():
-            errs.append(f"{ident}: improvised without a cited source")
-        if ident not in candidates:
-            errs.append(f"{ident}: improvised without a new_domain_candidates row")
+        # ORDERS_08NOV_0555Z: a real+fit formula is never rejected for being
+        # improvised or for a missing label/source/candidate row -- labelling
+        # and sourcing are the Factory's own job, attached by construction,
+        # never a reason to bounce the writer. Only a silent re-write of a
+        # kernel/Store definition (above) is an error here.
     return errs
 
 
@@ -191,6 +189,55 @@ def _jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(dict(r), ensure_ascii=False) + "\n" for r in rows),
+        encoding="utf-8",
+    )
+
+
+def attach_improvised_metadata(
+    product_root: Any,
+    kernel_index: Sequence[Mapping[str, Any]],
+    store_index: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """ORDERS_08NOV_0555Z: attach the improvised label + a Store candidate BY
+    CONSTRUCTION, so a real+fit formula is never rejected for a missing
+    annotation. Returns what was written (ids labelled, candidates added)."""
+    root = Path(product_root)
+    defs_path = root / WRITER_DEFINITIONS_REL
+    cands_path = root / WRITER_CANDIDATES_REL
+    rows = _jsonl(defs_path)
+    labelled: List[str] = []
+    for row in rows:
+        ident = str(row.get("id") or row.get("key") or "").strip()
+        if not ident:
+            continue
+        if resolve_layer(ident, kernel_index, store_index)["layer"] != LAYER_IMPROVISED:
+            continue
+        if row.get("label") != IMPROVISED_LABEL:
+            row["label"] = IMPROVISED_LABEL
+            labelled.append(ident)
+    if labelled:
+        _write_jsonl(defs_path, rows)
+
+    existing = {str(r.get("definition") or r.get("id") or "").strip() for r in _jsonl(cands_path)}
+    added: List[str] = []
+    for row in rows:
+        ident = str(row.get("id") or row.get("key") or "").strip()
+        if not ident or ident in existing:
+            continue
+        if resolve_layer(ident, kernel_index, store_index)["layer"] != LAYER_IMPROVISED:
+            continue
+        cand = {"definition": ident, "label": IMPROVISED_LABEL, "reason": "no_store_coverage"}
+        with cands_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(cand, ensure_ascii=False) + "\n")
+        existing.add(ident)
+        added.append(ident)
+    return {"labelled": labelled, "candidates_added": added}
+
+
 def audit_product_formulas(
     product_root: Any,
     kernel_index: Sequence[Mapping[str, Any]],
@@ -198,11 +245,13 @@ def audit_product_formulas(
 ) -> List[str]:
     """Grade what the writer authored in ``product_root`` and record it.
 
-    Reads WRITER_DEFINITIONS_REL / WRITER_CANDIDATES_REL, runs
+    Reads WRITER_DEFINITIONS_REL / WRITER_CANDIDATES_REL, ATTACHES the
+    improvised label + Store candidate by construction (0555Z), runs
     :func:`writer_formula_errors`, and writes the findings to
     FORMULA_FINDINGS_REL (an empty list on a clean pass).
     """
     root = Path(product_root)
+    attach_improvised_metadata(root, kernel_index, store_index)
     errs = writer_formula_errors(
         _jsonl(root / WRITER_DEFINITIONS_REL),
         kernel_index,

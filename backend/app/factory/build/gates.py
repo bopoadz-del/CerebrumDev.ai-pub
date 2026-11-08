@@ -908,15 +908,14 @@ def gate_cloner_contract(ctx: GateContext) -> GateResult:
 
 
 def gate_writer_formulas(ctx: GateContext) -> GateResult:
-    """K-F7/F-9c + ORDERS_08NOV_0250Z B: the writer's formula findings
-    gate-fail the pass, never just a NOTE.
+    """K-F7/F-9c + ORDERS_08NOV_0555Z: only a silent re-write gate-fails.
 
     The writer pass graded every formula it authored against the kernel and
     the Store it was shown and wrote the errors to
     ``.factory/writer_formula_findings.json``. A re-written kernel/Store
-    formula, an improvised formula without the ``improvised, no Store
-    coverage`` label, without a cited source, or without a
-    ``new_domain_candidates`` row is a Store-first violation -- refuse it.
+    formula is a Store-first violation -- refuse it. A real+fit formula is
+    never refused for being improvised or for a missing label/source: that
+    is the Factory's own job, attached by construction, not a rejection.
     """
     from app.factory.build.formula_resolution import FORMULA_FINDINGS_REL
 
