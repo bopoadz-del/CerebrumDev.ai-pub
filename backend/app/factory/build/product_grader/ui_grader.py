@@ -242,7 +242,7 @@ def grade_ui(
     (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint), encoding="utf-8")
     out = wd / "report.json"
     try:
-        run(
+        proc = run(
             ["npx", "playwright", "test", str(wd / "grade_ui.spec.ts"), "--reporter=json"],
             cwd=str(wd),
             env={"PATH": "/usr/bin:/bin:/usr/local/bin", "BASE_URL": base_url,
@@ -253,6 +253,13 @@ def grade_ui(
         )
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
-    if not out.is_file():
+    # Playwright's JSON reporter may print to stdout rather than honour the
+    # PLAYWRIGHT_JSON_OUTPUT_NAME env; read the file first, then the captured
+    # stdout, so a reporter that ignores the env still yields a report.
+    if out.is_file():
+        report_text = out.read_text("utf-8")
+    else:
+        report_text = getattr(proc, "stdout", "") or ""
+    if not report_text.strip():
         return UiGrade([], ["UI run did not happen: no playwright report"])
-    return parse_report(json.loads(out.read_text("utf-8")), blueprint)
+    return parse_report(json.loads(report_text), blueprint)
