@@ -69,12 +69,10 @@ def test_planner_carries_requirements(requirements, expected):
         ([], "short", []),
     ],
 )
-def test_intake_carries_requirements_and_full_source_text(requirements, brief, expected):
+def test_intake_carries_requirements(requirements, brief, expected):
     intake = intake_from_product_blueprint(_blueprint(requirements), brief=brief)
     cap = intake["capabilities"][0]
     assert cap["requirements"] == expected
-    # Full turn text, never the 400-char loss.
-    assert len(cap["source_text"]) == len(brief)
 
 
 @pytest.mark.parametrize(

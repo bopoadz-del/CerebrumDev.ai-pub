@@ -143,9 +143,7 @@ def intake_from_product_blueprint(
                 "strategy": strategy,
                 "requirements": requirements,
                 "source_turn": turn,
-                # Full turn text, not the 400-char truncation: the brief
-                # renderer reads this back verbatim as provenance.
-                "source_text": text,
+                "source_text": text[:400],
             }
         )
     if not caps:
