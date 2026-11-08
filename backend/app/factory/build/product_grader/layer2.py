@@ -11,6 +11,7 @@ Builds gate (``grade_record.certification_refusal``).
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 #: The ONLY inputs Layer 2 may see, in this order.
@@ -24,6 +25,17 @@ GRADER_SYSTEM_PROMPT = (
     "evidence QUOTES the product. Return ONLY a JSON list."
 )
 EVIDENCE_MAX = 500
+
+_FENCE_START = re.compile(r"^```[A-Za-z0-9_+-]*\s*\n?")
+_FENCE_END = re.compile(r"\n?```\s*$")
+
+
+def _strip_fences(text: str) -> str:
+    """Strip a Markdown code fence around the grader's JSON answer."""
+    text = (text or "").strip()
+    text = _FENCE_START.sub("", text)
+    text = _FENCE_END.sub("", text)
+    return text.strip()
 
 
 class ContextLeak(ValueError):
@@ -67,10 +79,13 @@ def run_layer2(
     FAIL; every question the grader did not answer is an open FAIL."""
     questions = layer2_questions(blueprint)
     messages = layer2_messages(inputs, questions)  # ContextLeak propagates
+    raw = ""
     try:
-        verdicts = json.loads(complete(messages))
+        raw = complete(messages)
+        verdicts = json.loads(_strip_fences(raw))
     except Exception as exc:  # noqa: BLE001 -- no verdict is an open FAIL, recorded
-        return {"ran": False, "verdicts": [], "open_fails": [f"layer 2 did not answer: {type(exc).__name__}"]}
+        prefix = (raw or "").strip()[:200]
+        return {"ran": False, "verdicts": [], "open_fails": [f"layer 2 did not answer: {type(exc).__name__}: {prefix}"]}
     if not isinstance(verdicts, list):
         return {"ran": False, "verdicts": [], "open_fails": ["layer 2 did not answer: not a JSON list"]}
     clean = [

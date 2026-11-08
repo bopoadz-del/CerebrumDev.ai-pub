@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.factory.build.product_grader import layer2 as l2
+import app.factory.build.product_grader.layer2 as l2
 
 BPS = [
     {"capabilities": [{"id": "rent_roll", "description": "Roll rent."}], "ui_modules": ["portal"]},
@@ -120,6 +120,16 @@ def test_recorded_verdict_is_the_graders_verdict(verdicts):
     raw = json.dumps([{"question": q, "verdict": v, "evidence": "e"} for q, v in zip(qs, verdicts)])
     out = l2.run_layer2(INPUTS[0], bp, lambda m: raw)
     assert [v["verdict"] for v in out["verdicts"]] == verdicts
+
+
+@pytest.mark.parametrize("fenced, ran", [
+    ("```json\n[]\n```", True),
+    ("```\n[]\n```", True),
+    ("```json\nnot json\n```", False),
+])
+def test_a_fenced_json_answer_is_parsed(fenced, ran):
+    out = l2.run_layer2(INPUTS[0], BPS[0], lambda m: fenced)
+    assert out["ran"] is ran
 
 
 # --- G2 X8: each capability question carries the capability's description ---
