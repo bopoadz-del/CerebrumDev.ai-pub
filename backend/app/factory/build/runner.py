@@ -2159,6 +2159,31 @@ class RoleRunner:
             payload=bar.to_json(),
         )
 
+    def _note_plan_budget(self) -> None:
+        """State the plan-time budget before any phase runs (1330Z).
+
+        The class (small / new_platform) and its wall are recorded once, so a
+        run that later fails BUDGET_SPENT can be read against the plan budget
+        it was actually given.
+        """
+        wall = float(self.budget.wall_clock_s or 0.0)
+        self.ledger.append(
+            EventKind.NOTE,
+            detail=(
+                f"PLAN_BUDGET class={('new_platform' if wall > 1800.0 else 'small')} "
+                f"wall={wall:g}s phase={float(self.budget.phase_wall_clock_s or 0.0):g}s "
+                f"rework_cap={self.budget.max_rework} ceiling={float(self.budget.hard_ceiling_s or 0.0):g}s"
+            ),
+            payload={
+                "plan_budget": True,
+                "budget_class": "new_platform" if wall > 1800.0 else "small",
+                "wall_clock_s": wall,
+                "phase_wall_clock_s": float(self.budget.phase_wall_clock_s or 0.0),
+                "max_rework": self.budget.max_rework,
+                "hard_ceiling_s": float(self.budget.hard_ceiling_s or 0.0),
+            },
+        )
+
     def _emit_inspect(self, snapshot: Dict[str, Any], *, reason: str) -> None:
         """Append an inspect snapshot as a NOTE — never a verdict."""
         detail = str(snapshot.get("reason") or f"budget inspect ({reason})")
@@ -2558,6 +2583,7 @@ class RoleRunner:
                 inputs_hash=inputs_hash,
             )
         self._note_build_level()
+        self._note_plan_budget()
 
         from app.factory.build.preflight import evaluate_preflight
 
