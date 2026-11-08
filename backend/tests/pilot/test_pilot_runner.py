@@ -105,3 +105,45 @@ def test_principal_required_result_is_strict(has_creds, expected):
 def test_resume_not_restart(first, second, expected):
     ok, _ev = pilot.resume_not_restart(first, second)
     assert ok is expected
+
+
+@pytest.mark.parametrize(
+    "event, expected_line",
+    [
+        (
+            {"ts": "2026-11-08T10:07:00+00:00", "role": "STORE_MANAGER", "kind": "GATE_FAILED", "detail": "zip_http=409", "payload": {"state": "failed"}},
+            '2026-11-08T10:07:00+00:00 phase=STORE_MANAGER event=GATE_FAILED zip_http=409 payload={"state": "failed"}',
+        ),
+        (
+            {"ts": "2026-11-08T10:06:50+00:00", "role": "WRITER", "kind": "NOTE", "detail": "model_call", "payload": "short"},
+            "2026-11-08T10:06:50+00:00 phase=WRITER event=NOTE model_call payload=short",
+        ),
+    ],
+)
+def test_render_ledger_tail_line(event, expected_line):
+    # F-G3: one line per event carrying ts, phase (role), event (kind), payload.
+    lines = pilot.render_ledger_tail([event])
+    assert lines[0] == expected_line
+
+
+@pytest.mark.parametrize(
+    "events, expected",
+    [
+        ([], ["no ledger events"]),
+        (None, ["no ledger events"]),
+    ],
+)
+def test_render_ledger_tail_missing_events_is_explicit(events, expected):
+    assert pilot.render_ledger_tail(events) == expected
+
+
+@pytest.mark.parametrize(
+    "payload, expected_len",
+    [
+        ("x" * 500, 200),
+        ("short", 5),
+    ],
+)
+def test_render_ledger_tail_truncates_payload(payload, expected_len):
+    lines = pilot.render_ledger_tail([{"ts": "t", "payload": payload}])
+    assert len(lines[0].split("payload=", 1)[1]) == expected_len
