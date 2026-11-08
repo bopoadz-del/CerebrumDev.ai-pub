@@ -122,6 +122,16 @@ def test_recorded_verdict_is_the_graders_verdict(verdicts):
     assert [v["verdict"] for v in out["verdicts"]] == verdicts
 
 
+@pytest.mark.parametrize("fenced, ran", [
+    ("```json\n[]\n```", True),
+    ("```\n[]\n```", True),
+    ("```json\nnot json\n```", False),
+])
+def test_a_fenced_json_answer_is_parsed(fenced, ran):
+    out = l2.run_layer2(INPUTS[0], BPS[0], lambda m: fenced)
+    assert out["ran"] is ran
+
+
 # --- G2 X8: each capability question carries the capability's description ---
 @pytest.mark.parametrize("caps", [
     [{"id": "rent_roll", "description": "Roll the monthly rent ledger."}],
