@@ -118,7 +118,7 @@ class GateDecision:
 #: per capability (not per phase), so one route failing twice stops THAT route
 #: while others still get their own scoped task (ORDERS 2026-10-27 #2). The
 #: placeholder shape joins this set with its own detector in a follow-up PR.
-SCOPED_REWORK_SHAPES = frozenset({"missing_route"})
+SCOPED_REWORK_SHAPES = frozenset({"missing_route", "ui_unknown_route"})
 
 
 def _scoped_rework_findings(verdict: Any) -> List[Any]:
@@ -216,6 +216,24 @@ def _scoped_route_task(check: str, finding: Any) -> Any:
     return finding.with_fields(detail=text)
 
 
+def _unknown_route_task(check: str, finding: Any) -> Any:
+    """A route for a capability the product does not ship is a placeholder the
+    writer left in the console: fix the UI to call a real capability route, or
+    implement that capability end to end -- never a phantom backend route named
+    after the placeholder."""
+    cap = finding.capability_id or ""
+    route = f"/v1/{cap}" if cap else "the route the UI calls"
+    site = f" (the UI calls it at {finding.file}:{finding.line})" if finding.file else ""
+    text = (
+        f"[{check}] the UI calls {route} for capability '{cap}', which the "
+        f"product does not ship{site}: replace that call in the UI with a real "
+        "capability route (one of the shipped capabilities), or implement that "
+        "capability end to end -- do not add a backend route named after a "
+        "placeholder."
+    )
+    return finding.with_fields(detail=text)
+
+
 def _writer_gate_items(verdict: Any) -> tuple:
     """The WRITER's rework list after its OWN gate failed: one item per
     finding, named by the check it measures (brief_gates), then the command
@@ -231,6 +249,8 @@ def _writer_gate_items(verdict: Any) -> tuple:
     for check, finding in brief_gates.failure_checks(verdict):
         if isinstance(finding, _findings.Finding) and finding.finding_shape == "missing_route":
             items.append(_scoped_route_task(check, finding))
+        elif isinstance(finding, _findings.Finding) and finding.finding_shape == "ui_unknown_route":
+            items.append(_unknown_route_task(check, finding))
         elif isinstance(finding, _findings.Finding):
             # The bracket names the check for the coder; the typed fields travel
             # with the item (capability_id drives the ratchet, never this text).

@@ -84,6 +84,13 @@ class TestThePromptStatesTheBarTheGateEnforces:
         assert "app/formulas.py" in text
         assert "docs/provenance/provenance.json" in text
 
+    def test_the_prompt_forbids_placeholder_routes(self):
+        # The emitter must never leave /v1/x: the prompt tells the writer a
+        # placeholder route is a gate failure it must replace before yielding.
+        text = self._prompt()
+        assert "Never emit a placeholder or example" in text
+        assert "/v1/x" in text
+
     def test_the_prompt_states_the_one_ui_rule(self):
         text = self._prompt()
         assert "The platform serves ONE UI" in text
@@ -157,6 +164,19 @@ class TestTheGateJudgesWhatIsServed:
             tmp_path, html, openapi={"paths": {"/v1/capabilities": {}, "/v1/alpha": {}}}
         )
         assert not any("rag" in f for f in out["findings"]), out
+
+    def test_a_placeholder_route_is_unknown_but_a_shipped_capability_is_missing(self, tmp_path):
+        # /v1/x names a capability the product does not ship (a placeholder) ->
+        # ui_unknown_route; /v1/alpha ships but has no backend route -> missing_route.
+        html = (
+            "<html><body><script>"
+            "fetch('/v1/x'); fetch('/v1/alpha');"
+            "</script></body></html>"
+        )
+        out = self._probe_findings(tmp_path, html)
+        kinds = {(s.get("kind"), s.get("capability_id")) for s in out["structured"]}
+        assert ("ui_unknown_route", "x") in kinds, out
+        assert ("missing_route", "alpha") in kinds, out
 
     def test_no_served_page_at_all_is_refused(self, tmp_path):
         (tmp_path / "app").mkdir()
