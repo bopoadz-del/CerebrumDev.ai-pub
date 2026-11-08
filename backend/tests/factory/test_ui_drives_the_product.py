@@ -158,6 +158,19 @@ class TestTheGateJudgesWhatIsServed:
         )
         assert not any("rag" in f for f in out["findings"]), out
 
+    def test_a_placeholder_route_is_unknown_but_a_shipped_capability_is_missing(self, tmp_path):
+        # /v1/x names a capability the product does not ship (a placeholder) ->
+        # ui_unknown_route; /v1/alpha ships but has no backend route -> missing_route.
+        html = (
+            "<html><body><script>"
+            "fetch('/v1/x'); fetch('/v1/alpha');"
+            "</script></body></html>"
+        )
+        out = self._probe_findings(tmp_path, html)
+        kinds = {(s.get("kind"), s.get("capability_id")) for s in out["structured"]}
+        assert ("ui_unknown_route", "x") in kinds, out
+        assert ("missing_route", "alpha") in kinds, out
+
     def test_no_served_page_at_all_is_refused(self, tmp_path):
         (tmp_path / "app").mkdir()
         (tmp_path / "app" / "main.py").write_text("app = None\n", encoding="utf-8")

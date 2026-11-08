@@ -25,6 +25,11 @@ if TYPE_CHECKING:  # pragma: no cover
 GATE_NAME = UI_END_TO_END_CHECK
 UI_NOT_WIRED = "ui_not_wired_end_to_end"
 UI_NOT_BUILT = "ui_shipped_unbuilt"
+#: A route the UI calls for a capability the product does not ship -- a
+#: placeholder the writer left in the console. Distinct from ``missing_route``
+#: (a shipped capability whose route 404s) so the rework scopes a UI fix, not
+#: a phantom backend route.
+UI_UNKNOWN_ROUTE = "ui_unknown_route"
 
 #: Keys an answer may carry its authority/precedence label under.
 LABEL_KEYS = ("label", "labels", "authority", "precedence", "basis", "layer")
@@ -159,10 +164,22 @@ with TestClient(app) as client:
             _cap = _seg[1] if len(_seg) > 1 else (_seg[0] if _seg else "")
             _idx = html.find(path)
             _call = ("app/static/index.html:%d" % (html.count("\n", 0, _idx) + 1)) if _idx >= 0 else "app/static/index.html"
-            finding(
-                "the UI calls %s and the platform answers %s" % (path, resp.status_code),
-                kind="missing_route", route=path, capability_id=_cap, call_site=_call,
-            )
+            # A route for a capability the product does not ship (and that is
+            # not the /v1/capabilities discovery endpoint) is a placeholder the
+            # writer left in the console: fix the UI, never implement a phantom
+            # route. A shipped capability whose route 404s is a real missing
+            # route. No capability list at all -> keep the original shape.
+            if _cap and caps and _cap not in caps and _cap != "capabilities":
+                finding(
+                    "the UI calls %s for capability '%s' which the product does not ship"
+                    % (path, _cap),
+                    kind="ui_unknown_route", route=path, capability_id=_cap, call_site=_call,
+                )
+            else:
+                finding(
+                    "the UI calls %s and the platform answers %s" % (path, resp.status_code),
+                    kind="missing_route", route=path, capability_id=_cap, call_site=_call,
+                )
             continue
         if resp.status_code == 405:
             answered.append(path)

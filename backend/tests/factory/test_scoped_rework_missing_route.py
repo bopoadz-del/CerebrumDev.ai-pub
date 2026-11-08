@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.factory.build import findings as _findings
 from app.factory.build import runner
 from app.factory.build.ui_e2e import GATE_NAME, UI_NOT_WIRED
@@ -24,6 +26,18 @@ def _missing_route(cap: str, line: int) -> _findings.Finding:
         file="app/static/index.html",
         line=line,
         finding_shape="missing_route",
+    )
+
+
+def _unknown_route(cap: str, line: int) -> _findings.Finding:
+    return _findings.Finding(
+        f"the UI calls /v1/{cap} for capability '{cap}' which the product does not ship",
+        gate=GATE_NAME,
+        check_id=GATE_NAME,
+        capability_id=cap,
+        file="app/static/index.html",
+        line=line,
+        finding_shape="ui_unknown_route",
     )
 
 
@@ -82,3 +96,34 @@ def test_a_non_route_finding_keeps_its_generic_key_alongside_the_route_keys():
     keys = set(runner._failure_keys(verdict))
     assert f"{GATE_NAME}:missing_route:exports" in keys
     assert any(k.startswith(f"{GATE_NAME}:") and ":missing_route:" not in k for k in keys)
+
+
+@pytest.mark.parametrize(
+    "cap, shape, expected_key",
+    [
+        ("x", "ui_unknown_route", f"{GATE_NAME}:ui_unknown_route:x"),
+        ("exports", "missing_route", f"{GATE_NAME}:missing_route:exports"),
+    ],
+)
+def test_scoped_route_key_is_distinct_by_shape(cap, shape, expected_key):
+    # A placeholder route (ui_unknown_route) and a real missing route are two
+    # different failures, so SAME_FAILURE_TWICE never folds them together.
+    finding = _findings.Finding(
+        f"the UI calls /v1/{cap}",
+        gate=GATE_NAME,
+        check_id=GATE_NAME,
+        capability_id=cap,
+        file="app/static/index.html",
+        line=40,
+        finding_shape=shape,
+    )
+    assert set(runner._failure_keys(_verdict([finding]))) == {expected_key}
+
+
+def test_unknown_route_scopes_a_replace_instruction_not_a_backend_route():
+    verdict = _verdict([_unknown_route("x", 40)])
+    items = [str(i) for i in runner._writer_gate_items(verdict)]
+    task = next(i for i in items if "/v1/x" in i)
+    assert "replace that call in the UI" in task
+    assert "the product does not ship" in task
+    assert "do not add a backend route named after a placeholder" in task
