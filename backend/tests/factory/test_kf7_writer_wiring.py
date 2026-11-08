@@ -50,10 +50,10 @@ class _Stop(Exception):
 # --- R1 (orchestrator add): the production writer path runs the check -------
 
 @pytest.mark.parametrize("defs, cands, expect", [
-    # bad: re-writes a kernel formula, and improvises one unlabelled
+    # bad: re-writes a kernel formula (the improvised unlabelled row is no
+    # longer an error -- 0555Z labels it by construction, never rejects it)
     ([{"id": "kz_v1"}, {"id": "imp_q", "source": "Ref"}], [{"definition": "imp_q"}],
-     ["kz_v1: kernel covers this; use the kernel definition",
-      f"imp_q: improvised without the label {IMPROVISED_LABEL!r}"]),
+     ["kz_v1: kernel covers this; use the kernel definition"]),
     # good: improvised, labelled, sourced, with its candidate row
     ([{"id": "imp_q", "label": IMPROVISED_LABEL, "source": "Ref"}], [{"definition": "imp_q"}], []),
 ])
