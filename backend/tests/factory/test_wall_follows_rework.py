@@ -22,6 +22,8 @@ import json
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from app.factory.blueprint import load_blueprint
 from app.factory.build import budget_inspect, codewhale_worker
 from app.factory.build.authority import BuildRole
@@ -194,15 +196,16 @@ def _grants(ledger):
     ]
 
 
-def test_a_rework_grant_never_grows_the_wall_past_the_plan_budget(tmp_path):
-    """Strict plan-time budget (0605Z): wall=100 s is the plan total for its
-    class, so the rework grant (requested 152 s, under the 1000 s ceiling) is
-    clamped to 100 s. The writer still gets its one rework round, but the wall
-    can no longer grow past the plan budget and the run stops typed as
-    wall-clock exhaustion."""
+@pytest.mark.parametrize("wall", [100.0, 120.0])
+def test_a_rework_grant_never_grows_the_wall_past_the_plan_budget(tmp_path, wall):
+    """Strict plan-time budget (0605Z): the plan wall is final for its class,
+    so the rework grant (requested ~152 s, under the 1000 s ceiling) is
+    clamped to the plan wall. The writer still gets its one rework round, but
+    the wall can no longer grow past the plan budget and the run stops typed
+    as wall-clock exhaustion."""
     clock = _Clock()
     runner, calls = _runner(
-        tmp_path, clock, wall=100.0, phase=80.0, ceiling=1000.0, writer_seconds=70.0
+        tmp_path, clock, wall=wall, phase=80.0, ceiling=1000.0, writer_seconds=70.0
     )
     outcome = runner.run()
 
@@ -211,7 +214,7 @@ def test_a_rework_grant_never_grows_the_wall_past_the_plan_budget(tmp_path):
     assert grants, "the rule granted a rework round"
     grant = grants[0]
     assert grant["phases"] == [BuildRole.WRITER.value]
-    assert grant["wall_s"] == 100.0  # clamped to the plan wall, never past it
+    assert grant["wall_s"] == wall  # clamped to the plan wall, never past it
     assert grant["capped"] is False
     assert outcome.outcome is Outcome.FAILED_TIME_BUDGET, outcome.detail
     assert "wall-clock budget" in (outcome.detail or "")
