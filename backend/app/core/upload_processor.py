@@ -391,12 +391,13 @@ async def embed_chunks(chunks: List[str]) -> Tuple[List[List[float]], Optional[D
         raise ValueError(f"Embedding backends unavailable: {exc}") from exc
 
 
-async def process_upload(session_id: str, file_paths: List[str]):
+async def process_upload(session_id: str, file_paths: List[str], original_names: Optional[List[str]] = None):
     """Background pipeline: parse, chunk, embed and persist indexed data.
 
     Chunks are stored in a persistent ChromaDB collection per session. If ChromaDB
     fails, the pipeline falls back to an in-memory store so the user can still
-    proceed (with a warning).
+    proceed (with a warning). ``original_names`` (parallel to ``file_paths``)
+    are the client's own filenames, kept for citations and the parse job.
     """
     state = get_session(session_id)
     if not state:
@@ -413,7 +414,7 @@ async def process_upload(session_id: str, file_paths: List[str]):
     update_session(session_id, state)
 
     try:
-        await _parse_chunk_embed_store(session_id, state, file_paths)
+        await _parse_chunk_embed_store(session_id, state, file_paths, original_names)
     except Exception as exc:
         # The terminal write is the CONTRACT of this task: the POST route's
         # 409 guard reads upload.status, so a death between "processing" and
@@ -432,7 +433,7 @@ async def process_upload(session_id: str, file_paths: List[str]):
 
 
 async def _parse_chunk_embed_store(
-    session_id: str, state: Any, file_paths: List[str]
+    session_id: str, state: Any, file_paths: List[str], original_names: Optional[List[str]] = None
 ) -> None:
     """The parse -> chunk -> embed -> store pipeline, split out so
     ``process_upload`` can guarantee a terminal upload.status whatever
@@ -444,7 +445,13 @@ async def _parse_chunk_embed_store(
 
     total = len(file_paths)
     for idx, path in enumerate(file_paths):
-        file_name = Path(path).name
+        # F-10c-a: source_files carries the CLIENT's original filename, not the
+        # on-disk uuid-prefixed name, so document:<filename> citations match
+        # what the caller asked for. Fall back to the on-disk name when the
+        # caller did not pass original names (legacy / direct callers).
+        file_name = (
+            original_names[idx] if original_names and idx < len(original_names) else Path(path).name
+        )
         file_hash = _stable_file_hash(path)
         try:
             text = await parse_document(path)

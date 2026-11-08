@@ -327,6 +327,33 @@ class TestProcessUpload:
         assert reloaded is not None
         assert sorted(reloaded["source_files"]) == ["alpha.xlsx", "beta.xlsx"]
 
+    @pytest.mark.parametrize("original_name", ["harbourline_contract.xlsx", "harbourline_boq.xlsx"])
+    @pytest.mark.asyncio
+    async def test_source_files_carry_the_original_name_not_the_uuid_prefix(self, monkeypatch, tmp_path, original_name):
+        """F-10c-a: source_files carry the client's filename, not the on-disk
+        uuid-prefixed name, so document:<filename> citations match the caller."""
+
+        async def _fake_embed(chunks):
+            return [[float(i)] * 8 for i in range(len(chunks))], {
+                "backend": "model2vec",
+                "dimensions": 8,
+                "model": "minishlab/potion-base-8M",
+            }
+
+        monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
+
+        # Save with a uuid-prefixed on-disk name, as the upload route does.
+        prefixed = tmp_path / f"{'a' * 32}_{original_name}"
+        _write_doc(prefixed, "Clause 14.3.\n\nRetention five percent.")
+
+        create_session("sess_f10c_name", "u1")
+        await upload_processor.process_upload(
+            "sess_f10c_name", [str(prefixed)], [original_name]
+        )
+
+        state = get_session("sess_f10c_name")
+        assert state.source_files == [original_name]
+
     @pytest.mark.asyncio
     async def test_reupload_same_file_with_fewer_chunks_removes_stale_tail(self, monkeypatch, tmp_path):
         """Re-uploading the same file with fewer chunks leaves no stale tail chunks."""

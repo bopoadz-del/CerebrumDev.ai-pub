@@ -191,6 +191,7 @@ async def upload_files(
 
     target_dir = _session_files_dir(session_id)
     saved_paths: List[str] = []
+    original_names: List[str] = []
 
     state.upload.status = "pending"
     state.upload.progress = 0.0
@@ -246,9 +247,10 @@ async def upload_files(
                 f"File '{safe_name}' exceeds the {size_cap} byte per-file limit",
             )
         saved_paths.append(str(dest))
+        original_names.append(safe_name)
 
     # session_id doubles as job_id for simplicity
-    start_task(session_id, process_upload(session_id, saved_paths))
+    start_task(session_id, process_upload(session_id, saved_paths, original_names))
 
     return {"job_id": session_id, "files_received": len(saved_paths)}
 
