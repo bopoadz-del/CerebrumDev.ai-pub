@@ -12,6 +12,8 @@ blueprint -> plan -> intake -> brief, and the prompt states the contract.
 
 from __future__ import annotations
 
+import pytest
+
 from app.factory.blueprint import CapabilitySpec, ProductBlueprint
 from app.factory.build.brief_compiler import compile_brief
 from app.factory.build.intake_blueprint import intake_from_product_blueprint
@@ -38,45 +40,68 @@ def _blueprint(requirements):
     )
 
 
-def test_capability_spec_keeps_requirements():
-    assert _blueprint([]).capabilities[0].requirements == []
-    assert _blueprint(["clause traceability"]).capabilities[0].requirements == [
-        "clause traceability"
-    ]
+@pytest.mark.parametrize(
+    "requirements,expected",
+    [
+        ([], []),
+        (["clause traceability"], ["clause traceability"]),
+    ],
+)
+def test_capability_spec_keeps_requirements(requirements, expected):
+    assert _blueprint(requirements).capabilities[0].requirements == expected
 
 
-def test_planner_carries_requirements():
-    assert plan_blueprint(_blueprint([])).capabilities[0].requirements == []
-    assert plan_blueprint(_blueprint(["a", "b"])).capabilities[0].requirements == [
-        "a",
-        "b",
-    ]
+@pytest.mark.parametrize(
+    "requirements,expected",
+    [
+        ([], []),
+        (["a", "b"], ["a", "b"]),
+    ],
+)
+def test_planner_carries_requirements(requirements, expected):
+    assert plan_blueprint(_blueprint(requirements)).capabilities[0].requirements == expected
 
 
-def test_intake_carries_requirements_and_full_source_text():
-    bp = _blueprint(["keep these words"])
-    intake = intake_from_product_blueprint(bp, brief="long user turn " + "x" * 500)
+@pytest.mark.parametrize(
+    "requirements,brief,expected",
+    [
+        (["keep these words"], "long user turn " + "x" * 500, ["keep these words"]),
+        ([], "short", []),
+    ],
+)
+def test_intake_carries_requirements_and_full_source_text(requirements, brief, expected):
+    intake = intake_from_product_blueprint(_blueprint(requirements), brief=brief)
     cap = intake["capabilities"][0]
-    assert cap["requirements"] == ["keep these words"]
-    assert len(cap["source_text"]) > 400  # full turn text, no 400-char loss
-    # Second input: no requirements -> empty list, still valid.
-    intake2 = intake_from_product_blueprint(_blueprint([]), brief="short")
-    assert intake2["capabilities"][0]["requirements"] == []
+    assert cap["requirements"] == expected
+    # Full turn text, never the 400-char loss.
+    assert len(cap["source_text"]) == len(brief)
 
 
-def test_brief_renders_requirements_verbatim():
-    bp = _blueprint(["clause 8.2 traceable", "BOQ P1-P5"])
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        ["clause 8.2 traceable", "BOQ P1-P5"],
+        [],
+    ],
+)
+def test_brief_renders_requirements_verbatim(requirements):
+    bp = _blueprint(requirements)
     text = compile_brief(bp, plan_blueprint(bp)).text
-    assert "requirement: clause 8.2 traceable" in text
-    assert "requirement: BOQ P1-P5" in text
-    # Second input: no requirements -> no such line rendered.
-    bp2 = _blueprint([])
-    text2 = compile_brief(bp2, plan_blueprint(bp2)).text
-    assert "requirement: clause 8.2 traceable" not in text2
+    for req in requirements:
+        assert f"requirement: {req}" in text
+    if not requirements:
+        assert "requirement: clause 8.2 traceable" not in text
 
 
-def test_writer_prompt_states_source_of_record_and_coverage():
-    text = render_writer_prompt(_blueprint([]), brief="build it")
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        [],
+        ["clause 8.2 traceable"],
+    ],
+)
+def test_writer_prompt_states_source_of_record_and_coverage(requirements):
+    text = render_writer_prompt(_blueprint(requirements), brief="build it")
     assert PROMPT_VERSION == "writer_worker_prompt.v16"
     assert "SOURCE OF RECORD" in text
     assert "REQUIREMENTS COVERAGE" in text
