@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.factory.build.product_grader import ui_grader as ug
+import app.factory.build.product_grader.ui_grader as ug
 
 BPS = [
     {"product_id": "lettings-desk", "product_name": "Lettings Desk", "summary": "tenancy files",
@@ -71,6 +71,21 @@ def test_run_with_report_is_parsed(tmp_path):
     assert g.ok
     assert (tmp_path / "fixtures" / "fixture.pdf").read_bytes().startswith(b"%PDF")
     assert (tmp_path / "fixtures" / "fixture.xlsx").is_file()
+
+
+def test_run_that_prints_report_to_stdout_is_parsed(tmp_path):
+    # The JSON reporter may print to stdout instead of honouring the
+    # PLAYWRIGHT_JSON_OUTPUT_NAME env; the captured stdout is a fallback.
+    from types import SimpleNamespace
+
+    bp = BPS[1]
+
+    def fake(cmd, **kw):
+        names = [s.name for s in ug.ui_plan(bp)]
+        return SimpleNamespace(stdout=json.dumps(_report(names)))
+
+    g = ug.grade_ui(bp, tmp_path, base_url="http://x", run=fake)
+    assert g.ok
 
 
 @pytest.mark.parametrize("bp", BPS)
