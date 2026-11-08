@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.factory.build.product_grader import ui_grader as ug
+import app.factory.build.product_grader.ui_grader as ug
 
 BPS = [
     {"product_id": "lettings-desk", "product_name": "Lettings Desk", "summary": "tenancy files",
