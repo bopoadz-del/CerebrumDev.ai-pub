@@ -406,7 +406,7 @@ def upload_client(tmp_path, monkeypatch):
 
     started: list = []
     monkeypatch.setattr(
-        upload_router, "process_upload", lambda session_id, paths: (session_id, paths)
+        upload_router, "process_upload", lambda session_id, paths, original_names=None: (session_id, paths)
     )
     monkeypatch.setattr(
         upload_router, "start_task", lambda job_id, coro: started.append(coro)
