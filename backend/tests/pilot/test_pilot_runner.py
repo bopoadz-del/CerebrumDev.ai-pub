@@ -147,3 +147,28 @@ def test_render_ledger_tail_missing_events_is_explicit(events, expected):
 def test_render_ledger_tail_truncates_payload(payload, expected_len):
     lines = pilot.render_ledger_tail([{"ts": "t", "payload": payload}])
     assert len(lines[0].split("payload=", 1)[1]) == expected_len
+
+
+@pytest.mark.parametrize(
+    "product, expect_none",
+    [
+        ({}, True),
+        ({"brief_diag": None}, True),
+        ({"brief_diag": {"chunks": 0, "digest_folded": False}}, False),
+        ({"brief_diag": {"chunks": 2, "source_files": ["a.pdf", "b.xlsx"], "digest_folded": True}}, False),
+    ],
+)
+def test_brief_diag_summary_reports_presence(product, expect_none):
+    out = pilot.brief_diag_summary(product)
+    assert (out == "none") == expect_none
+
+
+@pytest.mark.parametrize(
+    "diag, expected_in",
+    [
+        ({"chunks": 2, "source_files": ["a.pdf"]}, "\"chunks\": 2"),
+        ({"digest_folded": False, "worker": "h:1"}, "\"digest_folded\": false"),
+    ],
+)
+def test_brief_diag_summary_quotes_the_fields(diag, expected_in):
+    assert expected_in in pilot.brief_diag_summary({"brief_diag": diag})

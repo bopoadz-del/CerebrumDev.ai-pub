@@ -33,7 +33,6 @@ import io
 import json
 import mimetypes
 import os
-import re
 import sys
 import time
 import urllib.request
@@ -270,6 +269,17 @@ def principal_required_result(has_creds: bool) -> Check:
     )
 
 
+def brief_diag_summary(product: Dict[str, Any]) -> str:
+    """The persisted draft diagnostic (product_design.brief_diag, #157/#148),
+    quoted for the pilot's BRIEF evidence -- chunks / source_files /
+    digest_folded / loaded_from / worker / upload_worker. "none" when absent.
+    """
+    diag = (product or {}).get("brief_diag")
+    if not diag:
+        return "none"
+    return json.dumps(diag, ensure_ascii=False, default=str)[:400]
+
+
 def run_pilot(base: str) -> int:
     global LAST_SID, LAST_TOKEN
     smoke.BASE = base
@@ -311,14 +321,14 @@ def run_pilot(base: str) -> int:
 
     # Stage 2 -- BRIEF (F-10c-a document:<filename> citations)
     raw, turns = smoke.chat_until_drafted(sid, token, PROJECT_BRIEF)
-    # ORDERS_1735Z: surface the drafter's own view of the state (_brief_diag rides
-    # on the draft result) so cited=[] is traced to the state, not guessed.
-    diag_m = re.search(r'"_brief_diag"\s*:\s*(\{[^{}]*\})', raw or "")
-    diag = diag_m.group(1) if diag_m else "none"
     _ps, product = smoke.req("GET", f"/v1/sessions/{sid}/product", token=token)
     product = product if isinstance(product, dict) else {}
     ok2, ev2 = brief_cites_documents(product, [DOC_PDF, DOC_XLSX])
-    record("2 BRIEF (F-10c-a)", ok2, f"turns={turns} {ev2} draft_state={diag}")
+    # ORDERS_08NOV_0250Z: quote the PERSISTED diag (product_design.brief_diag,
+    # #157/#148) -- chunks/source_files/digest_folded/loaded_from/worker/
+    # upload_worker -- not the fragile SSE regex, so cited=[] is traced to the
+    # state, never guessed.
+    record("2 BRIEF (F-10c-a)", ok2, f"turns={turns} {ev2} brief_diag={brief_diag_summary(product)}")
 
     # Stage 3 -- BUILD through STORE + export zip
     smoke.chat(sid, token, "", action="set_build_level", value=BUILD_LEVEL)
