@@ -7,12 +7,14 @@ the wrapper's keyword arguments.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from app.factory.build import agent_confine
 from app.factory.build.agent_confine import (
     ConfinementUnavailable,
     confinement_popen_kwargs,
@@ -230,3 +232,51 @@ def test_only_the_build_and_a_same_parent_sibling_are_writable_roots(tmp_path, s
 def test_a_broad_filesystem_root_is_refused(broad):
     with pytest.raises(ConfinementUnavailable):
         narrow_rw_roots(broad)
+
+
+@pytest.mark.parametrize("log", ["/tmp/argv-a.log", "/tmp/argv-b.log"])
+def test_scoped_env_passes_the_argv_log_through(log):
+    env = scoped_child_env({"CODE_CLI_ARGV_LOG": log, "PATH": "/usr/bin"}, {})
+    assert env["CODE_CLI_ARGV_LOG"] == log
+
+
+class _FakeStat:
+    def __init__(self, mode):
+        self.st_mode = mode
+
+
+@pytest.mark.parametrize("retval,expected", [(-1, 0), (3, 3)])
+def test_landlock_abi_returns_zero_below_one_and_value_above(monkeypatch, retval, expected):
+    def fake(*_args):
+        return retval
+
+    monkeypatch.setattr(agent_confine, "_syscall", lambda: fake)
+    assert agent_confine.landlock_abi() == expected
+
+
+@pytest.mark.parametrize("abi,raises", [(0, True), (3, False)])
+def test_require_landlock_raises_below_one_and_returns_above(monkeypatch, abi, raises):
+    monkeypatch.setattr(agent_confine, "landlock_abi", lambda: abi)
+    if raises:
+        with pytest.raises(ConfinementUnavailable):
+            agent_confine.require_landlock()
+    else:
+        assert agent_confine.require_landlock() == abi
+
+
+@pytest.mark.parametrize(
+    "stat_result,expected",
+    [
+        (stat.S_IFCHR | 0o600, agent_confine._DEV),
+        (stat.S_IFREG | 0o644, agent_confine._RX),
+        (None, agent_confine._RX),
+    ],
+)
+def test_rights_for_char_device_gets_dev_and_others_rx(monkeypatch, stat_result, expected):
+    def fake_stat(_path, **_kwargs):
+        if stat_result is None:
+            raise OSError("missing")
+        return _FakeStat(stat_result)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert agent_confine._rights_for("/fake/path") == expected

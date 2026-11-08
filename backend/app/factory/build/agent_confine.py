@@ -57,6 +57,7 @@ _BROAD_RW = frozenset({
 })
 
 _PROCESS_KEYS = frozenset({
+    "CODE_CLI_ARGV_LOG",
     "CURL_CA_BUNDLE",
     "LANG",
     "LC_ALL",
