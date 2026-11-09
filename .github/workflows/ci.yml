@@ -333,7 +333,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/coverage_test_map.py \
-            --src backend/app --tests backend/tests \
+            --src backend/app --tests backend/tests/factory \
             --out "$RUNNER_TEMP/mutation_test_map.json" --workdir backend
 
       - name: Mutants on changed functions (CI-M-a)
