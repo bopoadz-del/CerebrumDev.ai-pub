@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from app.factory.build.codewhale_worker import WorkerError
+from app.factory.build.codewhale_worker import (
+    WorkerError,
+    _parse_writer_receipt,
+)
 from app.factory.build.roles_handlers import (
     _run_writer_via_codewhale_worker,
     writer_uses_codewhale,
@@ -513,3 +518,68 @@ def test_writer_does_not_retry_a_non_network_failure(
     assert result.reason == "writer_no_output"
     assert len(calls) == 1, "no retry for a non-network failure"
     assert [n for n in notes if n.get("stage") == "writer-retry"] == []
+
+
+def _network_receipt_line(error: str) -> str:
+    """A receipt the CLI prints on a DNS failure before exiting 75."""
+    return json.dumps(
+        {
+            "status": "failed",
+            "termination_reason": "model_error",
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "output": "",
+            "tools": [],
+            "error": f"error sending request for url (https://api.deepseek.com/v1/chat/completions): client error (Connect): {error}",
+            "error_category": "network",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "dns error: failed to lookup address information: Try again",
+        "dns error: failed to lookup address information: Temporary failure in name resolution",
+    ],
+)
+def test_parse_writer_receipt_returns_receipt_on_nonzero_exit(error):
+    """A DNS/model failure exits the CLI 75 while STILL printing its receipt.
+    The receipt must be returned (not raised as exit 75) so the caller's
+    retry loop sees error_category=network. Two inputs (two error strings)."""
+    receipt = _parse_writer_receipt([_network_receipt_line(error)], 75)
+    assert receipt.status == "failed"
+    assert receipt.error_category == "network"
+    assert receipt.termination_reason == "model_error"
+
+
+@pytest.mark.parametrize(
+    "stdout_lines",
+    [
+        ["a plain stderr-style line", "no receipt json here"],
+        [],
+    ],
+)
+def test_parse_writer_receipt_raises_exit_on_nonzero_without_receipt(stdout_lines):
+    """With no parseable receipt, a non-zero exit still raises exit N (the
+    pre-fix behaviour is preserved). Two inputs (garbage lines, no lines)."""
+    with pytest.raises(WorkerError, match="exit 75"):
+        _parse_writer_receipt(stdout_lines, 75)
+
+
+def test_parse_writer_receipt_raises_non_json_on_zero_exit():
+    """A clean exit with no receipt JSON is still a named failure."""
+    with pytest.raises(WorkerError, match="non-JSON summary"):
+        _parse_writer_receipt(["no receipt"], 0)
+
+
+def test_parse_writer_receipt_returns_success_receipt_on_zero_exit():
+    """Regression: a zero exit with a normal receipt still parses."""
+    receipt = _parse_writer_receipt(
+        [json.dumps({"status": "completed", "termination_reason": "resolved",
+                     "provider": "deepseek", "model": "m", "output": "ok",
+                     "tools": [], "error": None, "error_category": None})],
+        0,
+    )
+    assert receipt.status == "completed"
+    assert receipt.error_category is None

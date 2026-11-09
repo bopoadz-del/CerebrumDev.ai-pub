@@ -945,6 +945,51 @@ def _child_env(session_id: Optional[str], cli_home: Optional[str] = None) -> Dic
     )
 
 
+def _parse_writer_receipt(
+    stdout_lines: List[str], returncode: int
+) -> WorkerReceipt:
+    """Build the writer receipt from the CLI's captured stdout.
+
+    The CLI prints its receipt JSON to stdout on every exit path, including a
+    non-zero one. A DNS/model failure exits 75 while still printing a receipt
+    whose ``error_category=network`` / ``termination_reason=model_error`` -- the
+    caller retries those, so the receipt must be parsed and RETURNED before the
+    non-zero exit is raised (Advisor 13:12Z, pilot-live 42633433251).
+    """
+    payload = None
+    candidates = [stdout_lines[-1]] if stdout_lines else []
+    candidates.append("\n".join(stdout_lines))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            payload = parsed
+            break
+    if payload is None:
+        if returncode != 0:
+            tail = "\n".join(stdout_lines)[-400:]
+            raise WorkerError(
+                f"{WORKER_EXEC_FAILED}: exit {returncode}: {tail}"
+            )
+        raise WorkerError(
+            f"{WORKER_EXEC_FAILED}: non-JSON summary from the CLI"
+        )
+    return WorkerReceipt(
+        status=str(payload.get("status") or ""),
+        termination_reason=payload.get("termination_reason"),
+        provider=str(payload.get("provider") or ""),
+        model=str(payload.get("model") or ""),
+        output=str(payload.get("output") or ""),
+        tools=[
+            dict(t) for t in (payload.get("tools") or []) if isinstance(t, dict)
+        ],
+        error=payload.get("error"),
+        error_category=payload.get("error_category"),
+    )
+
+
 def run_worker_job(
     prompt: str,
     checkout_dir: Path | str,
@@ -1392,40 +1437,12 @@ def run_worker_job(
                     progress_handle.close()
                 except OSError:
                     pass
-        returncode = proc.returncode
-        if returncode != 0:
-            tail = "\n".join(stdout_lines)[-400:]
-            raise WorkerError(
-                f"{WORKER_EXEC_FAILED}: exit {returncode}: {tail}"
-            )
-        # The summary is the CLI's final JSON on stdout. Parse exactly as
-        # before the streaming change: the last line, then the whole raw
-        # buffer (never the sanitised relay copy).
-        payload = None
-        candidates = [stdout_lines[-1]] if stdout_lines else []
-        candidates.append("\n".join(stdout_lines))
-        for candidate in candidates:
-            try:
-                payload = json.loads(candidate)
-                break
-            except ValueError:
-                continue
-        if payload is None:
-            raise WorkerError(
-                f"{WORKER_EXEC_FAILED}: non-JSON summary from the CLI"
-            )
-        receipt = WorkerReceipt(
-            status=str(payload.get("status") or ""),
-            termination_reason=payload.get("termination_reason"),
-            provider=str(payload.get("provider") or ""),
-            model=str(payload.get("model") or ""),
-            output=str(payload.get("output") or ""),
-            tools=[
-                dict(t) for t in (payload.get("tools") or []) if isinstance(t, dict)
-            ],
-            error=payload.get("error"),
-            error_category=payload.get("error_category"),
-        )
+        # Parse the receipt BEFORE the exit-code check: a DNS/model failure
+        # makes the CLI exit non-zero (75) while STILL printing its receipt
+        # JSON to stdout. Returning the receipt (rather than raising the exit
+        # code) lets the caller retry error_category=network before the
+        # writer_no_output abort (Advisor 13:12Z, pilot-live 42633433251).
+        receipt = _parse_writer_receipt(stdout_lines, proc.returncode)
         # E3 part 2: the verdict line.
         logger.info(
             "codewhale writer receipt: status=%s reason=%s provider=%s "
