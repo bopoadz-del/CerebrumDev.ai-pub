@@ -1311,3 +1311,109 @@ def test_a_block_that_ships_its_own_adapter_is_left_exactly_as_the_store_wrote_i
 
     vendored = (ws.destination / "vendor" / "blocks" / "greeting" / "block.py").read_text(encoding="utf-8")
     assert "Auto-generated adapter for Cerebrum block: greeting" in vendored
+
+
+def _dotted_module_store(tmp_path: Path) -> Path:
+    """Faux Store plus a block whose registry entry is a dotted module name
+    (app.blocks.program_engine.block) -- the registry's legitimate form for a
+    block class that lives in a submodule of its package."""
+    store = _faux_store(tmp_path)
+    init = (store / "app" / "blocks" / "__init__.py").read_text(encoding="utf-8")
+    (store / "app" / "blocks" / "__init__.py").write_text(
+        init.replace(
+            '"farewell": ("app.blocks.farewell", "FarewellBlock"),',
+            '"farewell": ("app.blocks.farewell", "FarewellBlock"),\n'
+            '    "program_engine": ("app.blocks.program_engine.block", "ProgramEngineBlock"),',
+        ),
+        encoding="utf-8",
+    )
+    pkg = store / "app" / "blocks" / "program_engine"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "from app.blocks.program_engine.block import ProgramEngineBlock\n",
+        encoding="utf-8",
+    )
+    (pkg / "block.py").write_text(
+        "from app.core.universal_base import UniversalBlock\n"
+        "class ProgramEngineBlock(UniversalBlock):\n"
+        "    async def execute(self, input_data, params):\n"
+        "        return {'status': 'ok', 'result': {'engine': 'program'}}\n",
+        encoding="utf-8",
+    )
+    reg = store / "block_registry" / "program_engine"
+    reg.mkdir()
+    (reg / "block.json").write_text(json.dumps({"id": "program_engine"}), encoding="utf-8")
+    (reg / "block.py").write_text(
+        "from app.blocks import get_block\n"
+        "def run(**kwargs):\n"
+        "    return get_block('program_engine')\n",
+        encoding="utf-8",
+    )
+    return store
+
+
+@pytest.mark.parametrize(
+    "block_id, module_path, class_name, vendored_rels",
+    [
+        # flat entry: a module file named directly in the registry.
+        ("greeting", "vendor.cerebrum.blocks.greeting", "GreetingBlock", ("greeting.py",)),
+        # dotted entry: a class inside a block package's submodule -- the
+        # registry's legitimate form the vendorer must resolve, not flatten.
+        (
+            "program_engine",
+            "vendor.cerebrum.blocks.program_engine.block",
+            "ProgramEngineBlock",
+            ("program_engine/__init__.py", "program_engine/block.py"),
+        ),
+    ],
+)
+def test_dotted_and_flat_registry_entries_both_vendor_and_import(
+    tmp_path, block_id, module_path, class_name, vendored_rels
+):
+    """Two registry inputs -- a dotted module name and a flat one -- both
+    vendor and import in the slice.
+
+    The Store registry's legitimate form for program_engine is the dotted
+    module path app.blocks.program_engine.block. The slice vendorer must
+    resolve that path to the file under the block package and copy the
+    package __init__ chain -- not special-case program_engine.
+    """
+    store = _dotted_module_store(tmp_path)
+
+    ws, result = _clone(tmp_path, store, block_ids=("greeting", "program_engine"))
+    assert result.ok, result.detail
+
+    cerebrum = ws.destination / "vendor" / "cerebrum" / "blocks"
+    for rel in vendored_rels:
+        assert (cerebrum / rel).is_file(), f"{rel} must ship for {module_path}"
+
+    probe = textwrap.dedent(
+        f"""
+        import os
+        for var in ("CEREBRUM_API_URL", "CEREBRUM_API_KEY", "CEREBRUM_API_TOKEN"):
+            os.environ.pop(var, None)
+        import importlib
+        assert importlib.import_module({module_path!r}).{class_name}.__name__ == {class_name!r}
+        from vendor.cerebrum.blocks import get_block
+        assert get_block({block_id!r}).__name__ == {class_name!r}
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(ws.destination),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+
+
+def test_a_dotted_registry_name_with_no_module_file_still_fails_closed(tmp_path):
+    """The guard on the test above: a dotted name must not be silently
+    dropped. A dotted registry module whose file is absent fails the clone
+    where it is cheap rather than shipping a latent ModuleNotFoundError."""
+    store = _dotted_module_store(tmp_path)
+    (store / "app" / "blocks" / "program_engine" / "block.py").unlink()
+
+    with pytest.raises(RoleError, match=r"program_engine/block\.py"):
+        _clone(tmp_path, store, block_ids=("program_engine",))

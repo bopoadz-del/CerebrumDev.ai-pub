@@ -1058,11 +1058,27 @@ def _closure_over_runtime(
         if mod in block_mods:
             continue
         if "." in mod:
-            raise RoleError(
-                f"runtime slice cannot vendor app.blocks.{mod}: dotted "
-                "registry module names are not supported by the slice "
-                "vendorer yet (package *contents* are copied separately)"
-            )
+            # A dotted registry module name (app.blocks.program_engine.block)
+            # names a module INSIDE a block package. The registry's legitimate
+            # form, not a special case: resolve the dotted path to the module
+            # file and vendor its enclosing package (the recursive package
+            # copy carries the module file and the package __init__ chain, and
+            # the registry keeps the dotted name so the import still resolves
+            # after clone). Fail closed when either part is absent instead of
+            # shipping a latent ModuleNotFoundError.
+            parts = [p for p in mod.split(".") if p]
+            pkg = parts[0]
+            module_file = blocks_dir.joinpath(*parts).with_suffix(".py")
+            pkg_init_path = blocks_dir / pkg / "__init__.py"
+            if not pkg_init_path.is_file() or not module_file.is_file():
+                raise RoleError(
+                    f"runtime slice needs app/blocks/{'/'.join(parts)}.py "
+                    f"inside app/blocks/{pkg}/__init__.py, which does not "
+                    "exist in the Store checkout (dotted registry module name)"
+                )
+            hard_blocks.add(pkg)
+            todo.append(pkg)
+            continue
         path = blocks_dir / f"{mod}.py"
         pkg_init = blocks_dir / mod / "__init__.py"
         shadow = _resolve_shadowed_wrapper(blocks_dir, mod)
