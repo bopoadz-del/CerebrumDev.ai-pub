@@ -381,3 +381,135 @@ def test_slot_wait_bound_is_the_run_ceiling(tmp_path):
     assert left() == pytest.approx(0.0)
     ctx.deadline_box = {}
     assert _writer_slot_wait_left(ctx)() is None
+
+
+# -- Writer network retry (Advisor 13:12Z) ------------------------------------
+
+
+def _fake_worker_with_receipts(receipts, calls):
+    """A run_worker_job fake that returns the given receipts in order."""
+
+    def fake(
+        prompt,
+        dest,
+        tenant_store=None,
+        session_id="",
+        product_id="",
+        progress=None,
+        timeout_s=None,
+        live_time_left=None,
+        slot_wait_left=None,
+        on_slot_wait=None,
+    ):
+        calls.append(dict(dest=dest))
+        return receipts[min(len(calls) - 1, len(receipts) - 1)]
+
+    return fake
+
+
+def _network_failure_receipt(error: str):
+    """A returned (not raised) receipt for the DNS/model_error abort."""
+    return _receipt(
+        [],
+        status="failed",
+        termination_reason="model_error",
+        error_category="network",
+        error=error,
+    )
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_writer_retries_a_transient_network_failure_then_continues(
+    tmp_path, monkeypatch, failures
+):
+    """A network/model_error receipt is RETRIED, not aborted; once a pass
+    completes the phase continues. Two inputs: 1 and 2 transient failures."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    receipts = [
+        _network_failure_receipt(f"dns error: Try again (attempt {i})")
+        for i in range(failures)
+    ] + [_receipt([{"tool": "write", "path": "app/actions/cap.py"}])]
+
+    calls = []
+    monkeypatch.setattr(
+        "app.factory.build.codewhale_worker.run_worker_job",
+        _fake_worker_with_receipts(receipts, calls),
+    )
+    ctx = _ctx(tmp_path)
+    _plant_authored_handler(tmp_path / "build")
+    notes = []
+    ctx.note = lambda text, **kw: notes.append(dict(kw, text=str(text)))
+
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok, result.detail
+    assert len(calls) == failures + 1, "one retry per transient failure"
+    retries = [n for n in notes if n.get("stage") == "writer-retry"]
+    assert [r["network_retry"] for r in retries] == list(range(1, failures + 1))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "dns error: failed to lookup address information: Try again",
+        "client error (Connect): dns error: lookup failed (EAI_AGAIN)",
+    ],
+)
+def test_writer_aborts_after_three_network_failures(tmp_path, monkeypatch, error):
+    """Three network/model_error failures exhaust the retry budget and fall
+    through to today's writer_no_output abort. Two distinct error inputs."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    receipts = [_network_failure_receipt(error) for _ in range(10)]
+    calls = []
+    monkeypatch.setattr(
+        "app.factory.build.codewhale_worker.run_worker_job",
+        _fake_worker_with_receipts(receipts, calls),
+    )
+    ctx = _ctx(tmp_path)
+    notes = []
+    ctx.note = lambda text, **kw: notes.append(dict(kw, text=str(text)))
+
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok is False
+    assert result.reason == "writer_no_output"
+    # 1 initial attempt + 3 retries, then the loop stops (no 5th call).
+    assert len(calls) == 4
+    retries = [n for n in notes if n.get("stage") == "writer-retry"]
+    assert [r["network_retry"] for r in retries] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "category,reason",
+    [
+        ("model", "model_error"),
+        ("network", "timeout"),
+    ],
+)
+def test_writer_does_not_retry_a_non_network_failure(
+    tmp_path, monkeypatch, category, reason
+):
+    """Only error_category=network AND termination_reason=model_error is
+    retryable; any other failure aborts once with no retry NOTE. Two inputs."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    receipts = [
+        _receipt(
+            [],
+            status="failed",
+            termination_reason=reason,
+            error_category=category,
+            error="some error",
+        )
+    ]
+    calls = []
+    monkeypatch.setattr(
+        "app.factory.build.codewhale_worker.run_worker_job",
+        _fake_worker_with_receipts(receipts, calls),
+    )
+    ctx = _ctx(tmp_path)
+    notes = []
+    ctx.note = lambda text, **kw: notes.append(dict(kw, text=str(text)))
+
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok is False
+    assert result.reason == "writer_no_output"
+    assert len(calls) == 1, "no retry for a non-network failure"
+    assert [n for n in notes if n.get("stage") == "writer-retry"] == []

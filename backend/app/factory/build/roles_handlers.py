@@ -3908,6 +3908,22 @@ def _flag_writer_formulas(ctx: RoleContext, dest: Path, sources: Dict[str, Any])
     return errs
 
 
+#: A DNS lookup failure surfaces as a RETURNED receipt (status failed +
+#: error_category network + termination_reason model_error), not a raise. It
+#: is transient infra, so the writer launcher retries before the
+#: writer_no_output abort path runs (Advisor 13:12Z, pilot-live 42619526699).
+_WRITER_NETWORK_RETRY_MAX = 3
+_WRITER_NETWORK_RETRY_BACKOFF_S = (2.0, 4.0, 8.0)
+
+
+def _writer_receipt_retryable(receipt: Any) -> bool:
+    """True when a writer receipt is a transient network failure to retry."""
+    return (
+        getattr(receipt, "error_category", None) == "network"
+        and getattr(receipt, "termination_reason", None) == "model_error"
+    )
+
+
 def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     """Phase 5: the WRITER role runs headless through `codewhale exec`.
 
@@ -4078,8 +4094,9 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                     source="factory",
                 )
         owned_before = factory_owned.snapshot(Path(dest))
-        try:
-            receipt = run_worker_job(
+
+        def _launch_writer() -> Any:
+            return run_worker_job(
                 prompt,
                 dest,
                 tenant_store=ctx.state.get("tenant_store"),
@@ -4101,14 +4118,51 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                 slot_wait_left=_writer_slot_wait_left(ctx),
                 on_slot_wait=note_slot_wait,
             )
-        except WorkerError as exc:
+
+        def _raise_worker_failure(exc: WorkerError) -> None:
             if SLOT_WAIT_EXHAUSTED in str(exc):
                 raise RoleError(
                     f"{SLOT_WAIT_EXHAUSTED}: {exc}",
                     reason=SLOT_WAIT_EXHAUSTED,
                     location="WRITER",
                 ) from exc
-            raise
+            raise exc
+
+        try:
+            receipt = _launch_writer()
+        except WorkerError as exc:
+            _raise_worker_failure(exc)
+
+        # A DNS lookup failure is transient infra, not a build fault: the
+        # writer launcher retries network+model_error before the
+        # writer_no_output abort path runs (Advisor 13:12Z, pilot-live
+        # 42619526699). One typed NOTE per attempt; backoff 2/4/8s.
+        for attempt in range(1, _WRITER_NETWORK_RETRY_MAX + 1):
+            if not _writer_receipt_retryable(receipt):
+                break
+            delay = _WRITER_NETWORK_RETRY_BACKOFF_S[attempt - 1]
+            ctx.note(
+                "writer network error (dns/model_error) -- "
+                f"retry {attempt}/{_WRITER_NETWORK_RETRY_MAX} in {delay:g}s",
+                stage="writer-retry",
+                source="codewhale_worker",
+                network_retry=attempt,
+                error_category=str(
+                    getattr(receipt, "error_category", None) or ""
+                ),
+            )
+            # Each attempt re-acquires its own build slot; reset the slot
+            # narration so a queued retry is announced and closed again.
+            slot_wait["position"] = None
+            slot_wait["closed"] = False
+            slot_wait["last"] = 0.0
+            import time
+
+            time.sleep(delay)
+            try:
+                receipt = _launch_writer()
+            except WorkerError as exc:
+                _raise_worker_failure(exc)
     except WorkerError as exc:
         raise RoleError(
             f"codewhale_worker_failed: {exc}",
