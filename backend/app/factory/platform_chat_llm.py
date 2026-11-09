@@ -563,6 +563,10 @@ def _str_list(raw: Any) -> List[str]:
 
 def decide(state: Any, message: str) -> Dict[str, Any]:
     """Ask the factory LLM which Floor action to take. Raises on failure."""
+    # Task 3: the assistant must SEE the session's uploaded documents, the same
+    # digest the draft path folds in (F-10c-a). Without it, a user asking
+    # "what does my attachment say" gets "I don't see any attachment".
+    digest = platform_chat_flow.uploaded_docs_digest(state)
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": _SYSTEM},
         {
@@ -573,6 +577,7 @@ def decide(state: Any, message: str) -> Dict[str, Any]:
                 + _elicitation_facts(state)
                 + "\n"
                 + _store_inventory()
+                + (digest if digest else "")
                 + "\n\nConversation so far:\n"
                 + _conversation(state, message)
                 + "\n\nUser message:\n"
