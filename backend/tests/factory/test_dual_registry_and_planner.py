@@ -60,3 +60,25 @@ capabilities:
         CapabilityPlanner(BLOCKS).plan(bp)
 
 
+@pytest.mark.parametrize(
+    "planned, want_class",
+    [
+        ([], "small"),
+        ([("UNSUPPORTED", [])], "small"),
+        ([("MAPPED", [])], "new_platform"),
+        ([("MAPPED", ["b1"])], "small"),
+    ],
+)
+def test_budget_class_for_classifies_the_plan(planned, want_class):
+    """The plan-time class: an empty/all-unsupported plan is small (the
+    drop_rule mutant would divide by zero), 100% no-block is new_platform."""
+    from app.factory.planner import PlannedCapability, _budget_class_for
+
+    caps = [
+        PlannedCapability(capability_id=f"c{i}", strategy=s, block_ids=b)
+        for i, (s, b) in enumerate(planned)
+    ]
+    got_class, _share = _budget_class_for(caps)
+    assert got_class == want_class
+
+

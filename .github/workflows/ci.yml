@@ -274,7 +274,7 @@ jobs:
   mutation-gate:
     name: Mutation gate (CI-M)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
       pull-requests: write
@@ -328,6 +328,14 @@ jobs:
           echo "Store head: $(git rev-parse HEAD)  ($(ls block_registry | wc -l) blocks)"
           echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
 
+      - name: Generate the coverage-derived test mapping
+        working-directory: .
+        run: |
+          set -euo pipefail
+          python3 scripts/coverage_test_map.py \
+            --src backend/app --tests backend/tests/factory \
+            --out "$RUNNER_TEMP/mutation_test_map.json" --workdir backend
+
       - name: Mutants on changed functions (CI-M-a)
         working-directory: .
         run: |
@@ -336,6 +344,7 @@ jobs:
           git fetch --no-tags origin "$BASE"
           python3 scripts/mutation_gate.py --base "$BASE" \
             --src backend/app --tests backend/tests --workdir backend \
+            --mapping "$RUNNER_TEMP/mutation_test_map.json" \
             --summary "$RUNNER_TEMP/cim.md"
 
       - name: Two-input test lint (CI-M-b)

@@ -57,7 +57,7 @@ from app.factory.build.gates import (
     GateResult,
     gate_for,
 )
-from app.factory.build.ledger import BuildLedger, EventKind
+from app.factory.build.ledger import BuildLedger, EventKind, TERMINAL_KINDS
 from app.factory.build.roles import (
     ROLE_IMPLEMENTATIONS,
     RoleContext,
@@ -81,12 +81,18 @@ REWORK_SOURCE = BuildRole.TESTER
 #: unavailable, store contract) is never product work and stays terminal.
 REWORK_SOURCES = frozenset({BuildRole.TESTER, BuildRole.WRITER})
 
-#: Owner rule: two rework rounds PER GATE (WRITER gate, TESTER, Store gate);
-#: one gate's rounds never reduce another's. A gate that has used its two and
-#: fails again stops the run.
-REWORK_BUDGET = 2
+#: Owner rule (ORDERS_08NOV_1330Z): ONE rework round PER GATE (WRITER gate,
+#: TESTER, Store gate); one gate's rounds never reduce another's. A gate that
+#: has used its one and fails again stops the run.
+REWORK_BUDGET = 1
 #: Hard ceiling on rework rounds for the whole build, every gate together.
 REWORK_CEILING = 6
+#: Factory-file reprompts and writer test-defect regenerations are NOT
+#: rework: their own counters, never the product rework budget (the runner's
+#: own contract; the HOLD order's cap 1 governs REWORK only). They keep two
+#: rounds each, as before the cap change.
+FACTORY_FILE_REPROMPT_BUDGET = 2
+TEST_DEFECT_REGENERATION_BUDGET = 2
 
 #: The four things the runner can do with a failed phase verdict. One rule
 #: (``RoleRunner.decide``) picks one, from data, and records it.
@@ -478,6 +484,10 @@ class Outcome(str, Enum):
     HANDOFF_TO_N3 = "HANDOFF_TO_N3"
     FAILED_GATE = "FAILED_GATE"
     FAILED_BUDGET_SPENT = "FAILED_BUDGET_SPENT"
+    #: The plan-time wall (0605Z: 30 min small / 40 min new-platform) was
+    #: reached before the run finished. Distinct from a spent rework budget:
+    #: this is the WALL, and it is final -- no inspect ramp past it.
+    FAILED_TIME_BUDGET = "FAILED_TIME_BUDGET"
     FAILED_ROLE_ERROR = "FAILED_ROLE_ERROR"
     FAILED_AUTHORITY = "FAILED_AUTHORITY"
 
@@ -604,7 +614,25 @@ class RoleRunner:
             if plan
             else CapabilityPlanner(self.blocks_root).plan(blueprint)
         )
-        self.budget = budget or BuildBudget()
+        if budget is None:
+            # The plan-time budget class chooses the wall (0605Z owner
+            # ruling): the planner already classed the plan, the runner only
+            # turns the class into the number -- one config, no literals
+            # here.
+            from app.factory.build.budget_inspect import (
+                NEW_PLATFORM_WALL_S,
+                SMALL_PLATFORM_WALL_S,
+            )
+
+            klass = str(getattr(self.plan, "budget_class", "small") or "small")
+            wall = NEW_PLATFORM_WALL_S if klass == "new_platform" else SMALL_PLATFORM_WALL_S
+            self.budget = BuildBudget(wall_clock_s=wall)
+        else:
+            self.budget = budget
+        #: The plan-time wall, taken ONCE. Strict enforcement (0605Z) clamps
+        #: every later extension to it: the inspect ramp and the rework
+        #: grants can propose more, but the wall never grows past this.
+        self._plan_wall_s: float = float(self.budget.wall_clock_s or 0.0)
         # Roles are injectable so a test can drive a misbehaving role; gates
         # are NOT -- see the module docstring.
         self.roles = dict(roles or ROLE_IMPLEMENTATIONS)
@@ -1547,7 +1575,7 @@ class RoleRunner:
             )
         defects = list(owned.get("test_defects") or [])
         if owned["owner"] == failure_owner.TEST_DEFECT:
-            if test_defect_rounds >= self.budget.max_rework:
+            if test_defect_rounds >= TEST_DEFECT_REGENERATION_BUDGET:
                 return self._stop(
                     Outcome.FAILED_GATE,
                     "TEST_DEFECT unresolved after "
@@ -1732,7 +1760,7 @@ class RoleRunner:
         paths = ", ".join(str(row.get("path")) for row in touched) or str(verdict.detail)
         gate_rounds = self._rework_rounds_at(role)
         build_rounds = self._rework_rounds_this_build()
-        if reprompts >= self.budget.max_rework:
+        if reprompts >= FACTORY_FILE_REPROMPT_BUDGET:
             return self._stop(
                 Outcome.FAILED_GATE,
                 f"FACTORY_FAULT: the writer touched Factory-owned files after {reprompts} "
@@ -1771,7 +1799,7 @@ class RoleRunner:
         self.ledger.append(
             EventKind.NOTE,
             role=REWORK_TARGET,
-            detail=f"REPROMPT {reprompts + 1}/{self.budget.max_rework} (no rework budget): {paths}",
+            detail=f"REPROMPT {reprompts + 1}/{FACTORY_FILE_REPROMPT_BUDGET} (no rework budget): {paths}",
             payload={
                 "reprompt": reprompts + 1,
                 "touched": touched,
@@ -2159,6 +2187,77 @@ class RoleRunner:
             payload=bar.to_json(),
         )
 
+    def _note_plan_budget(self) -> None:
+        """State the plan-time budget before any phase runs (1330Z).
+
+        The class (small / new_platform) and its wall are recorded once, so a
+        run that later fails on the wall can be read against the plan budget
+        it was actually given. The class is the PLANNER's class, not a
+        reverse-engineered guess from the wall.
+        """
+        wall = float(self.budget.wall_clock_s or 0.0)
+        klass = str(getattr(self.plan, "budget_class", "") or "").strip()
+        if klass not in {"small", "new_platform"}:
+            klass = "new_platform" if wall > 1800.0 else "small"
+        share = float(getattr(self.plan, "no_store_block_share", 0.0) or 0.0)
+        self.ledger.append(
+            EventKind.NOTE,
+            role=BuildRole.COLLECTOR,
+            detail=(
+                f"PLAN_BUDGET class={klass} "
+                f"wall={wall:g}s phase={float(self.budget.phase_wall_clock_s or 0.0):g}s "
+                f"rework_cap={self.budget.max_rework} ceiling={float(self.budget.hard_ceiling_s or 0.0):g}s"
+            ),
+            payload={
+                "plan_budget": True,
+                "budget_class": klass,
+                "no_store_block_share": round(share, 4),
+                "wall_clock_s": wall,
+                "phase_wall_clock_s": float(self.budget.phase_wall_clock_s or 0.0),
+                "max_rework": self.budget.max_rework,
+                "hard_ceiling_s": float(self.budget.hard_ceiling_s or 0.0),
+            },
+        )
+
+    def _phase_minutes_s(self) -> Dict[str, float]:
+        """Per-phase minutes from the ledger (PHASE_STARTED -> terminal ts).
+
+        The failure-time snapshot the wall ruling wants: where the wall went,
+        per role. An in-flight phase (no terminal event yet) counts to the
+        ledger's last timestamp, so the phase that hit the wall is included.
+        Never throws -- a torn ts degrades to a missing entry, not a crash.
+        """
+        from datetime import datetime as _dt
+
+        def _parse(ts: str) -> Optional[float]:
+            try:
+                return _dt.fromisoformat(str(ts)).timestamp()
+            except (TypeError, ValueError):
+                return None
+
+        events = list(self.ledger.events())
+        last_ts = None
+        for event in events:
+            parsed = _parse(event.ts)
+            if parsed is not None:
+                last_ts = parsed
+        started: Dict[str, float] = {}
+        out: Dict[str, float] = {}
+        for event in events:
+            t = _parse(event.ts)
+            if t is None or event.role is None:
+                continue
+            name = event.role.value
+            if event.kind is EventKind.PHASE_STARTED:
+                started[name] = t
+            elif event.kind in TERMINAL_KINDS and name in started:
+                minutes = max(0.0, t - started.pop(name)) / 60.0
+                out[name] = round(minutes, 2)
+        if last_ts is not None:
+            for name, t in started.items():
+                out[name] = round(max(0.0, last_ts - t) / 60.0, 2)
+        return out
+
     def _emit_inspect(self, snapshot: Dict[str, Any], *, reason: str) -> None:
         """Append an inspect snapshot as a NOTE — never a verdict."""
         detail = str(snapshot.get("reason") or f"budget inspect ({reason})")
@@ -2205,6 +2304,13 @@ class RoleRunner:
         old_wall = float(self.budget.wall_clock_s or 0.0)
         requested = float(new_wall)
         new_wall = self.budget.capped(requested)
+        plan_wall = float(getattr(self, "_plan_wall_s", 0.0) or 0.0)
+        if plan_wall > 0:
+            # Strict plan-time budget (0605Z): the plan wall is final for
+            # its class. Every extension -- the inspect ramp, a rework grant,
+            # the pilot tail -- is capped here, so no caller can grow the
+            # wall past the plan budget it was given.
+            new_wall = min(new_wall, plan_wall)
         target = None
         if self._run_started is not None and new_wall > 0:
             target = float(self._run_started) + float(new_wall)
@@ -2557,7 +2663,10 @@ class RoleRunner:
                 product_id=getattr(self.blueprint, "product_id", "unknown"),
                 inputs_hash=inputs_hash,
             )
-        self._note_build_level()
+        # The plan-budget NOTE lands AFTER the reopen seeding below:
+        # ledger.reopening_rework() reads the reopen REWORK only while it is
+        # the LAST event, and a note written here would hide it from a
+        # re-entered run (the reopened writer would get an empty work list).
 
         from app.factory.build.preflight import evaluate_preflight
 
@@ -2666,6 +2775,12 @@ class RoleRunner:
         if BuildRole.WRITER in done and BuildRole.TESTER not in done:
             self._refresh_factory_files()
 
+        # State the run's level and plan budget before any phase runs -- and
+        # AFTER the reopen seeding above consumed the reopen REWORK, so the
+        # PLAN_BUDGET note never hides it (see the note at the top of run()).
+        self._note_build_level()
+        self._note_plan_budget()
+
         index = 0
         while True:
             while index < len(BUILD_PHASES):
@@ -2691,50 +2806,57 @@ class RoleRunner:
                         + list(halt.get("contract_misses") or [])[:8],
                     )
                 if deadline is not None and self.clock() >= deadline:
-                    snap = self._stage_inspect(
-                        reason="wall_reached", stage="wall"
-                    )
-                    new_wall = snap.get("next_wall_s")
-                    if new_wall:
-                        self._extend_wall(float(new_wall))
-                        if snap.get("cli_in_flight"):
-                            self._emit_cli_watchdog_extend(snap)
-                        deadline = self._deadline
-                    elif (
-                        snap.get("decision")
-                        in {
-                            "inspect_only_high_wall_honored",
-                            "continue_pilot",
-                            "continue_ceiling",
-                        }
-                        and int(snap.get("agent_written") or 0) > 0
-                        and not snap.get("contract_misses")
-                    ):
-                        from app.factory.build.auto_pilot import PILOT_SUITE_TAIL_S
-
-                        elapsed_now = 0.0
-                        if self._run_started is not None:
-                            elapsed_now = float(self.clock()) - float(
-                                self._run_started
-                            )
-                        self._extend_wall(elapsed_now + float(PILOT_SUITE_TAIL_S))
-                        deadline = self._deadline
-                    else:
-                        return self._finish(
-                            Outcome.FAILED_BUDGET_SPENT,
-                            (
-                                f"wall-clock budget of {self.budget.wall_clock_s:g}s "
-                                f"spent before {role.value} completed"
-                                + (
-                                    f"; {snap.get('reason')}"
-                                    if snap.get("reason")
-                                    else ""
-                                )
+                    snap = self._stage_inspect(reason="wall_reached", stage="wall")
+                    proposed = snap.get("next_wall_s")
+                    if proposed:
+                        # Strict plan-time budget (0605Z): the wall is final.
+                        # The inspect may PROPOSE a ramp (stage 2, pilot
+                        # tail); the plan budget refuses it and the run fails
+                        # as over budget -- recorded, never silent.
+                        self.ledger.append(
+                            EventKind.NOTE,
+                            role=role,
+                            detail=(
+                                "plan budget is final: refusing inspect ramp to "
+                                f"{float(proposed):g}s (wall={float(self.budget.wall_clock_s or 0.0):g}s, "
+                                f"decision={snap.get('decision') or '-'})"
                             ),
-                            phase=role,
-                            rework=rework_used,
-                            findings=list(snap.get("pilot_ready_blockers") or []),
+                            payload={
+                                "budget_ramp_refused": float(proposed),
+                                "budget_class": str(
+                                    getattr(self.plan, "budget_class", "small")
+                                    or "small"
+                                ),
+                                "inspect_decision": snap.get("decision") or "",
+                            },
                         )
+                    return self._finish(
+                        Outcome.FAILED_TIME_BUDGET,
+                        (
+                            "time_budget_exceeded: wall-clock budget of "
+                            f"{self.budget.wall_clock_s:g}s spent before "
+                            f"{role.value} completed"
+                            + (
+                                f"; {snap.get('reason')}"
+                                if snap.get("reason")
+                                else ""
+                            )
+                        ),
+                        phase=role,
+                        rework=rework_used,
+                        findings=list(snap.get("pilot_ready_blockers") or []),
+                        decision={
+                            "reason": "time_budget_exceeded",
+                            "phase_minutes_s": self._phase_minutes_s(),
+                            "budget_class": str(
+                                getattr(self.plan, "budget_class", "small")
+                                or "small"
+                            ),
+                            "wall_clock_s": float(
+                                self.budget.wall_clock_s or 0.0
+                            ),
+                        },
+                    )
 
                 # Factory-owned files (the acceptance harness, release gate,
                 # CI) are the Factory's, never the writer's. The writer edits

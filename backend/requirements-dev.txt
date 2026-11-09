@@ -26,3 +26,7 @@ pip-audit>=2.10.1
 # Realistic pilot fixtures (item 2b): the contract PDF generator. Test-only,
 # never a runtime dependency of the product.
 reportlab>=4.2.0
+
+# Coverage-derived mutation-test mapping (CI-M-a, scripts/coverage_test_map.py).
+coverage>=7.0.0
+pytest-cov>=6.0.0

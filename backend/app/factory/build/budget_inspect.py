@@ -38,6 +38,19 @@ logger = logging.getLogger("cerebrumdev.factory.budget_inspect")
 STAGE_1_S = 1800.0
 #: Optional second stage — only after inspect says real work is progressing.
 STAGE_2_S = 2700.0
+
+#: Plan-time budget classes (ORDERS_08NOV_0605Z owner ruling). One config,
+#: no scattered literals: a small platform (the default) gets a 30-min TOTAL
+#: wall, every phase included; a new platform made mostly of new blocks gets
+#: 40 min, chosen only when the planner's no-Store-block capability share
+#: exceeds the threshold below. Past the plan wall the run FAILS with
+#: ``reason=time_budget_exceeded`` -- the stage-1/2 inspect ramp is superseded
+#: for plan-time budgets.
+SMALL_PLATFORM_WALL_S = 1800.0
+NEW_PLATFORM_WALL_S = 2400.0
+#: Share of viable capabilities that resolved to NO Store block above which
+#: the plan classes the build "new_platform" (mostly new blocks).
+NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD = 0.5
 #: Last-resort ceiling. Never the default; never granted silently.
 #:
 #: The same number lives on ``BuildBudget.hard_ceiling_s``, which is where it

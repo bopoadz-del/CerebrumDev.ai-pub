@@ -19,7 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.factory import build_jobs
+import pytest
+
 from app.factory.blueprint import load_blueprint
 from app.factory.build import codewhale_worker
 from app.factory.build.budget_inspect import STAGE_1_S
@@ -30,14 +31,14 @@ ROOT = Path(__file__).resolve().parents[3]
 SMOKE = ROOT / "blueprints/examples/runner_smoke.yaml"
 
 
-def _staged_runner(tmp_path):
+def _staged_runner(tmp_path, *, wall=STAGE_1_S):
     clock = {"t": 0.0}
     runner = RoleRunner(
         load_blueprint(SMOKE),
         tmp_path / "build",
         budget=BuildBudget(
             max_rework=2,
-            wall_clock_s=STAGE_1_S,       # the staged 30-minute wall
+            wall_clock_s=wall,       # the staged plan wall (final for its class)
             phase_wall_clock_s=7200.0,
             hard_ceiling_s=7200.0,
         ),
@@ -46,8 +47,8 @@ def _staged_runner(tmp_path):
     runner.workspace.mkdir(parents=True, exist_ok=True)
     runner.ledger.start_run(product_id="p", inputs_hash="h")
     runner._run_started = 0.0
-    runner._deadline = STAGE_1_S
-    runner._deadline_box["at"] = STAGE_1_S
+    runner._deadline = wall
+    runner._deadline_box["at"] = wall
     runner._deadline_box["clock"] = lambda: clock["t"]
     return runner, clock
 
@@ -61,21 +62,21 @@ def _open_codewhale_call(runner):
     )
 
 
-def test_a_heartbeat_pulse_before_the_mark_lifts_the_staged_wall(tmp_path):
-    runner, clock = _staged_runner(tmp_path)
+@pytest.mark.parametrize("wall", [STAGE_1_S, 2400.0])
+def test_a_heartbeat_pulse_before_the_mark_does_not_lift_the_strict_plan_wall(tmp_path, wall):
+    """Strict plan-time budget (0605Z): the staged plan wall is final for
+    its class, so the stage-1 inspect ramp (1800 -> 2700) is clamped and the
+    box never grows, even one heartbeat before the mark."""
+    runner, clock = _staged_runner(tmp_path, wall=wall)
     _open_codewhale_call(runner)
     # The last heartbeat pulse before the box ends: 60 s before the mark.
     clock["t"] = STAGE_1_S - codewhale_worker.HEARTBEAT_EVERY_S
 
     runner._maybe_stage_inspect()
 
-    assert runner._deadline_box["at"] > STAGE_1_S, (
-        "the staged wall was still 1800s one heartbeat before the box ended"
+    assert runner._deadline_box["at"] == wall, (
+        "the strict plan wall kept the box at the plan total (the 2700s inspect ramp was clamped)"
     )
-    # ...and the status reader sees the lifted deadline for the open call.
-    notes = [e for e in runner.ledger.events() if e.kind is EventKind.NOTE]
-    open_note = build_jobs._open_model_call_note(notes)
-    assert float(open_note.payload["deadline_s"]) > codewhale_worker.HEARTBEAT_EVERY_S
 
 
 def test_without_a_call_in_flight_the_inspect_still_waits_for_its_mark(tmp_path):
