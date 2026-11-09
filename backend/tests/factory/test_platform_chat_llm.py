@@ -165,6 +165,17 @@ def test_decide_without_uploads_keeps_the_prompt_byte_identical(session, monkeyp
     assert "Uploaded project documents" not in user_content
 
 
+def test_decide_non_object_is_valueerror(session, monkeypatch):
+    """A non-object LLM payload must raise ValueError, not crash on .get().
+    Kills the CI-M ``drop_rule`` (removing the isinstance guard) and
+    ``swallow_exception`` (raise->pass) mutants on ``decide``."""
+    monkeypatch.setattr(
+        platform_chat_llm, "_llm_json_call", lambda messages: ["not", "a", "dict"]
+    )
+    with pytest.raises(ValueError, match="non-object"):
+        platform_chat_llm.decide(session, "hi")
+
+
 def test_decide_empty_object_is_soft_miss(session, monkeypatch):
     monkeypatch.setattr(platform_chat_llm, "_llm_json_call", lambda messages: {})
     with pytest.raises(LlmSoftMiss, match="empty action"):
