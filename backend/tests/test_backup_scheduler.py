@@ -27,8 +27,8 @@ os.environ.setdefault("ALLOW_ANONYMOUS_DEV", "1")
 
 import pytest  # noqa: E402
 
-from app.core import backup as bk  # noqa: E402
 from app.core import backup_scheduler as sched  # noqa: E402
+import app.core.backup as bk  # noqa: E402
 
 # Fake credentials for this test, generated per run (no value is stored in the repo).
 _GENERATED_PW_1 = "test-" + __import__("secrets").token_hex(8)
