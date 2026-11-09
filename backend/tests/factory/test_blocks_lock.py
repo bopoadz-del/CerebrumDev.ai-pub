@@ -340,3 +340,34 @@ class TestTheInventoryIsTheStores:
         from app.factory.blocks_lock import top_up_from_store
 
         assert top_up_from_store(None) is None
+
+
+@pytest.mark.parametrize("tracked_name", ["block.py", "note.txt"])
+def test_tracked_relpaths_reads_the_committed_tree(tmp_path, tracked_name):
+    """_git_toplevel finds the repo root and _tracked_relpaths lists only
+    git-tracked files (an untracked sibling is dropped)."""
+    from app.factory.blocks_lock import _git_toplevel, _tracked_relpaths
+
+    repo = tmp_path / "store"
+    block = repo / "block_registry" / "b1"
+    block.mkdir(parents=True)
+    (block / tracked_name).write_text("x\n", encoding="utf-8")
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("add", "-A")
+    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+    (block / "untracked.txt").write_text("y\n", encoding="utf-8")
+
+    assert _git_toplevel(block) == repo.resolve()
+    assert _tracked_relpaths(block) == [tracked_name]
+
+
+def test_tracked_relpaths_returns_none_outside_a_git_tree(tmp_path):
+    """Outside a git tree, the walk-up finds no .git and both functions return
+    None (an untracked dir is not a store checkout)."""
+    from app.factory.blocks_lock import _git_toplevel, _tracked_relpaths
+
+    d = tmp_path / "plain"
+    d.mkdir()
+    assert _git_toplevel(d) is None
+    assert _tracked_relpaths(d) is None

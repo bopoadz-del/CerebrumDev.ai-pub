@@ -71,17 +71,41 @@ def _function_spans(source_path: Path) -> dict[str, set[int]]:
     return spans
 
 
-def collect(repo: Path, src_roots: Sequence[str], test_files: Sequence[str], pytest_args: Sequence[str], workdir: str = ".") -> list[Execution]:
-    """Run pytest once under coverage with per-test dynamic contexts.
+class _FileContextPlugin:
+    """Switch coverage's dynamic context to the current test FILE (not function),
+    so one run attributes each covered source line to the file that ran it."""
 
-    ``--cov-context=test`` records, per line, which test executed it, so one
-    run yields function -> test files (far cheaper than a per-file run, and
-    coverage's C tracer stays ~1.1x instead of setprofile's 10-50x).
+    def __init__(self, cov, repo: Path):
+        self.cov = cov
+        self.repo = repo
+
+    def pytest_configure(self, config):
+        self.cov.start()
+
+    def pytest_unconfigure(self, config):
+        self.cov.stop()
+
+    def pytest_runtest_protocol(self, item, nextitem):
+        p = Path(item.path)
+        try:
+            ctx = p.relative_to(self.repo).as_posix()
+        except ValueError:
+            ctx = str(p)
+        self.cov.switch_context(ctx)
+
+
+def collect(repo: Path, src_roots: Sequence[str], test_files: Sequence[str], pytest_args: Sequence[str], workdir: str = ".") -> list[Execution]:
+    """Run pytest once under coverage with per-FILE dynamic contexts.
+
+    ``switch_context(file)`` costs ~60 switches (one per test file), not the
+    ~4400 per-test switches of ``--cov-context=test``, so this is ~1.1x instead
+    of ~30x. A source line only has a context when a test FILE executed it, so
+    a function's body maps to the files that actually ran it (not mere import).
     """
     import os
 
+    import coverage
     import pytest
-    from coverage import CoverageData
 
     wd = repo / workdir
     rel_tests = (
@@ -89,50 +113,42 @@ def collect(repo: Path, src_roots: Sequence[str], test_files: Sequence[str], pyt
         if workdir != "."
         else list(test_files)
     )
-    src_pkg = next((Path(r).name for r in src_roots), "app")
-    cov_data = wd / ".coverage.cim"
-    if cov_data.exists():
-        cov_data.unlink()
-    os.environ["COVERAGE_FILE"] = str(cov_data)
+    src_abs = [str((repo / r).resolve()) for r in src_roots]
+    cov = coverage.Coverage(source=src_abs, data_file=None, branch=False)
+    plugin = _FileContextPlugin(cov, repo)
     old = os.getcwd()
     os.chdir(wd)
     sys.path.insert(0, str(wd))
-    executions: list[Execution] = []
-    prefix = "" if workdir == "." else workdir.rstrip("/\\") + "/"
     try:
         pytest.main(
-            [f"--cov={src_pkg}", "--cov-context=test", "--cov-report=",
-             "-q", "-p", "no:cacheprovider", *pytest_args, *rel_tests],
-            plugins=[],
+            ["-q", "-p", "no:cacheprovider", *pytest_args, *rel_tests],
+            plugins=[plugin],
         )
-        data = CoverageData(basename=str(cov_data))
-        data.read()
-        for filename in data.measured_files():
-            try:
-                rel_src = Path(filename).relative_to(repo).as_posix()
-            except ValueError:
-                continue
-            spans = _function_spans(Path(filename))
-            if not spans:
-                continue
-            ctx_by_line = data.contexts_by_lineno(filename) or {}
-            for fn_name, lines in spans.items():
-                files: set[str] = set()
-                for ln in lines:
-                    for ctx in ctx_by_line.get(ln, ()):
-                        file_part = ctx.split("::", 1)[0]
-                        if file_part:
-                            files.add(prefix + file_part)
-                for f in sorted(files):
-                    executions.append((f, rel_src, fn_name))
     finally:
         os.chdir(old)
         try:
             sys.path.remove(str(wd))
         except ValueError:
             pass
-        if cov_data.exists():
-            cov_data.unlink()
+    data = cov.get_data()
+    executions: list[Execution] = []
+    for filename in data.measured_files():
+        try:
+            rel_src = Path(filename).relative_to(repo).as_posix()
+        except ValueError:
+            continue
+        spans = _function_spans(Path(filename))
+        if not spans:
+            continue
+        ctx_by_line = data.contexts_by_lineno(filename) or {}
+        for fn_name, lines in spans.items():
+            files: set[str] = set()
+            for ln in lines:
+                for ctx in ctx_by_line.get(ln, ()):
+                    if ctx:
+                        files.add(ctx)
+            for f in sorted(files):
+                executions.append((f, rel_src, fn_name))
     return executions
 
 
