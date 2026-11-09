@@ -23,7 +23,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
 from reportlab.platypus import (
     PageBreak,
     Paragraph,
@@ -363,13 +362,9 @@ def build_contract_story(seed: int = SEED):
     return story
 
 
-def _deterministic_canvas(filename, **kwargs):
-    """A canvas with a fixed CreationDate so regeneration is byte-stable."""
-    kwargs["invariant"] = 1
-    return canvas.Canvas(filename, **kwargs)
-
-
 _FIXED_ID_HEX = b"0" * 32
+_FIXED_XLSX_STAMP = b"2026-01-01T00:00:00Z"
+_FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 def _determinize_pdf_id(data: bytes) -> bytes:
@@ -391,7 +386,7 @@ def generate_contract(path: Path, seed: int = SEED) -> Path:
         topMargin=18 * mm,
         bottomMargin=18 * mm,
         title=PROJECT_NAME,
-        canvasmaker=_deterministic_canvas,
+        invariant=1,
     )
     doc.build(build_contract_story(seed))
     path.write_bytes(_determinize_pdf_id(path.read_bytes()))
@@ -477,7 +472,40 @@ def generate_boq(path: Path, seed: int = SEED) -> Path:
         summary.append([f"Section {sec}", name, round(total, 2)])
     summary.append(["", "Total (excluding Provisional Sums markup)", round(grand, 2)])
     wb.save(path)
+    _determinize_xlsx(path)
     return path
+
+
+def _determinize_xlsx(path: Path) -> None:
+    """Rewrite the xlsx with fixed entry timestamps and a fixed modified stamp.
+
+    openpyxl sets every ZIP entry's mtime to the write time and overwrites
+    dcterms:modified on save, so two regenerations differ at second granularity.
+    """
+    import io
+    import zipfile
+
+    src = zipfile.ZipFile(path)
+    out = io.BytesIO()
+    dst = zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED)
+    try:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "docProps/core.xml":
+                data = re.sub(
+                    rb"(<dcterms:modified[^>]*>)[^<]*(</dcterms:modified>)",
+                    rb"\g<1>" + _FIXED_XLSX_STAMP + rb"\g<2>",
+                    data,
+                )
+            zi = zipfile.ZipInfo(info.filename, _FIXED_ZIP_TIME)
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = info.external_attr
+            zi.internal_attr = info.internal_attr
+            dst.writestr(zi, data)
+    finally:
+        dst.close()
+        src.close()
+    path.write_bytes(out.getvalue())
 
 
 def main() -> None:
