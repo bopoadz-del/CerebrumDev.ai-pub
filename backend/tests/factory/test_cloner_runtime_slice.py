@@ -1417,3 +1417,24 @@ def test_a_dotted_registry_name_with_no_module_file_still_fails_closed(tmp_path)
 
     with pytest.raises(RoleError, match=r"program_engine/block\.py"):
         _clone(tmp_path, store, block_ids=("program_engine",))
+
+
+def test_a_store_shim_without_a_registry_runtime_entry_fails_closed(tmp_path):
+    """A Store shim that needs the app.blocks runtime but whose registry has
+    no entry for the block (and no app/blocks/<id>.py module) must refuse the
+    clone and name the block, not crash later on the customer's machine.
+
+    This is the fail-closed check at the top of _closure_over_runtime; it is
+    also the line the mutation gate's drop_rule / swallow_exception mutants
+    target, so a test here is what kills those mutants (the gate mutates the
+    whole changed function, not just the dotted-name lines)."""
+    store = _faux_store(tmp_path)
+    reg = store / "block_registry" / "ghost_runtime"
+    reg.mkdir()
+    (reg / "block.json").write_text(
+        json.dumps({"id": "ghost_runtime"}), encoding="utf-8"
+    )
+    (reg / "block.py").write_text(_SHIM, encoding="utf-8")
+
+    with pytest.raises(RoleError, match="ghost_runtime"):
+        _clone(tmp_path, store, block_ids=("ghost_runtime",))
