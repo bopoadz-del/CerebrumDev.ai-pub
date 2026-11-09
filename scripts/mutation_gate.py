@@ -150,6 +150,24 @@ def load_test_map(repo: Path, mapping_path: str) -> dict[str, dict[str, list[str
     return data if isinstance(data, dict) else {}
 
 
+def _killers_first(files: Sequence[str], fn_name: str, repo: Path) -> list[str]:
+    """Order test files so those that NAME the function run first.
+
+    The gate runs pytest with ``-x``, so it stops at the first failure. A
+    mutant is most likely killed by a test that references the function by
+    name; running that file first means a killed mutant stops after one file
+    instead of walking the whole alphabetical list to a late killer.
+    """
+    def key(t: str) -> tuple[int, str]:
+        try:
+            text = (repo / t).read_text("utf-8", "replace")
+        except OSError:
+            text = ""
+        return (0 if re.search(rf"\b{re.escape(fn_name)}\b", text) else 1, t)
+
+    return sorted(files, key=key)
+
+
 def tests_for(path: str, fn_name: str, repo: Path, test_roots: Sequence[str], src_roots: Sequence[str], mapping: dict[str, dict[str, list[str]]] | None = None) -> list[str]:
     """Test files that can kill a mutant of ``fn_name``.
 
@@ -160,7 +178,7 @@ def tests_for(path: str, fn_name: str, repo: Path, test_roots: Sequence[str], sr
     if mapping:
         mapped = (mapping.get(path) or {}).get(fn_name)
         if mapped is not None:
-            return list(mapped)
+            return _killers_first(mapped, fn_name, repo)
     toks = module_tokens(path, src_roots, repo)
     hits = []
     for root in test_roots:
@@ -168,7 +186,7 @@ def tests_for(path: str, fn_name: str, repo: Path, test_roots: Sequence[str], sr
             text = t.read_text("utf-8", "replace")
             if any(tok and tok in text for tok in toks) and re.search(rf"\b{re.escape(fn_name)}\b", text) or any(tok and re.search(rf"import {re.escape(tok)}\b|from {re.escape(tok)} import", text) for tok in toks):
                 hits.append(t.relative_to(repo).as_posix())
-    return list(dict.fromkeys(hits))
+    return _killers_first(list(dict.fromkeys(hits)), fn_name, repo)
 
 
 def is_test_file(path: str) -> bool:

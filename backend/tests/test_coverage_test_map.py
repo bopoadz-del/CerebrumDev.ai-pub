@@ -67,14 +67,18 @@ def test_load_mapping_tolerates_absence_and_corruption(tmp_path, content, want):
         ({"s/calc.py": {"fee": ["tests/test_a.py"]}}, ["tests/test_a.py"]),
         (
             {"s/calc.py": {"fee": ["tests/test_b.py", "tests/test_a.py"]}},
-            ["tests/test_b.py", "tests/test_a.py"],
+            ["tests/test_a.py", "tests/test_b.py"],  # direct-reference file first
         ),
     ],
 )
 def test_tests_for_prefers_the_mapping_entry(tmp_path, mapping, want):
-    """A coverage-derived entry is returned verbatim, before any static match."""
+    """A coverage-derived entry is used, ordered so the file that names the
+    function runs first (so -x stops at the likely killer)."""
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_a.py").write_text("def test_x(): pass\n", "utf-8")
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "from s.calc import fee\n\ndef test_fee():\n    fee(1)\n", "utf-8"
+    )
+    (tmp_path / "tests" / "test_b.py").write_text("def test_other(): pass\n", "utf-8")
     got = mg.tests_for("s/calc.py", "fee", tmp_path, ["tests"], ["src"], mapping)
     assert got == want
 
