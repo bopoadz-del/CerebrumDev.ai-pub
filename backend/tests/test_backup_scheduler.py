@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 
@@ -26,8 +27,8 @@ os.environ.setdefault("ALLOW_ANONYMOUS_DEV", "1")
 
 import pytest  # noqa: E402
 
-from app.core import backup as bk  # noqa: E402
 from app.core import backup_scheduler as sched  # noqa: E402
+import app.core.backup as bk  # noqa: E402
 
 # Fake credentials for this test, generated per run (no value is stored in the repo).
 _GENERATED_PW_1 = "test-" + __import__("secrets").token_hex(8)
@@ -115,6 +116,50 @@ class TestRunBackupOnce:
         status = json.loads(sched.status_path().read_text(encoding="utf-8"))
         assert status["ok"] is False
         assert "disk on fire" in status["error"]
+
+    @pytest.mark.parametrize("dir_name", ["factory_outputs", "sessions"])
+    def test_backup_copies_content_without_following_symlinks(self, tmp_path, monkeypatch, dir_name):
+        """Session build artifacts are symlinks; the snapshot must copy the
+        link, not follow it, so a dangling target does not fail the backup."""
+        monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+        monkeypatch.delenv("BACKUP_DIR", raising=False)
+        monkeypatch.delenv("ACCOUNTS_DATABASE_URL", raising=False)
+        _seed_accounts_db(tmp_path / "storage" / "accounts.db")
+        (tmp_path / "storage" / dir_name).mkdir(parents=True)
+
+        real = shutil.copytree
+        calls = []
+
+        def spy(src, dst, **kw):
+            calls.append(kw)
+            return real(src, dst, **kw)
+
+        monkeypatch.setattr(shutil, "copytree", spy)
+
+        report = bk.create_backup(include_content=True)
+        assert report.ok is True
+        assert calls and all(call.get("symlinks") is True for call in calls)
+
+    @pytest.mark.parametrize(
+        "db_url,expected_engine",
+        [
+            ("postgresql://u:p@localhost/db", "postgres"),
+            ("", "sqlite"),
+        ],
+    )
+    def test_backup_engine_follows_database_url(self, tmp_path, monkeypatch, db_url, expected_engine):
+        monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+        monkeypatch.delenv("BACKUP_DIR", raising=False)
+        if db_url:
+            monkeypatch.setenv("ACCOUNTS_DATABASE_URL", db_url)
+            monkeypatch.setattr(bk, "snapshot_postgres", lambda url, dest: dest)
+            monkeypatch.setattr(bk, "snapshot_postgres_via_sqlalchemy", lambda url, dest: None)
+        else:
+            monkeypatch.delenv("ACCOUNTS_DATABASE_URL", raising=False)
+            _seed_accounts_db(tmp_path / "storage" / "accounts.db")
+
+        report = bk.create_backup(include_content=False)
+        assert report.engine == expected_engine
 
 
 class TestArming:
