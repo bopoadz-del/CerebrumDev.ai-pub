@@ -140,6 +140,27 @@ class TestRunBackupOnce:
         assert report.ok is True
         assert calls and all(call.get("symlinks") is True for call in calls)
 
+    @pytest.mark.parametrize(
+        "db_url,expected_engine",
+        [
+            ("postgresql://u:p@localhost/db", "postgres"),
+            ("", "sqlite"),
+        ],
+    )
+    def test_backup_engine_follows_database_url(self, tmp_path, monkeypatch, db_url, expected_engine):
+        monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+        monkeypatch.delenv("BACKUP_DIR", raising=False)
+        if db_url:
+            monkeypatch.setenv("ACCOUNTS_DATABASE_URL", db_url)
+            monkeypatch.setattr(bk, "snapshot_postgres", lambda url, dest: dest)
+            monkeypatch.setattr(bk, "snapshot_postgres_via_sqlalchemy", lambda url, dest: None)
+        else:
+            monkeypatch.delenv("ACCOUNTS_DATABASE_URL", raising=False)
+            _seed_accounts_db(tmp_path / "storage" / "accounts.db")
+
+        report = bk.create_backup(include_content=False)
+        assert report.engine == expected_engine
+
 
 class TestArming:
     def test_disabled_flag_arms_nothing(self, monkeypatch):
