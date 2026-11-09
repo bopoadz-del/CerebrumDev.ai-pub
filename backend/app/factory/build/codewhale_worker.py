@@ -40,6 +40,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -945,6 +946,131 @@ def _child_env(session_id: Optional[str], cli_home: Optional[str] = None) -> Dic
     )
 
 
+def _parse_writer_receipt(
+    stdout_lines: List[str], returncode: int
+) -> WorkerReceipt:
+    """Build the writer receipt from the CLI's captured stdout.
+
+    The CLI prints its receipt JSON to stdout on every exit path, including a
+    non-zero one. A DNS/model failure exits 75 while still printing a receipt
+    whose ``error_category=network`` / ``termination_reason=model_error`` -- the
+    caller retries those, so the receipt must be parsed and RETURNED before the
+    non-zero exit is raised (Advisor 13:12Z, pilot-live 42633433251).
+    """
+    payload = None
+    candidates = [stdout_lines[-1]] if stdout_lines else []
+    candidates.append("\n".join(stdout_lines))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            payload = parsed
+            break
+    if payload is None:
+        if returncode != 0:
+            tail = "\n".join(stdout_lines)[-400:]
+            raise WorkerError(
+                f"{WORKER_EXEC_FAILED}: exit {returncode}: {tail}"
+            )
+        raise WorkerError(
+            f"{WORKER_EXEC_FAILED}: non-JSON summary from the CLI"
+        )
+    return WorkerReceipt(
+        status=str(payload.get("status") or ""),
+        termination_reason=payload.get("termination_reason"),
+        provider=str(payload.get("provider") or ""),
+        model=str(payload.get("model") or ""),
+        output=str(payload.get("output") or ""),
+        tools=[
+            dict(t) for t in (payload.get("tools") or []) if isinstance(t, dict)
+        ],
+        error=payload.get("error"),
+        error_category=payload.get("error_category"),
+    )
+
+
+#: Hosts the writer must resolve; probed from inside the confinement before the
+#: writer CLI starts so a deterministic DNS failure is attributed, not assumed.
+_DNS_PROBE_HOSTS = ("api.deepseek.com", "api.github.com")
+
+_DNS_PROBE_CODE = (
+    "import json, socket, sys, time\n"
+    "out = {}\n"
+    "for host in sys.argv[1:]:\n"
+    "    t0 = time.monotonic()\n"
+    "    try:\n"
+    "        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)\n"
+    "        out[host] = {'resolved': sorted({a[4][0] for a in infos}),\n"
+    "                     'elapsed_ms': round((time.monotonic() - t0) * 1000, 1)}\n"
+    "    except Exception as exc:\n"
+    "        out[host] = {'error': f'{type(exc).__name__}: {exc}',\n"
+    "                     'elapsed_ms': round((time.monotonic() - t0) * 1000, 1)}\n"
+    "print(json.dumps(out, sort_keys=True))\n"
+)
+
+
+def _dns_probe(
+    cwd: Path,
+    env: Dict[str, str],
+    *,
+    hosts=_DNS_PROBE_HOSTS,
+    timeout_s: float = 10.0,
+) -> Dict[str, Any]:
+    """Resolve the writer's hosts INSIDE the confinement.
+
+    Runs ``getaddrinfo`` in a child that carries the same scoped environment
+    and the same Landlock ruleset the writer CLI runs under, so a deterministic
+    resolver failure is measured, not assumed (Advisor 14:42Z). Returns
+    ``{host: {resolved|error, elapsed_ms}}``, or ``{"_probe_error": ...}``.
+    """
+    from app.factory.build.agent_confine import (
+        ConfinementUnavailable,
+        confinement_popen_kwargs,
+    )
+
+    try:
+        kwargs = confinement_popen_kwargs(cwd, sys.executable)
+    except ConfinementUnavailable as exc:
+        return {"_probe_error": f"confinement unavailable: {exc}"}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _DNS_PROBE_CODE, *hosts],
+            cwd=str(cwd),
+            env=dict(env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_s,
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        return {"_probe_error": "timeout"}
+    except OSError as exc:
+        return {"_probe_error": f"spawn failed: {exc}"}
+    except Exception as exc:  # noqa: BLE001 -- telemetry must never fail the writer
+        # A mocked/partial Popen in tests, a Landlock surprise, etc. The probe
+        # is diagnostic: any failure is recorded, never raised.
+        return {"_probe_error": f"{type(exc).__name__}: {exc}"}
+    if proc.returncode != 0:
+        return {"_probe_error": f"exit {proc.returncode}: {proc.stderr.strip()[:200]}"}
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return {"_probe_error": f"non-JSON stdout: {proc.stdout[:200]}"}
+
+
+def _fmt_dns_probe(v: Any) -> str:
+    """One probe result as a short human string for the ledger NOTE."""
+    if not isinstance(v, dict):
+        return str(v)
+    if "resolved" in v:
+        addrs = ",".join(v["resolved"][:3])
+        return f"resolved {addrs} ({v['elapsed_ms']}ms)"
+    return f"error {v.get('error', '?')} ({v.get('elapsed_ms', '?')}ms)"
+
+
 def run_worker_job(
     prompt: str,
     checkout_dir: Path | str,
@@ -1174,6 +1300,28 @@ def run_worker_job(
             confine_kw = confinement_popen_kwargs(cwd, cli)
         except ConfinementUnavailable as exc:
             raise WorkerError(f"{WORKER_EXEC_FAILED}: {exc}") from exc
+        child_env = _child_env(session_id, cli_home)
+        # Advisor 14:42Z: measure DNS from INSIDE the confinement before the
+        # writer CLI starts, so a deterministic resolver failure is attributed
+        # (a typed ledger NOTE), not assumed. Telemetry only -- it never
+        # blocks or fails the writer.
+        probe = _dns_probe(cwd, child_env)
+
+        probe_text = "; ".join(
+            f"{h}: {_fmt_dns_probe(v)}" for h, v in sorted(probe.items())
+        )
+        if progress is not None:
+            try:
+                # A dedicated typed NOTE: the ``dns_probe`` field (in
+                # WRITER_PROGRESS_FIELDS) carries the structured results; the
+                # line text carries the human summary. No ``tool`` key, so the
+                # probe note never masquerades as a CLI progress line.
+                progress(
+                    f"dns probe: {probe_text}"[:400],
+                    {DNS_PROBE: probe},
+                )
+            except Exception:  # noqa: BLE001 -- telemetry never fails the build
+                pass
         try:
             proc = subprocess.Popen(
                 argv,
@@ -1183,7 +1331,7 @@ def run_worker_job(
                 stdin=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
-                env=_child_env(session_id, cli_home),
+                env=child_env,
                 # The agent's shell gets its own process group: a group-wide
                 # signal it sends can never reach the Factory server.
                 **confine_kw,
@@ -1392,40 +1540,12 @@ def run_worker_job(
                     progress_handle.close()
                 except OSError:
                     pass
-        returncode = proc.returncode
-        if returncode != 0:
-            tail = "\n".join(stdout_lines)[-400:]
-            raise WorkerError(
-                f"{WORKER_EXEC_FAILED}: exit {returncode}: {tail}"
-            )
-        # The summary is the CLI's final JSON on stdout. Parse exactly as
-        # before the streaming change: the last line, then the whole raw
-        # buffer (never the sanitised relay copy).
-        payload = None
-        candidates = [stdout_lines[-1]] if stdout_lines else []
-        candidates.append("\n".join(stdout_lines))
-        for candidate in candidates:
-            try:
-                payload = json.loads(candidate)
-                break
-            except ValueError:
-                continue
-        if payload is None:
-            raise WorkerError(
-                f"{WORKER_EXEC_FAILED}: non-JSON summary from the CLI"
-            )
-        receipt = WorkerReceipt(
-            status=str(payload.get("status") or ""),
-            termination_reason=payload.get("termination_reason"),
-            provider=str(payload.get("provider") or ""),
-            model=str(payload.get("model") or ""),
-            output=str(payload.get("output") or ""),
-            tools=[
-                dict(t) for t in (payload.get("tools") or []) if isinstance(t, dict)
-            ],
-            error=payload.get("error"),
-            error_category=payload.get("error_category"),
-        )
+        # Parse the receipt BEFORE the exit-code check: a DNS/model failure
+        # makes the CLI exit non-zero (75) while STILL printing its receipt
+        # JSON to stdout. Returning the receipt (rather than raising the exit
+        # code) lets the caller retry error_category=network before the
+        # writer_no_output abort (Advisor 13:12Z, pilot-live 42633433251).
+        receipt = _parse_writer_receipt(stdout_lines, proc.returncode)
         # E3 part 2: the verdict line.
         logger.info(
             "codewhale writer receipt: status=%s reason=%s provider=%s "
@@ -1472,7 +1592,8 @@ _STEP_PREFIX = "writer: STEP"
 #: disk. The budget ramp reads them to tell a working writer from a quiet one.
 STEPS_REPORTED = "steps_reported"
 FILES_ON_DISK = "files_on_disk"
-WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK)
+DNS_PROBE = "dns_probe"
+WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK, DNS_PROBE)
 
 
 def is_narration_line(line: str) -> bool:

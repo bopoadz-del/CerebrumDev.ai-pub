@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from app.factory.build.codewhale_worker import WorkerError
+from app.factory.build.codewhale_worker import (
+    WorkerError,
+    _dns_probe,
+    _fmt_dns_probe,
+    _parse_writer_receipt,
+)
 from app.factory.build.roles_handlers import (
     _run_writer_via_codewhale_worker,
     writer_uses_codewhale,
@@ -513,3 +520,222 @@ def test_writer_does_not_retry_a_non_network_failure(
     assert result.reason == "writer_no_output"
     assert len(calls) == 1, "no retry for a non-network failure"
     assert [n for n in notes if n.get("stage") == "writer-retry"] == []
+
+
+def _network_receipt_line(error: str) -> str:
+    """A receipt the CLI prints on a DNS failure before exiting 75."""
+    return json.dumps(
+        {
+            "status": "failed",
+            "termination_reason": "model_error",
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "output": "",
+            "tools": [],
+            "error": f"error sending request for url (https://api.deepseek.com/v1/chat/completions): client error (Connect): {error}",
+            "error_category": "network",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "dns error: failed to lookup address information: Try again",
+        "dns error: failed to lookup address information: Temporary failure in name resolution",
+    ],
+)
+def test_parse_writer_receipt_returns_receipt_on_nonzero_exit(error):
+    """A DNS/model failure exits the CLI 75 while STILL printing its receipt.
+    The receipt must be returned (not raised as exit 75) so the caller's
+    retry loop sees error_category=network. Two inputs (two error strings)."""
+    receipt = _parse_writer_receipt([_network_receipt_line(error)], 75)
+    assert receipt.status == "failed"
+    assert receipt.error_category == "network"
+    assert receipt.termination_reason == "model_error"
+
+
+@pytest.mark.parametrize(
+    "stdout_lines",
+    [
+        ["a plain stderr-style line", "no receipt json here"],
+        [],
+    ],
+)
+def test_parse_writer_receipt_raises_exit_on_nonzero_without_receipt(stdout_lines):
+    """With no parseable receipt, a non-zero exit still raises exit N (the
+    pre-fix behaviour is preserved). Two inputs (garbage lines, no lines)."""
+    with pytest.raises(WorkerError, match="exit 75"):
+        _parse_writer_receipt(stdout_lines, 75)
+
+
+def test_parse_writer_receipt_raises_non_json_on_zero_exit():
+    """A clean exit with no receipt JSON is still a named failure."""
+    with pytest.raises(WorkerError, match="non-JSON summary"):
+        _parse_writer_receipt(["no receipt"], 0)
+
+
+@pytest.mark.parametrize(
+    "status,model,tool_count",
+    [
+        ("completed", "deepseek-v4-pro", 0),
+        ("completed", "deepseek-v4-pro", 2),
+    ],
+)
+def test_parse_writer_receipt_returns_success_receipt_on_zero_exit(
+    status, model, tool_count
+):
+    """Regression: a zero exit with a normal receipt still parses. Two inputs."""
+    tools = [{"name": f"t{i}"} for i in range(tool_count)]
+    receipt = _parse_writer_receipt(
+        [json.dumps({"status": status, "termination_reason": "resolved",
+                     "provider": "deepseek", "model": model, "output": "ok",
+                     "tools": tools, "error": None, "error_category": None})],
+        0,
+    )
+    assert receipt.status == status
+    assert receipt.model == model
+    assert len(receipt.tools) == tool_count
+    assert receipt.error_category is None
+
+
+class _FakeCompleted:
+    returncode = 0
+    stderr = ""
+
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+
+
+@pytest.mark.parametrize(
+    "stdout_json,key",
+    [
+        (
+            '{"api.deepseek.com": {"resolved": ["1.2.3.4"], "elapsed_ms": 2.1}, '
+            '"api.github.com": {"resolved": ["5.6.7.8"], "elapsed_ms": 1.9}}',
+            "resolved",
+        ),
+        (
+            '{"api.deepseek.com": {"error": "gaierror: [Errno -3] Try again", '
+            '"elapsed_ms": 8000.0}}',
+            "error",
+        ),
+    ],
+)
+def test_dns_probe_parses_resolved_and_error(tmp_path, monkeypatch, stdout_json, key):
+    """The DNS probe (Advisor 14:42Z step a) reports either a resolved host or
+    the getaddrinfo error text, each with elapsed_ms. Two inputs."""
+    import subprocess
+
+    monkeypatch.setattr(
+        "app.factory.build.agent_confine.confinement_popen_kwargs",
+        lambda cwd, exe: {},
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _FakeCompleted(stdout_json),
+    )
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    host = next(h for h in result if not h.startswith("_"))
+    assert key in result[host]
+    assert "elapsed_ms" in result[host]
+
+
+@pytest.mark.parametrize(
+    "value,needle",
+    [
+        ({"resolved": ["1.2.3.4", "5.6.7.8"], "elapsed_ms": 2.1}, "resolved 1.2.3.4,5.6.7.8"),
+        ({"error": "gaierror: Try again", "elapsed_ms": 8000.0}, "error gaierror: Try again"),
+        ("a plain string", "a plain string"),
+    ],
+)
+def test_fmt_dns_probe_resolved_error_and_scalar(value, needle):
+    """Each probe result shape formats differently (kills constant_return)."""
+    assert needle in _fmt_dns_probe(value)
+
+
+def test_dns_probe_records_a_generic_spawn_failure(monkeypatch, tmp_path):
+    """Any unexpected subprocess failure is recorded as _probe_error, never
+    raised (kills the drop_rule mutant on the except Exception branch)."""
+    import subprocess
+
+    monkeypatch.setattr(
+        "app.factory.build.agent_confine.confinement_popen_kwargs",
+        lambda cwd, exe: {},
+    )
+
+    def _boom(*a, **k):
+        raise TypeError("no context manager")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    assert "_probe_error" in result
+    assert "TypeError" in result["_probe_error"]
+
+
+def _fake_run_raiser(exc):
+    def _raise(*a, **k):
+        raise exc
+
+    return _raise
+
+
+class _NonZeroProc:
+    returncode = 75
+    stdout = ""
+    stderr = "exit 75 tail"
+
+
+class _NonJsonProc:
+    returncode = 0
+    stdout = "not json at all"
+    stderr = ""
+
+
+@pytest.mark.parametrize(
+    "patch,needle",
+    [
+        # Confinement unavailable (no Landlock) -> recorded, never raised.
+        ("confinement", "confinement unavailable"),
+        # subprocess timeout -> recorded.
+        ("timeout", "timeout"),
+        # OSError on spawn -> recorded.
+        ("oserror", "spawn failed"),
+        # non-zero exit with no parseable receipt -> recorded.
+        ("nonzero", "exit 75"),
+        # zero exit, non-JSON stdout -> recorded.
+        ("nonjson", "non-JSON"),
+    ],
+)
+def test_dns_probe_records_every_failure_shape(monkeypatch, tmp_path, patch, needle):
+    """Each failure branch of _dns_probe returns a typed _probe_error instead of
+    raising (kills drop_rule mutants on every branch)."""
+    import subprocess
+
+    from app.factory.build.agent_confine import ConfinementUnavailable
+
+    if patch == "confinement":
+        monkeypatch.setattr(
+            "app.factory.build.agent_confine.confinement_popen_kwargs",
+            lambda cwd, exe: (_ for _ in ()).throw(ConfinementUnavailable("no landlock")),
+        )
+    else:
+        monkeypatch.setattr(
+            "app.factory.build.agent_confine.confinement_popen_kwargs",
+            lambda cwd, exe: {},
+        )
+    if patch == "timeout":
+        monkeypatch.setattr(
+            subprocess, "run", _fake_run_raiser(subprocess.TimeoutExpired("x", 1))
+        )
+    elif patch == "oserror":
+        monkeypatch.setattr(subprocess, "run", _fake_run_raiser(OSError("spawn")))
+    elif patch == "nonzero":
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NonZeroProc())
+    elif patch == "nonjson":
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NonJsonProc())
+
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    assert "_probe_error" in result
+    assert needle in result["_probe_error"]
