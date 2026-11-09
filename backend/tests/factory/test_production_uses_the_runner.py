@@ -74,10 +74,10 @@ def test_production_floor_budget_is_a_code_phase(monkeypatch):
     monkeypatch.delenv("FACTORY_BUILD_MAX_REWORK", raising=False)
     monkeypatch.delenv("FACTORY_PHASE_WALL_CLOCK_S", raising=False)
     assert build_jobs._wall_clock_s() == 1800.0
-    # Owner rule: 2 rework rounds per gate (REWORK_BUDGET).
+    # Owner rule: 1 rework round per gate (REWORK_BUDGET, ORDERS_08NOV_1330Z).
     from app.factory.build.runner import REWORK_BUDGET
 
-    assert build_jobs._max_rework() == REWORK_BUDGET == 2
+    assert build_jobs._max_rework() == REWORK_BUDGET == 1
     assert build_jobs._phase_wall_clock_s() == 1500.0
 
 

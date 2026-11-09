@@ -53,30 +53,62 @@ def consumed_block_ids(factory_shelf: Optional[Path] = None) -> list[str]:
     return sorted(load_factory_shelf(factory_shelf))
 
 
+_LS_FILES_CACHE: Dict[Path, Optional[List[str]]] = {}
+
+
+def _git_toplevel(root: Path) -> Optional[Path]:
+    """Walk up to the nearest .git; no subprocess (a .git may be a file for
+    worktrees/submodules)."""
+    cur = Path(root).resolve()
+    for _ in range(12):
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+    return None
+
+
 def _tracked_relpaths(source: Path) -> Optional[List[str]]:
     """Repo-relative posix paths under ``source``, or None when not a git tree.
 
     The lock must describe the COMMITTED store tree at the recorded sha —
     untracked working-tree files must never leak into a content hash.
+
+    The registry hashes every block dir; all block dirs live under the same
+    store repo, so ``git ls-files`` is run ONCE at the top-level and filtered
+    per block instead of spawning a git process per block (458 blocks = 458
+    git calls, ~90 s on Windows — the dominant RoleRunner init cost).
     """
-    root = Path(source)
+    root = Path(source).resolve()
+    top = _git_toplevel(root)
+    if top is None:
+        return None
+    if top not in _LS_FILES_CACHE:
+        try:
+            listed = subprocess.run(
+                ["git", "ls-files", "-z", "--", "."],
+                cwd=top,
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            _LS_FILES_CACHE[top] = None
+            return None
+        if listed.returncode != 0:
+            _LS_FILES_CACHE[top] = None
+            return None
+        _LS_FILES_CACHE[top] = [p for p in listed.stdout.decode("utf-8", "replace").split("\0") if p]
+    files = _LS_FILES_CACHE[top]
+    if files is None:
+        return None
     try:
-        listed = subprocess.run(
-            ["git", "ls-files", "-z", "--", "."],
-            cwd=root,
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if listed.returncode != 0:
-        return None
-    rel = [p for p in listed.stdout.decode("utf-8", "replace").split("\0") if p]
-    # An empty list is meaningful: a git tree whose block dir has no
-    # committed files (e.g. untracked working-tree leftovers). None is
-    # reserved for "not a git tree at all".
-    return rel
+        rel_root = root.relative_to(top).as_posix()
+    except ValueError:
+        rel_root = ""
+    prefix = rel_root + "/" if rel_root else ""
+    return [p[len(prefix):] for p in files if p.startswith(prefix)]
 
 
 def block_content_hash(source: Path) -> str:
