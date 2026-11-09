@@ -87,6 +87,13 @@ on:
       - "backend/app/factory/build/writer_behaviour.py"
       - "backend/app/factory/build/writer_phases.py"
 
+# A new push cancels the in-flight replay for this PR -- the older head's
+# verdict is stale the moment the branch moves. (PR workflows only; this is
+# never applied to master/deploy/pilot-live.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
