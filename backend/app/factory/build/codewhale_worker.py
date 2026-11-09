@@ -1007,6 +1007,16 @@ _DNS_PROBE_CODE = (
     "    except Exception as exc:\n"
     "        out[host] = {'error': f'{type(exc).__name__}: {exc}',\n"
     "                     'elapsed_ms': round((time.monotonic() - t0) * 1000, 1)}\n"
+    "try:\n"
+    "    rc = open('/etc/resolv.conf', 'rb').read().decode('utf-8', 'replace')\n"
+    "    out['_resolv_conf'] = {'ok': True, 'text': rc.strip()[:240], 'bytes': len(rc)}\n"
+    "except Exception as exc:\n"
+    "    out['_resolv_conf'] = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}\n"
+    "try:\n"
+    "    open('/etc/nsswitch.conf', 'rb').read()\n"
+    "    out['_nsswitch_conf'] = {'ok': True}\n"
+    "except Exception as exc:\n"
+    "    out['_nsswitch_conf'] = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}\n"
     "print(json.dumps(out, sort_keys=True))\n"
 )
 
