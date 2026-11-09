@@ -60,6 +60,17 @@ describe('FloorUpload — the Floor "+" document attach (F-10b)', () => {
     expect(result).toHaveTextContent('3 chunks indexed')
   })
 
+  it('appends a second attachment instead of replacing the first (Task 3)', async () => {
+    render(<FloorUpload sessionId="s1" />)
+    await waitFor(() => expect(screen.getByTestId('floor-upload-add')).toBeEnabled())
+    pick('spec.pdf', 'application/pdf')
+    await screen.findByTestId('floor-upload-result')
+    pick('boq.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    await waitFor(() => expect(uploadFilesMock).toHaveBeenCalledTimes(2))
+    const chips = await screen.findAllByTestId('floor-upload-chip')
+    expect(chips.map((c) => c.textContent)).toEqual(['spec.pdf', 'boq.xlsx'])
+  })
+
   it('surfaces the backend 415 as an error and never shows a result', async () => {
     uploadFilesMock.mockRejectedValue(new ApiError(415, "File type '.exe' is not accepted"))
     render(<FloorUpload sessionId="s1" />)

@@ -298,6 +298,54 @@ class TestProcessUpload:
         assert chroma_store.count_chunks("sess_reupload") == len(state.chunks)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "a_name,a_text,b_name,b_text",
+        [
+            ("alpha.xlsx", "Alpha one.\n\nAlpha two.", "beta.xlsx", "Beta one.\n\nBeta two."),
+            (
+                "contract.xlsx",
+                "Clause 14.3.\n\nRetention five percent.",
+                "boq.xlsx",
+                "Accepted amount.\n\nLD rate.",
+            ),
+        ],
+    )
+    async def test_sequential_uploads_append_do_not_replace(
+        self, monkeypatch, tmp_path, a_name, a_text, b_name, b_text
+    ):
+        """Task 3: attaching a second file adds beside the first, not over it.
+        A re-upload of the SAME filename still evicts (see the stale-tail test);
+        a DIFFERENT filename must survive so the assistant sees both."""
+
+        async def _fake_embed(chunks):
+            return [[float(i)] * 8 for i in range(len(chunks))], {
+                "backend": "model2vec",
+                "dimensions": 8,
+                "model": "minishlab/potion-base-8M",
+            }
+
+        monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
+
+        file_a = tmp_path / a_name
+        _write_doc(file_a, a_text)
+        file_b = tmp_path / b_name
+        _write_doc(file_b, b_text)
+
+        sid = f"sess_append_{a_name.split('.')[0]}"
+        create_session(sid, "u1")
+        await upload_processor.process_upload(sid, [str(file_a)])
+        await upload_processor.process_upload(sid, [str(file_b)])
+
+        state = get_session(sid)
+        names = sorted(set(state.source_files))
+        assert names == sorted([a_name, b_name])
+        # chunks/embeddings stay parallel after the append (packager invariant).
+        assert len(state.embeddings) == len(state.chunks)
+        joined = "\n".join(state.chunks)
+        assert a_text.split("\n\n")[0] in joined
+        assert b_text.split("\n\n")[0] in joined
+
+    @pytest.mark.asyncio
     async def test_two_files_chunks_coexist(self, monkeypatch, tmp_path):
         """Chunks from two different source files coexist in one session collection."""
         import app.core.chroma_store as chroma_store

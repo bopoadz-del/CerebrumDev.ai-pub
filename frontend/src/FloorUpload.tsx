@@ -46,7 +46,16 @@ export function FloorUpload({ sessionId, disabled }: Props) {
       setPhase('uploading')
       setMessage('')
       setResult(null)
-      setNames(files.map((f) => f.name))
+      // Task 3: attach is APPEND, not replace. Keep every file the user has
+      // attached this session; a second pick adds beside the first instead of
+      // silently dropping it. Dedup by name so re-selecting a file keeps one chip.
+      setNames((prev) => {
+        const next = [...prev]
+        for (const f of files) {
+          if (!next.includes(f.name)) next.push(f.name)
+        }
+        return next
+      })
       try {
         await product.uploadFiles(sessionId, files)
         setPhase('processing')
@@ -111,6 +120,19 @@ export function FloorUpload({ sessionId, disabled }: Props) {
           }}
         />
       </span>
+      {names.length > 0 && (
+        <span
+          className="floor-upload__chips"
+          data-testid="floor-upload-chips"
+          aria-label="Attached documents"
+        >
+          {names.map((n) => (
+            <span key={n} className="floor-upload__chip" data-testid="floor-upload-chip">
+              {n}
+            </span>
+          ))}
+        </span>
+      )}
       {busy && (
         <span
           className="floor-upload__status floor-upload__message"
