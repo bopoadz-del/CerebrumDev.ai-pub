@@ -361,7 +361,12 @@ def create_backup(
             for name in ("uploads", "sessions", "chroma", "factory_outputs"):
                 src_dir = root / name
                 if src_dir.is_dir():
-                    shutil.copytree(src_dir, staging / name, dirs_exist_ok=True)
+                    # Copy links as links: session build artifacts (e.g.
+                    # .product.staging-writer/vendor, product/data) are symlinks
+                    # whose targets can disappear before the backup runs, and a
+                    # followed broken link raised [Errno 2] and failed the whole
+                    # snapshot.
+                    shutil.copytree(src_dir, staging / name, dirs_exist_ok=True, symlinks=True)
                     result.included.append(name)
                 else:
                     result.skipped[name] = "absent"
