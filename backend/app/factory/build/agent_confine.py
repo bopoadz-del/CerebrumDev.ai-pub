@@ -141,7 +141,7 @@ _DENIED = frozenset({
     "STRIPE_WEBHOOK_SECRET",
 })
 
-_SYSTEM_RX_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl")
+_SYSTEM_RX_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/etc/ssl")
 _SYSTEM_RX_FILES = (
     "/dev/null",
     "/dev/urandom",
