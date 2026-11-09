@@ -210,6 +210,27 @@ class TestShaDescendantGate:
     def test_git_is_ancestor_fails_closed_on_unknown_revs(self, smoke):
         assert not smoke._git_is_ancestor("0" * 40, "1" * 40)
 
+    def test_git_is_ancestor_fetches_the_descendant_sha_before_merge_base(
+        self, smoke, monkeypatch
+    ):
+        calls = []
+        outcomes = iter([1, 0])  # fetch "fails" (ignored); merge-base passes
+
+        class _Result:
+            def __init__(self, code):
+                self.returncode = code
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return _Result(next(outcomes))
+
+        monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+        assert smoke._git_is_ancestor("a" * 40, "b" * 40)
+        assert calls == [
+            ["git", "fetch", "--no-tags", "--quiet", "origin", "b" * 40],
+            ["git", "merge-base", "--is-ancestor", "a" * 40, "b" * 40],
+        ]
+
 
 class TestUnauthenticatedSkip:
     def test_skip_annotation_is_a_notice_not_a_failure(self, smoke, capsys, monkeypatch):

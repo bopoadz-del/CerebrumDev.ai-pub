@@ -181,9 +181,21 @@ def git_sha_matches(live_sha, expected_sha, allow_descendant=False, _is_ancestor
 
 def _git_is_ancestor(ancestor: str, descendant: str) -> bool:
     """True when ``ancestor`` is an ancestor of (or equal to) ``descendant``
-    in the checked-out repo (``git merge-base --is-ancestor``). False when git
-    is un-runnable, the repo is shallow, or a ref does not resolve — the gate
-    then stays strict (no skip-pass)."""
+    in the checked-out repo (``git merge-base --is-ancestor``).
+
+    The descendant may have landed after this checkout (a superseding deploy),
+    so one best-effort ``git fetch origin <descendant>`` runs first; a fetch
+    failure is ignored and merge-base decides. OSError (git un-runnable) and a
+    non-zero merge-base both fail closed — never a skip-pass."""
+    try:
+        subprocess.run(
+            ["git", "fetch", "--no-tags", "--quiet", "origin", descendant],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return False
     try:
         proc = subprocess.run(
             ["git", "merge-base", "--is-ancestor", ancestor, descendant],
