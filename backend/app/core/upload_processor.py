@@ -468,13 +468,33 @@ async def _parse_chunk_embed_store(
         state.upload.progress = 0.1 + 0.3 * ((idx + 1) / total)
         update_session(session_id, state)
 
-    state.corpus = "\n\n".join(all_chunks)
-    state.chunks = all_chunks
-    state.source_files = source_files  # F-10c: per-chunk filename, parallel to chunks
+    # Task 3: attach is APPEND, not replace. A re-uploaded filename evicts its
+    # own prior chunks (matching store_chunks' hash-map eviction below); a
+    # DIFFERENT file rides along beside the ones already indexed, so a second
+    # attachment no longer silently drops the first.
+    prior_chunks = list(getattr(state, "chunks", None) or [])
+    prior_files = list(getattr(state, "source_files", None) or [])
+    prior_embeddings = list(getattr(state, "embeddings", None) or [])
+
+    reuploaded = {name for name in source_files}
+    kept_chunks: List[str] = []
+    kept_files: List[str] = []
+    kept_embeddings: List[List[float]] = []
+    for idx, (chunk, name) in enumerate(zip(prior_chunks, prior_files)):
+        if name in reuploaded:
+            continue
+        kept_chunks.append(chunk)
+        kept_files.append(name)
+        if idx < len(prior_embeddings):
+            kept_embeddings.append(prior_embeddings[idx])
+
+    state.corpus = "\n\n".join(kept_chunks + all_chunks)
+    state.chunks = kept_chunks + all_chunks
+    state.source_files = kept_files + source_files  # F-10c: per-chunk filename, parallel to chunks
     # Diagnostic (ORDERS_1810Z): stamp the process that persisted these chunks,
     # so a draft served elsewhere can be told apart from a stale cross-worker read.
     state.upload.worker = f"{socket.gethostname()}:{os.getpid()}"
-    state.upload.total_chunks = len(all_chunks)
+    state.upload.total_chunks = len(state.chunks)
     state.upload.progress = 0.45
     state.upload.message = "Chunking text..."
     update_session(session_id, state)
@@ -487,7 +507,7 @@ async def _parse_chunk_embed_store(
         update_session(session_id, state)
         try:
             embeddings, embedding_meta = await embed_chunks(all_chunks)
-            state.embeddings = embeddings
+            state.embeddings = kept_embeddings + embeddings
             state.embedding_meta = embedding_meta
         except ValueError as exc:
             logger.warning(
@@ -496,7 +516,7 @@ async def _parse_chunk_embed_store(
                 exc,
             )
             embeddings, embedding_meta = _fallback_embeddings(all_chunks)
-            state.embeddings = embeddings
+            state.embeddings = kept_embeddings + embeddings
             state.embedding_meta = embedding_meta
             state.index_status = "degraded"
             state.upload.message = (

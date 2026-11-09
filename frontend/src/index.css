@@ -359,6 +359,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
    can never share — or overlap — the "+" button's sliver of space. */
 .composer > .floor-upload__message { flex: 1 1 100%; order: -1; min-width: 0; }
 .floor-upload__status, .floor-upload__result { color: var(--dim); font-size: 13px; }
+.floor-upload__chips { flex: 1 1 100%; order: -1; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.floor-upload__chip { display: inline-flex; align-items: center; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--dim); }
 .composer-paused { margin: -8px 0 16px; }
 
 /* key-value */

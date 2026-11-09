@@ -129,6 +129,42 @@ def test_any_free_text_is_the_models_to_decide(monkeypatch, session):
         assert platform_chat_llm.should_orchestrate(session, text) is True
 
 
+def test_decide_folds_uploaded_docs_into_the_model_context(session, monkeypatch):
+    """Task 3: the assistant must SEE the session's uploads, so a question
+    about an attachment is answered from it, not with 'no attachment'."""
+    session.chunks = ["Time for Completion is 730 days."]
+    session.source_files = ["contract.pdf"]
+    captured = {}
+
+    def _fake_llm(messages):
+        captured["messages"] = messages
+        return {"action": "reply", "message": "see contract.pdf"}
+
+    monkeypatch.setattr(platform_chat_llm, "_llm_json_call", _fake_llm)
+    decision = platform_chat_llm.decide(session, "what does my attachment say")
+    user_content = captured["messages"][1]["content"]
+    assert "document:contract.pdf" in user_content
+    assert "Time for Completion is 730 days." in user_content
+    assert decision["action"] == "reply"
+
+
+def test_decide_without_uploads_keeps_the_prompt_byte_identical(session, monkeypatch):
+    """No upload -> no digest section, so the prompt is unchanged (parallel to
+    the draft path's byte-identical guarantee)."""
+    session.chunks = []
+    session.source_files = []
+    captured = {}
+
+    def _fake_llm(messages):
+        captured["messages"] = messages
+        return {"action": "reply", "message": "ok"}
+
+    monkeypatch.setattr(platform_chat_llm, "_llm_json_call", _fake_llm)
+    platform_chat_llm.decide(session, "hello")
+    user_content = captured["messages"][1]["content"]
+    assert "Uploaded project documents" not in user_content
+
+
 def test_decide_empty_object_is_soft_miss(session, monkeypatch):
     monkeypatch.setattr(platform_chat_llm, "_llm_json_call", lambda messages: {})
     with pytest.raises(LlmSoftMiss, match="empty action"):

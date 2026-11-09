@@ -69,6 +69,35 @@ test('Floor "+" derives its accept-set from the backend and lists the indexed re
   await expect(result).toContainText('3 chunks indexed')
 })
 
+test('Floor "+" appends a second attachment instead of replacing the first', async ({ page }) => {
+  await mockFloor(page)
+  await page.route(`**/v1/sessions/${SID}/upload/status`, (r) =>
+    r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'parsed' }) }),
+  )
+  await page.route(`**/v1/sessions/${SID}/upload/result`, (r) =>
+    r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'completed', total_chunks: 3, failed_files: [] }) }),
+  )
+  await page.route(`**/v1/sessions/${SID}/upload`, (r) =>
+    r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ files_received: 1, job_id: 'j1' }) }),
+  )
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
+  const input = page.getByTestId('floor-upload-input')
+  await expect(page.getByTestId('floor-upload-add')).toBeEnabled()
+
+  await input.setInputFiles({ name: 'spec.pdf', mimeType: 'application/pdf', buffer: Buffer.from('hello') })
+  await expect(page.getByTestId('floor-upload-result')).toContainText('spec.pdf')
+
+  await input.setInputFiles({ name: 'boq.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('x') })
+  await expect(page.getByTestId('floor-upload-result')).toContainText('boq.xlsx')
+
+  const chips = page.getByTestId('floor-upload-chip')
+  await expect(chips).toHaveCount(2)
+  await expect(chips.nth(0)).toHaveText('spec.pdf')
+  await expect(chips.nth(1)).toHaveText('boq.xlsx')
+})
+
 test('Floor "+" surfaces a backend 415 and shows no result', async ({ page }) => {
   await mockFloor(page)
   await page.route(`**/v1/sessions/${SID}/upload`, (r) =>

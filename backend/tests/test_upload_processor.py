@@ -298,6 +298,39 @@ class TestProcessUpload:
         assert chroma_store.count_chunks("sess_reupload") == len(state.chunks)
 
     @pytest.mark.asyncio
+    async def test_sequential_uploads_append_do_not_replace(self, monkeypatch, tmp_path):
+        """Task 3: attaching a second file adds beside the first, not over it.
+        A re-upload of the SAME filename still evicts (see the stale-tail test);
+        a DIFFERENT filename must survive so the assistant sees both."""
+
+        async def _fake_embed(chunks):
+            return [[float(i)] * 8 for i in range(len(chunks))], {
+                "backend": "model2vec",
+                "dimensions": 8,
+                "model": "minishlab/potion-base-8M",
+            }
+
+        monkeypatch.setattr(upload_processor, "embed_chunks", _fake_embed)
+
+        file_a = tmp_path / "alpha.xlsx"
+        _write_doc(file_a, "Alpha one.\n\nAlpha two.")
+        file_b = tmp_path / "beta.xlsx"
+        _write_doc(file_b, "Beta one.\n\nBeta two.")
+
+        create_session("sess_append", "u1")
+        await upload_processor.process_upload("sess_append", [str(file_a)])
+        await upload_processor.process_upload("sess_append", [str(file_b)])
+
+        state = get_session("sess_append")
+        names = sorted(set(state.source_files))
+        assert names == ["alpha.xlsx", "beta.xlsx"]
+        # chunks/embeddings stay parallel after the append (packager invariant).
+        assert len(state.embeddings) == len(state.chunks)
+        joined = "\n".join(state.chunks)
+        assert "Alpha one." in joined
+        assert "Beta one." in joined
+
+    @pytest.mark.asyncio
     async def test_two_files_chunks_coexist(self, monkeypatch, tmp_path):
         """Chunks from two different source files coexist in one session collection."""
         import app.core.chroma_store as chroma_store
