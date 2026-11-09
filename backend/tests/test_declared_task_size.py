@@ -130,6 +130,9 @@ def test_the_repo_declares_two_vcpu_four_gb_and_the_2c4g_profile():
     declared = json.loads(DECLARED.read_text(encoding="utf-8"))
     assert (declared["cpu"], declared["memory"]) == ("2048", "4096")
     assert declared["environment"]["FACTORY_WORKER_PROFILE"] == "2c-4g"
+    # The writer's DeepSeek SSE stream fails over HTTP/2 on the worker network;
+    # force HTTP/1.1 so a live pilot is not failed by a network-layer error.
+    assert declared["environment"]["CODEWHALE_FORCE_HTTP1"] == "1"
     import sys
 
     sys.path.insert(0, str(REPO_ROOT / "backend"))
