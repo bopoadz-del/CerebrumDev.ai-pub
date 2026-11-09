@@ -9,6 +9,7 @@ import pytest
 from app.factory.build.codewhale_worker import (
     WorkerError,
     _dns_probe,
+    _fmt_dns_probe,
     _parse_writer_receipt,
 )
 from app.factory.build.roles_handlers import (
@@ -639,3 +640,102 @@ def test_dns_probe_parses_resolved_and_error(tmp_path, monkeypatch, stdout_json,
     host = next(h for h in result if not h.startswith("_"))
     assert key in result[host]
     assert "elapsed_ms" in result[host]
+
+
+@pytest.mark.parametrize(
+    "value,needle",
+    [
+        ({"resolved": ["1.2.3.4", "5.6.7.8"], "elapsed_ms": 2.1}, "resolved 1.2.3.4,5.6.7.8"),
+        ({"error": "gaierror: Try again", "elapsed_ms": 8000.0}, "error gaierror: Try again"),
+        ("a plain string", "a plain string"),
+    ],
+)
+def test_fmt_dns_probe_resolved_error_and_scalar(value, needle):
+    """Each probe result shape formats differently (kills constant_return)."""
+    assert needle in _fmt_dns_probe(value)
+
+
+def test_dns_probe_records_a_generic_spawn_failure(monkeypatch, tmp_path):
+    """Any unexpected subprocess failure is recorded as _probe_error, never
+    raised (kills the drop_rule mutant on the except Exception branch)."""
+    import subprocess
+
+    monkeypatch.setattr(
+        "app.factory.build.agent_confine.confinement_popen_kwargs",
+        lambda cwd, exe: {},
+    )
+
+    def _boom(*a, **k):
+        raise TypeError("no context manager")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    assert "_probe_error" in result
+    assert "TypeError" in result["_probe_error"]
+
+
+def _fake_run_raiser(exc):
+    def _raise(*a, **k):
+        raise exc
+
+    return _raise
+
+
+class _NonZeroProc:
+    returncode = 75
+    stdout = ""
+    stderr = "exit 75 tail"
+
+
+class _NonJsonProc:
+    returncode = 0
+    stdout = "not json at all"
+    stderr = ""
+
+
+@pytest.mark.parametrize(
+    "patch,needle",
+    [
+        # Confinement unavailable (no Landlock) -> recorded, never raised.
+        ("confinement", "confinement unavailable"),
+        # subprocess timeout -> recorded.
+        ("timeout", "timeout"),
+        # OSError on spawn -> recorded.
+        ("oserror", "spawn failed"),
+        # non-zero exit with no parseable receipt -> recorded.
+        ("nonzero", "exit 75"),
+        # zero exit, non-JSON stdout -> recorded.
+        ("nonjson", "non-JSON"),
+    ],
+)
+def test_dns_probe_records_every_failure_shape(monkeypatch, tmp_path, patch, needle):
+    """Each failure branch of _dns_probe returns a typed _probe_error instead of
+    raising (kills drop_rule mutants on every branch)."""
+    import subprocess
+
+    from app.factory.build.agent_confine import ConfinementUnavailable
+
+    if patch == "confinement":
+        monkeypatch.setattr(
+            "app.factory.build.agent_confine.confinement_popen_kwargs",
+            lambda cwd, exe: (_ for _ in ()).throw(ConfinementUnavailable("no landlock")),
+        )
+    else:
+        monkeypatch.setattr(
+            "app.factory.build.agent_confine.confinement_popen_kwargs",
+            lambda cwd, exe: {},
+        )
+    if patch == "timeout":
+        monkeypatch.setattr(
+            subprocess, "run", _fake_run_raiser(subprocess.TimeoutExpired("x", 1))
+        )
+    elif patch == "oserror":
+        monkeypatch.setattr(subprocess, "run", _fake_run_raiser(OSError("spawn")))
+    elif patch == "nonzero":
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NonZeroProc())
+    elif patch == "nonjson":
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NonJsonProc())
+
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    assert "_probe_error" in result
+    assert needle in result["_probe_error"]

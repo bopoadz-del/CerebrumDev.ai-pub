@@ -1061,6 +1061,16 @@ def _dns_probe(
         return {"_probe_error": f"non-JSON stdout: {proc.stdout[:200]}"}
 
 
+def _fmt_dns_probe(v: Any) -> str:
+    """One probe result as a short human string for the ledger NOTE."""
+    if not isinstance(v, dict):
+        return str(v)
+    if "resolved" in v:
+        addrs = ",".join(v["resolved"][:3])
+        return f"resolved {addrs} ({v['elapsed_ms']}ms)"
+    return f"error {v.get('error', '?')} ({v.get('elapsed_ms', '?')}ms)"
+
+
 def run_worker_job(
     prompt: str,
     checkout_dir: Path | str,
@@ -1297,16 +1307,8 @@ def run_worker_job(
         # blocks or fails the writer.
         probe = _dns_probe(cwd, child_env)
 
-        def _fmt_probe(v: Any) -> str:
-            if not isinstance(v, dict):
-                return str(v)
-            if "resolved" in v:
-                addrs = ",".join(v["resolved"][:3])
-                return f"resolved {addrs} ({v['elapsed_ms']}ms)"
-            return f"error {v.get('error', '?')} ({v.get('elapsed_ms', '?')}ms)"
-
         probe_text = "; ".join(
-            f"{h}: {_fmt_probe(v)}" for h, v in sorted(probe.items())
+            f"{h}: {_fmt_dns_probe(v)}" for h, v in sorted(probe.items())
         )
         if progress is not None:
             try:
