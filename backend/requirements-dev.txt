@@ -22,3 +22,7 @@ bandit>=1.9.4
 # Adjudications live in docs/security/dependency-adjudications/ — never a
 # bare --ignore-vuln.
 pip-audit>=2.10.1
+
+# Coverage-derived mutation-test mapping (CI-M-a, scripts/coverage_test_map.py).
+coverage>=7.0.0
+pytest-cov>=6.0.0
