@@ -240,6 +240,12 @@ def test_scoped_env_passes_the_argv_log_through(log):
     assert env["CODE_CLI_ARGV_LOG"] == log
 
 
+@pytest.mark.parametrize("force", ["1", "0"])
+def test_scoped_env_passes_the_force_http1_flag(force):
+    env = scoped_child_env({"CODEWHALE_FORCE_HTTP1": force, "PATH": "/usr/bin"}, {})
+    assert env["CODEWHALE_FORCE_HTTP1"] == force
+
+
 class _FakeStat:
     def __init__(self, mode):
         self.st_mode = mode
