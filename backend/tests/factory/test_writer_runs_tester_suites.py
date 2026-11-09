@@ -110,19 +110,21 @@ def _ctx(root: Path, state_specs: dict) -> RoleContext:
 STALE = {CAP: {"entity": CAP, "fields": [{"name": "reference", "type": "str"}]}}
 
 
-def _self_check_ns() -> dict:
+def _self_check_ns(stamp: Path | None = None) -> dict:
     ns: dict = {"__name__": "factory_checks"}
+    if stamp is not None:
+        ns["__file__"] = str(stamp)
     exec(compile(render_self_check(), "factory_checks.py", "exec"), ns)
     return ns
 
 
-def _git_init_commit(root: Path) -> None:
-    """A committed HEAD so the self-check can diff the writer's pass against it."""
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
-    subprocess.run(["git", "-C", str(root), "config", "user.email", "factory@example.com"], check=True)
-    subprocess.run(["git", "-C", str(root), "config", "user.name", "factory"], check=True)
-    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
-    subprocess.run(["git", "-C", str(root), "commit", "-qm", "baseline"], check=True)
+def _stamp(root: Path, mtime: float) -> dict:
+    """Write the self-check and pin its mtime so the pass-start marker is fixed."""
+    stamp = root / "scripts" / "factory_checks.py"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(render_self_check(), encoding="utf-8")
+    os.utime(stamp, (mtime, mtime))
+    return _self_check_ns(stamp)
 
 
 def _env() -> dict:
@@ -166,45 +168,45 @@ def test_tester_samples_the_field_the_product_declares_not_the_stale_spec(tmp_pa
 
 
 def test_self_check_re_runs_nothing_when_no_file_changed(tmp_path):
-    ns = _self_check_ns()
     root = tmp_path / "build"
-
-    # First writer pass: no git repo (or no HEAD) -> nothing to diff, no crash.
     root.mkdir()
+    ns = _stamp(root, mtime=1_000)
+
+    # First writer pass: no app files yet -> nothing to report, no crash.
     assert ns["run_targeted_tests"](str(root), _env()) == []
 
-    # After TESTER stamps its suites and the tree is committed, a clean tree
-    # has nothing changed: the writer re-runs nothing (the gate owns the suites).
+    # After TESTER stamps its suites, the stamp is newer than every app file:
+    # nothing changed -> the writer re-runs nothing (the gate owns the suites).
     _product(root, declares_needed=False)
     assert run_tester(_ctx(root, STALE)).ok
-    _git_init_commit(root)
-    assert ns["run_targeted_tests"](str(root), _env()) == []
+    ns2 = _stamp(root, mtime=2_000_000_000)
+    assert ns2["run_targeted_tests"](str(root), _env()) == []
 
 
 def test_self_check_runs_only_the_tests_referencing_the_changed_file(tmp_path, monkeypatch):
-    ns = _self_check_ns()
     root = tmp_path / "build"
     _product(root, declares_needed=False)
     assert run_tester(_ctx(root, STALE)).ok
 
     # An unrelated test file the selection must NOT run.
     _write(root, "tests/test_unrelated.py", "def test_unrelated():\n    assert True\n")
-    _git_init_commit(root)
 
-    # The writer touches the handler; nothing else moves.
+    # Pin the stamp as the pass-start marker (newer than everything seeded).
+    ns = _stamp(root, mtime=2_000_000_000)
+
+    # The writer touches the handler; nothing else moves. Pin its mtime after
+    # the stamp so it is the one app file this pass changed.
     handler = root / "app" / "actions" / f"{CAP}.py"
     handler.write_text(handler.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
+    os.utime(handler, (3_000_000_000, 3_000_000_000))
 
     seen = []
-    real_run = subprocess.run
-
-    def fake_run(argv, **kw):
-        if "pytest" in argv:
-            seen.append(argv)
-            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-        return real_run(argv, **kw)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: seen.append(argv)
+        or type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
 
     assert ns["run_targeted_tests"](str(root), _env()) == []
     assert len(seen) == 1, "exactly one pytest invocation for the changed file"

@@ -1051,34 +1051,34 @@ TIMEOUT_S = 900
 {targeted_selection}
 
 
-def _git_changed_names(root):
-    """Tracked + untracked paths that differ from HEAD (empty on no git)."""
-    names = []
-    for args in (("diff", "--name-only", "--diff-filter=ACMR", "HEAD"),
-                 ("ls-files", "--others", "--exclude-standard")):
-        try:
-            proc = subprocess.run(
-                ["git", "-C", root, *args],
-                capture_output=True, text=True, timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        names += (proc.stdout or "").splitlines()
-    return names
-
-
 def _changed_sources(root):
-    """app/** files this pass changed: uncommitted (tracked or untracked) vs HEAD.
+    """app/** files modified after this script was stamped (mtime > ours).
 
-    The writer's checkout is a git repo; HEAD is the pre-pass state, so the
-    diff is exactly this pass's work. No git -> no list: the probe still runs.
-    """
-    prefix = SRC_ROOT + "/"
+    The Factory writes this script at the start of the writer pass, after the
+    rework seed; the writer's edits land later, so their mtime sorts after
+    ours. No git and no content baseline: the staged tree is not a repository,
+    and a baseline of the product's own files would put agent bytes into a
+    Factory-owned stamp. A first pass has no suites on disk to select, so a
+    whole-tree "changed" there selects nothing."""
+    try:
+        marker = os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        return []
     out = []
-    for name in _git_changed_names(root):
-        if name.startswith(prefix) and name.endswith(".py"):
-            out.append(name)
-    return sorted(set(out))
+    base = os.path.join(root, SRC_ROOT)
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            try:
+                if os.path.getmtime(full) <= marker:
+                    continue
+            except OSError:
+                continue
+            out.append(os.path.relpath(full, root).replace(os.sep, "/"))
+    return sorted(out)
 
 
 def _test_files(root):
