@@ -282,3 +282,29 @@ def declared_verticals(store_root: Any = None) -> List[Dict[str, Any]]:
                 out.append({"vertical": v, "kit": kit_id,
                             "build_ready": manifest.get("build_ready") is True})
     return sorted(out, key=lambda row: (row["vertical"], row["kit"]))
+
+
+def kit_closure(vertical: Any, store_root: Any = None) -> FrozenSet[str]:
+    """The deterministic Store-block closure a vertical's kit brings.
+
+    Identical store root (pin) + vertical -> identical closure: the kit list
+    is read from the pinned Store's own manifests and sorted, so the result
+    is a pure function of the pin and the typed vertical -- never an LLM's
+    free choice. The serving kit's declared blocks plus every block the Store
+    declares governance (governance is cross-cutting) are the closure the
+    build may vendor for this vertical.
+
+    With no vertical (``NO_VERTICAL``) no kit serves it, so the closure is
+    the governance blocks only -- the "no choice, no kit" rule, applied to
+    the block set.
+    """
+    kits = domain_kits(store_root)
+    status, kit_id, _ = resolve_vertical(vertical, kits)
+    blocks: set[str] = set()
+    if status == SERVED and kit_id:
+        manifest = kits.get(kit_id) or {}
+        for bid in manifest.get("blocks") or []:
+            if bid:
+                blocks.add(str(bid))
+    blocks |= set(blocks_of_class(GOVERNANCE, store_root))
+    return frozenset(sorted(blocks))
