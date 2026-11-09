@@ -1049,6 +1049,10 @@ def _dns_probe(
         return {"_probe_error": "timeout"}
     except OSError as exc:
         return {"_probe_error": f"spawn failed: {exc}"}
+    except Exception as exc:  # noqa: BLE001 -- telemetry must never fail the writer
+        # A mocked/partial Popen in tests, a Landlock surprise, etc. The probe
+        # is diagnostic: any failure is recorded, never raised.
+        return {"_probe_error": f"{type(exc).__name__}: {exc}"}
     if proc.returncode != 0:
         return {"_probe_error": f"exit {proc.returncode}: {proc.stderr.strip()[:200]}"}
     try:
@@ -1293,7 +1297,9 @@ def run_worker_job(
         # blocks or fails the writer.
         probe = _dns_probe(cwd, child_env)
 
-        def _fmt_probe(v: Dict[str, Any]) -> str:
+        def _fmt_probe(v: Any) -> str:
+            if not isinstance(v, dict):
+                return str(v)
             if "resolved" in v:
                 addrs = ",".join(v["resolved"][:3])
                 return f"resolved {addrs} ({v['elapsed_ms']}ms)"
@@ -1304,9 +1310,13 @@ def run_worker_job(
         )
         if progress is not None:
             try:
+                # A dedicated typed NOTE: the ``dns_probe`` field (in
+                # WRITER_PROGRESS_FIELDS) carries the structured results; the
+                # line text carries the human summary. No ``tool`` key, so the
+                # probe note never masquerades as a CLI progress line.
                 progress(
                     f"dns probe: {probe_text}"[:400],
-                    {"tool": "dns-probe", DNS_PROBE: probe},
+                    {DNS_PROBE: probe},
                 )
             except Exception:  # noqa: BLE001 -- telemetry never fails the build
                 pass
