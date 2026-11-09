@@ -8,6 +8,7 @@ import pytest
 
 from app.factory.build.codewhale_worker import (
     WorkerError,
+    _dns_probe,
     _parse_writer_receipt,
 )
 from app.factory.build.roles_handlers import (
@@ -595,3 +596,46 @@ def test_parse_writer_receipt_returns_success_receipt_on_zero_exit(
     assert receipt.model == model
     assert len(receipt.tools) == tool_count
     assert receipt.error_category is None
+
+
+class _FakeCompleted:
+    returncode = 0
+    stderr = ""
+
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+
+
+@pytest.mark.parametrize(
+    "stdout_json,key",
+    [
+        (
+            '{"api.deepseek.com": {"resolved": ["1.2.3.4"], "elapsed_ms": 2.1}, '
+            '"api.github.com": {"resolved": ["5.6.7.8"], "elapsed_ms": 1.9}}',
+            "resolved",
+        ),
+        (
+            '{"api.deepseek.com": {"error": "gaierror: [Errno -3] Try again", '
+            '"elapsed_ms": 8000.0}}',
+            "error",
+        ),
+    ],
+)
+def test_dns_probe_parses_resolved_and_error(tmp_path, monkeypatch, stdout_json, key):
+    """The DNS probe (Advisor 14:42Z step a) reports either a resolved host or
+    the getaddrinfo error text, each with elapsed_ms. Two inputs."""
+    import subprocess
+
+    monkeypatch.setattr(
+        "app.factory.build.agent_confine.confinement_popen_kwargs",
+        lambda cwd, exe: {},
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _FakeCompleted(stdout_json),
+    )
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    host = next(h for h in result if not h.startswith("_"))
+    assert key in result[host]
+    assert "elapsed_ms" in result[host]

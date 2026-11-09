@@ -40,6 +40,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -990,6 +991,72 @@ def _parse_writer_receipt(
     )
 
 
+#: Hosts the writer must resolve; probed from inside the confinement before the
+#: writer CLI starts so a deterministic DNS failure is attributed, not assumed.
+_DNS_PROBE_HOSTS = ("api.deepseek.com", "api.github.com")
+
+_DNS_PROBE_CODE = (
+    "import json, socket, sys, time\n"
+    "out = {}\n"
+    "for host in sys.argv[1:]:\n"
+    "    t0 = time.monotonic()\n"
+    "    try:\n"
+    "        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)\n"
+    "        out[host] = {'resolved': sorted({a[4][0] for a in infos}),\n"
+    "                     'elapsed_ms': round((time.monotonic() - t0) * 1000, 1)}\n"
+    "    except Exception as exc:\n"
+    "        out[host] = {'error': f'{type(exc).__name__}: {exc}',\n"
+    "                     'elapsed_ms': round((time.monotonic() - t0) * 1000, 1)}\n"
+    "print(json.dumps(out, sort_keys=True))\n"
+)
+
+
+def _dns_probe(
+    cwd: Path,
+    env: Dict[str, str],
+    *,
+    hosts=_DNS_PROBE_HOSTS,
+    timeout_s: float = 10.0,
+) -> Dict[str, Any]:
+    """Resolve the writer's hosts INSIDE the confinement.
+
+    Runs ``getaddrinfo`` in a child that carries the same scoped environment
+    and the same Landlock ruleset the writer CLI runs under, so a deterministic
+    resolver failure is measured, not assumed (Advisor 14:42Z). Returns
+    ``{host: {resolved|error, elapsed_ms}}``, or ``{"_probe_error": ...}``.
+    """
+    from app.factory.build.agent_confine import (
+        ConfinementUnavailable,
+        confinement_popen_kwargs,
+    )
+
+    try:
+        kwargs = confinement_popen_kwargs(cwd, sys.executable)
+    except ConfinementUnavailable as exc:
+        return {"_probe_error": f"confinement unavailable: {exc}"}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _DNS_PROBE_CODE, *hosts],
+            cwd=str(cwd),
+            env=dict(env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_s,
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        return {"_probe_error": "timeout"}
+    except OSError as exc:
+        return {"_probe_error": f"spawn failed: {exc}"}
+    if proc.returncode != 0:
+        return {"_probe_error": f"exit {proc.returncode}: {proc.stderr.strip()[:200]}"}
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return {"_probe_error": f"non-JSON stdout: {proc.stdout[:200]}"}
+
+
 def run_worker_job(
     prompt: str,
     checkout_dir: Path | str,
@@ -1219,6 +1286,30 @@ def run_worker_job(
             confine_kw = confinement_popen_kwargs(cwd, cli)
         except ConfinementUnavailable as exc:
             raise WorkerError(f"{WORKER_EXEC_FAILED}: {exc}") from exc
+        child_env = _child_env(session_id, cli_home)
+        # Advisor 14:42Z: measure DNS from INSIDE the confinement before the
+        # writer CLI starts, so a deterministic resolver failure is attributed
+        # (a typed ledger NOTE), not assumed. Telemetry only -- it never
+        # blocks or fails the writer.
+        probe = _dns_probe(cwd, child_env)
+
+        def _fmt_probe(v: Dict[str, Any]) -> str:
+            if "resolved" in v:
+                addrs = ",".join(v["resolved"][:3])
+                return f"resolved {addrs} ({v['elapsed_ms']}ms)"
+            return f"error {v.get('error', '?')} ({v.get('elapsed_ms', '?')}ms)"
+
+        probe_text = "; ".join(
+            f"{h}: {_fmt_probe(v)}" for h, v in sorted(probe.items())
+        )
+        if progress is not None:
+            try:
+                progress(
+                    f"dns probe: {probe_text}"[:400],
+                    {"tool": "dns-probe", DNS_PROBE: probe},
+                )
+            except Exception:  # noqa: BLE001 -- telemetry never fails the build
+                pass
         try:
             proc = subprocess.Popen(
                 argv,
@@ -1228,7 +1319,7 @@ def run_worker_job(
                 stdin=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
-                env=_child_env(session_id, cli_home),
+                env=child_env,
                 # The agent's shell gets its own process group: a group-wide
                 # signal it sends can never reach the Factory server.
                 **confine_kw,
@@ -1489,7 +1580,8 @@ _STEP_PREFIX = "writer: STEP"
 #: disk. The budget ramp reads them to tell a working writer from a quiet one.
 STEPS_REPORTED = "steps_reported"
 FILES_ON_DISK = "files_on_disk"
-WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK)
+DNS_PROBE = "dns_probe"
+WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK, DNS_PROBE)
 
 
 def is_narration_line(line: str) -> bool:
