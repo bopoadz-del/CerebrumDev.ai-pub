@@ -18,6 +18,7 @@ package).
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import subprocess
 import sys
@@ -55,80 +56,84 @@ def load_mapping(repo: Path, mapping_path: str) -> dict[str, dict[str, list[str]
     return data if isinstance(data, dict) else {}
 
 
-class _CoveragePlugin:
-    """A pytest plugin that records which test file calls each source function.
-
-    ``sys.setprofile`` fires on every Python call; we keep only calls whose
-    filename lives under a source root (fast string-prefix check, so the
-    profile overhead stays off the hot test path) and attribute them to the
-    test file currently running.
-    """
-
-    def __init__(self, repo: Path, src_roots: Sequence[str]):
-        self.repo = repo
-        self.src_prefixes = [str((repo / r).resolve()) for r in src_roots]
-        self.current_test: str | None = None
-        self.executions: list[Execution] = []
-        self._prev_profile = None
-
-    def _profile(self, frame, event, arg):
-        if event != "call" or self.current_test is None:
-            return
-        filename = frame.f_code.co_filename
-        for prefix in self.src_prefixes:
-            if filename.startswith(prefix):
-                rel = Path(filename).relative_to(self.repo).as_posix()
-                self.executions.append((self.current_test, rel, frame.f_code.co_name))
-                break
-
-    def pytest_configure(self, config):
-        self._prev_profile = sys.getprofile()
-        sys.setprofile(self._profile)
-
-    def pytest_unconfigure(self, config):
-        sys.setprofile(self._prev_profile)
-
-    def pytest_runtest_protocol(self, item, nextitem):
-        p = Path(item.path)
-        try:
-            self.current_test = p.relative_to(self.repo).as_posix()
-        except ValueError:
-            self.current_test = str(p)
+def _function_spans(source_path: Path) -> dict[str, set[int]]:
+    """Map function name -> body line numbers (outer and nested both counted)."""
+    try:
+        tree = ast.parse(source_path.read_text("utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return {}
+    spans: dict[str, set[int]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            spans.setdefault(node.name, set()).update(
+                range(node.lineno, (node.end_lineno or node.lineno) + 1)
+            )
+    return spans
 
 
 def collect(repo: Path, src_roots: Sequence[str], test_files: Sequence[str], pytest_args: Sequence[str], workdir: str = ".") -> list[Execution]:
-    """Run pytest once in-process with the tracing plugin; return executions.
+    """Run pytest once under coverage with per-test dynamic contexts.
 
-    pytest runs from ``repo/workdir`` (so it finds backend/pytest.ini and the
-    conftests); the plugin still records repo-relative test paths.
+    ``--cov-context=test`` records, per line, which test executed it, so one
+    run yields function -> test files (far cheaper than a per-file run, and
+    coverage's C tracer stays ~1.1x instead of setprofile's 10-50x).
     """
     import os
 
     import pytest
+    from coverage import CoverageData
 
-    plugin = _CoveragePlugin(repo, src_roots)
+    wd = repo / workdir
     rel_tests = (
         [str(Path(t).relative_to(workdir)) for t in test_files]
         if workdir != "."
         else list(test_files)
     )
+    src_pkg = next((Path(r).name for r in src_roots), "app")
+    cov_data = wd / ".coverage.cim"
+    if cov_data.exists():
+        cov_data.unlink()
+    os.environ["COVERAGE_FILE"] = str(cov_data)
     old = os.getcwd()
-    os.chdir(repo / workdir)
-    # The workdir must be importable (conftest.py does ``from tests.factory``,
-    # test modules do ``from app.factory``); chdir alone does not add it.
-    sys.path.insert(0, str(repo / workdir))
+    os.chdir(wd)
+    sys.path.insert(0, str(wd))
+    executions: list[Execution] = []
+    prefix = "" if workdir == "." else workdir.rstrip("/\\") + "/"
     try:
         pytest.main(
-            ["-q", "-p", "no:cacheprovider", *pytest_args, *rel_tests],
-            plugins=[plugin],
+            [f"--cov={src_pkg}", "--cov-context=test", "--cov-report=",
+             "-q", "-p", "no:cacheprovider", *pytest_args, *rel_tests],
+            plugins=[],
         )
+        data = CoverageData(basename=str(cov_data))
+        data.read()
+        for filename in data.measured_files():
+            try:
+                rel_src = Path(filename).relative_to(repo).as_posix()
+            except ValueError:
+                continue
+            spans = _function_spans(Path(filename))
+            if not spans:
+                continue
+            ctx_by_line = data.contexts_by_lineno(filename) or {}
+            for fn_name, lines in spans.items():
+                files: set[str] = set()
+                for ln in lines:
+                    for ctx in ctx_by_line.get(ln, ()):
+                        file_part = ctx.split("::", 1)[0]
+                        if file_part:
+                            files.add(prefix + file_part)
+                for f in sorted(files):
+                    executions.append((f, rel_src, fn_name))
     finally:
         os.chdir(old)
         try:
-            sys.path.remove(str(repo / workdir))
+            sys.path.remove(str(wd))
         except ValueError:
             pass
-    return plugin.executions
+        if cov_data.exists():
+            cov_data.unlink()
+    return executions
 
 
 def main(argv: Sequence[str] | None = None) -> int:
