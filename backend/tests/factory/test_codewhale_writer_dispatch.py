@@ -573,13 +573,25 @@ def test_parse_writer_receipt_raises_non_json_on_zero_exit():
         _parse_writer_receipt(["no receipt"], 0)
 
 
-def test_parse_writer_receipt_returns_success_receipt_on_zero_exit():
-    """Regression: a zero exit with a normal receipt still parses."""
+@pytest.mark.parametrize(
+    "status,model,tool_count",
+    [
+        ("completed", "deepseek-v4-pro", 0),
+        ("completed", "deepseek-v4-pro", 2),
+    ],
+)
+def test_parse_writer_receipt_returns_success_receipt_on_zero_exit(
+    status, model, tool_count
+):
+    """Regression: a zero exit with a normal receipt still parses. Two inputs."""
+    tools = [{"name": f"t{i}"} for i in range(tool_count)]
     receipt = _parse_writer_receipt(
-        [json.dumps({"status": "completed", "termination_reason": "resolved",
-                     "provider": "deepseek", "model": "m", "output": "ok",
-                     "tools": [], "error": None, "error_category": None})],
+        [json.dumps({"status": status, "termination_reason": "resolved",
+                     "provider": "deepseek", "model": model, "output": "ok",
+                     "tools": tools, "error": None, "error_category": None})],
         0,
     )
-    assert receipt.status == "completed"
+    assert receipt.status == status
+    assert receipt.model == model
+    assert len(receipt.tools) == tool_count
     assert receipt.error_category is None
