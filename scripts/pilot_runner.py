@@ -284,7 +284,7 @@ def run_pilot(base: str) -> int:
     global LAST_SID, LAST_TOKEN
     smoke.BASE = base
     print(f"pilot run against {base}\n")
-    if not smoke.wait_for_ready():
+    if not smoke.wait_for_ready(allow_descendant=True):
         record("surface ready", False, "health/ready/version did not come up")
         return finish()
 
