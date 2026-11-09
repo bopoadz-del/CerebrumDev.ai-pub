@@ -298,7 +298,7 @@ def test_probe_deepseek_binary_missing(tmp_path, monkeypatch):
 
 
 def test_dispatch_deepseek_uses_prompt_and_kimi_model_env(tmp_path, monkeypatch):
-    argv_log = tmp_path / "argv.log"
+    argv_log = tmp_path / "build" / "argv.log"
     script = tmp_path / "kimi"
     script.write_text(
         "#!/bin/sh\n"
@@ -535,7 +535,7 @@ def _arm_deepseek_cli(tmp_path, monkeypatch, script: Path | None = None) -> Path
 
 
 def test_dispatch_deepseek_strict_kimi_receives_brief(tmp_path, monkeypatch):
-    argv_log = tmp_path / "argv.log"
+    argv_log = tmp_path / "build" / "argv.log"
     script = _strict_kimi(tmp_path)
     _arm_deepseek_cli(tmp_path, monkeypatch, script)
     monkeypatch.setenv("CODE_CLI_ARGV_LOG", str(argv_log))
@@ -774,7 +774,7 @@ class _LettingsReusePlan:
 
 
 def test_dispatch_deepseek_ready_all_reuse_compose_uses_cli(tmp_path, monkeypatch):
-    argv_log = tmp_path / "argv.log"
+    argv_log = tmp_path / "build" / "argv.log"
     script = tmp_path / "kimi"
     script.write_text(
         "#!/bin/sh\n"

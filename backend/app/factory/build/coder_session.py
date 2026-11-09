@@ -3005,9 +3005,31 @@ def _run_cli_session(
             log_path,
             f"$ {' '.join(kimi_prompt_log_argv(cli, len(brief_text), model=model or None))}",
         )
-    session_env = os.environ.copy()
+    from app.factory.build.agent_confine import (
+        ConfinementUnavailable,
+        confinement_popen_kwargs,
+        scoped_child_env,
+    )
+
+    extra_env: Dict[str, str] = {}
     if deepseek_coder_selected(cli):
-        session_env.update(deepseek_cli_environ())
+        extra_env.update(deepseek_cli_environ())
+    home = root / ".agent-home"
+    scratch = root / ".agent-tmp"
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        scratch.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return DispatchResult(
+            via="cli",
+            ok=False,
+            detail=f"coding-agent workspace is not writable: {exc}",
+            blocker=NAMED_BLOCKER_CLI_FAILED,
+            model=cli,
+        )
+    session_env = scoped_child_env(
+        os.environ, extra_env, home=home, tmp=scratch
+    )
     logger.info(
         "FACTORY_CODE_CLI C-BRIEF dispatch via=cli command=%s "
         "gaps=%s work=%s reuse=%s timeout_s=%.0f",
@@ -3045,8 +3067,25 @@ def _run_cli_session(
     }
     if stdin_payload is not None:
         popen_kw["stdin"] = subprocess.PIPE
+    rw_extra = []
+    workspace = getattr(ctx, "workspace", None)
+    for attr in ("destination", "workspace"):
+        val = getattr(workspace, attr, None)
+        if isinstance(val, (str, Path)):
+            rw_extra.append(Path(val))
     try:
+        popen_kw.update(
+            confinement_popen_kwargs(root, str(cmd[0]) if cmd else "", rw_extra)
+        )
         proc = track_agent(subprocess.Popen(cmd, **popen_kw))
+    except ConfinementUnavailable as exc:
+        return DispatchResult(
+            via="cli",
+            ok=False,
+            detail=str(exc),
+            blocker=NAMED_BLOCKER_CLI_FAILED,
+            model=cli,
+        )
     except FileNotFoundError:
         return DispatchResult(
             via="unavailable",
