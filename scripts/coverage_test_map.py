@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -95,15 +96,38 @@ class _CoveragePlugin:
             self.current_test = str(p)
 
 
-def collect(repo: Path, src_roots: Sequence[str], test_files: Sequence[str], pytest_args: Sequence[str]) -> list[Execution]:
-    """Run pytest once in-process with the tracing plugin; return executions."""
+def collect(repo: Path, src_roots: Sequence[str], test_files: Sequence[str], pytest_args: Sequence[str], workdir: str = ".") -> list[Execution]:
+    """Run pytest once in-process with the tracing plugin; return executions.
+
+    pytest runs from ``repo/workdir`` (so it finds backend/pytest.ini and the
+    conftests); the plugin still records repo-relative test paths.
+    """
+    import os
+
     import pytest
 
     plugin = _CoveragePlugin(repo, src_roots)
-    pytest.main(
-        ["-q", "-p", "no:cacheprovider", *pytest_args, *test_files],
-        plugins=[plugin],
+    rel_tests = (
+        [str(Path(t).relative_to(workdir)) for t in test_files]
+        if workdir != "."
+        else list(test_files)
     )
+    old = os.getcwd()
+    os.chdir(repo / workdir)
+    # The workdir must be importable (conftest.py does ``from tests.factory``,
+    # test modules do ``from app.factory``); chdir alone does not add it.
+    sys.path.insert(0, str(repo / workdir))
+    try:
+        pytest.main(
+            ["-q", "-p", "no:cacheprovider", *pytest_args, *rel_tests],
+            plugins=[plugin],
+        )
+    finally:
+        os.chdir(old)
+        try:
+            sys.path.remove(str(repo / workdir))
+        except ValueError:
+            pass
     return plugin.executions
 
 
@@ -112,15 +136,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--src", action="append", required=True, help="source root(s) to trace")
     ap.add_argument("--tests", action="append", required=True, help="test root(s)")
     ap.add_argument("--out", required=True, help="mapping JSON path (repo-relative)")
+    ap.add_argument("--workdir", default=".", help="directory pytest runs from (e.g. backend)")
     ap.add_argument("--pytest-arg", action="append", default=[])
     a = ap.parse_args(argv)
 
-    repo = Path.cwd()
+    repo = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip())
     test_files: list[str] = []
     for root in a.tests:
         test_files.extend(str(p.relative_to(repo)) for p in sorted((repo / root).rglob("test_*.py")))
 
-    executions = collect(repo, a.src, test_files, a.pytest_arg)
+    executions = collect(repo, a.src, test_files, a.pytest_arg, workdir=a.workdir)
     mapping = build_mapping(executions)
     out_path = repo / a.out
     out_path.parent.mkdir(parents=True, exist_ok=True)
