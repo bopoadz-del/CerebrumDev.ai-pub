@@ -284,10 +284,6 @@ def test_the_writer_pass_ships_the_self_check(blueprint, tmp_path, stub_coder):
     assert outcome.ok, outcome.detail
     stamped = tmp_path / "build" / writer_behaviour.SELF_CHECK_REL
     assert stamped.is_file()
-    # The stamp is the Factory's bytes alone: re-rendering from the baseline it
-    # embedded reproduces it byte for byte (no timestamp, no product words).
-    ns = {"__name__": "factory_checks"}
-    exec(compile(stamped.read_text(encoding="utf-8"), "factory_checks.py", "exec"), ns)
-    assert stamped.read_text(encoding="utf-8") == writer_behaviour.render_self_check(
-        ns["BASELINE"]
-    )
+    # The stamp is the Factory's bytes alone (its payload base is read off the
+    # live models when it runs), so a refresh never sees a product-made change.
+    assert stamped.read_text(encoding="utf-8") == writer_behaviour.render_self_check()

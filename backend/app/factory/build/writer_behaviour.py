@@ -1015,31 +1015,6 @@ def _render_targeted_selection() -> str:
     return "\n".join(lines)
 
 
-def _self_check_baseline(workspace: object) -> dict[str, str]:
-    """Content hashes of ``app/**/*.py`` at the start of the pass.
-
-    The stamped self-check diffs the workspace against this to find "the files
-    this pass changed" -- its own view from its own bytes, never a runner list.
-    """
-    import hashlib
-
-    root = Path(getattr(workspace, "workspace", workspace))
-    base = root / SELF_CHECK_SRC_ROOT
-    out: dict[str, str] = {}
-    if not base.is_dir():
-        return out
-    for path in base.rglob("*.py"):
-        if "__pycache__" in path.parts:
-            continue
-        try:
-            out[path.relative_to(root).as_posix()] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-        except OSError:
-            continue
-    return out
-
-
 _SELF_CHECK_TEMPLATE = '''"""Factory self-check -- the WRITER gate's own behaviour probe.
 
 Factory-owned and re-stamped on every writer pass: editing it changes
@@ -1060,7 +1035,6 @@ must be declared in that capability's model FIELDS, and a payload built from
 those FIELDS must be accepted. Exit 0 only when there is nothing to fix.
 """
 
-import hashlib
 import json
 import os
 import re
@@ -1070,7 +1044,6 @@ from pathlib import Path
 
 PROBE = {probe}
 RECORD_LEVELS = {levels}
-BASELINE = {baseline}
 SRC_ROOT = {src_root}
 TEST_ROOT = {test_root}
 TIMEOUT_S = 900
@@ -1078,32 +1051,34 @@ TIMEOUT_S = 900
 {targeted_selection}
 
 
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _git_changed_names(root):
+    """Tracked + untracked paths that differ from HEAD (empty on no git)."""
+    names = []
+    for args in (("diff", "--name-only", "--diff-filter=ACMR", "HEAD"),
+                 ("ls-files", "--others", "--exclude-standard")):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", root, *args],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        names += (proc.stdout or "").splitlines()
+    return names
 
 
 def _changed_sources(root):
-    """app/** files that differ from the stamped baseline (new or modified)."""
-    changed = []
-    base = os.path.join(root, SRC_ROOT)
-    for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
-        for name in filenames:
-            if not name.endswith(".py"):
-                continue
-            full = os.path.join(dirpath, name)
-            rel = os.path.relpath(full, root).replace(os.sep, "/")
-            try:
-                if BASELINE.get(rel) == _sha256(full):
-                    continue
-            except OSError:
-                pass
-            changed.append(rel)
-    return sorted(changed)
+    """app/** files this pass changed: uncommitted (tracked or untracked) vs HEAD.
+
+    The writer's checkout is a git repo; HEAD is the pre-pass state, so the
+    diff is exactly this pass's work. No git -> no list: the probe still runs.
+    """
+    prefix = SRC_ROOT + "/"
+    out = []
+    for name in _git_changed_names(root):
+        if name.startswith(prefix) and name.endswith(".py"):
+            out.append(name)
+    return sorted(set(out))
 
 
 def _test_files(root):
@@ -1218,7 +1193,7 @@ if __name__ == "__main__":
 '''
 
 
-def render_self_check(baseline: dict[str, str] | None = None) -> str:
+def render_self_check() -> str:
     """The stamped self-check: the SAME rendered probe the gate runs (its
     payload base read off the live models when it runs), plus the targeted
     tests for the files this pass changes -- never the suites the gates own."""
@@ -1226,7 +1201,6 @@ def render_self_check(baseline: dict[str, str] | None = None) -> str:
         command=SELF_CHECK_COMMAND,
         probe=repr(_render_probe()),
         levels=repr(RECORD_LEVELS),
-        baseline=repr(baseline or {}),
         src_root=repr(SELF_CHECK_SRC_ROOT),
         test_root=repr(SELF_CHECK_TEST_ROOT),
         targeted_selection=_render_targeted_selection(),
@@ -1239,7 +1213,7 @@ def emit_self_check(workspace: object) -> None:
     from app.factory.build.workspace import write_workspace_text
 
     write_workspace_text(
-        workspace, SELF_CHECK_REL, render_self_check(_self_check_baseline(workspace))
+        workspace, SELF_CHECK_REL, render_self_check()
     )
 
 

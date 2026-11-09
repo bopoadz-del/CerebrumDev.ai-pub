@@ -27,7 +27,6 @@ from app.factory.build.product_suites import (
 from app.factory.build.roles import RoleContext, run_tester
 from app.factory.build.workspace import RoleWorkspace
 from app.factory.build.writer_behaviour import (
-    _self_check_baseline,
     render_self_check,
     select_targeted_tests,
 )
@@ -117,6 +116,15 @@ def _self_check_ns() -> dict:
     return ns
 
 
+def _git_init_commit(root: Path) -> None:
+    """A committed HEAD so the self-check can diff the writer's pass against it."""
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "factory@example.com"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "factory"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "baseline"], check=True)
+
+
 def _env() -> dict:
     return dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
 
@@ -161,16 +169,15 @@ def test_self_check_re_runs_nothing_when_no_file_changed(tmp_path):
     ns = _self_check_ns()
     root = tmp_path / "build"
 
-    # First writer pass: nothing changed -> nothing to report, no crash.
+    # First writer pass: no git repo (or no HEAD) -> nothing to diff, no crash.
     root.mkdir()
     assert ns["run_targeted_tests"](str(root), _env()) == []
 
-    # After TESTER stamps its suites, the start-of-pass baseline matches the
-    # tree exactly: no file changed, so the writer re-runs nothing (the gate
-    # owns the full suite).
+    # After TESTER stamps its suites and the tree is committed, a clean tree
+    # has nothing changed: the writer re-runs nothing (the gate owns the suites).
     _product(root, declares_needed=False)
     assert run_tester(_ctx(root, STALE)).ok
-    ns["BASELINE"] = dict(_self_check_baseline(root))
+    _git_init_commit(root)
     assert ns["run_targeted_tests"](str(root), _env()) == []
 
 
@@ -179,22 +186,25 @@ def test_self_check_runs_only_the_tests_referencing_the_changed_file(tmp_path, m
     root = tmp_path / "build"
     _product(root, declares_needed=False)
     assert run_tester(_ctx(root, STALE)).ok
-    ns["BASELINE"] = dict(_self_check_baseline(root))
 
     # An unrelated test file the selection must NOT run.
     _write(root, "tests/test_unrelated.py", "def test_unrelated():\n    assert True\n")
+    _git_init_commit(root)
 
     # The writer touches the handler; nothing else moves.
     handler = root / "app" / "actions" / f"{CAP}.py"
     handler.write_text(handler.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
 
     seen = []
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda argv, **kw: seen.append(argv)
-        or type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-    )
+    real_run = subprocess.run
+
+    def fake_run(argv, **kw):
+        if "pytest" in argv:
+            seen.append(argv)
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert ns["run_targeted_tests"](str(root), _env()) == []
     assert len(seen) == 1, "exactly one pytest invocation for the changed file"
