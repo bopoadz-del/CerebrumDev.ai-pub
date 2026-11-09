@@ -191,6 +191,47 @@ def test_dispatch_with_cli_does_not_use_oneshot(tmp_path, monkeypatch):
     assert oneshot == [], "CLI present must not call HTTP oneshot"
 
 
+@pytest.mark.parametrize("deepseek", [False, True])
+def test_claude_native_branch_is_gated_by_deepseek(tmp_path, monkeypatch, deepseek):
+    """The Claude-native if (is_claude_code_cli and not deepseek_coder_selected)
+    is the drop_rule target: removing it must fail the deepseek=False case."""
+    script = tmp_path / "claude"
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
+    monkeypatch.setenv("FACTORY_CODER_ENABLED", "1")
+    monkeypatch.delenv("FACTORY_BRIEF_HTTP_ONESHOT", raising=False)
+    if deepseek:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy-key")
+    else:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    claude_calls: list = []
+    monkeypatch.setattr(
+        "app.factory.code_cli.claude_print_argv",
+        lambda cli, brief, model=None: claude_calls.append(brief) or [cli, "--print"],
+    )
+    monkeypatch.setattr(
+        "app.factory.code_cli.kimi_prompt_argv",
+        lambda cli, brief, model=None: [cli, "--prompt", "x"],
+    )
+    monkeypatch.setattr(
+        "app.factory.code_cli.kimi_prompt_log_argv",
+        lambda cli, n, model=None: ["$", cli],
+    )
+    from app.factory.build import agent_confine
+
+    def _no_confinement(*_a, **_k):
+        raise agent_confine.ConfinementUnavailable("no landlock in test")
+
+    monkeypatch.setattr(agent_confine, "confinement_popen_kwargs", _no_confinement)
+    ctx = _ctx(tmp_path)
+    compiled = compile_brief(ctx.blueprint, ctx.plan, store_ids={"analytics"})
+    ctx.workspace.write_text(Path("docs") / "coder_brief.md", compiled.text)
+    ctx.workspace.write_text(Path("docs") / "coder_session.log", "")
+    dispatch_compiled_brief(ctx, compiled)
+    assert bool(claude_calls) == (not deepseek)
+
+
 def test_dispatch_deadline_tracks_7200s_timeout_not_1785(tmp_path, monkeypatch):
     """sess_2fba31ab: Floor deadline_s must follow FACTORY_CODER_TIMEOUT_S."""
     from app.factory.llm_watchdog import MODEL_CALL_GRACE_S

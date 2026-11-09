@@ -5,6 +5,7 @@
   "memory": "4096",
   "environment": {
     "FACTORY_WORKER_PROFILE": "2c-4g",
+    "CODEWHALE_FORCE_HTTP1": "1",
     "FACTORY_STORE_REPO": "bopoadz-del/Cerebrum-Blocks-pub",
     "FACTORY_BUILDS_REPO": "bopoadz-del/cerebrum-builds-pub",
     "FACTORY_SELF_REPO": "bopoadz-del/CerebrumDev.ai-pub",
