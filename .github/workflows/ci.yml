@@ -293,7 +293,6 @@ jobs:
   # carry >= 2 distinct inputs. No allowlists.
   mutation-gate:
     name: Mutation gate (CI-M)
-    if: ${{ github.event.pull_request.draft == false && github.event.action != 'synchronize' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
