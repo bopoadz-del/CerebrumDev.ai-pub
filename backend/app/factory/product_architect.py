@@ -355,6 +355,29 @@ def _snake_slug(text: str, default: str = "product") -> str:
     return slug or default
 
 
+def _deterministic_closure(
+    vertical: str, brief: str, dual_ids: Any
+) -> frozenset:
+    """The block closure a draft may vendor for one vertical + brief.
+
+    The model can propose blocks; this is the set it is ALLOWED to keep. It
+    is a pure function of the pinned Store + typed vertical + brief: the
+    vertical's serving kit blocks, every block the Store declares governance,
+    and any dual-registered block the brief names by id. No Store reachable ->
+    only the brief-named blocks survive, so the model never invents domain
+    depth when the pin cannot say what it holds.
+    """
+    from app.factory.store_kits import kit_closure
+
+    dual = set(dual_ids or ())
+    allowed = set(kit_closure(vertical))
+    text = (brief or "").lower()
+    for bid in dual:
+        if bid in text or bid.replace("_", " ") in text:
+            allowed.add(bid)
+    return frozenset(allowed & dual)
+
+
 def _blueprint_from_llm_payload(
     data: Dict[str, Any],
     brief: str,
@@ -370,6 +393,10 @@ def _blueprint_from_llm_payload(
         raise ValueError("LLM draft is not a JSON object")
 
     dual = set(dual_ids)
+    from app.factory.store_kits import chosen_vertical
+
+    vertical = chosen_vertical(vertical_hint)
+    allowed = _deterministic_closure(vertical, brief, dual)
     raw_caps = data.get("capabilities")
     if not isinstance(raw_caps, list) or not raw_caps:
         raise ValueError("LLM draft has no capabilities")
@@ -381,8 +408,14 @@ def _blueprint_from_llm_payload(
         cap_id = _slug(str(item.get("id", "")), default="")
         if not cap_id:
             continue
+        # The model may propose blocks, but the closure it may vendor is the
+        # deterministic one for this vertical + brief (kit blocks + governance
+        # + blocks the brief names). Identical pin + vertical -> identical
+        # closure, so the build never inherits the model's free pick.
         block_ids = [
-            b for b in item.get("block_ids", []) if isinstance(b, str) and b in dual
+            b
+            for b in item.get("block_ids", [])
+            if isinstance(b, str) and b in dual and b in allowed
         ]
         # A connector a block supplies is that block, not a placeholder.
         connectors = [
@@ -405,9 +438,6 @@ def _blueprint_from_llm_payload(
 
     # The vertical is the USER's choice (the Floor's typed field), never the
     # model's reading of the brief: a "vertical" key in the payload is ignored.
-    from app.factory.store_kits import chosen_vertical
-
-    vertical = chosen_vertical(vertical_hint)
     product_name = str(data.get("product_name", "")).strip()[:120] or vertical.replace(
         "_", " "
     ).title()
