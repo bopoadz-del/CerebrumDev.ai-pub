@@ -129,22 +129,29 @@ def test_any_free_text_is_the_models_to_decide(monkeypatch, session):
         assert platform_chat_llm.should_orchestrate(session, text) is True
 
 
-def test_decide_folds_uploaded_docs_into_the_model_context(session, monkeypatch):
+@pytest.mark.parametrize(
+    "chunk, filename",
+    [
+        ("Time for Completion is 730 days.", "contract.pdf"),
+        ("Accepted Contract Amount is SAR 39,098,392.98.", "boq.xlsx"),
+    ],
+)
+def test_decide_folds_uploaded_docs_into_the_model_context(session, monkeypatch, chunk, filename):
     """Task 3: the assistant must SEE the session's uploads, so a question
     about an attachment is answered from it, not with 'no attachment'."""
-    session.chunks = ["Time for Completion is 730 days."]
-    session.source_files = ["contract.pdf"]
+    session.chunks = [chunk]
+    session.source_files = [filename]
     captured = {}
 
     def _fake_llm(messages):
         captured["messages"] = messages
-        return {"action": "reply", "message": "see contract.pdf"}
+        return {"action": "reply", "message": f"see {filename}"}
 
     monkeypatch.setattr(platform_chat_llm, "_llm_json_call", _fake_llm)
     decision = platform_chat_llm.decide(session, "what does my attachment say")
     user_content = captured["messages"][1]["content"]
-    assert "document:contract.pdf" in user_content
-    assert "Time for Completion is 730 days." in user_content
+    assert f"document:{filename}" in user_content
+    assert chunk in user_content
     assert decision["action"] == "reply"
 
 
