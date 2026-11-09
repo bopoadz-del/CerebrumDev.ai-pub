@@ -257,8 +257,12 @@ UI (a pilot is deployed and tested, so what it serves must work):
 {acceptance_floor}
 
 {formula_sources}DEPTH (the gates are the bar, and you can reach them yourself):
-- Run them before you yield. The code-phase suite is
-  ``python -m pytest -m "not pilot" -q`` from this checkout root. Fix what it
+- Run the self-check before you yield: ``python scripts/factory_checks.py``
+  from this checkout root. It runs the WRITER gate's own probe (F1/F11/schema)
+  and the targeted tests for the files YOU changed -- nothing else. Do NOT run
+  the code-phase suite (``python -m pytest -m "not pilot" -q``) or TESTER's
+  product suites: those are the gates' own checks and they run after your
+  pass; re-running them here is what times you out. Fix what the self-check
   reports and run it again. Then exercise each capability the way the harness
   will: POST a record, GET it back, confirm it persisted for the caller's
   tenant. A failure you find is a failure you fix; a failure you leave costs a

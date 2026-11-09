@@ -174,10 +174,16 @@ def refresh_factory_files(
             render_acceptance_script(blueprint),
             changed,
         )
-    from app.factory.build.writer_behaviour import SELF_CHECK_REL, render_self_check
+    from app.factory.build.writer_behaviour import (
+        SELF_CHECK_REL,
+        _self_check_baseline,
+        render_self_check,
+    )
 
     if owned(str(SELF_CHECK_REL)):
-        _write_if_changed(root, SELF_CHECK_REL, render_self_check(), changed)
+        _write_if_changed(
+            root, SELF_CHECK_REL, render_self_check(_self_check_baseline(root)), changed
+        )
     if owned(".github/workflows/ci.yml"):
         _write_if_changed(root, ".github/workflows/ci.yml", render_github_ci(), changed)
     if (root / "requirements.txt").is_file():
