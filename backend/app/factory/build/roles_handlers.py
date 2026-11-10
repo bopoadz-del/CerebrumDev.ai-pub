@@ -4585,16 +4585,9 @@ def run_writer(
     # The Store gate's own harness, stamped before ANY writer path: the writer
     # measures itself with the N checks the gate scores (``--self-check``),
     # never a script of its own. Re-stamped before TESTER (factory_refresh).
-    from app.factory.build.store_acceptance import stamp_acceptance_harness, stamp_ui_index
+    from app.factory.build.store_acceptance import stamp_acceptance_harness
 
     stamp_acceptance_harness(ctx.workspace, blueprint=ctx.blueprint)
-    # The console the gate probes, rendered by construction BEFORE the writer:
-    # a page that reads /v1/capabilities and builds a route per capability.
-    # The writer customises on top (frontend/), it does not author the shell.
-    stamp_ui_index(
-        ctx.workspace,
-        product_name=getattr(ctx.blueprint, "product_name", "platform"),
-    )
     if writer_uses_codewhale(env):
         return _run_writer_via_codewhale_worker(ctx)
     writer_roster = _writer_block_roster(ctx.state)

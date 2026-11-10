@@ -341,3 +341,38 @@ class TestTheRenderedShellDrivesEveryCapabilitySet:
     )
     def test_it_drives_all_of_each(self, tmp_path, caps):
         assert self._driven(tmp_path, caps) == sorted(caps)
+
+
+class TestTheAcceptanceHarnessStampsTheConsoleByConstruction:
+    """The console is stamped with the harness, before any writer path.
+
+    ``stamp_acceptance_harness`` stamps ``app/static/index.html`` by
+    construction (it calls ``stamp_ui_index``), so a build that never reaches
+    the writer still carries the shell the ``ui_end_to_end`` gate probes. A
+    mutant that drops either write leaves the console absent and this test red.
+    """
+
+    def test_the_console_is_written_when_the_harness_is_stamped(self, tmp_path):
+        from app.factory.build.stamp_registry import _Workspace
+        from app.factory.build.store_acceptance import (
+            UI_INDEX_REL,
+            stamp_acceptance_harness,
+            stamp_ui_index,
+        )
+
+        class _Bp:
+            product_name = "Test Product"
+
+        ws = _Workspace(tmp_path)
+        stamp_acceptance_harness(ws, blueprint=_Bp())
+
+        index = tmp_path / UI_INDEX_REL
+        assert index.is_file()
+        text = index.read_text(encoding="utf-8")
+        assert "Test Product" in text
+        assert "/v1/capabilities" in text
+
+        # The same write the harness makes, exercised directly: the stamp and
+        # the harness must each be load-bearing, not one hiding inside the other.
+        stamp_ui_index(ws, product_name="Direct Stamp")
+        assert "Direct Stamp" in index.read_text(encoding="utf-8")

@@ -192,7 +192,7 @@ def stamps() -> Tuple[Stamp, ...]:
     return (
         Stamp("kernel roster", SHARED, (rel(JOBS_REL),), _roster, staged_writer=True),
         Stamp("deploy modules", OWNED, deploy_owned, _deploy_modules, staged_writer=True),
-        Stamp("acceptance harness", OWNED, (rel(ACCEPTANCE_SCRIPT_REL),), _acceptance, staged_writer=True),
+        Stamp("acceptance harness", OWNED, (rel(ACCEPTANCE_SCRIPT_REL), rel(UI_INDEX_REL)), _acceptance, staged_writer=True),
         Stamp("writer self-check", OWNED, (rel(SELF_CHECK_REL),), _self_check, staged_writer=True),
         Stamp(
             "re-entry refresh (Factory files)",
