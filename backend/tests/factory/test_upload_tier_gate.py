@@ -85,12 +85,19 @@ def test_non_entitled_principal_is_refused_402_and_gets_inert_picker(gate_client
     assert started == []
 
 
-def test_entitled_principal_uploads_and_indexes(gate_client):
-    """A live-trial user is entitled: /upload/allowed returns real caps and the
-    POST proceeds (background index scheduled)."""
+@pytest.mark.parametrize("status", ["active", "trialing"])
+def test_entitled_principal_uploads_and_indexes(gate_client, status):
+    """An entitled user (active sub, or live trial) uploads: /upload/allowed
+    returns real caps and the POST proceeds (background index scheduled). Two
+    inputs (two entitled statuses)."""
     client, create_session, started = gate_client
-    body = _register(client)  # trialing with a live trial
+    body = _register(client)  # starts trialing with a live trial
     headers = _auth(body)
+
+    if status == "active":
+        from app.core import accounts_store
+
+        assert accounts_store.set_subscription(body["account_id"], "active")
 
     sid = f"sess_{uuid.uuid4().hex[:10]}"
     create_session(sid, body["account_id"])
