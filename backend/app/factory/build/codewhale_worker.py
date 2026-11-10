@@ -1663,23 +1663,22 @@ def _emit_worker_stalled(
     attempt: int,
 ) -> None:
     """Emit the named ``worker_stalled`` ledger event (telemetry, never fatal)."""
-    if progress is None:
-        return
-    try:
-        progress(
-            f"{WORKER_STALLED}: no new step, file or stdout line for "
-            f"{stall.idle_s:.0f}s ({stall.files} files on disk, "
-            f"{stall.steps} steps reported) -- pass {attempt} of "
-            f"{WORKER_STALL_RETRIES + 1}",
-            {
-                STALL_MARKER: WORKER_STALLED,
-                STALL_IDLE_S: round(stall.idle_s, 1),
-                STALL_FILES: stall.files,
-                STALL_STEPS: stall.steps,
-            },
-        )
-    except Exception:  # noqa: BLE001 -- telemetry never fails the build
-        pass
+    if progress is not None:
+        try:
+            progress(
+                f"{WORKER_STALLED}: no new step, file or stdout line for "
+                f"{stall.idle_s:.0f}s ({stall.files} files on disk, "
+                f"{stall.steps} steps reported) -- pass {attempt} of "
+                f"{WORKER_STALL_RETRIES + 1}",
+                {
+                    STALL_MARKER: WORKER_STALLED,
+                    STALL_IDLE_S: round(stall.idle_s, 1),
+                    STALL_FILES: stall.files,
+                    STALL_STEPS: stall.steps,
+                },
+            )
+        except Exception:  # noqa: BLE001 -- telemetry never fails the build
+            pass
 
 
 def run_worker_job_with_stall_retry(

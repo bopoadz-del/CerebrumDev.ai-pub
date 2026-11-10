@@ -114,3 +114,15 @@ def test_idle_writer_is_killed_and_retried_exactly_once(monkeypatch, tmp_path, i
         assert STALL_STEPS in info
         # Killed at the configured idle limit, never earlier, never at the wall.
         assert info[STALL_IDLE_S] >= idle_s * 0.5
+
+
+def test_emit_worker_stalled_skips_a_missing_callback():
+    """The ledger event is telemetry: no progress callback means no call, no
+    error -- the guard is what keeps a missing callback from being invoked."""
+    from app.factory.build.codewhale_worker import (
+        _WorkerStall,
+        _emit_worker_stalled,
+    )
+
+    # Must return normally without ever attempting to call ``None``.
+    _emit_worker_stalled(None, _WorkerStall(480.0, 3, 7), 1)
