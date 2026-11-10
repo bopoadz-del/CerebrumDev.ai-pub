@@ -172,12 +172,12 @@ def read_timeout_s() -> float:
 def model_call_retries() -> int:
     """Fresh-connection retries after a per-call connect/read timeout."""
     raw = os.getenv(MODEL_CALL_RETRY_ENV, "").strip()
-    if not raw:
-        return DEFAULT_MODEL_CALL_RETRIES
-    try:
-        return max(0, min(int(raw), MODEL_CALL_RETRY_MAX))
-    except ValueError:
-        return DEFAULT_MODEL_CALL_RETRIES
+    if raw:
+        try:
+            return max(0, min(int(raw), MODEL_CALL_RETRY_MAX))
+        except ValueError:
+            pass
+    return DEFAULT_MODEL_CALL_RETRIES
 
 
 def per_call_timeout() -> httpx.Timeout:
