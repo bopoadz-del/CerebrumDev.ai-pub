@@ -143,3 +143,10 @@ jobs:
           name: pilot-result
           path: PILOT_RESULT.md
           if-no-files-found: ignore
+      - name: Upload PILOT_LEDGER
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-ledger
+          path: PILOT_LEDGER.jsonl
+          if-no-files-found: ignore

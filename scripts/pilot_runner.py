@@ -208,9 +208,20 @@ RESULTS: List[Tuple[str, bool, str]] = []
 #: F-G3 (ORDERS_08NOV_0020Z): on ANY stage FAIL the pilot prints the session id
 #: plus the last 20 ledger events (ts, phase, event, payload) into the step
 #: output and PILOT_RESULT -- a silent stop is never left unexplained.
+#: ORDERS_10NOV_1925Z: on ANY stage FAIL the pilot also writes the FULL build
+#: ledger to PILOT_LEDGER.jsonl (uploaded as a job artifact) and prints every
+#: terminal-reason event -- RUN_FAILED / PHASE_ABORTED / GATE_FAILED, or a
+#: named worker_* / model_call_* marker -- with its timestamp. A failed pilot
+#: must never end without its terminal reason in the run.
 LAST_SID: str | None = None
 LAST_TOKEN: str | None = None
 LEDGER_TAIL: List[str] = []
+PILOT_LEDGER_NAME = "PILOT_LEDGER.jsonl"
+#: Ledger event kinds that are a run/phase verdict (the terminal events).
+TERMINAL_REASON_KINDS = frozenset({"RUN_FAILED", "PHASE_ABORTED", "GATE_FAILED"})
+#: Named worker / model-call reason markers, carried in ``kind``, ``detail`` or
+#: a typed payload key (``stall`` / ``failure_kind`` / ``marker``).
+REASON_PREFIXES = ("worker_", "model_call_")
 
 
 def record(stage: str, ok: bool, evidence: str) -> None:
@@ -245,14 +256,76 @@ def render_ledger_tail(events: Any, limit: int = 20) -> List[str]:
     return lines
 
 
-def fetch_ledger_tail(sid: str, token: str, limit: int = 20) -> List[str]:
-    """F-G3: last ``limit`` ledger events for a session, rendered for the report."""
+def fetch_full_ledger(sid: str, token: str) -> List[Any]:
+    """F-G3: the FULL build ledger for a session (every event, untruncated)."""
     _s, ledger = smoke.req("GET", f"/v1/sessions/{sid}/product/ledger", token=token)
     events = (ledger or {}).get("events") if isinstance(ledger, dict) else ledger
-    if not isinstance(events, list) or not events:
-        detail = (ledger or {}).get("detail") if isinstance(ledger, dict) else None
-        return [f"no ledger events (detail={detail})"]
-    return render_ledger_tail(events, limit=limit)
+    return events if isinstance(events, list) else []
+
+
+def is_reason_event(ev: Dict[str, Any]) -> bool:
+    """True for a terminal verdict or a named worker_*/model_call_* marker.
+
+    Matches the event's own ``kind`` / ``detail`` and the typed payload markers
+    that name a worker or model-call reason (``stall`` / ``failure_kind`` /
+    ``marker``, or the model-call lifecycle fields) -- never by searching
+    arbitrary prose for a phrase someone happened to write.
+    """
+    kind = str(ev.get("kind") or "")
+    detail = str(ev.get("detail") or "")
+    payload = ev.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if kind.upper() in TERMINAL_REASON_KINDS:
+        return True
+    if kind.lower().startswith(REASON_PREFIXES) or detail.lower().startswith(REASON_PREFIXES):
+        return True
+    for key in ("stall", "failure_kind", "marker"):
+        if str(payload.get(key) or "").lower().startswith(REASON_PREFIXES):
+            return True
+    return bool(
+        "model_call" in payload
+        or "model_call_state" in payload
+        or "model_call_deadline_s" in payload
+    )
+
+
+def render_reason_events(events: Any) -> List[str]:
+    """Every terminal-reason event, one line each with its timestamp.
+
+    The run's terminal reason (a verdict, or a worker_*/model_call_* marker),
+    not the generic tail -- so a failed pilot names why it failed.
+    """
+    if not isinstance(events, list):
+        return ["no ledger events to filter"]
+    lines: List[str] = []
+    for ev in events:
+        if isinstance(ev, dict) and is_reason_event(ev):
+            lines.extend(render_ledger_tail([ev], limit=1))
+    if not lines:
+        return ["no RUN_FAILED / PHASE_ABORTED / GATE_FAILED / worker_* / model_call_* event found"]
+    return lines
+
+
+def write_pilot_ledger(events: Any, path: Path | str | None = None) -> bool:
+    """Write the full build ledger to PILOT_LEDGER.jsonl (one event per line).
+
+    ``path`` overrides the target for tests; the pilot writes next to
+    PILOT_RESULT.md at the repo root so the workflow can upload it.
+    """
+    if not isinstance(events, list):
+        return False
+    target = Path(path) if path is not None else (REPO_ROOT / PILOT_LEDGER_NAME)
+    try:
+        lines = [
+            json.dumps(ev, ensure_ascii=False, default=str) if isinstance(ev, dict)
+            else json.dumps({"raw": str(ev)}, ensure_ascii=False)
+            for ev in events
+        ]
+        target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def principal_required_result(has_creds: bool) -> Check:
@@ -372,17 +445,23 @@ def render_result_md() -> str:
     if LAST_SID:
         lines += ["", f"session_id={LAST_SID}"]
     if LEDGER_TAIL:
-        lines += ["", "## last 20 ledger events (F-G3)"]
+        lines += ["", "## build ledger (F-G3)"]
         lines += [f"- {line}" for line in LEDGER_TAIL]
     return "\n".join(lines) + "\n"
 
 
 def finish() -> int:
-    # F-G3: a failure must carry its ledger tail, never a silent stop.
+    # F-G3 (ORDERS_10NOV_1925Z): a failure must carry the FULL ledger plus its
+    # terminal reason in the run, never a silent stop.
     failed = [s for s, ok, _ in RESULTS if not ok]
     if failed and LAST_SID and LAST_TOKEN and not LEDGER_TAIL:
         try:
-            LEDGER_TAIL.extend(fetch_ledger_tail(LAST_SID, LAST_TOKEN))
+            events = fetch_full_ledger(LAST_SID, LAST_TOKEN)
+            if write_pilot_ledger(events):
+                LEDGER_TAIL.append(f"full ledger written to {PILOT_LEDGER_NAME} ({len(events)} events)")
+            LEDGER_TAIL.extend(render_ledger_tail(events, limit=20))
+            LEDGER_TAIL.append("terminal reason:")
+            LEDGER_TAIL.extend(render_reason_events(events))
         except Exception as exc:  # noqa: BLE001 -- ledger fetch never changes the verdict
             LEDGER_TAIL.append(f"ledger fetch error: {exc}")
     md = render_result_md()

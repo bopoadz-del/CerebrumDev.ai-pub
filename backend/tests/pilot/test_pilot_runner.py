@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/tests/pilot/<file> -> repo root
 SCRIPTS = REPO_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
@@ -172,3 +171,60 @@ def test_brief_diag_summary_reports_presence(product, expect_none):
 )
 def test_brief_diag_summary_quotes_the_fields(diag, expected_in):
     assert expected_in in pilot.brief_diag_summary({"brief_diag": diag})
+
+
+@pytest.mark.parametrize(
+    "event, expected",
+    [
+        ({"kind": "RUN_FAILED", "detail": "", "payload": {}}, True),
+        ({"kind": "PHASE_ABORTED", "detail": "", "payload": {}}, True),
+        ({"kind": "GATE_FAILED", "detail": "", "payload": {}}, True),
+        ({"kind": "worker_stalled", "detail": "", "payload": {}}, True),
+        ({"kind": "NOTE", "detail": "worker_timed_out: wall", "payload": {}}, True),
+        ({"kind": "NOTE", "detail": "writer working", "payload": {"stall": "worker_stalled"}}, True),
+        ({"kind": "NOTE", "detail": "session finished", "payload": {"model_call": True, "provider": "x"}}, True),
+        ({"kind": "NOTE", "detail": "session finished", "payload": {"model_call_state": "closed"}}, True),
+        ({"kind": "NOTE", "detail": "session finished", "payload": {"failure_kind": "model_call_timeout"}}, True),
+        ({"kind": "NOTE", "detail": "plain note", "payload": {"provider": "x"}}, False),
+        ({"kind": "PHASE_STARTED", "detail": "", "payload": {}}, False),
+        ({"kind": "NOTE", "detail": "worker count is 2", "payload": {}}, False),
+    ],
+)
+def test_is_reason_event(event, expected):
+    # ORDERS_10NOV_1925Z: a reason event is a verdict, or a worker_*/model_call_*
+    # marker in kind/detail/typed payload -- never arbitrary prose.
+    assert pilot.is_reason_event(event) is expected
+
+
+@pytest.mark.parametrize(
+    "events, expected",
+    [
+        (
+            [
+                {"ts": "t1", "kind": "PHASE_STARTED", "detail": "", "payload": {}},
+                {"ts": "t2", "kind": "RUN_FAILED", "detail": "boom", "payload": {}},
+            ],
+            ["t2 phase=- event=RUN_FAILED boom payload={}"],
+        ),
+        (
+            [{"ts": "t1", "kind": "NOTE", "detail": "plain", "payload": {}}],
+            ["no RUN_FAILED / PHASE_ABORTED / GATE_FAILED / worker_* / model_call_* event found"],
+        ),
+    ],
+)
+def test_render_reason_events_filters(events, expected):
+    assert pilot.render_reason_events(events) == expected
+
+
+@pytest.mark.parametrize(
+    "events, expected_lines",
+    [
+        ([{"seq": 1, "kind": "NOTE"}, {"seq": 2, "kind": "RUN_FAILED"}], 2),
+        ([{"seq": 3, "kind": "GATE_FAILED"}], 1),
+    ],
+)
+def test_write_pilot_ledger_writes_jsonl(tmp_path, events, expected_lines):
+    ok = pilot.write_pilot_ledger(events, tmp_path / "ledger.jsonl")
+    assert ok is True
+    raw = (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(raw) == expected_lines
