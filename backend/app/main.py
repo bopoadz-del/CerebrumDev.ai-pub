@@ -46,7 +46,7 @@ from .core.auth import require_api_key, require_master_key, verify_production_au
 from .core.cors_policy import cors_allow_origins
 from .core.llm_config import _truthy, env_key_present, llm_ready_details
 from .core.metrics import HttpMetricsMiddleware, metrics_response
-from .core.billing import require_entitled
+from .core.billing import FeatureGateDenied, require_entitled
 from .routers import (
     accounts,
     accounts_restore,
@@ -256,6 +256,15 @@ app = FastAPI(
     openapi_url="/openapi.json" if _docs else None,
     lifespan=_lifespan,
 )
+
+
+@app.exception_handler(FeatureGateDenied)
+async def _feature_gate_denied_handler(request, exc: FeatureGateDenied):
+    """A product-tier boundary refusal: 402 upgrade_required + the feature."""
+    return JSONResponse(
+        status_code=402,
+        content={"detail": "upgrade_required", "feature": exc.feature},
+    )
 
 _cors_origins = cors_allow_origins()
 
