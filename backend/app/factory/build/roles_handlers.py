@@ -3955,9 +3955,10 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         SLOT_WAIT_EXHAUSTED,
         SLOT_WAIT_OPEN,
         WRITER_PROGRESS_FIELDS,
+        WRITER_STALL_FIELDS,
         WorkerError,
         is_narration_line,
-        run_worker_job,
+        run_worker_job_with_stall_retry,
         writer_specialist_cap,
     )
     from app.factory.build.writer_prompt import render_writer_prompt
@@ -4030,7 +4031,7 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             # 3 minutes before the 2700s wall cut a 238-file pass).
             progress_fields = {
                 key: info[key]
-                for key in WRITER_PROGRESS_FIELDS
+                for key in (*WRITER_PROGRESS_FIELDS, *WRITER_STALL_FIELDS)
                 if isinstance(info, dict) and info.get(key) is not None
             }
             ctx.note(
@@ -4112,7 +4113,7 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         owned_before = factory_owned.snapshot(Path(dest))
 
         def _launch_writer() -> Any:
-            return run_worker_job(
+            return run_worker_job_with_stall_retry(
                 prompt,
                 dest,
                 tenant_store=ctx.state.get("tenant_store"),

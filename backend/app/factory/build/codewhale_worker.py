@@ -58,6 +58,11 @@ WORKER_DISPATCH_AMBIGUOUS = "worker_dispatch_ambiguous"
 WORKER_CLI_MISSING = "worker_cli_missing"
 WORKER_EXEC_FAILED = "worker_exec_failed"
 WORKER_TIMED_OUT = "worker_timed_out"
+#: The progress watchdog's named stall. Distinct from WORKER_TIMED_OUT (the
+#: wall): the wall bounds the whole pass; a stall is a pass that made NO
+#: observable progress (no new step, no new file on disk, no new stdout line)
+#: for the idle limit. The first stall retries; the second fails the phase.
+WORKER_STALLED = "worker_stalled"
 
 #: The close half of the model-call NOTE. build_status treats the "CLI
 #: started" NOTE as an in-flight coder call until a NOTE whose detail
@@ -165,6 +170,15 @@ DEFAULT_PROCESS_CAP = 3
 #: than the process cap on purpose -- see WORKER_PROFILES.
 DEFAULT_TENANT_CAP = 1
 DEFAULT_WORKER_TIMEOUT_S = 1800.0
+#: Idle limit for the PROGRESS watchdog -- a separate clock from the wall. A
+#: live-but-silent writer sits inside one model call that never returns for
+#: the whole wall (09:38Z: one DeepSeek call, 30 min, written=0); the wall
+#: cannot see that, only a progress clock can. No new step, no new file on
+#: disk and no new stdout line for this long is a stall.
+DEFAULT_IDLE_S = 480.0
+IDLE_ENV = "FACTORY_CODEWHALE_IDLE_S"
+#: One fresh-process retry after a stall, as ordered. The second stall fails.
+WORKER_STALL_RETRIES = 1
 
 #: Kept for the existing operator contract: this env var has always named
 #: the PROCESS cap and still does.
@@ -225,6 +239,26 @@ DEPLOYED_PROFILE = "1c-2g"
 
 class WorkerError(RuntimeError):
     """A named refusal/failure from the CodeWhale worker layer."""
+
+
+class _WorkerStall(Exception):
+    """A headless pass made no observable progress for the idle limit.
+
+    Internal signal only. It carries the facts the ``worker_stalled`` ledger
+    event reports: how long the pass was idle, and how many files/steps it had
+    produced when it stalled. ``run_worker_job`` raises it; the retry wrapper
+    turns the FINAL stall into a named ``worker_stalled`` failure -- never the
+    wall's ``worker_timed_out``.
+    """
+
+    def __init__(self, idle_s: float, files: int, steps: int) -> None:
+        super().__init__(
+            f"{WORKER_STALLED}: idle for {idle_s:.0f}s "
+            f"({files} files on disk, {steps} steps reported)"
+        )
+        self.idle_s = idle_s
+        self.files = files
+        self.steps = steps
 
 
 def _preflight_probe(
@@ -433,6 +467,16 @@ def worker_timeout_s() -> float:
     return float(
         os.getenv("FACTORY_CODEWHALE_WORKER_TIMEOUT_S", str(DEFAULT_WORKER_TIMEOUT_S))
     )
+
+
+def worker_idle_s() -> float:
+    """Seconds of observable silence before a pass is declared stalled.
+
+    Distinct from ``worker_timeout_s`` (the wall): this bounds silence, not
+    elapsed time. A pass that emits no new step, no new file on disk and no
+    new stdout line for this long is killed and retried once.
+    """
+    return float(os.getenv(IDLE_ENV, str(DEFAULT_IDLE_S)))
 
 
 @dataclass(frozen=True)
@@ -1373,6 +1417,14 @@ def run_worker_job(
         # the agent's output.
         files_at_start = count_authored_files(cwd)
         started_at = time.monotonic()
+        # The progress watchdog's own clock -- separate from the wall. It
+        # remembers when observable progress last landed and the snapshots it
+        # compares against each tick: files on disk, steps reported, stdout
+        # lines. ``quiet_clock`` covers the relayed lines (stderr, CLI log,
+        # prompt steps); stdout and disk are tracked by count here because
+        # the stdout reader runs on its own thread and never touches a clock.
+        idle_limit = worker_idle_s()
+        progress_state = {"t": started_at, "files": 0, "steps": 0, "stdout": 0}
 
         def _heartbeat() -> None:
             """Speak for the agent when it has said nothing for a while.
@@ -1529,6 +1581,41 @@ def run_worker_job(
                     tailer.pump(_relay)
                     _pump_prompt_progress()
                     _heartbeat()
+                    # Progress watchdog -- a separate clock from the wall.
+                    # Cheap progress (a new step, stdout line or relayed line)
+                    # resets the clock without touching the disk; only when
+                    # every cheap signal is quiet do we walk the tree for a
+                    # new file, and only then does the idle counter run.
+                    now = time.monotonic()
+                    if (
+                        narration["steps"] != progress_state["steps"]
+                        or len(stdout_lines) != progress_state["stdout"]
+                        or quiet_clock["last"] > progress_state["t"]
+                    ):
+                        progress_state.update(
+                            {
+                                "t": now,
+                                "steps": narration["steps"],
+                                "stdout": len(stdout_lines),
+                            }
+                        )
+                    else:
+                        files_now = max(
+                            0, count_authored_files(cwd) - files_at_start
+                        )
+                        if files_now != progress_state["files"]:
+                            progress_state.update({"t": now, "files": files_now})
+                        elif now - progress_state["t"] >= idle_limit:
+                            kill_agent_tree(proc)
+                            proc.wait()
+                            # A stall is a named, recoverable event, never a wall
+                            # kill: the wrapper retries once, then fails as
+                            # ``worker_stalled`` -- never ``worker_timed_out``.
+                            raise _WorkerStall(
+                                now - progress_state["t"],
+                                files_now,
+                                narration["steps"],
+                            )
         finally:
             # Drain the remainder so no authored evidence is lost.
             stdout_reader.join(timeout=5)
@@ -1570,6 +1657,78 @@ def run_worker_job(
         return receipt
 
 
+def _emit_worker_stalled(
+    progress: Optional[Callable[[str, Dict[str, Any]], None]],
+    stall: _WorkerStall,
+    attempt: int,
+) -> None:
+    """Emit the named ``worker_stalled`` ledger event (telemetry, never fatal)."""
+    if progress is not None:
+        try:
+            progress(
+                f"{WORKER_STALLED}: no new step, file or stdout line for "
+                f"{stall.idle_s:.0f}s ({stall.files} files on disk, "
+                f"{stall.steps} steps reported) -- pass {attempt} of "
+                f"{WORKER_STALL_RETRIES + 1}",
+                {
+                    STALL_MARKER: WORKER_STALLED,
+                    STALL_IDLE_S: round(stall.idle_s, 1),
+                    STALL_FILES: stall.files,
+                    STALL_STEPS: stall.steps,
+                },
+            )
+        except Exception:  # noqa: BLE001 -- telemetry never fails the build
+            pass
+
+
+def run_worker_job_with_stall_retry(
+    prompt: str,
+    checkout_dir: Path | str,
+    *,
+    tenant_store: Any = None,
+    timeout_s: Optional[float] = None,
+    session_id: Optional[str] = None,
+    product_id: str = "",
+    progress: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    live_time_left: Optional[Callable[[], Optional[float]]] = None,
+    slot_wait_left: Optional[Callable[[], Optional[float]]] = None,
+    on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> WorkerReceipt:
+    """``run_worker_job`` with the progress watchdog's one-retry loop.
+
+    A pass that goes idle for ``worker_idle_s`` seconds raises ``_WorkerStall``
+    from inside ``run_worker_job``. This wrapper emits the ``worker_stalled``
+    ledger event, kills the agent tree and retries ONCE with a fresh process on
+    the same staged workspace. The second stall fails the phase as
+    ``worker_stalled`` -- never the wall's ``worker_timed_out`` (the wall never
+    fired).
+    """
+    for attempt in range(1, WORKER_STALL_RETRIES + 2):
+        try:
+            return run_worker_job(
+                prompt,
+                checkout_dir,
+                tenant_store=tenant_store,
+                timeout_s=timeout_s,
+                session_id=session_id,
+                product_id=product_id,
+                progress=progress,
+                live_time_left=live_time_left,
+                slot_wait_left=slot_wait_left,
+                on_slot_wait=on_slot_wait,
+            )
+        except _WorkerStall as stall:
+            _emit_worker_stalled(progress, stall, attempt)
+            if attempt >= WORKER_STALL_RETRIES + 1:
+                raise WorkerError(
+                    f"{WORKER_STALLED}: headless job stalled "
+                    f"{WORKER_STALL_RETRIES + 1} times; the last pass was idle "
+                    f"for {stall.idle_s:.0f}s with no new step, file or stdout "
+                    f"line ({stall.files} files on disk, "
+                    f"{stall.steps} steps reported)"
+                ) from stall
+
+
 def _cli_log_tailer(home: Optional[Path] = None) -> Any:
     """A fresh tailer for one worker pass."""
     return _CliLogTailer(home=home)
@@ -1604,6 +1763,14 @@ STEPS_REPORTED = "steps_reported"
 FILES_ON_DISK = "files_on_disk"
 DNS_PROBE = "dns_probe"
 WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK, DNS_PROBE)
+#: The ``worker_stalled`` ledger event: a named marker plus the facts the
+#: order demands -- idle seconds, files at stall, steps at stall. Forwarded
+#: by the writer relay exactly like WRITER_PROGRESS_FIELDS.
+STALL_MARKER = "stall"
+STALL_IDLE_S = "stall_idle_s"
+STALL_FILES = "stall_files"
+STALL_STEPS = "stall_steps"
+WRITER_STALL_FIELDS = (STALL_MARKER, STALL_IDLE_S, STALL_FILES, STALL_STEPS)
 
 
 def is_narration_line(line: str) -> bool:
