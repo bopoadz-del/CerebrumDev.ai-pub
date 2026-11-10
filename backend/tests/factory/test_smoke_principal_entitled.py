@@ -41,13 +41,15 @@ def test_smoke_account_is_active_public_account_trials(store, creator, expect_st
     assert fields["subscription_status"] == expect_status
 
 
-def test_re_ensuring_the_smoke_account_resets_its_password(store):
-    """The ops-only account is update-in-place: re-ensuring it resets its
-    password (the else branch). Two inputs (two passwords)."""
+@pytest.mark.parametrize("password", ["pass-two-123", "pass-two-456"])
+def test_re_ensuring_the_smoke_account_resets_its_password(store, password):
+    """The ops-only account is update-in-place: re-ensuring it marks it verified
+    and resets its password (the else branch). Two inputs (two passwords)."""
     first = store.ensure_verified_account("smoke-b@example.com", "pass-one-123")
-    second = store.ensure_verified_account("smoke-b@example.com", "pass-two-123")
+    second = store.ensure_verified_account("smoke-b@example.com", password)
     assert second["account_id"] == first["account_id"]
-    assert store.verify_account_password(first["account_id"], "pass-two-123") is True
+    assert second["email_verified"] is True
+    assert store.verify_account_password(first["account_id"], password) is True
     assert store.verify_account_password(first["account_id"], "pass-one-123") is False
 
 
