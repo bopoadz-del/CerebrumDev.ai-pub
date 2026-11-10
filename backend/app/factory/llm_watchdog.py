@@ -79,6 +79,23 @@ MODEL_CALL_GRACE_S = 30.0
 #: post that overshoots by this much is still a bug in the watchdog.
 WATCHDOG_OVERSHOOT_GRACE_S = 8.0
 
+#: Per-call connect/read split. ``httpx.Client(timeout=N)`` gives ONE
+#: idle value to every phase, so a black-holed connect burns the whole N.
+#: The split names the two failure modes: a connect that never completes
+#: (30s) and a read that never answers (300s). Env-overridable defaults;
+#: neither touches the call/attempt walls or the pilot ceilings.
+CONNECT_TIMEOUT_ENV = "FACTORY_CODER_CONNECT_TIMEOUT_S"
+READ_TIMEOUT_ENV = "FACTORY_CODER_READ_TIMEOUT_S"
+DEFAULT_CONNECT_TIMEOUT_S = 30.0
+DEFAULT_READ_TIMEOUT_S = 300.0
+#: One fresh-connection retry after a per-call connect/read timeout.
+#: Capped so a retry storm can never form; 0 disables.
+MODEL_CALL_RETRY_ENV = "FACTORY_CODER_MODEL_CALL_RETRIES"
+DEFAULT_MODEL_CALL_RETRIES = 1
+MODEL_CALL_RETRY_MAX = 3
+#: Named event a per-call stall surfaces as, distinct from a wall timeout.
+MODEL_CALL_TIMEOUT = "model_call_timeout"
+
 
 def call_timeout_s() -> float:
     """Per-attempt ceiling for one coder HTTP request.
@@ -121,6 +138,59 @@ def attempt_wall_s() -> float:
     return max(DEFAULT_ATTEMPT_WALL_S, per + MODEL_CALL_GRACE_S)
 
 
+def connect_timeout_s() -> float:
+    """Connect timeout for one per-call HTTP attempt.
+
+    A short floor keeps a black-holed SYN from burning the per-post wall.
+    Override with FACTORY_CODER_CONNECT_TIMEOUT_S.
+    """
+    raw = os.getenv(CONNECT_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            return max(0.05, float(raw))
+        except ValueError:
+            pass
+    return DEFAULT_CONNECT_TIMEOUT_S
+
+
+def read_timeout_s() -> float:
+    """Read timeout for one per-call HTTP attempt.
+
+    Longer than connect (a real generation streams), but still far below
+    the wall so a silent upstream is a named event, not a wall burn.
+    Override with FACTORY_CODER_READ_TIMEOUT_S.
+    """
+    raw = os.getenv(READ_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            return max(0.05, float(raw))
+        except ValueError:
+            pass
+    return DEFAULT_READ_TIMEOUT_S
+
+
+def model_call_retries() -> int:
+    """Fresh-connection retries after a per-call connect/read timeout."""
+    raw = os.getenv(MODEL_CALL_RETRY_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MODEL_CALL_RETRIES
+    try:
+        return max(0, min(int(raw), MODEL_CALL_RETRY_MAX))
+    except ValueError:
+        return DEFAULT_MODEL_CALL_RETRIES
+
+
+def per_call_timeout() -> httpx.Timeout:
+    """httpx.Timeout that splits connect from read, so a stalled socket
+    fails fast instead of sharing the whole per-post wall across phases."""
+    return httpx.Timeout(
+        connect=connect_timeout_s(),
+        read=read_timeout_s(),
+        write=read_timeout_s(),
+        pool=connect_timeout_s(),
+    )
+
+
 def is_timeout_error(exc: BaseException) -> bool:
     """A timeout by TYPE, anywhere in the cause chain -- never by the words
     of its message."""
@@ -160,6 +230,19 @@ def _timeout_error(url: str, timeout_s: float) -> httpx.ReadTimeout:
         f"coder LLM watchdog fired after {timeout_s:.1f}s "
         f"(upstream still open at {url})"
     )
+
+
+class ModelCallTimeout(httpx.ReadTimeout):
+    """A per-call connect/read timeout -- a named stall, not a silent wall.
+
+    Subclasses ``httpx.ReadTimeout`` so ``is_timeout_error`` still recognises
+    it by type; ``named`` carries the ledger token ``model_call_timeout`` so
+    the event reads as a stall, never a bare wall kill.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.named = MODEL_CALL_TIMEOUT
 
 
 def _iter_network_streams(client: Any) -> Iterable[Any]:
@@ -254,17 +337,36 @@ def post_with_deadline(
     def _run() -> None:
         try:
             if _is_real_httpx_post(poster):
-                client = httpx.Client(timeout=timeout_s)
-                client_holder["client"] = client
-                try:
-                    box["resp"] = client.post(
-                        url, json=json, headers=headers
-                    )
-                finally:
+                retries = model_call_retries()
+                for attempt in range(retries + 1):
+                    # A fresh client per attempt = a fresh connection, so
+                    # the retry cannot inherit a half-open socket from the
+                    # timed-out one.
+                    client = httpx.Client(timeout=per_call_timeout())
+                    client_holder["client"] = client
                     try:
-                        client.close()
-                    except Exception:  # noqa: BLE001
-                        pass
+                        box["resp"] = client.post(
+                            url, json=json, headers=headers
+                        )
+                        break
+                    except httpx.TimeoutException as exc:
+                        # Per-call connect/read timeout: retry once on a new
+                        # connection, then name the stall -- never let it
+                        # silently occupy the whole post wall.
+                        if attempt < retries:
+                            continue
+                        raise ModelCallTimeout(
+                            f"{MODEL_CALL_TIMEOUT}: no answer within per-call "
+                            f"timeouts (connect {connect_timeout_s():g}s / "
+                            f"read {read_timeout_s():g}s) after "
+                            f"{attempt + 1} attempt(s); last "
+                            f"{type(exc).__name__}: {exc}"
+                        ) from exc
+                    finally:
+                        try:
+                            client.close()
+                        except Exception:  # noqa: BLE001
+                            pass
             else:
                 box["resp"] = poster(
                     url, json=json, headers=headers, timeout=timeout_s
