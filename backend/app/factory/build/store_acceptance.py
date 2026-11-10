@@ -2543,6 +2543,17 @@ def stamp_acceptance_harness(workspace: Any, *, blueprint: Any = None) -> None:
     workspace.write_text(rel, factory_renders("platform", (), blueprint)[rel])
 
 
+def stamp_ui_index(workspace: Any, *, product_name: str = "platform") -> None:
+    """Stamp the Factory's discovery console BEFORE the writer starts.
+
+    ``ui_end_to_end`` probes ``app/static/index.html``, so it must be the
+    Factory's shell by construction -- a page that reads ``/v1/capabilities``
+    at load and builds a route per declared capability -- never something the
+    writer happens to author. The writer customises on top (``frontend/``).
+    """
+    workspace.write_text(UI_INDEX_REL, render_ui_index(product_name))
+
+
 def stamp_acceptance_into_path(
     root: Path | str,
     *,

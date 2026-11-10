@@ -313,9 +313,12 @@ previous agent left. Name the specialist in your progress log
   message, not at 3am inside a request.
 - BACKEND: capabilities, persistence, tenancy, the domain decisions the
   brief asked for. This is the pass DEPTH above is written about.
-- FRONTEND: the one console at app/static/index.html, driving at least two
-  capabilities against the real routes, showing the authority label on every
-  answer. A page that lists routes it never calls is a facade.
+- FRONTEND: the console shell at app/static/index.html is the Factory's and
+  is already present when you start -- it reads /v1/capabilities at load and
+  builds a route per declared capability, so it drives whatever the product
+  ships. Do not author or edit it (it is a Factory-owned file). Customise ON
+  TOP: your frontend/ modules add the operator surfaces this brief asks for,
+  built on the shipped console and the block ui_schema, not beside them.
 - DEVOPS: a DevOps team receives this and must deploy it without you. The
   Dockerfile builds every asset the app serves, the healthcheck answers
   before traffic, migrations run on boot, and README says how to run it and

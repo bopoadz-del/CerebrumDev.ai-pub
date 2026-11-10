@@ -224,6 +224,9 @@ PRESTAMPED = (
     "app/health.py",
     "app/observe.py",
     "app/revision.py",
+    # The console the ui_end_to_end gate probes: the Factory's by construction
+    # (rendered before the writer, owned, so the writer customises on top).
+    "app/static/index.html",
 )
 
 

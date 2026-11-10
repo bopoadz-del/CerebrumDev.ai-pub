@@ -157,7 +157,7 @@ def refresh_factory_files(
     brief it declared — re-rendering without it would raise every signal and
     silently re-strict a build whose brief asked for less."""
     from app.factory.build.roles_handlers import _render_release_gate
-    from app.factory.build.store_acceptance import render_acceptance_script, render_github_ci
+    from app.factory.build.store_acceptance import render_acceptance_script, render_github_ci, render_ui_index
 
     root = Path(root)
     changed: List[str] = []
@@ -180,6 +180,8 @@ def refresh_factory_files(
         _write_if_changed(root, SELF_CHECK_REL, render_self_check(), changed)
     if owned(".github/workflows/ci.yml"):
         _write_if_changed(root, ".github/workflows/ci.yml", render_github_ci(), changed)
+    if owned("app/static/index.html"):
+        _write_if_changed(root, "app/static/index.html", render_ui_index(product_name), changed)
     if (root / "requirements.txt").is_file():
         _write_if_changed(root, "requirements.txt", merged_requirements(root), changed, shared=True)
         from app.factory.build.dependency_pins import CONSTRAINTS_REL, constraints_for_tree

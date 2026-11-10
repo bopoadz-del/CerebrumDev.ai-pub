@@ -182,7 +182,7 @@ def stamps() -> Tuple[Stamp, ...]:
     from app.factory.build.placeholder_connectors import CONTRACT_TEST
     from app.factory.build.product_suites import PRODUCT_SUITES
     from app.factory.build.roles_constants import CONFTEST_REL
-    from app.factory.build.store_acceptance import ACCEPTANCE_SCRIPT_REL, GITHUB_CI_REL
+    from app.factory.build.store_acceptance import ACCEPTANCE_SCRIPT_REL, GITHUB_CI_REL, UI_INDEX_REL
     from app.factory.build.writer_behaviour import SELF_CHECK_REL
 
     def rel(p: Any) -> str:
@@ -198,7 +198,7 @@ def stamps() -> Tuple[Stamp, ...]:
             "re-entry refresh (Factory files)",
             OWNED,
             ("scripts/release_gate.py", rel(ACCEPTANCE_SCRIPT_REL), rel(SELF_CHECK_REL), rel(GITHUB_CI_REL),
-             CONSTRAINTS_REL),
+             CONSTRAINTS_REL, rel(UI_INDEX_REL)),
             _refresh,
         ),
         Stamp("re-entry refresh (requirements)", SHARED, ("requirements.txt",), _refresh),
