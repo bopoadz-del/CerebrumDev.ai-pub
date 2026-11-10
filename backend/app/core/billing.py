@@ -57,14 +57,13 @@ def is_entitled(subscription_status: Optional[str], trial_ends_at: Optional[str]
 
 
 def is_principal_entitled(principal: Principal) -> bool:
-    """The bool form of the gate — no raise, for ``/upload/allowed`` and the UI.
+    """Upload-tier entitlement — enforced regardless of ``BILLING_ENFORCEMENT``.
 
-    Admin (master key) and dev principals always pass; a real user is entitled
-    exactly when :func:`is_entitled` says so. Enforcement is opt-in: with
-    billing enforcement off, everyone is entitled (the paid gate is inert).
+    Admin (master key) and dev principals always pass; a user is entitled
+    exactly when :func:`is_entitled` says so (active sub, or a live trial).
+    This is a product-tier boundary, distinct from the billing flag that gates
+    the other paid actions (session create, draft, generate).
     """
-    if not enforcement_enabled():
-        return True
     if principal.kind != "user" or not principal.account_id:
         return True
     fields = accounts_store.subscription_fields(principal.account_id)
@@ -117,3 +116,29 @@ def assert_entitled(principal: Principal) -> Principal:
 def require_entitled(principal: Principal = Depends(require_api_key)) -> Principal:
     """Gate paid actions: admin/dev pass; users need an active sub or live trial."""
     return assert_entitled(principal)
+
+
+class FeatureGateDenied(Exception):
+    """A product-tier boundary refusal: 402 ``upgrade_required`` + the feature.
+
+    Distinct from ``assert_entitled``'s ``trial_expired``: a free account is not
+    an expired trial. The handler in ``main.py`` renders the body as
+    ``{"detail": "upgrade_required", "feature": <feature>}``.
+    """
+
+    def __init__(self, feature: str):
+        self.feature = feature
+
+
+def assert_upload_entitled(
+    principal: Principal = Depends(require_api_key),
+) -> Principal:
+    """Gate document upload + index (a product-tier boundary).
+
+    Enforced regardless of ``BILLING_ENFORCEMENT``; admin/dev pass; a user is
+    entitled only while active or inside a live trial. Otherwise raises
+    :class:`FeatureGateDenied` for the upload feature.
+    """
+    if not is_principal_entitled(principal):
+        raise FeatureGateDenied("document_upload")
+    return principal

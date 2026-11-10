@@ -188,7 +188,6 @@ def test_is_principal_entitled_derives_from_plan(monkeypatch, status, ends, expe
     inputs (entitled / not)."""
     from app.core import accounts_store, billing
 
-    monkeypatch.setattr(billing, "enforcement_enabled", lambda: True)
     monkeypatch.setattr(
         accounts_store,
         "subscription_fields",
@@ -202,8 +201,40 @@ def test_is_principal_entitled_derives_from_plan(monkeypatch, status, ends, expe
     assert billing.is_principal_entitled(_principal("dev")) is True
 
 
-def test_is_principal_entitled_everyone_when_enforcement_off(monkeypatch):
-    from app.core import billing
+@pytest.mark.parametrize(
+    "status,ends,raises",
+    [
+        ("active", None, False),
+        ("trialing", "2999-01-01T00:00:00+00:00", False),
+        ("trialing", "2000-01-01T00:00:00+00:00", True),
+        ("none", None, True),
+    ],
+)
+def test_assert_upload_entitled_refuses_non_entitled(monkeypatch, status, ends, raises):
+    """The upload POST gate refuses a non-entitled user with FeatureGateDenied
+    carrying document_upload, and lets an entitled user through. Two inputs."""
+    import pytest as _pytest
 
-    monkeypatch.setattr(billing, "enforcement_enabled", lambda: False)
-    assert billing.is_principal_entitled(_principal("user", "acct-1")) is True
+    from app.core import accounts_store, billing
+
+    monkeypatch.setattr(
+        accounts_store,
+        "subscription_fields",
+        lambda account_id: {"subscription_status": status, "trial_ends_at": ends},
+    )
+    principal = _principal("user", "acct-1")
+    if raises:
+        with _pytest.raises(billing.FeatureGateDenied) as exc:
+            billing.assert_upload_entitled(principal)
+        assert exc.value.feature == "document_upload"
+    else:
+        assert billing.assert_upload_entitled(principal) is principal
+
+
+def test_assert_upload_entitled_admin_and_dev_pass(monkeypatch):
+    from app.core import accounts_store, billing
+
+    # Enforcement is a tier boundary: admin/dev pass even with no plan fields.
+    monkeypatch.setattr(accounts_store, "subscription_fields", lambda account_id: None)
+    assert billing.assert_upload_entitled(_principal("admin")) is not None
+    assert billing.assert_upload_entitled(_principal("dev")) is not None

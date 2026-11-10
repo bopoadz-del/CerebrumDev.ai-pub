@@ -29,7 +29,7 @@ from ..core.session_guard import require_owned_session
 from ..core.session_store import update_session
 from ..core.upload_processor import process_upload
 from ..core.background import start_task, get_task_status
-from ..core.billing import require_entitled, is_principal_entitled
+from ..core.billing import assert_upload_entitled, is_principal_entitled
 from ..core.auth import Principal, require_api_key
 
 router = APIRouter()
@@ -159,7 +159,7 @@ def _fail(
 async def upload_files(
     files: List[UploadFile] = File(...),
     state: SessionState = Depends(require_owned_session),
-    _principal: Principal = Depends(require_entitled),
+    _principal: Principal = Depends(assert_upload_entitled),
 ):
     session_id = state.session_id
 
