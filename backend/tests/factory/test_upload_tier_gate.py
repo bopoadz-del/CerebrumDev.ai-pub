@@ -106,3 +106,69 @@ def test_entitled_principal_uploads_and_indexes(gate_client):
     )
     assert resp.status_code == 200, resp.text
     assert started
+
+
+def _principal(kind, account_id=None):
+    from app.core.auth import Principal
+
+    return Principal(kind=kind, account_id=account_id)
+
+
+@pytest.mark.parametrize(
+    "status,ends,expected",
+    [
+        ("active", None, True),
+        ("trialing", "2999-01-01T00:00:00+00:00", True),
+        ("trialing", "2000-01-01T00:00:00+00:00", False),
+        ("none", None, False),
+    ],
+)
+def test_is_principal_entitled_derives_from_plan(monkeypatch, status, ends, expected):
+    """The upload gate reads the principal's plan status; admin/dev pass, and a
+    user passes only when active or inside a live trial. Two inputs."""
+    from app.core import accounts_store, billing
+
+    monkeypatch.setattr(
+        accounts_store,
+        "subscription_fields",
+        lambda account_id: {"subscription_status": status, "trial_ends_at": ends},
+    )
+    assert billing.is_principal_entitled(_principal("user", "acct-1")) is expected
+    assert billing.is_principal_entitled(_principal("admin")) is True
+    assert billing.is_principal_entitled(_principal("dev")) is True
+
+
+@pytest.mark.parametrize(
+    "status,ends,raises",
+    [
+        ("active", None, False),
+        ("trialing", "2999-01-01T00:00:00+00:00", False),
+        ("trialing", "2000-01-01T00:00:00+00:00", True),
+        ("none", None, True),
+    ],
+)
+def test_assert_upload_entitled_refuses_non_entitled(monkeypatch, status, ends, raises):
+    """The POST gate refuses a non-entitled user with FeatureGateDenied carrying
+    document_upload, and returns the principal for an entitled user. Two inputs."""
+    from app.core import accounts_store, billing
+
+    monkeypatch.setattr(
+        accounts_store,
+        "subscription_fields",
+        lambda account_id: {"subscription_status": status, "trial_ends_at": ends},
+    )
+    principal = _principal("user", "acct-1")
+    if raises:
+        with pytest.raises(billing.FeatureGateDenied) as exc:
+            billing.assert_upload_entitled(principal)
+        assert exc.value.feature == "document_upload"
+    else:
+        assert billing.assert_upload_entitled(principal) is principal
+
+
+def test_assert_upload_entitled_admin_and_dev_pass(monkeypatch):
+    from app.core import accounts_store, billing
+
+    monkeypatch.setattr(accounts_store, "subscription_fields", lambda account_id: None)
+    assert billing.assert_upload_entitled(_principal("admin")) is not None
+    assert billing.assert_upload_entitled(_principal("dev")) is not None
