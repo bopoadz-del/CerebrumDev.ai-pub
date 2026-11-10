@@ -167,7 +167,8 @@ def test_tester_samples_the_field_the_product_declares_not_the_stale_spec(tmp_pa
         assert (root / rel).is_file(), rel
 
 
-def test_self_check_re_runs_nothing_when_no_file_changed(tmp_path):
+@pytest.mark.parametrize("declares_needed", [False, True])
+def test_self_check_re_runs_nothing_when_no_file_changed(tmp_path, declares_needed):
     root = tmp_path / "build"
     root.mkdir()
     ns = _stamp(root, mtime=1_000)
@@ -177,19 +178,24 @@ def test_self_check_re_runs_nothing_when_no_file_changed(tmp_path):
 
     # After TESTER stamps its suites, the stamp is newer than every app file:
     # nothing changed -> the writer re-runs nothing (the gate owns the suites).
-    _product(root, declares_needed=False)
+    _product(root, declares_needed=declares_needed)
     assert run_tester(_ctx(root, STALE)).ok
     ns2 = _stamp(root, mtime=2_000_000_000)
     assert ns2["run_targeted_tests"](str(root), _env()) == []
 
 
-def test_self_check_runs_only_the_tests_referencing_the_changed_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "unrelated", ["tests/test_unrelated.py", "tests/test_other.py"]
+)
+def test_self_check_runs_only_the_tests_referencing_the_changed_file(
+    tmp_path, monkeypatch, unrelated
+):
     root = tmp_path / "build"
     _product(root, declares_needed=False)
     assert run_tester(_ctx(root, STALE)).ok
 
     # An unrelated test file the selection must NOT run.
-    _write(root, "tests/test_unrelated.py", "def test_unrelated():\n    assert True\n")
+    _write(root, unrelated, "def test_unrelated():\n    assert True\n")
 
     # Pin the stamp as the pass-start marker (newer than everything seeded).
     ns = _stamp(root, mtime=2_000_000_000)
@@ -214,7 +220,7 @@ def test_self_check_runs_only_the_tests_referencing_the_changed_file(tmp_path, m
     # The smoke suite references the capability the writer touched.
     assert SMOKE_SUITE in argv
     # The unrelated test file (and the rest of the suite) is not re-run.
-    assert "tests/test_unrelated.py" not in argv
+    assert unrelated not in argv
 
 
 @pytest.mark.parametrize(
@@ -236,6 +242,16 @@ def test_self_check_runs_only_the_tests_referencing_the_changed_file(tmp_path, m
             ],
             [],
         ),
+        (
+            # A changed ``__init__.py`` resolves to its package tokens, not
+            # the module name ``__init__`` (the strip branch is load-bearing).
+            ["app/actions/__init__.py"],
+            [
+                ("tests/test_smoke.py", "from app.actions import kiln_board\n"),
+                ("tests/test_unrelated.py", "def test_health():\n    assert True\n"),
+            ],
+            ["tests/test_smoke.py"],
+        ),
     ],
 )
 def test_select_targeted_tests_picks_only_files_referencing_the_changed_source(
@@ -244,7 +260,8 @@ def test_select_targeted_tests_picks_only_files_referencing_the_changed_source(
     assert select_targeted_tests(changed_sources, test_files) == expected
 
 
-def test_tester_rework_item_names_the_self_check_not_the_failing_suite():
+@pytest.mark.parametrize("failing_suite", [SMOKE_SUITE, ROUTES_SUITE])
+def test_tester_rework_item_names_the_self_check_not_the_failing_suite(failing_suite):
     from app.factory.build.runner import _tester_recheck_item
     from app.factory.build.writer_behaviour import SELF_CHECK_COMMAND
 
@@ -252,13 +269,13 @@ def test_tester_rework_item_names_the_self_check_not_the_failing_suite():
         gate = "product_green"
         reason = "suite_red"
         findings = (
-            f"FAILED {SMOKE_SUITE}::test_every_capability_executes_end_to_end - "
+            f"FAILED {failing_suite}::test_every_capability_executes_end_to_end - "
             f"AssertionError: {CAP} rejected a payload built from its own schema: "
             f"{NEEDED} is required",
         )
         payload = {
             "failing_tests": [
-                {"nodeid": f"{SMOKE_SUITE}::test_every_capability_executes_end_to_end",
+                {"nodeid": f"{failing_suite}::test_every_capability_executes_end_to_end",
                  "outcome": "failure"}
             ]
         }

@@ -977,8 +977,6 @@ def select_targeted_tests(
     for rel in changed_sources or ():
         tokens.extend(_source_reference_tokens(rel))
     tokens = [t for t in dict.fromkeys(tokens) if t]
-    if not tokens:
-        return []
     selected = []
     for rel, text in test_files:
         if any(re.search(rf"\b{re.escape(tok)}\b", text or "") for tok in tokens):
