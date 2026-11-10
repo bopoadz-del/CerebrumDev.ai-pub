@@ -232,9 +232,8 @@ class TestTheTesterChecksTheUIBeforeTheGateDoes:
     sess_42d244d317f042b2 lost a 10m22s writer pass to
     ``ui_end_to_end ok=False reason=ui_not_wired_end_to_end``.
 
-    The prompt's own DEPTH section tells the agent to run
-    ``python -m pytest -m "not pilot" -q`` before yielding. A UI suite in that
-    run is the difference between fixing it in-pass and burning a round.
+    TESTER's emitted UI suite is the difference between fixing the problem
+    in-pass and burning a whole rework round on the gate's verdict.
 
     The bar does not move. The emitted suite checks what the gate already
     treats as FATAL and nothing more -- the unbuilt frontend and the missing

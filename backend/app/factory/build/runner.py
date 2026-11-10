@@ -272,30 +272,20 @@ def _writer_gate_items(verdict: Any) -> tuple:
 
 
 def _tester_recheck_item(verdict: Any) -> str:
-    """The TESTER rework round's re-check: the failing product-gate tests by
-    node id, and the self-check that runs the same suites TESTER stamped.
-    Every finding row already names the capability and field it refused."""
-    from app.factory.build import failure_owner
+    """The TESTER rework round's re-check: run the self-check, which re-runs
+    only the targeted tests for the files this pass changes. The failing
+    product-gate suites are TESTER's own check, not the writer's to re-run
+    (F2). Every finding row already names the capability and field it refused."""
     from app.factory.build.brief_gates import PRODUCT_GATE_CHECK
     from app.factory.build.product_suites import RECHECK_TAG
     from app.factory.build.writer_behaviour import SELF_CHECK_COMMAND
 
-    nodes = [
-        str(name).rsplit(" [", 1)[0]
-        for name in failure_owner.failure_names(verdict)
-        if "::" in str(name)
-    ]
-    rerun = (
-        " and `python -m pytest -m \"pilot or not pilot\" "
-        + " ".join(nodes)
-        + "`"
-        if nodes
-        else ""
-    )
     return (
         f"{RECHECK_TAG} [{PRODUCT_GATE_CHECK}] the suites that failed are on disk (Factory-"
         f"owned; TESTER re-stamps them from your app/models.py): run "
-        f"`{SELF_CHECK_COMMAND}`{rerun} before declaring done. A payload "
+        f"`{SELF_CHECK_COMMAND}` before declaring done -- it re-runs only the "
+        "targeted tests for the files you changed, never the full suites the "
+        "gates own. A payload "
         "\"built from its own schema\" uses the model's FIELDS -- declare in "
         "that capability's model every field its handler or route requires"
     )
