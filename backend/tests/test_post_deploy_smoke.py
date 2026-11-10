@@ -210,8 +210,15 @@ class TestShaDescendantGate:
     def test_git_is_ancestor_fails_closed_on_unknown_revs(self, smoke):
         assert not smoke._git_is_ancestor("0" * 40, "1" * 40)
 
+    @pytest.mark.parametrize(
+        "ancestor, descendant",
+        [
+            ("a" * 40, "b" * 40),
+            ("1" * 40, "2" * 40),
+        ],
+    )
     def test_git_is_ancestor_fetches_the_descendant_sha_before_merge_base(
-        self, smoke, monkeypatch
+        self, smoke, monkeypatch, ancestor, descendant
     ):
         calls = []
         outcomes = iter([1, 0])  # fetch "fails" (ignored); merge-base passes
@@ -225,10 +232,10 @@ class TestShaDescendantGate:
             return _Result(next(outcomes))
 
         monkeypatch.setattr(smoke.subprocess, "run", fake_run)
-        assert smoke._git_is_ancestor("a" * 40, "b" * 40)
+        assert smoke._git_is_ancestor(ancestor, descendant)
         assert calls == [
-            ["git", "fetch", "--no-tags", "--quiet", "origin", "b" * 40],
-            ["git", "merge-base", "--is-ancestor", "a" * 40, "b" * 40],
+            ["git", "fetch", "--no-tags", "--quiet", "origin", descendant],
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
         ]
 
 
