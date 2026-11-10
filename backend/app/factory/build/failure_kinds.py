@@ -13,6 +13,8 @@ from typing import Any, Iterator, MutableMapping, Optional
 
 #: The work ran out of wall clock: a watchdog, a deadline or a killed session.
 TIMEOUT = "timeout"
+#: A per-call connect/read timeout fired (a stall, distinct from a wall kill).
+MODEL_CALL_TIMEOUT = "model_call_timeout"
 #: A coder call that was never made: the build budget could not fit it.
 BUDGET_SKIPPED = "budget_skipped"
 
@@ -29,8 +31,13 @@ def failure_kind(exc: Optional[BaseException]) -> str:
     """TIMEOUT when the exception -- or anything it was raised from -- is a
     timeout by TYPE; otherwise "" (no kind claimed)."""
     from app.factory.coder import CoderTimeout
+    from app.factory.llm_watchdog import ModelCallTimeout
     from app.workbench.sandbox import SandboxTimeout
 
+    # The per-call stall is the most specific name: a request that never
+    # answered within connect/read, not a wall-clock kill.
+    if any(isinstance(e, ModelCallTimeout) for e in _chain(exc)):
+        return MODEL_CALL_TIMEOUT
     timeout_types = (TimeoutError, subprocess.TimeoutExpired, CoderTimeout, SandboxTimeout)
     return TIMEOUT if any(isinstance(e, timeout_types) for e in _chain(exc)) else ""
 
