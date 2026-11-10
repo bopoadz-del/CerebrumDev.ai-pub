@@ -6,6 +6,7 @@ killed and the two-input lint is satisfied.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -110,19 +111,35 @@ def test_resume_not_restart(first, second, expected):
     "event, expected_line",
     [
         (
-            {"ts": "2026-11-08T10:07:00+00:00", "role": "STORE_MANAGER", "kind": "GATE_FAILED", "detail": "zip_http=409", "payload": {"state": "failed"}},
-            '2026-11-08T10:07:00+00:00 phase=STORE_MANAGER event=GATE_FAILED zip_http=409 payload={"state": "failed"}',
+            {
+                "ts": "2026-11-08T10:07:00+00:00",
+                "role": "STORE_MANAGER",
+                "kind": "GATE_FAILED",
+                "detail": "zip_http=409",
+                "payload": {"state": "failed", "files": 0, "steps": 0},
+            },
+            "2026-11-08T10:07:00+00:00 phase=STORE_MANAGER event=GATE_FAILED "
+            "failure_kind=GATE_FAILED zip_http=409 counts={files=0,steps=0}",
         ),
         (
-            {"ts": "2026-11-08T10:06:50+00:00", "role": "WRITER", "kind": "NOTE", "detail": "model_call", "payload": "short"},
-            "2026-11-08T10:06:50+00:00 phase=WRITER event=NOTE model_call payload=short",
+            {
+                "ts": "2026-11-08T10:06:50+00:00",
+                "role": "WRITER",
+                "kind": "NOTE",
+                "detail": "writer working",
+                "payload": {"files_on_disk": 44, "steps_reported": 0, "stall_idle_s": 240.5},
+            },
+            "2026-11-08T10:06:50+00:00 phase=WRITER event=NOTE "
+            "failure_kind=- writer working counts={files=44,idle_s=240.5,steps=0}",
         ),
     ],
 )
-def test_render_ledger_tail_line(event, expected_line):
-    # F-G3: one line per event carrying ts, phase (role), event (kind), payload.
-    lines = pilot.render_ledger_tail([event])
+def test_render_timeline_line(event, expected_line):
+    # ORDERS_10NOV_1940Z: one redacted line per event -- ts, phase, event,
+    # failure class/kind, reason and counts; never the payload.
+    lines = pilot.render_timeline([event])
     assert lines[0] == expected_line
+    assert "payload" not in lines[0]
 
 
 @pytest.mark.parametrize(
@@ -132,20 +149,85 @@ def test_render_ledger_tail_line(event, expected_line):
         (None, ["no ledger events"]),
     ],
 )
-def test_render_ledger_tail_missing_events_is_explicit(events, expected):
-    assert pilot.render_ledger_tail(events) == expected
+def test_render_timeline_missing_events_is_explicit(events, expected):
+    assert pilot.render_timeline(events) == expected
 
 
 @pytest.mark.parametrize(
-    "payload, expected_len",
+    "event, forbidden",
     [
-        ("x" * 500, 200),
-        ("short", 5),
+        (
+            {
+                "ts": "t",
+                "role": "WRITER",
+                "kind": "NOTE",
+                "detail": "ok",
+                "payload": {
+                    "brief": "SECRETBRIEF",
+                    "prompt": "SECRETPROMPT",
+                    "path": "/ws/secret",
+                    "session_id": "sid-123",
+                    "token": "tok-123",
+                    "steps_reported": 3,
+                },
+            },
+            {"SECRETBRIEF", "SECRETPROMPT", "/ws/secret", "sid-123", "tok-123", "payload"},
+        ),
+        (
+            {
+                "ts": "t",
+                "kind": "RUN_FAILED",
+                "detail": "boom",
+                "payload": {"decision": {"findings": ["doc-name.pdf"]}, "files": 2},
+            },
+            {"decision", "findings", "doc-name.pdf", "payload"},
+        ),
     ],
 )
-def test_render_ledger_tail_truncates_payload(payload, expected_len):
-    lines = pilot.render_ledger_tail([{"ts": "t", "payload": payload}])
-    assert len(lines[0].split("payload=", 1)[1]) == expected_len
+def test_redact_event_drops_payload_and_secrets(event, forbidden):
+    # ORDERS_10NOV_1940Z: payloads, briefs, prompts, doc names, paths, session
+    # ids and tokens never reach the printed/uploaded timeline.
+    red = pilot.redact_event(event)
+    flat = json.dumps(red, ensure_ascii=False, default=str)
+    for word in forbidden:
+        assert word not in flat
+
+
+@pytest.mark.parametrize(
+    "event, expected",
+    [
+        ({"kind": "RUN_FAILED", "detail": "", "payload": {}}, "RUN_FAILED"),
+        ({"kind": "NOTE", "detail": "", "payload": {"failure_kind": "timeout"}}, "timeout"),
+        ({"kind": "NOTE", "detail": "", "payload": {"stall": "worker_stalled"}}, "worker_stalled"),
+        ({"kind": "NOTE", "detail": "model_call_timeout", "payload": {}}, "model_call_timeout"),
+        ({"kind": "worker_stalled", "detail": "", "payload": {}}, "worker_stalled"),
+        ({"kind": "NOTE", "detail": "plain", "payload": {"other": 1}}, ""),
+        ({"kind": "PHASE_STARTED", "detail": "", "payload": {}}, ""),
+    ],
+)
+def test_failure_kind_of(event, expected):
+    assert pilot.failure_kind_of(event) == expected
+
+
+@pytest.mark.parametrize(
+    "event, expected",
+    [
+        (
+            {"payload": {"files_on_disk": 44, "steps_reported": 0, "stall_idle_s": 240.5}},
+            {"files": 44, "steps": 0, "idle_s": 240.5},
+        ),
+        (
+            {"payload": {"stall_files": 9, "stall_steps": 2, "stall_idle_s": 30}},
+            {"files": 9, "steps": 2, "idle_s": 30.0},
+        ),
+        ({"payload": {"since_s": 11.2}}, {"idle_s": 11.2}),
+        ({"payload": {"files": 5, "steps": 1, "since_s": 3}}, {"files": 5, "steps": 1, "idle_s": 3.0}),
+        ({"payload": {"other": "x"}}, {}),
+        ({"payload": "not a dict"}, {}),
+    ],
+)
+def test_counts_of_keeps_only_named_counts(event, expected):
+    assert pilot.counts_of(event) == expected
 
 
 @pytest.mark.parametrize(
@@ -204,7 +286,7 @@ def test_is_reason_event(event, expected):
                 {"ts": "t1", "kind": "PHASE_STARTED", "detail": "", "payload": {}},
                 {"ts": "t2", "kind": "RUN_FAILED", "detail": "boom", "payload": {}},
             ],
-            ["t2 phase=- event=RUN_FAILED boom payload={}"],
+            ["t2 phase=- event=RUN_FAILED failure_kind=RUN_FAILED boom"],
         ),
         (
             [{"ts": "t1", "kind": "NOTE", "detail": "plain", "payload": {}}],
@@ -219,12 +301,22 @@ def test_render_reason_events_filters(events, expected):
 @pytest.mark.parametrize(
     "events, expected_lines",
     [
-        ([{"seq": 1, "kind": "NOTE"}, {"seq": 2, "kind": "RUN_FAILED"}], 2),
-        ([{"seq": 3, "kind": "GATE_FAILED"}], 1),
+        (
+            [
+                {"seq": 1, "kind": "NOTE", "payload": {"secret": "x", "steps": 2}},
+                {"seq": 2, "kind": "RUN_FAILED", "detail": "boom", "payload": {"prompt": "y"}},
+            ],
+            2,
+        ),
+        ([{"seq": 3, "kind": "GATE_FAILED", "payload": {"session_id": "z"}}], 1),
     ],
 )
-def test_write_pilot_ledger_writes_jsonl(tmp_path, events, expected_lines):
-    ok = pilot.write_pilot_ledger(events, tmp_path / "ledger.jsonl")
+def test_write_pilot_timeline_writes_jsonl(tmp_path, events, expected_lines):
+    ok = pilot.write_pilot_timeline(events, tmp_path / "timeline.jsonl")
     assert ok is True
-    raw = (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    raw = (tmp_path / "timeline.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(raw) == expected_lines
+    # Redaction: the full payload never lands in the uploaded artifact.
+    joined = "\n".join(raw)
+    for word in ("secret", "prompt", "session_id", "payload"):
+        assert word not in joined
