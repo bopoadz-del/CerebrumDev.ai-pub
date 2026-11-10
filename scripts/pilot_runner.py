@@ -205,12 +205,34 @@ def wait_upload_terminal(sid: str, token: str, wait_s: int = 600) -> Dict[str, A
 
 RESULTS: List[Tuple[str, bool, str]] = []
 
-#: F-G3 (ORDERS_08NOV_0020Z): on ANY stage FAIL the pilot prints the session id
-#: plus the last 20 ledger events (ts, phase, event, payload) into the step
-#: output and PILOT_RESULT -- a silent stop is never left unexplained.
+#: F-G3 (ORDERS_08NOV_0020Z): on ANY stage FAIL the pilot prints the last
+#: ledger events into the step output and PILOT_RESULT -- a silent stop is
+#: never left unexplained.
+#: ORDERS_10NOV_1940Z (narrows 1925Z item 1): the pilot still fetches the FULL
+#: build ledger through the gated endpoint it already uses, but it prints and
+#: uploads only a REDACTED event TIMELINE -- ts, phase, event, failure
+#: class/kind, the short reason string and counts (files/steps/idle seconds).
+#: Never the ledger payload, never brief/prompt text, document names, paths,
+#: session ids or tokens: the full ledger stays server-side, and the repo's
+#: run logs/artifacts are public.
 LAST_SID: str | None = None
 LAST_TOKEN: str | None = None
 LEDGER_TAIL: List[str] = []
+PILOT_TIMELINE_NAME = "PILOT_TIMELINE.jsonl"
+#: Ledger event kinds that are a run/phase verdict (the terminal events).
+TERMINAL_REASON_KINDS = frozenset({"RUN_FAILED", "PHASE_ABORTED", "GATE_FAILED"})
+#: Named worker / model-call reason markers, carried in ``kind``, ``detail`` or
+#: a typed payload key (``stall`` / ``failure_kind`` / ``marker``).
+REASON_PREFIXES = ("worker_", "model_call_")
+#: The ONLY payload keys the redacted timeline keeps: numeric counts of files,
+#: steps and idle seconds (the count fields the ledger writes). Every other
+#: payload key -- including briefs, prompts, document names, paths, session ids
+#: and tokens -- is dropped.
+COUNT_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "files": ("files_on_disk", "stall_files", "files"),
+    "steps": ("steps_reported", "stall_steps", "steps"),
+    "idle_s": ("stall_idle_s", "since_s", "idle_s"),
+}
 
 
 def record(stage: str, ok: bool, evidence: str) -> None:
@@ -219,40 +241,162 @@ def record(stage: str, ok: bool, evidence: str) -> None:
     RESULTS.append((stage, ok, evidence))
 
 
-def render_ledger_tail(events: Any, limit: int = 20) -> List[str]:
-    """F-G3: render up to ``limit`` ledger events, one line each.
+def fetch_full_ledger(sid: str, token: str) -> List[Any]:
+    """The FULL build ledger for a session, fetched server-side only.
 
-    Each line carries ``ts``, the build phase (``role``), the event
-    (``kind`` + ``detail``) and the first 200 chars of ``payload``.
+    Every event, untruncated -- never written, printed or uploaded as-is:
+    callers redact it (:func:`render_timeline` / :func:`write_pilot_timeline`)
+    before anything leaves the CI run.
+    """
+    _s, ledger = smoke.req("GET", f"/v1/sessions/{sid}/product/ledger", token=token)
+    events = (ledger or {}).get("events") if isinstance(ledger, dict) else ledger
+    return events if isinstance(events, list) else []
+
+
+def failure_kind_of(ev: Dict[str, Any]) -> str:
+    """The failure class/kind for a redacted timeline entry.
+
+    A terminal verdict kind, a typed ``failure_kind`` / ``stall`` / ``marker``
+    in the payload, or a named worker_*/model_call_* marker in ``kind`` or
+    ``detail``. Empty when the event claims no failure class.
+    """
+    kind = str(ev.get("kind") or "")
+    if kind.upper() in TERMINAL_REASON_KINDS:
+        return kind
+    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+    for key in ("failure_kind", "stall", "marker"):
+        value = str(payload.get(key) or "")
+        if value:
+            return value
+    detail = str(ev.get("detail") or "")
+    if detail.lower().startswith(REASON_PREFIXES):
+        return detail
+    if kind.lower().startswith(REASON_PREFIXES):
+        return kind
+    return ""
+
+
+def counts_of(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """The numeric counts a redacted timeline entry keeps: files, steps and
+    idle seconds, read only from the ledger's typed count fields."""
+    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+    out: Dict[str, Any] = {}
+    for label, keys in COUNT_FIELDS.items():
+        for key in keys:
+            raw = payload.get(key)
+            if raw is None:
+                continue
+            try:
+                num = float(raw)
+            except (TypeError, ValueError):
+                continue
+            out[label] = int(num) if label in ("files", "steps") else num
+            break
+    return out
+
+
+def redact_event(ev: Any) -> Dict[str, Any]:
+    """The ONLY fields of a ledger event the public pilot may print/upload.
+
+    ts, phase, event, failure class/kind, the short reason string and counts.
+    The payload never appears: briefs, prompts, document names, paths, session
+    ids and tokens stay server-side.
+    """
+    if not isinstance(ev, dict):
+        return {"event": "unreadable", "reason": str(ev)[:80]}
+    return {
+        "ts": str(ev.get("ts") or ""),
+        "phase": str(ev.get("role") or "-"),
+        "event": str(ev.get("kind") or ""),
+        "failure_kind": failure_kind_of(ev),
+        "reason": str(ev.get("detail") or "")[:200],
+        "counts": counts_of(ev),
+    }
+
+
+def render_timeline(events: Any, limit: int = 20) -> List[str]:
+    """Render up to ``limit`` ledger events as REDACTED one-line entries.
+
+    Each line carries the allowed timeline fields only; the payload never
+    appears (its counts are surfaced as ``counts={...}``).
     """
     if not isinstance(events, list) or not events:
         return ["no ledger events"]
     lines: List[str] = []
     for ev in events[-limit:]:
-        if not isinstance(ev, dict):
-            lines.append(str(ev)[:200])
-            continue
-        ts = str(ev.get("ts") or "")
-        role = str(ev.get("role") or "-")
-        kind = str(ev.get("kind") or "")
-        detail = str(ev.get("detail") or "")
-        payload = ev.get("payload") or {}
-        payload_s = (
-            payload if isinstance(payload, str)
-            else json.dumps(payload, ensure_ascii=False, default=str)
+        red = redact_event(ev)
+        counts = red["counts"]
+        counts_s = ",".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        line = (
+            f"{red['ts']} phase={red['phase']} event={red['event']} "
+            f"failure_kind={red['failure_kind'] or '-'} {red['reason']}"
         )
-        lines.append(f"{ts} phase={role} event={kind} {detail} payload={payload_s[:200]}")
+        if counts_s:
+            line += f" counts={{{counts_s}}}"
+        lines.append(line)
     return lines
 
 
-def fetch_ledger_tail(sid: str, token: str, limit: int = 20) -> List[str]:
-    """F-G3: last ``limit`` ledger events for a session, rendered for the report."""
-    _s, ledger = smoke.req("GET", f"/v1/sessions/{sid}/product/ledger", token=token)
-    events = (ledger or {}).get("events") if isinstance(ledger, dict) else ledger
-    if not isinstance(events, list) or not events:
-        detail = (ledger or {}).get("detail") if isinstance(ledger, dict) else None
-        return [f"no ledger events (detail={detail})"]
-    return render_ledger_tail(events, limit=limit)
+def is_reason_event(ev: Dict[str, Any]) -> bool:
+    """True for a terminal verdict or a named worker_*/model_call_* marker.
+
+    Matches the event's own ``kind`` / ``detail`` and the typed payload markers
+    that name a worker or model-call reason (``stall`` / ``failure_kind`` /
+    ``marker``, or the model-call lifecycle fields) -- never by searching
+    arbitrary prose for a phrase someone happened to write.
+    """
+    kind = str(ev.get("kind") or "")
+    detail = str(ev.get("detail") or "")
+    payload = ev.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if kind.upper() in TERMINAL_REASON_KINDS:
+        return True
+    if kind.lower().startswith(REASON_PREFIXES) or detail.lower().startswith(REASON_PREFIXES):
+        return True
+    for key in ("stall", "failure_kind", "marker"):
+        if str(payload.get(key) or "").lower().startswith(REASON_PREFIXES):
+            return True
+    return bool(
+        "model_call" in payload
+        or "model_call_state" in payload
+        or "model_call_deadline_s" in payload
+    )
+
+
+def render_reason_events(events: Any) -> List[str]:
+    """Every terminal-reason event, one line each with its timestamp.
+
+    The run's terminal reason (a verdict, or a worker_*/model_call_* marker),
+    not the generic tail -- so a failed pilot names why it failed.
+    """
+    if not isinstance(events, list):
+        return ["no ledger events to filter"]
+    lines: List[str] = []
+    for ev in events:
+        if isinstance(ev, dict) and is_reason_event(ev):
+            lines.extend(render_timeline([ev], limit=1))
+    if not lines:
+        return ["no RUN_FAILED / PHASE_ABORTED / GATE_FAILED / worker_* / model_call_* event found"]
+    return lines
+
+
+def write_pilot_timeline(events: Any, path: Path | str | None = None) -> bool:
+    """Write the REDACTED timeline to PILOT_TIMELINE.jsonl (one event per line).
+
+    ``path`` overrides the target for tests; the pilot writes next to
+    PILOT_RESULT.md at the repo root so the workflow can upload it. Only the
+    redacted event dicts are written -- the full ledger stays server-side.
+    """
+    if not isinstance(events, list):
+        return False
+    target = Path(path) if path is not None else (REPO_ROOT / PILOT_TIMELINE_NAME)
+    try:
+        lines = [json.dumps(redact_event(ev), ensure_ascii=False, default=str) for ev in events]
+        target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def principal_required_result(has_creds: bool) -> Check:
@@ -369,20 +513,27 @@ def render_result_md() -> str:
     failed = [s for s, ok, _ in RESULTS if not ok]
     verdict = "FAIL" if (failed or not RESULTS) else "PASS"
     lines += ["", f"**{verdict}**: {len(RESULTS) - len(failed)}/{len(RESULTS)} stages green"]
-    if LAST_SID:
-        lines += ["", f"session_id={LAST_SID}"]
     if LEDGER_TAIL:
-        lines += ["", "## last 20 ledger events (F-G3)"]
+        lines += ["", "## build timeline (redacted)"]
         lines += [f"- {line}" for line in LEDGER_TAIL]
     return "\n".join(lines) + "\n"
 
 
 def finish() -> int:
-    # F-G3: a failure must carry its ledger tail, never a silent stop.
+    # F-G3 (ORDERS_10NOV_1940Z): a failure must carry the REDACTED timeline and
+    # its terminal reason in the run, never a silent stop; the full ledger
+    # stays server-side.
     failed = [s for s, ok, _ in RESULTS if not ok]
     if failed and LAST_SID and LAST_TOKEN and not LEDGER_TAIL:
         try:
-            LEDGER_TAIL.extend(fetch_ledger_tail(LAST_SID, LAST_TOKEN))
+            events = fetch_full_ledger(LAST_SID, LAST_TOKEN)
+            if write_pilot_timeline(events):
+                LEDGER_TAIL.append(
+                    f"redacted timeline written to {PILOT_TIMELINE_NAME} ({len(events)} events)"
+                )
+            LEDGER_TAIL.extend(render_timeline(events, limit=20))
+            LEDGER_TAIL.append("terminal reason:")
+            LEDGER_TAIL.extend(render_reason_events(events))
         except Exception as exc:  # noqa: BLE001 -- ledger fetch never changes the verdict
             LEDGER_TAIL.append(f"ledger fetch error: {exc}")
     md = render_result_md()
