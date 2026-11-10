@@ -29,6 +29,8 @@ from ..core.session_guard import require_owned_session
 from ..core.session_store import update_session
 from ..core.upload_processor import process_upload
 from ..core.background import start_task, get_task_status
+from ..core.billing import require_entitled, is_principal_entitled
+from ..core.auth import Principal, require_api_key
 
 router = APIRouter()
 
@@ -157,6 +159,7 @@ def _fail(
 async def upload_files(
     files: List[UploadFile] = File(...),
     state: SessionState = Depends(require_owned_session),
+    _principal: Principal = Depends(require_entitled),
 ):
     session_id = state.session_id
 
@@ -274,15 +277,33 @@ async def upload_result(state: SessionState = Depends(require_owned_session)):
 
 
 @router.get("/{session_id}/upload/allowed")
-async def upload_allowed(state: SessionState = Depends(require_owned_session)):
+async def upload_allowed(
+    state: SessionState = Depends(require_owned_session),
+    principal: Principal = Depends(require_api_key),
+):
     """The accept-set + caps the Floor "+" derives its file picker from, so the
     frontend never hardwires the format list (F-10b): it mirrors the same
     ``allowed_extensions()`` the POST route enforces, so the picker and the 415
-    can never drift apart."""
+    can never drift apart.
+
+    Upload is a PAID action: a free/expired principal gets ``entitled: false``
+    with empty caps (so the UI hides the "+" and shows the upgrade message),
+    and the POST route independently refuses the same account with 402.
+    """
+    entitled = is_principal_entitled(principal)
+    if not entitled:
+        return {
+            "extensions": [],
+            "accept": "",
+            "max_files": 0,
+            "max_file_bytes": 0,
+            "entitled": False,
+        }
     exts = sorted(allowed_extensions())
     return {
         "extensions": exts,
         "accept": ",".join(exts),
         "max_files": max_upload_files(),
         "max_file_bytes": max_upload_file_bytes(),
+        "entitled": True,
     }

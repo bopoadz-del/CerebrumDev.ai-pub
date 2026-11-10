@@ -165,3 +165,45 @@ def test_legacy_account_without_billing_fields_not_entitled(client, monkeypatch)
     assert snap["entitled"] is False
     res = client.post("/v1/sessions/", headers=_auth(body))
     assert res.status_code == 402
+
+
+def _principal(kind, account_id=None):
+    from app.core.auth import Principal
+
+    return Principal(kind=kind, account_id=account_id)
+
+
+@pytest.mark.parametrize(
+    "status,ends,expected",
+    [
+        ("active", None, True),
+        ("trialing", "2999-01-01T00:00:00+00:00", True),
+        ("trialing", "2000-01-01T00:00:00+00:00", False),
+        ("none", None, False),
+    ],
+)
+def test_is_principal_entitled_derives_from_plan(monkeypatch, status, ends, expected):
+    """The upload gate reads the principal's plan status; admin/dev pass, and a
+    user passes only when the account is active or inside a live trial. Two
+    inputs (entitled / not)."""
+    from app.core import accounts_store, billing
+
+    monkeypatch.setattr(billing, "enforcement_enabled", lambda: True)
+    monkeypatch.setattr(
+        accounts_store,
+        "subscription_fields",
+        lambda account_id: {"subscription_status": status, "trial_ends_at": ends},
+    )
+    assert (
+        billing.is_principal_entitled(_principal("user", "acct-1")) is expected
+    )
+    # admin + dev always pass regardless of plan.
+    assert billing.is_principal_entitled(_principal("admin")) is True
+    assert billing.is_principal_entitled(_principal("dev")) is True
+
+
+def test_is_principal_entitled_everyone_when_enforcement_off(monkeypatch):
+    from app.core import billing
+
+    monkeypatch.setattr(billing, "enforcement_enabled", lambda: False)
+    assert billing.is_principal_entitled(_principal("user", "acct-1")) is True

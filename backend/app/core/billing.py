@@ -56,6 +56,23 @@ def is_entitled(subscription_status: Optional[str], trial_ends_at: Optional[str]
     return False
 
 
+def is_principal_entitled(principal: Principal) -> bool:
+    """The bool form of the gate — no raise, for ``/upload/allowed`` and the UI.
+
+    Admin (master key) and dev principals always pass; a real user is entitled
+    exactly when :func:`is_entitled` says so. Enforcement is opt-in: with
+    billing enforcement off, everyone is entitled (the paid gate is inert).
+    """
+    if not enforcement_enabled():
+        return True
+    if principal.kind != "user" or not principal.account_id:
+        return True
+    fields = accounts_store.subscription_fields(principal.account_id)
+    if fields is None:
+        return False
+    return is_entitled(fields["subscription_status"], fields["trial_ends_at"])
+
+
 def billing_status(account_id: str) -> Optional[Dict[str, Any]]:
     """Full billing snapshot for the status endpoint / register response."""
     fields = accounts_store.subscription_fields(account_id)

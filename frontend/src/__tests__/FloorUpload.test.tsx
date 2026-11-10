@@ -24,7 +24,7 @@ vi.mock('../api/factory', async (importOriginal) => {
 import { FloorUpload } from '../FloorUpload'
 import { ApiError } from '../api/factory'
 
-const ALLOWED = { extensions: ['.docx', '.pdf', '.xlsx'], accept: '.docx,.pdf,.xlsx', max_files: 10, max_file_bytes: 1000000 }
+const ALLOWED = { extensions: ['.docx', '.pdf', '.xlsx'], accept: '.docx,.pdf,.xlsx', max_files: 10, max_file_bytes: 1000000, entitled: true }
 
 function pick(name: string, type: string) {
   const input = screen.getByTestId('floor-upload-input') as HTMLInputElement
@@ -85,5 +85,15 @@ describe('FloorUpload — the Floor "+" document attach (F-10b)', () => {
     uploadAllowedMock.mockReturnValue(new Promise(() => {})) // never resolves
     render(<FloorUpload sessionId="s1" />)
     expect(screen.getByTestId('floor-upload-add')).toBeDisabled()
+  })
+
+  it('hides the "+" and shows the upgrade message when not entitled (free tier)', async () => {
+    uploadAllowedMock.mockResolvedValue({ ...ALLOWED, accept: '', entitled: false })
+    render(<FloorUpload sessionId="s1" />)
+    const add = await screen.findByTestId('floor-upload-add')
+    await waitFor(() => expect(add).toBeDisabled())
+    const upgrade = await screen.findByTestId('floor-upload-upgrade')
+    expect(upgrade).toHaveTextContent(/paid-tier/i)
+    expect(uploadFilesMock).not.toHaveBeenCalled()
   })
 })

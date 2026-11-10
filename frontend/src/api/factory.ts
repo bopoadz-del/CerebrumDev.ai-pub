@@ -526,6 +526,7 @@ export interface UploadAllowed {
   accept: string
   max_files: number
   max_file_bytes: number
+  entitled: boolean
 }
 
 export interface UploadStatus {
