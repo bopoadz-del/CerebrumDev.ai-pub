@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.factory.build.store_acceptance import render_ui_index
 from app.factory.build.ui_e2e import _render_probe
 from app.factory.build.writer_prompt import render_writer_prompt
@@ -75,6 +77,14 @@ class TestThePromptStatesTheBarTheGateEnforces:
         assert "UI (a pilot is deployed and tested" in text
         assert "at least two capabilities driven from" in text
         assert "authority label" in text
+
+    def test_the_prompt_points_the_writer_at_customising_on_top_not_authoring_the_shell(self):
+        # The shell at app/static/index.html is the Factory's by construction;
+        # the writer customises on top, it never authors the shell.
+        text = self._prompt()
+        assert "app/static/index.html" in text
+        assert "Do not author or edit it" in text
+        assert "frontend/ modules" in text
 
     def test_the_prompt_attaches_the_improvised_label_in_three_places(self):
         # ORDERS_08NOV_0250Z B: the label is attached by construction, not a
@@ -284,3 +294,85 @@ class TestTheTesterChecksTheUIBeforeTheGateDoes:
             "the emitter exists but TESTER never writes it, so the agent still "
             "never runs it"
         )
+
+
+class TestTheRenderedShellDrivesEveryCapabilitySet:
+    """Two synthetic capability sets, the rendered shell drives all of each.
+
+    The shell is generic: it reads ``/v1/capabilities`` at load and builds
+    ``"/v1/" + id`` per declared capability, so the gate's discovery branch
+    credits it with driving whatever the product ships. Two different sets
+    prove no capability name is baked into the shell.
+    """
+
+    def _driven(self, tmp_path: Path, caps: tuple[str, ...]) -> list[str]:
+        import subprocess
+        import sys
+
+        (tmp_path / "app" / "static").mkdir(parents=True)
+        (tmp_path / "app" / "static" / "index.html").write_text(
+            render_ui_index("Test"), encoding="utf-8"
+        )
+        (tmp_path / "app" / "actions").mkdir(parents=True, exist_ok=True)
+        for cap in caps:
+            (tmp_path / "app" / "actions" / f"{cap}.py").write_text("", encoding="utf-8")
+        (tmp_path / "app" / "main.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "\n"
+            '@app.get("/v1/capabilities")\n'
+            "def caps():\n"
+            '    return {"items": ' + json.dumps(list(caps)) + "}\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", _render_probe()],
+            cwd=tmp_path, capture_output=True, text=True,
+        )
+        line = [ln for ln in proc.stdout.splitlines() if ln.startswith("UI_PROBE=")]
+        assert line, proc.stdout + proc.stderr
+        out = json.loads(line[-1].split("=", 1)[1])
+        assert out["findings"] == [], out
+        return sorted(out["ui_caps"])
+
+    @pytest.mark.parametrize(
+        "caps",
+        [("ingest", "query", "backup"), ("book_slot", "cancel_slot")],
+    )
+    def test_it_drives_all_of_each(self, tmp_path, caps):
+        assert self._driven(tmp_path, caps) == sorted(caps)
+
+
+class TestTheAcceptanceHarnessStampsTheConsoleByConstruction:
+    """The console is stamped with the harness, before any writer path.
+
+    ``stamp_acceptance_harness`` stamps ``app/static/index.html`` by
+    construction (it calls ``stamp_ui_index``), so a build that never reaches
+    the writer still carries the shell the ``ui_end_to_end`` gate probes. A
+    mutant that drops either write leaves the console absent and this test red.
+    """
+
+    def test_the_console_is_written_when_the_harness_is_stamped(self, tmp_path):
+        from app.factory.build.stamp_registry import _Workspace
+        from app.factory.build.store_acceptance import (
+            UI_INDEX_REL,
+            stamp_acceptance_harness,
+            stamp_ui_index,
+        )
+
+        class _Bp:
+            product_name = "Test Product"
+
+        ws = _Workspace(tmp_path)
+        stamp_acceptance_harness(ws, blueprint=_Bp())
+
+        index = tmp_path / UI_INDEX_REL
+        assert index.is_file()
+        text = index.read_text(encoding="utf-8")
+        assert "Test Product" in text
+        assert "/v1/capabilities" in text
+
+        # The same write the harness makes, exercised directly: the stamp and
+        # the harness must each be load-bearing, not one hiding inside the other.
+        stamp_ui_index(ws, product_name="Direct Stamp")
+        assert "Direct Stamp" in index.read_text(encoding="utf-8")
