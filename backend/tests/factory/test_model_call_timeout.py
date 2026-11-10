@@ -74,12 +74,16 @@ class _SilentEndpoint:
         self._thread.join(timeout=2)
 
 
-def test_silent_endpoint_fails_fast_with_named_event(monkeypatch):
+@pytest.mark.parametrize(
+    ("read_s", "connect_s"),
+    [("0.2", "0.5"), ("0.1", "0.3")],
+)
+def test_silent_endpoint_fails_fast_with_named_event(monkeypatch, read_s, connect_s):
     """A never-answering endpoint is a per-call read timeout: it must raise
     ``ModelCallTimeout`` (named ``model_call_timeout``) fast, and retry once
     on a fresh connection — two accepts, not a silent wall burn."""
-    monkeypatch.setenv("FACTORY_CODER_READ_TIMEOUT_S", "0.2")
-    monkeypatch.setenv("FACTORY_CODER_CONNECT_TIMEOUT_S", "0.5")
+    monkeypatch.setenv("FACTORY_CODER_READ_TIMEOUT_S", read_s)
+    monkeypatch.setenv("FACTORY_CODER_CONNECT_TIMEOUT_S", connect_s)
     endpoint = _SilentEndpoint()
     try:
         url = f"http://127.0.0.1:{endpoint.port}/v1/chat/completions"
@@ -100,12 +104,17 @@ def test_silent_endpoint_fails_fast_with_named_event(monkeypatch):
         endpoint.close()
 
 
-def test_model_call_timeout_is_a_distinct_failure_kind():
+@pytest.mark.parametrize(
+    ("exc", "expected_kind"),
+    [
+        (ModelCallTimeout("no answer within per-call timeouts"), MODEL_CALL_TIMEOUT),
+        (TimeoutError("wall"), TIMEOUT),
+    ],
+)
+def test_model_call_timeout_is_a_distinct_failure_kind(exc, expected_kind):
     """The named stall maps to its own failure kind, not the generic wall
     ``timeout`` — readers can tell a per-call hang from a wall kill."""
-    stall = ModelCallTimeout("no answer within per-call timeouts")
-    assert failure_kind(stall) == MODEL_CALL_TIMEOUT
-    assert failure_kind(TimeoutError("wall")) == TIMEOUT
+    assert failure_kind(exc) == expected_kind
 
 
 @pytest.mark.parametrize(
