@@ -45,6 +45,11 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the pilot's sha gate can accept the expected
+          # deploy sha OR a descendant of it (git merge-base --is-ancestor),
+          # not just an exact/prefix match.
+          fetch-depth: 0
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}

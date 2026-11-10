@@ -33,6 +33,7 @@ Exit code 0 = all checks that ran pass. Prints a LIVE/DEAD line per kernel.
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -150,11 +151,16 @@ def expected_git_sha(explicit=None):
     )
 
 
-def git_sha_matches(live_sha, expected_sha):
-    """True when live /version git_sha matches expected (full or unique prefix).
+def git_sha_matches(live_sha, expected_sha, allow_descendant=False, _is_ancestor=None):
+    """True when live /version git_sha matches expected (full or unique prefix),
+    or — only when ``allow_descendant`` — when expected is an ancestor of live.
 
     Empty expected_sha is not a gate (local run). Prefix match requires the
     shorter side to be at least 7 hex chars — git's default short SHA.
+    ``allow_descendant`` lets a pilot whose deploy was superseded by a later
+    deploy pass: the code it exercised is still in the live tree (a
+    descendant), so two deploys landing back-to-back must not fail the earlier
+    pilot on a sha mismatch. ``_is_ancestor`` is injectable for tests.
     """
     expected = (expected_sha or "").strip().lower()
     if not expected:
@@ -165,7 +171,41 @@ def git_sha_matches(live_sha, expected_sha):
     if live == expected:
         return True
     shorter, longer = (live, expected) if len(live) <= len(expected) else (expected, live)
-    return len(shorter) >= 7 and longer.startswith(shorter)
+    if len(shorter) >= 7 and longer.startswith(shorter):
+        return True
+    if allow_descendant:
+        check = _git_is_ancestor if _is_ancestor is None else _is_ancestor
+        return check(expected, live)
+    return False
+
+
+def _git_is_ancestor(ancestor: str, descendant: str) -> bool:
+    """True when ``ancestor`` is an ancestor of (or equal to) ``descendant``
+    in the checked-out repo (``git merge-base --is-ancestor``).
+
+    The descendant may have landed after this checkout (a superseding deploy),
+    so one best-effort ``git fetch origin <descendant>`` runs first; a fetch
+    failure is ignored and merge-base decides. OSError (git un-runnable) and a
+    non-zero merge-base both fail closed — never a skip-pass."""
+    try:
+        subprocess.run(
+            ["git", "fetch", "--no-tags", "--quiet", "origin", descendant],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
 
 
 def surface_is_ready(
@@ -176,13 +216,15 @@ def surface_is_ready(
     version_status=None,
     version_body=None,
     expected_sha="",
+    allow_descendant=False,
 ):
     """True when /health, /ready, and (when SHA-gated) /version are live.
 
-    Health must be HTTP 200 with status==\"ok\". Ready must be HTTP 200 with
-    status==\"ready\". When expected_sha is non-empty, /version must be HTTP
-    200 and git_sha must match (full or unique prefix). Empty expected_sha
-    skips the SHA gate so 4-arg callers and local runs stay health/ready only.
+    Health must be HTTP 200 with status=="ok". Ready must be HTTP 200 with
+    status=="ready". When expected_sha is non-empty, /version must be HTTP
+    200 and git_sha must match (full or unique prefix) or — only when
+    ``allow_descendant`` — be a descendant of it. Empty expected_sha skips the
+    SHA gate so 4-arg callers and local runs stay health/ready only.
     """
     health_ok = health_status == 200 and _mapping(health_body).get("status") == "ok"
     ready_ok = ready_status == 200 and _mapping(ready_body).get("status") == "ready"
@@ -194,17 +236,23 @@ def surface_is_ready(
     if version_status != 200:
         return False
     live = _mapping(version_body).get("git_sha") or ""
-    return git_sha_matches(live, want)
+    return git_sha_matches(live, want, allow_descendant=allow_descendant)
 
 
 def wait_for_ready(
-    timeout_s=None, interval_s=None, req_fn=None, sleeper=None, expected_sha=None
+    timeout_s=None,
+    interval_s=None,
+    req_fn=None,
+    sleeper=None,
+    expected_sha=None,
+    allow_descendant=False,
 ):
     """Poll /health, /ready, and (when SHA-gated) /version until ready.
 
     Returns True if the surface became ready. Records a DEAD check on timeout.
-    ``req_fn`` / ``sleeper`` / ``expected_sha`` are injectable for tests.
-    When ``expected_sha`` is None, GITHUB_SHA is read from the environment.
+    ``req_fn`` / ``sleeper`` / ``expected_sha`` / ``allow_descendant`` are
+    injectable for tests. When ``expected_sha`` is None, GITHUB_SHA is read
+    from the environment.
     """
     timeout = ready_wait_seconds() if timeout_s is None else timeout_s
     interval = ready_interval_seconds() if interval_s is None else interval_s
@@ -224,7 +272,7 @@ def wait_for_ready(
         hs, hb = last_h
         rs, rb = last_r
         vs, vb = last_v
-        if surface_is_ready(hs, hb, rs, rb, vs, vb, want_sha):
+        if surface_is_ready(hs, hb, rs, rb, vs, vb, want_sha, allow_descendant=allow_descendant):
             extra = ""
             if want_sha:
                 sha = _mapping(vb).get("git_sha") or ""
