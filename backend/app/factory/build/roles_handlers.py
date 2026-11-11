@@ -3973,6 +3973,10 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         ctx.blueprint,
         brief=_compiled_writer_brief(ctx),
         resume=bool(ctx.state.get("writer_resumed")),
+        # The work list a rework round was handed (grader / gate findings):
+        # rendered as REWORK FINDINGS so the agent patches in place and fixes
+        # only these instead of re-authoring the whole product (v16).
+        findings=tuple(getattr(ctx, "work_list", ()) or ()),
         # K-F7 (ORDERS_1900Z): kernel first, then the Store, then labelled
         # improvisation -- the writer sees what already exists.
         **formula_sources,
