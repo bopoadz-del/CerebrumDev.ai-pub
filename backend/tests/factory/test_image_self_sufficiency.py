@@ -103,10 +103,12 @@ def test_no_dockerfile_or_no_locked_block_is_not_judged_and_never_fails(tmp_path
     (root / "Dockerfile").unlink()
     verdict = image_sufficiency.check(root)
     assert verdict.ok and not verdict.judged
+    assert verdict.detail == "no Dockerfile: image not judgeable"
     (root / "Dockerfile").write_text(FULL, encoding="utf-8")
     (root / "blocks.lock.json").write_text(json.dumps({"blocks": {}}), encoding="utf-8")
     verdict = image_sufficiency.check(root)
     assert verdict.ok and not verdict.judged
+    assert verdict.detail == "no locked block: nothing to load"
 
 
 def test_a_copy_from_another_stage_is_not_judged(tmp_path):
