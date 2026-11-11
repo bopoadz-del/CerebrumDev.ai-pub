@@ -1,109 +1,125 @@
 # Executive Programs — build design note (item 4, spec prep)
 
-Status: **draft spec**. The production run starts only after the FACTORY lane
-reports a 7/7 pilot inside budget (ORDERS_08NOV_0525Z_FACTORY_exec_programs_production_run.md §3).
-This note records inputs, contract, and the two-input test plan so the build can
-start the minute the pilot lands. It does **not** hardwire any track content.
+Status: **draft spec**. Reconciles to `SPEC_EXEC_PROGRAMS_PRODUCT_v1.md` (owner, 4 Nov). The
+production run starts only after the FACTORY lane reports a 7/7 pilot inside budget
+(ORDERS_08NOV_0525Z_FACTORY_exec_programs_production_run.md §3). No build until then.
 
 ## 1. Inputs
 
-### 1.1 Source document
+### 1.1 Source document → track YAMLs
 - `exec-programs.html` — 68,624 bytes, Drive id `1ZXFeueB4RKmGKHlVfUxmMlWNpkCL5uAq`
   (owner upload 08 Nov 05:20Z). Replaces the 06 Nov 41,401-byte copy.
 - Becomes the fixture `backend/tests/fixtures/executive_programs/exec-programs.html`.
-- **Before the build**, re-pin and diff against the 41,401-byte copy: tracks,
-  weeks, MODES, RUBRIC, SESSIONS, prompts, and any new tabs/features. The diff
-  summary is quoted in `REPORT_FACTORY_<HHMM>Z_exec_programs_diff.md` (FACTORY lane).
-- **NO HARDWIRING**: every figure/framework the app teaches is derived from the
-  source at build time, never retyped into factory or emitter code.
+- **Before the build**, re-pin and diff against the 41,401-byte copy (tracks, weeks, MODES,
+  RUBRIC, SESSIONS, prompts, tabs). Diff summary quoted in `REPORT_FACTORY_<HHMM>Z_exec_programs_diff.md`.
+- **SOURCE RULE (spec §Data model + acceptance 10)**: a track is one YAML validated against
+  `track.v1.schema.json`; the two 16-week week-tables in the spec are the DATA for `tracks/*.yaml`,
+  never strings in code. Every figure/framework/company/case name is supplied by the YAML at run
+  time. The no-hardwiring grep of product code for any track name, week theme, book title or case
+  name returns nothing outside `tracks/` and `tests/fixtures/`.
 
 ### 1.2 Program engine (Store block) — the actual contract
 `program_engine` v1.0.0 (registry `block_registry/program_engine/block.json`, Store #44).
-
-- **Block envelope**: `input` = one JSON object, "Engine operation payload (operation +
-  arguments)"; `layer 3`, `filesystem: true`, `network: false`; every op returns
-  `{"status": "success"|"error", "result": …}` (errors carry the reason in `error`).
-- **Operations** (`app/blocks/program_engine/block.py`):
-  - `load_track(path)` → `Track.model_dump(mode="json")`
-  - `session_prompt(track, week, session)` → prompt string
-  - `defense_prompt(track, week)` → prompt string
-  - `jury_prompt(track)` → prompt string
-  - `markdown(track, state)` → export markdown
-  - `restore(text)` → `State.model_dump()`
-- **Engine mirrors the factory kernel** (byte-identical `schema/calendar/modes/rubric/prompts/export`).
-  The product routes all program math through these ops — it never re-implements a
-  calendar, rubric band, or prompt.
+- **Block envelope**: `input` = one JSON object, "Engine operation payload (operation + arguments)";
+  `layer 3`, `filesystem: true`, `network: false`; every op returns `{"status": "success"|"error", "result": …}`.
+- **Operations**: `load_track(path)`, `session_prompt(track, week, session)`, `defense_prompt(track, week)`,
+  `jury_prompt(track)`, `markdown(track, state)`, `restore(text)`.
+- **Engine mirrors the factory kernel** (`schema/calendar/modes/rubric/prompts/export`). The product
+  routes ALL program math through these — it never re-implements a calendar, rubric band, or prompt.
 
 ### 1.3 `track.v1` schema (closed, `extra="forbid"`)
-`Track{schema_version="track.v1", id, name, audience, length_weeks≥4, hours_per_week,
-rubric, weights, terms[]}`; `Rubric{points_each=20, bands{A,B,C,rewrite_below}, criteria
-= exactly 5}`; `Weights{memos+defenses+capstone == 100}`; `Term{number, name, outcome,
-defense_minutes=45, weeks[]}`; `Week{number, theme, readings[], case, deliverable}`;
-`Reading{title, author, chapters?}`; `Case{title, decision_question, public_sources[]}`;
-`Deliverable{title, brief, pages≥1}`. Validation errors raise `TrackError` carrying the
-dotted field path.
+`Track{schema_version="track.v1", id, name, audience, length_weeks≥4, hours_per_week, rubric, weights,
+terms[]}`; `Rubric{points_each=20, bands{A,B,C,rewrite_below}, criteria = exactly 5}`;
+`Weights{memos+defenses+capstone == 100}`; `Term{number, name, outcome, defense_minutes=45, weeks[]}`;
+`Week{number, theme, readings[], case, deliverable}`; `Reading{title, author, chapters?}`;
+`Case{title, decision_question, public_sources[]}`; `Deliverable{title, brief, pages≥1}`.
+Validation errors raise `TrackError` with the dotted field path.
 
 ### 1.4 Engine surface the learner app must call
 - `calendar`: `Session{week, kind, offset, minutes, date, name}`, `sessions(start, length_weeks)`,
   `week_start`, `current_week`.
 - `modes`: `SessionMode(str, Enum)`, `mode_for_kind(kind)`.
 - `rubric`: `total(scores)`, `band(total_score, rubric)`, `weighted_average(…)`, `graduated(…)`.
-- `export`: `State{track, start, data: dict[str, dict[int, WeekState]]}`; `WeekState{memo,
-  scores[5], verdicts[5], defense, jury}`; `markdown`, `backup`, `restore` (raises `RestoreError`).
-- `prompts`: `session_prompt(track, week_no, session)`, `defense_prompt(track, week_no)`,
-  `jury_prompt(track)`.
+- `export`: `State{track, start, data: dict[str, dict[int, WeekState]]}`; `WeekState{memo, scores[5],
+  verdicts[5], defense, jury}`; `markdown`, `backup`, `restore` (raises `RestoreError`).
+- `prompts`: `session_prompt(track, week_no, session)`, `defense_prompt(track, week_no)`, `jury_prompt(track)`.
 
-### 1.5 Domain packs
-`coo.v1`, `ceo.v1`, plus any new track the 68,624-byte source adds — re-derived from
-`exec-programs.html` into `track.v1` documents (not authored by hand).
+## 2. Product contract (spec §Product, §Data model, §User flows)
 
-### 1.6 Build path (unchanged)
-Floor session → upload `exec-programs.html` → brief drafted from the upload →
-owner-approvable draft → 5-phase build → STORE gate → graded → export zip →
-deployed product. If the build fails, fix the Factory mechanism, never the product's files.
+- **Users**: Learner (one per enrolment), Faculty (AI), Grader (AI, separate), Reviewer (human jury
+  member, invited per defense), Admin (track author).
+- **Cadence**: week = Thursday→Wednesday, six sessions (Framework, Case prep, Case class, Lab 1, Lab 2,
+  Exam), Sunday off; start date chosen at enrolment, every session date computed from it.
+- **Grading**: memo 5 criteria × 20 → A ≥ 90, B 80–89, C 70–79, < 70 = rewrite; term defense pass/fail;
+  capstone accepted by a jury of three (all three accept).
+- **Weights**: memos 60%, defenses 20%, capstone 20%; graduation = B average + 4 passes + accepted capstone.
+- **LLM**: the Factory's configured provider through the single egress, on the kernels — no new provider.
+- **Build level**: pilot; delivery `github_repo` to a `cerebrum-exec-programs` branch on cerebrum-builds-pub;
+  also exportable as zip.
+- **Out of scope v1**: payments, multi-tenant orgs, video, mobile app, live human faculty scheduling, LMS integrations.
+- **Data model entities** (all persisted): Track, Term, Week, Reading, Case, Deliverable, Session, Rubric,
+  Enrolment (version-pinned), Submission (versions kept, one rewrite under C), Grade (provenance = kernel
+  block + version + rubric version), Defense (45 min, transcript stored), Capstone (jury[3], verdicts[3]),
+  Transcript (exportable PDF).
 
-## 2. Contract (production-grade, ORDERS_08NOV_0525Z §2)
+## 3. Eight capabilities (spec §Capabilities) — replace the generic contract rows
 
-| # | Requirement | Factory mechanism (derived from the actual build) | Grader evidence |
-|---|-------------|----------------------------------------------------|-----------------|
-| 2a | Multi-user sign-up/sign-in; per-learner progress, memos, grades server-side; coach/admin cohort view | per-user `program_engine.State` (`data` keyed by learner) persisted server-side; auth routes; coach role reads the cohort | two learners' `State` isolated server-side; coach sees both, learner sees own |
-| 2b | Program engine: tracks, 16-week calendars, sessions/modes/prompts, deliverables, 5-criterion rubric+bands, weighted grades, defense/jury, export/backup/restore | route ALL math through `program_engine` ops (`load_track`, `session_prompt`, `defense_prompt`, `jury_prompt`, `markdown`, `restore`) and the `calendar`/`modes`/`rubric`/`prompts` helpers | a band comes from `rubric.band`, a session from `calendar.sessions` — never a hand-rolled branch |
-| 2c | Learner-facing UI (program bar, tabs, session view, memo editor, grading view, progress), mobile, light+dark, accessible | `ui_modules` render the learner surface; the brief compiles the UI, not a JSON operator console | Playwright renders learner views at mobile width in both themes |
-| 2d | Content honesty: every figure/framework carries its source; improvised content labelled | formula-label gate (#163) applies to every emitted claim | each taught figure has a source citation; improvised text is labelled |
-| 2e | Security baseline: per-deploy random token (no literal), auth on every API route, input validation, no secrets in client | per-deploy token from env, never a literal; auth middleware on all routes | two deploys produce distinct non-literal tokens; unauthenticated route returns 401 |
-| 2f | Ops: deploy target asked (not assumed); health/ready endpoints; grader verdict recorded | deploy target from the Floor session; `/health` + `/ready`; verdict persisted | deploy URL asked-and-answered; endpoints green; verdict quoted |
+The Factory grades **at least five** of these plus the UI before handover.
 
-## 3. Two-input test plan (derived from the actual engine surface)
+| # | Capability | Store blocks | Done means |
+|---|------------|--------------|------------|
+| 1 | track_loader | validation, knowledge | Any schema-valid YAML loads; an invalid one refused with the field path; two tracks ship |
+| 2 | enrolment_and_calendar | workflow, database, notification | Start date in, 16 weeks and 96 sessions out, correct for any timezone; week-1 reading email sent |
+| 3 | faculty_session | knowledge, memory, audit | Six session modes; transcript stored; mode and week visible in the audit log |
+| 4 | memo_grading | formula_executor, evidence_verifier, audit | Rubric scoring with per-criterion lines; grader run id + provenance stored; a rewrite path under 70 |
+| 5 | gradebook_and_transcript | analytics, dashboard, document_engine | Live average, weights applied, transcript PDF with every grade |
+| 6 | defense_and_capstone | workflow, team, notification | Term defenses on schedule, re-sit rule, jury invites by email, three verdicts, acceptance rule |
+| 7 | track_admin | validation, audit, storage | Upload, validate, diff, version pinning per enrolment |
+| 8 | reading_and_case_library | knowledge, storage | Per-week readings and cases listed with public sources; faculty withholds outcomes until case class |
 
-### 3.1 Track validation (`load_track`)
-- Two distinct `track.v1` documents (`coo.v1`, `ceo.v1`) each load cleanly.
-- Two malformed inputs (weights ≠ 100; `length_weeks` ≠ sum of week counts) each raise
-  `TrackError` with the dotted field path.
+## 4. AI faculty and grader (spec §AI faculty and grader)
 
-### 3.2 Calendar (`calendar.sessions`)
-- Two distinct start dates → 16-week schedules whose `Session{week, date, kind}` differ
-  only where the dates differ; `current_week` returns the right week for each.
+Two separate agents on the same provider; the **grader never sees the faculty transcript of the week it
+grades**, and the **faculty never writes a deliverable** for the learner.
 
-### 3.3 Rubric + weights (`rubric.band` / `weighted_average` / `graduated`)
-- Two distinct score vectors → correct band (`A` vs `B`) and weighted average; `graduated`
-  returns the same verdict for `A`/`B` and the rewrite boundary for the failing vector.
+| Session kind | Faculty mode | What the mode does |
+|---|---|---|
+| framework | lecture | Teaches the week's framework from the reading, then has the learner restate it for their own company |
+| case_prep | brief | Hands over the case + decision question; refuses to discuss the outcome |
+| case_class | socratic | Cold-calls, changes facts mid-way, forces a committed decision with numbers, then reveals the outcome |
+| lab | sparring | Challenges/cuts the learner's draft; never drafts the deliverable itself |
+| exam | oral_quiz | 20-minute quiz on the week after the grade is in |
+| defense | examiner | Attacks the weakest number/assumption of the term paper, records pass/fail |
 
-### 3.4 Multi-user state isolation (`export.State` / `backup` / `restore`)
-- Two learners on one track → `markdown(track, state)` differs per learner;
-  `restore(backup(state))` round-trips for both; a torn backup raises `RestoreError`.
+Binding: every mode is a kernel skill with the track's week data as its only content input; **prompt text
+carries no track, company or case names** — those come from the YAML at run time. The grader applies the
+rubric as a formula (5 × 20) and writes one verdict line per criterion; its run id, kernel block version and
+rubric version are stored on the grade.
 
-### 3.5 Prompts (`session_prompt` / `jury_prompt`)
-- Two tracks (`coo.v1`, `ceo.v1`) → distinct `session_prompt`/`jury_prompt` outputs; the
-  engine never fabricates a session absent from the track.
+## 5. Acceptance (spec §Acceptance, verbatim)
 
-### 3.6 Security token
-- Two deploy runs → distinct, non-literal tokens; neither equals any known literal.
+- Both track YAMLs load; a deliberately broken YAML (missing rubric) is refused with the field path
+- Enrol on a Thursday and on a Monday, two timezones: all 96 session dates correct, week 1 reading email sent
+- Each of the six session modes answers in character on a synthetic week; transcripts stored and listed
+- Grade three synthetic memos (strong, weak, empty): bands A, rewrite, rewrite; verdict lines present; provenance resolves to a kernel block and rubric version
+- Gradebook average and weights verified against a hand calculation; transcript PDF opens and lists every entry
+- Term defense pass and fail paths, re-sit scheduled within 7 days; capstone with two reviewer invites and three verdicts; graduation rule fires only when met
+- Track admin: upload a third track (10-week sample), validate, diff, enrol; existing enrolments unaffected
+- UI walk-through of enrol → today → session → submit → gradebook on desktop and phone width, zero dead buttons
+- Store acceptance floor 21/21 green; Factory grades ≥ 5 capabilities and the UI before handover
+- No hardwiring: grep of product code for any track name, week theme, book title or case name returns nothing outside tracks/ and tests/fixtures/
 
-### 3.7 Playwright (UI)
-- Two uploaded documents render two chips and the reply names both (Floor attach, #179).
-- Two tracks render two distinct learner program bars; memo editor persists per user;
-  grading view shows the rubric band.
+## 6. User-flow decisions the note now pins (from the spec)
 
-## 4. Out of scope for this note
-- Pinning/diffing `exec-programs.html` and the actual run are item 3 (queue), gated on the
-  7/7 pilot; this note only prepares the spec.
+- Missed session: a session not opened by the next week is flagged missed and must be made up before the
+  following week unlocks.
+- Rewrite: a result under 70 opens exactly one rewrite under C; versions are kept.
+- Defense: 45 min on the term's last Wednesday; pass/fail; a fail schedules a re-sit within 7 days.
+- Capstone: learner uploads plan + deck and invites two reviewers by email; each records a verdict; the app
+  records the AI examiner's verdict as the third.
+- Track admin: upload/edit a track YAML; validate; show the diff of weeks that changed; live enrolments keep
+  the version they started on (version pinning per enrolment).
+
+## 7. Out of scope for this note
+- Pinning/diffing `exec-programs.html` and the actual run are item 3 (queue), gated on the 7/7 pilot; this
+  note only prepares the spec.
