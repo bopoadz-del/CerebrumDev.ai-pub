@@ -179,7 +179,46 @@ def test_s8_writer_run_passes_formula_sources_to_the_prompt(monkeypatch, tmp_pat
         assert seen.get(k) == v, k
 
 
+@pytest.mark.parametrize("findings", [
+    ("cap_a: did not fail closed",),
+    ("cap_b: route missing", "cap_c: gate not green"),
+])
+def test_s8_writer_run_passes_rework_findings_to_the_prompt(monkeypatch, tmp_path, findings):
+    """The rework work list reaches the codewhale prompt as findings (v16):
+    a rework round renders REWORK FINDINGS from ctx.work_list, not just the
+    formula sources."""
+    from app.factory.build import roles_handlers as rh
+    from app.factory.build import writer_prompt as wp
+    from app.factory.build import image_sufficiency as img
+    from app.factory.build import codewhale_worker as cw
+
+    seen = {}
+
+    def fake_render(blueprint, **kw):
+        seen.update(kw)
+        raise _Stop
+
+    monkeypatch.setattr(wp, "render_writer_prompt", fake_render)
+    monkeypatch.setattr(rh, "_formula_sources", lambda ctx: {})
+    monkeypatch.setattr(rh, "persist_workspace_root", lambda ws: tmp_path)
+    monkeypatch.setattr(rh, "_compiled_writer_brief", lambda ctx: "b")
+    monkeypatch.setattr(img, "runtime_paths", lambda tree: [])
+    monkeypatch.setattr(img, "locked_entries", lambda tree: {})
+    monkeypatch.setattr(cw, "writer_specialist_cap", lambda: 1)
+
+    class Ctx:
+        blueprint = _BP("v")
+        workspace = None
+        state = {}
+        work_list = findings
+
+    with pytest.raises(_Stop):
+        rh._run_writer_via_codewhale_worker(Ctx())
+    assert seen.get("findings") == findings
+
+
 # --- F-9c split: one test per G2 survivor of 84bf10d (own file) -------------
+
 
 @pytest.mark.parametrize("sha, want, absent", [
     (None, " (store.pin unreadable)", "at store.pin"),

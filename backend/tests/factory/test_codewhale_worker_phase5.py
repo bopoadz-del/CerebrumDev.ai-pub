@@ -154,6 +154,26 @@ def test_prompt_version_is_the_product():
     assert text.startswith(f"<!-- {PROMPT_VERSION} -->")
 
 
+def test_rework_findings_render_into_the_prompt():
+    """A rework round's work list reaches the prompt as REWORK FINDINGS, so
+    the agent patches in place instead of re-authoring the product (v16)."""
+    text = render_writer_prompt(
+        _Blueprint(),
+        brief="x",
+        findings=["function grade FAIL: cap_a"],
+    )
+    assert "REWORK FINDINGS" in text
+    assert "function grade FAIL: cap_a" in text
+    assert "Do not rebuild the platform from scratch" in text
+
+
+def test_a_first_pass_renders_no_rework_section():
+    """No findings, no REWORK FINDINGS section -- a first pass is a blank
+    slate by definition."""
+    text = render_writer_prompt(_Blueprint(), brief="x")
+    assert "REWORK FINDINGS" not in text
+
+
 # -- T5.1: headless exec, verified where the CLI exists -----------------------
 
 

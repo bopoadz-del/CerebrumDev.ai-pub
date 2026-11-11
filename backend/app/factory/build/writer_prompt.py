@@ -112,7 +112,15 @@ from app.factory.build.acceptance_floor import (
 #:   when neither the kernel nor the Store covers it. The DEPTH rule now states
 #:   the ruling, and FORMULA SOURCES lists the kernel definition_index() and
 #:   the Store coverage index for the vertical (formula_resolution), in order.
-PROMPT_VERSION = "writer_worker_prompt.v15"
+#: v16 -- REWORK FINDINGS CARRIED. A rework round seeded the staging tree from
+#:   the committed product (incremental rework), but the re-rendered prompt
+#:   never carried the previous pass's findings, so the agent had no "keep
+#:   what works, fix only these" to act on and re-authored the whole product
+#:   blind (pilot 42916369342: four NOT_CERTIFIED function grades became a
+#:   full INFRA/BACKEND/DEVOPS/FRONTEND/SECURITY rebuild). REWORK FINDINGS
+#:   now renders the work list (grader / gate findings) when one is set, and
+#:   states the checkout is not a blank slate.
+PROMPT_VERSION = "writer_worker_prompt.v16"
 
 _TEMPLATE = """You are the WRITER role of the CerebrumDev factory, manufacturing a
 governed platform. Work headless in this checkout. Produce real, runnable
@@ -128,7 +136,7 @@ PRODUCT
 
 BRIEF
 {brief}
-
+{rework_findings}
 TENANCY
 - One tenant per request, always. All corpus access goes through the
   tenant store resolved from the authenticated principal — never a
@@ -440,6 +448,27 @@ def _locked_blocks_section(locked_blocks: Mapping[str, Sequence[str]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _rework_findings_section(findings: Sequence[str]) -> str:
+    """The previous pass's findings, carried into a rework round.
+
+    The incremental-rework seed already left the committed product in the
+    staging tree, so a rework is a patch-in-place pass -- but the agent only
+    knows that if the prompt names what failed. No findings, no section
+    (a first pass has none)."""
+    rows = [str(f).strip() for f in findings or () if str(f).strip()]
+    if not rows:
+        return ""
+    lines = [
+        "REWORK FINDINGS -- a previous pass of yours was graded and these findings",
+        "were returned. This checkout already carries that pass's work; it is NOT",
+        "a blank slate. Do not rebuild the platform from scratch. Keep every",
+        "file and capability not named below exactly as it is, and fix only",
+        "what these name:",
+    ]
+    lines.extend(f"- {row}" for row in rows)
+    return "\n".join(lines) + "\n"
+
+
 def render_writer_prompt(
     blueprint: Any,
     *,
@@ -452,6 +481,7 @@ def render_writer_prompt(
     kernel_index: Sequence[Mapping[str, Any]] = (),
     store_index: Sequence[Mapping[str, Any]] = (),
     store_sha: Optional[str] = None,
+    findings: Sequence[str] = (),
 ) -> str:
     """Fill the template from the brief. Deterministic by construction.
 
@@ -473,6 +503,10 @@ def render_writer_prompt(
     (kernel definition_index(), formula_resolution.store_coverage_index(),
     store_pin) and rendered as FORMULA SOURCES in resolution order.
 
+    ``findings`` are the work list a rework round was handed (grader / gate
+    findings); when non-empty they render as REWORK FINDINGS telling the
+    agent to patch in place and fix only those. A first pass passes none.
+
     Brief/summary text is inserted verbatim: str.format interprets braces
     only in the template, never in values, so user/model content passes
     through untouched.
@@ -487,6 +521,7 @@ def render_writer_prompt(
         vertical=vertical,
         summary=summary,
         brief=(brief or "").strip(),
+        rework_findings=_rework_findings_section(findings),
         specialist_workers=max(1, int(specialist_workers or 1)),
         factory_owned=_factory_owned_lines(),
         build_context=_build_context_section(runtime_paths),
