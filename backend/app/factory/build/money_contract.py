@@ -406,8 +406,9 @@ def _module_findings(
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in codes:
             found.append(f"{rel}:{node.lineno}: the declared code {node.value!r} is a literal -- read it from {MONEY_SETTINGS_MODULE}")
-    if not money:
-        return found
+    # The empty-money case needs no early return: when `money` is empty,
+    # `terms` is empty too (`_money_locals` yields `{}`), so the scaling loop
+    # below adds no findings and `found` is returned unchanged by the loop.
     aliases = _settings_aliases(tree)
     terms = set(money) | _money_locals(tree, money)
     quantity_terms = set(quantity) | _money_locals(tree, quantity)
