@@ -380,6 +380,20 @@ def _reads_settings(node: ast.AST, aliases: Set[str]) -> bool:
     return False
 
 
+def _is_only_compared(node: ast.AST, parents: Dict[ast.AST, ast.AST]) -> bool:
+    """True when ``node``'s value is consumed directly by a comparison.
+
+    A dimensionless factor whose money product is only COMPARED (feeds a
+    comparison, a boolean, an alert) is a threshold ratio, not money scaling
+    (owner ruling 00:25Z): ``alert_ratio * cap_amount > balance`` compares
+    an amount against a threshold and never stores, returns or sums the
+    scaled amount. The moment the product is stored, returned or summed it
+    is scaling and must come from app.money_settings; a literal rate is
+    refused either way (that check runs before this exemption).
+    """
+    return isinstance(parents.get(node), ast.Compare)
+
+
 def _module_findings(
     path: Path, rel: str, locale: Mapping[str, str], money: Set[str], quantity: Set[str]
 ) -> List[str]:
@@ -397,6 +411,9 @@ def _module_findings(
     aliases = _settings_aliases(tree)
     terms = set(money) | _money_locals(tree, money)
     quantity_terms = set(quantity) | _money_locals(tree, quantity)
+    parents: Dict[ast.AST, ast.AST] = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
     for node in ast.walk(tree):
         if not isinstance(node, ast.BinOp) or not isinstance(node.op, (ast.Mult, ast.Div, ast.FloorDiv)):
             continue
@@ -423,6 +440,8 @@ def _module_findings(
             found.append(f"{rel}:{node.lineno}: a money value is scaled by the literal {factor.value!r} -- a rate is a setting ({MONEY_SETTINGS_MODULE}.tax_rate())")
             continue
         if not _reads_settings(factor, aliases):
+            if _is_only_compared(node, parents):
+                continue
             found.append(
                 f"{rel}:{node.lineno}: a money value is scaled by a factor not taken from {MONEY_SETTINGS_MODULE}"
                 f" -- `{_snippet(node)}` scales a money value by `{_snippet(factor)}`; read that factor from "
