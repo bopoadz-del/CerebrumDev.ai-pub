@@ -179,7 +179,11 @@ def test_s8_writer_run_passes_formula_sources_to_the_prompt(monkeypatch, tmp_pat
         assert seen.get(k) == v, k
 
 
-def test_s8_writer_run_passes_rework_findings_to_the_prompt(monkeypatch, tmp_path):
+@pytest.mark.parametrize("findings", [
+    ("cap_a: did not fail closed",),
+    ("cap_b: route missing", "cap_c: gate not green"),
+])
+def test_s8_writer_run_passes_rework_findings_to_the_prompt(monkeypatch, tmp_path, findings):
     """The rework work list reaches the codewhale prompt as findings (v16):
     a rework round renders REWORK FINDINGS from ctx.work_list, not just the
     formula sources."""
@@ -206,11 +210,11 @@ def test_s8_writer_run_passes_rework_findings_to_the_prompt(monkeypatch, tmp_pat
         blueprint = _BP("v")
         workspace = None
         state = {}
-        work_list = ("cap_a: did not fail closed",)
+        work_list = findings
 
     with pytest.raises(_Stop):
         rh._run_writer_via_codewhale_worker(Ctx())
-    assert seen.get("findings") == ("cap_a: did not fail closed",)
+    assert seen.get("findings") == findings
 
 
 # --- F-9c split: one test per G2 survivor of 84bf10d (own file) -------------

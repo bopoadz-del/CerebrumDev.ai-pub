@@ -219,27 +219,44 @@ def test_a_rework_grant_rearms_the_plan_wall_for_its_own_pass(tmp_path, wall):
     assert outcome.ok, outcome.detail
 
 
-def test_a_rework_pass_past_the_phase_budget_is_refused_with_a_named_event(tmp_path):
+@pytest.mark.parametrize("phase", [30.0, 20.0])
+def test_a_rework_pass_past_the_phase_budget_is_refused_with_a_named_event(tmp_path, phase):
     """The phase budget still bounds the total (2026-11-11): the plan wall is
     per-pass, but the rework grant grows the wall by ONE phase budget
     (``allowance_each_s``), never more. A rework pass that outlives that
     allowance stops typed as time_budget_exceeded."""
     clock = _Clock()
     runner, calls = _runner(
-        tmp_path, clock, wall=60.0, phase=30.0, ceiling=1000.0, writer_seconds=40.0
+        tmp_path, clock, wall=60.0, phase=phase, ceiling=1000.0, writer_seconds=40.0
     )
     outcome = runner.run()
 
     assert calls["writer"] == 2
     grant = _grants(runner.ledger)[0]
-    # requested = elapsed 42 s + phase 30 s = 72 s; the two-pass plan budget
-    # (120 s) and the ceiling (1000 s) are both higher, so the phase budget
-    # is the binding cap on the rework wall. The rework pass (40 s) outlives
-    # it and the run stops typed.
-    assert grant["wall_s"] == 72.0
+    # requested = elapsed (42 s) + ONE phase budget; neither the two-pass plan
+    # budget (60 s * 2 = 120 s) nor the ceiling (1000 s) clamps it here, so
+    # the phase budget is the binding cap on the rework wall. The rework pass
+    # (40 s) outlives it and the run stops typed.
+    assert grant["allowance_each_s"] == phase
+    assert grant["wall_s"] == grant["requested_s"]
     assert grant["capped"] is False
     assert outcome.outcome is Outcome.FAILED_TIME_BUDGET
     assert "wall-clock budget" in (outcome.detail or "")
+
+
+@pytest.mark.parametrize("wall", [60.0, 120.0])
+def test_a_rework_grant_without_a_phase_budget_records_nothing(tmp_path, wall):
+    """The early return is a rule too (CI-M ``drop_rule``): with no per-phase
+    wall budget (``phase_wall_clock_s = 0``) a granted rework round records
+    NO wall grant -- there is no allowance to extend. Dropping the guard
+    would still write a grant NOTE for a run that had already started."""
+    clock = _Clock()
+    runner, _calls = _runner(
+        tmp_path, clock, wall=wall, phase=0.0, ceiling=1000.0, writer_seconds=40.0
+    )
+    runner._run_started = clock()
+    runner._grant_rework_wall(BuildRole.WRITER)
+    assert _grants(runner.ledger) == []
 
 
 def test_the_grant_never_hides_the_rework_it_belongs_to(tmp_path):
