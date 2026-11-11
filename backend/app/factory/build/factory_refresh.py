@@ -182,6 +182,20 @@ def refresh_factory_files(
         _write_if_changed(root, ".github/workflows/ci.yml", render_github_ci(), changed)
     if owned("app/static/index.html"):
         _write_if_changed(root, "app/static/index.html", render_ui_index(product_name), changed)
+    # The image is built from these two files alone of the writer's surface:
+    # the Dockerfile's final-stage COPY lines and .dockerignore decide what the
+    # image carries. Rendered whole, never merged, so the vendored tree the
+    # CLONER put under vendor/ and the lock pins always reaches the image
+    # (a writer-authored Dockerfile that left vendor/ out shipped an image
+    # that could not load a locked block -- pilot 43021713865, both passes).
+    if owned("Dockerfile"):
+        from app.factory.build.roles_handlers import _render_dockerfile
+
+        _write_if_changed(root, "Dockerfile", _render_dockerfile(), changed)
+    if owned(".dockerignore"):
+        from app.factory.build.roles_handlers import _render_dockerignore
+
+        _write_if_changed(root, ".dockerignore", _render_dockerignore(), changed)
     if (root / "requirements.txt").is_file():
         _write_if_changed(root, "requirements.txt", merged_requirements(root), changed, shared=True)
         from app.factory.build.dependency_pins import CONSTRAINTS_REL, constraints_for_tree

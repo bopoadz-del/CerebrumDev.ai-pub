@@ -127,6 +127,24 @@ def _refresh(root: Path) -> Any:
     return refresh_factory_files(root, "platform")
 
 
+def _deploy_scaffold(root: Any) -> Any:
+    """The Dockerfile and .dockerignore, rendered whole by the Factory.
+
+    The image is built from these two files alone of the writer's surface:
+    the Dockerfile's final-stage COPY lines and .dockerignore decide what the
+    image carries. They are mechanical deploy scaffold -- ``COPY . .`` and a
+    fixed ignore list -- so the Factory owns them outright and the writer
+    never authors them (owner rule). A writer-authored Dockerfile that left
+    ``vendor/`` out of the image is how a locked block went missing at run
+    time (pilot 43021713865, both passes)."""
+    from app.factory.build.roles_handlers import _render_dockerfile, _render_dockerignore
+
+    ws = _as_workspace(root)
+    ws.write_text("Dockerfile", _render_dockerfile())
+    ws.write_text(".dockerignore", _render_dockerignore())
+    return ["Dockerfile", ".dockerignore"]
+
+
 def _platform_gap(root: Any) -> Any:
     from app.factory.build.data_lifecycle import backfill_platform_substrate
 
@@ -192,6 +210,7 @@ def stamps() -> Tuple[Stamp, ...]:
     return (
         Stamp("kernel roster", SHARED, (rel(JOBS_REL),), _roster, staged_writer=True),
         Stamp("deploy modules", OWNED, deploy_owned, _deploy_modules, staged_writer=True),
+        Stamp("deploy scaffold (Dockerfile, .dockerignore)", OWNED, ("Dockerfile", ".dockerignore"), _deploy_scaffold, staged_writer=True),
         Stamp("acceptance harness", OWNED, (rel(ACCEPTANCE_SCRIPT_REL), rel(UI_INDEX_REL)), _acceptance, staged_writer=True),
         Stamp("writer self-check", OWNED, (rel(SELF_CHECK_REL),), _self_check, staged_writer=True),
         Stamp(

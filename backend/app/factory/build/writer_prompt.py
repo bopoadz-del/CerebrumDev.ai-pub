@@ -172,7 +172,7 @@ missing file is a missing gate, so write it all under this checkout root:
 - app/store.py and alembic/versions/0001_baseline.py (see PERSISTENCE)
 - tests/ — your own pytest files, runnable from the checkout root (never
   one of the Factory's files listed under FACTORY-OWNED FILES)
-- frontend/src/App.tsx, Dockerfile, README.md, requirements.txt
+- frontend/src/App.tsx, README.md, requirements.txt
 
 {locked_blocks}{build_context}FACTORY-OWNED FILES -- the Factory renders these into the product before or
 after your pass. Never create, edit or delete one: a pass that touches one
@@ -247,8 +247,8 @@ UI (a pilot is deployed and tested, so what it serves must work):
   carries the operator contract, so a screen built beside it rather than on it
   is not the platform's UI -- build the craft on top of the block, not around
   it.
-- The platform serves ONE UI. You ship frontend/ and the Dockerfile; either
-  the image builds the frontend and serves it, or you do not ship a frontend
+- The platform serves ONE UI. You ship frontend/; either the Factory's
+  Dockerfile builds the frontend and serves it, or you do not ship a frontend
   at all. A UI nothing builds is decoration, and the gate refuses it.
 - What it serves reaches the platform: at least two capabilities driven from
   the UI, not one. Every route the UI calls must answer -- the gate boots the
@@ -328,10 +328,10 @@ previous agent left. Name the specialist in your progress log
   TOP: your frontend/ modules add the operator surfaces this brief asks for,
   built on the shipped console and the block ui_schema, not beside them.
 - DEVOPS: a DevOps team receives this and must deploy it without you. The
-  Dockerfile builds every asset the app serves, the healthcheck answers
-  before traffic, migrations run on boot, and README says how to run it and
-  what to set. Build the image yourself and start it before you believe any
-  of that.
+  Dockerfile is Factory-rendered and already builds every asset the app
+  serves; the healthcheck answers before traffic, migrations run on boot, and
+  README says how to run it and what to set. Build the image yourself and
+  start it before you believe any of that.
 - SECURITY: go back over what the other four passes wrote and attack it.
   Authz on every route that touches tenant data, not just authn. No secret
   in the image, the logs, or an error body. Every external input validated
@@ -410,10 +410,9 @@ def _build_context_section(runtime_paths: Sequence[str]) -> str:
         "loads the paths below at runtime. They are already in the product tree,",
         "sealed -- never create, edit or delete them -- and they are",
         "not in this checkout: their absence here is not absence from the build.",
-        "The Dockerfile's final stage must COPY each directory below into the image",
-        "under its WORKDIR (COPY . . does, or one COPY line per directory), and",
-        ".dockerignore must not exclude it. The writer gate lays the image out from",
-        "the merged tree and refuses one that cannot load them.",
+        "The Factory renders the Dockerfile (COPY . .) and .dockerignore so the",
+        "image carries them; you never author either one. The writer gate lays",
+        "the image out from the merged tree and refuses one that cannot load them.",
     ]
     for root in sorted(roots):
         lines.append(f"- {root}/")

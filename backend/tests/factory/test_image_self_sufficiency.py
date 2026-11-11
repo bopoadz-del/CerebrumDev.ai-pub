@@ -413,3 +413,29 @@ def test_a_blueprint_controls_whether_the_image_carries_a_vendor_tree(
     else:
         assert verdict.ok and not verdict.judged
         assert "no locked block" in verdict.detail
+
+
+def test_the_factory_rendered_scaffold_carries_exactly_the_locked_blocks(tmp_path):
+    """The mechanism the Factory owns: its rendered Dockerfile (``COPY . .``)
+    and .dockerignore put exactly the locked blocks into the image -- never the
+    writer's Dockerfile. Two inputs, one rule:
+
+    * one locked block -> the image carries it;
+    * no locked block -> no vendor tree required.
+
+    Pilot 43021713865 (both passes): the writer authored a Dockerfile that
+    left ``vendor/`` out of the image, so the locked block failed to load.
+    """
+    from app.factory.build.roles_handlers import _render_dockerfile, _render_dockerignore
+
+    one = _locked_product(tmp_path / "one", ["notification"], _render_dockerfile())
+    (one / ".dockerignore").write_text(_render_dockerignore(), encoding="utf-8")
+    verdict = image_sufficiency.check(one)
+    assert verdict.ok and verdict.judged, verdict.detail
+    assert "1 locked block" in verdict.detail
+
+    none = _locked_product(tmp_path / "none", [], _render_dockerfile())
+    (none / ".dockerignore").write_text(_render_dockerignore(), encoding="utf-8")
+    verdict = image_sufficiency.check(none)
+    assert verdict.ok and not verdict.judged
+    assert "no locked block" in verdict.detail
