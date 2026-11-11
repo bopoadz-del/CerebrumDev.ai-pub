@@ -619,10 +619,18 @@ class RoleRunner:
             self.budget = BuildBudget(wall_clock_s=wall)
         else:
             self.budget = budget
-        #: The plan-time wall, taken ONCE. Strict enforcement (0605Z) clamps
-        #: every later extension to it: the inspect ramp and the rework
-        #: grants can propose more, but the wall never grows past this.
+        #: The plan-time wall, taken ONCE, PER WRITER PASS (owner ruling
+        #: 2026-11-11): it bounds ONE writer pass, not the whole build. The
+        #: inspect ramp still clamps to it, but a granted rework round
+        #: re-arms it for its own pass (``_plan_wall_passes`` below); the
+        #: phase budget and the hard ceiling still bound the total,
+        #: unchanged.
         self._plan_wall_s: float = float(self.budget.wall_clock_s or 0.0)
+        #: How many writer passes this plan wall has been granted for. Starts
+        #: at one (the first pass); every granted rework round re-arms the
+        #: per-pass allowance, so the plan wall's total grows by one pass
+        #: while the phase budget / ceiling still cap the whole run.
+        self._plan_wall_passes: int = 1
         # Roles are injectable so a test can drive a misbehaving role; gates
         # are NOT -- see the module docstring.
         self.roles = dict(roles or ROLE_IMPLEMENTATIONS)
@@ -1832,6 +1840,11 @@ class RoleRunner:
         rerun = list(dict.fromkeys(rerun))
         elapsed = max(0.0, float(self.clock()) - float(self._run_started))
         requested = elapsed + allowance_each * len(rerun)
+        # A granted rework round re-arms the per-pass plan wall: the re-run
+        # pass gets its own plan wall (owner ruling 2026-11-11), while the
+        # phase budget (allowance_each) and the ceiling still bound the
+        # total. ``_extend_wall`` reads ``_plan_wall_passes`` for the clamp.
+        self._plan_wall_passes += 1
         before = float(self.budget.wall_clock_s or 0.0)
         if requested > before or (
             self._deadline is not None
@@ -2296,11 +2309,14 @@ class RoleRunner:
         new_wall = self.budget.capped(requested)
         plan_wall = float(getattr(self, "_plan_wall_s", 0.0) or 0.0)
         if plan_wall > 0:
-            # Strict plan-time budget (0605Z): the plan wall is final for
-            # its class. Every extension -- the inspect ramp, a rework grant,
-            # the pilot tail -- is capped here, so no caller can grow the
-            # wall past the plan budget it was given.
-            new_wall = min(new_wall, plan_wall)
+            # Per-pass plan budget (2026-11-11): the plan wall bounds ONE
+            # writer pass; each granted rework round re-arms it (one more
+            # pass). The phase budget and the hard ceiling still bound the
+            # total -- the ceiling via ``capped`` above and the phase budget
+            # via the caller's requested wall -- so no caller can grow the
+            # wall past ``plan_wall * passes``.
+            passes = int(getattr(self, "_plan_wall_passes", 1) or 1)
+            new_wall = min(new_wall, plan_wall * passes)
         target = None
         if self._run_started is not None and new_wall > 0:
             target = float(self._run_started) + float(new_wall)
