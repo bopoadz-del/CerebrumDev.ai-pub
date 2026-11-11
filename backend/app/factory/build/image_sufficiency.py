@@ -413,6 +413,32 @@ def _missing_paths(result: dict, image: Path, root: Path) -> Tuple[List[str], bo
     return missing, judgeable or bool(missing)
 
 
+def _absent_locked_blocks(root: Path, image: Path, workdir: str) -> List[str]:
+    """Locked blocks the emulated image does not carry but the build context
+    does, read off ``blocks.lock.json`` (data) -- never off the loader's error
+    wording.
+
+    The probe names a missing path by scanning tracebacks for the scratch
+    directory. A writer-authored loader (or a start-up check in its own
+    ``app/main.py``) can raise with a RELATIVE path, which that scan cannot map
+    back to an image path, so the gate answered "image cannot load the app"
+    with no line for the rework to change. This reads each locked path
+    directly, so the finding names the missing path and its Dockerfile cause
+    exactly as the traceback path would have.
+    """
+    rules = read_dockerignore(root)
+    base = str(PurePosixPath(workdir)).strip("/")
+    out: List[str] = []
+    for rel in locked_paths(root).values():
+        target_rel = f"{rel}/block.py"
+        if (image / base / target_rel).is_file():
+            continue
+        image_path = "/" + (f"{base}/" if base else "") + target_rel
+        if context_cause(image_path, workdir, root, rules):
+            out.append(image_path)
+    return out
+
+
 def context_cause(path: str, workdir: str, root: Path, rules: Sequence[Tuple[bool, str]]) -> str:
     """Why an image path under the final WORKDIR is absent, read off the build
     context: the context file it would be copied from, and whether
@@ -502,8 +528,7 @@ def check(root: Path | str, *, python: str = sys.executable, timeout_s: int = PR
                 detail=f"image imports the app and loads all {len(blocks)} locked blocks from their locked paths",
             )
         missing, judgeable = _missing_paths(result, image, root)
-        if not judgeable:
-            return Verdict(ok=True, judged=False, detail="not judgeable here: a third-party package is not installed")
+        missing = sorted(set(missing) | set(_absent_locked_blocks(root, image, workdir)))
         if missing:
             rules = read_dockerignore(root)
             causes = {p: c for p in missing if (c := context_cause(p, workdir, root, rules))}
@@ -512,5 +537,7 @@ def check(root: Path | str, *, python: str = sys.executable, timeout_s: int = PR
                 detail="; ".join(f"image missing {p}" for p in missing),
                 causes=causes,
             )
+        if not judgeable:
+            return Verdict(ok=True, judged=False, detail="not judgeable here: a third-party package is not installed")
         last = (result["traces"][-1].strip().splitlines() or [""])[-1]
         return Verdict(ok=False, judged=True, detail=f"image cannot load the app: {_in_image(last, image)[:300]}")

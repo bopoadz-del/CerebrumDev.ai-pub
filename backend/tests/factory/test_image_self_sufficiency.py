@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.factory.build import image_sufficiency
 
 DISPATCH = '''
@@ -341,3 +343,73 @@ def test_the_writer_gate_finding_carries_the_cause():
     from app.factory.build import gates
 
     assert "image.causes" in inspect.getsource(gates.gate_writer_contract)
+
+
+# -- a locked block the image lacks is named deterministically, off the lock ---
+#
+# Pilot 43021713865 (Harbourline): the writer authored its own start-up check
+# that raised with a RELATIVE path ("locked block 'notification' is missing at
+# vendor/blocks/notification"), so the traceback scan found no scratch path and
+# the gate answered "image cannot load the app" with no line for the rework to
+# change. The check below names the missing locked path regardless of the
+# loader's wording.
+
+RELATIVE_PATH_MAIN = '''
+from pathlib import Path
+import json
+
+lock = json.loads(Path("blocks.lock.json").read_text(encoding="utf-8"))
+for block_id in lock.get("blocks", {}):
+    if not (Path("vendor") / "blocks" / block_id / "block.py").is_file():
+        raise RuntimeError(
+            f"locked block {block_id!r} is missing at vendor/blocks/{block_id}: "
+            "the image must carry it"
+        )
+'''
+
+
+def test_a_missing_locked_block_is_named_even_when_the_loader_reports_a_relative_path(tmp_path):
+    root = _product(tmp_path, APP_ONLY, main=RELATIVE_PATH_MAIN)
+    verdict = image_sufficiency.check(root)
+    assert not verdict.ok and verdict.judged, verdict.detail
+    assert "/app/vendor/blocks/ledger/block.py" in verdict.missing
+    assert "/app/vendor/blocks/storage/block.py" in verdict.missing
+    assert "image missing /app/vendor/blocks/storage/block.py" in verdict.detail
+
+
+def _locked_product(root: Path, locked, dockerfile: str) -> Path:
+    """A synthetic product whose blocks.lock.json pins exactly ``locked``."""
+    (root / "app").mkdir(parents=True)
+    (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "app" / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "app" / "dispatch.py").write_text(DISPATCH, encoding="utf-8")
+    for block in locked:
+        d = root / "vendor" / "blocks" / block
+        d.mkdir(parents=True)
+        (d / "block.py").write_text("X = 1\n", encoding="utf-8")
+    (root / "blocks.lock.json").write_text(
+        json.dumps({"blocks": {b: {"path": f"vendor/blocks/{b}"} for b in locked}}),
+        encoding="utf-8",
+    )
+    (root / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize(
+    "locked, dockerfile, carried",
+    [
+        (["notification"], FULL, True),
+        ([], "FROM python:3.12-slim\nWORKDIR /app\nCOPY app ./app\n", False),
+    ],
+    ids=["locks_one_block_image_carries_it", "locks_none_no_vendor_tree_required"],
+)
+def test_a_blueprint_controls_whether_the_image_carries_a_vendor_tree(
+    tmp_path, locked, dockerfile, carried
+):
+    verdict = image_sufficiency.check(_locked_product(tmp_path, locked, dockerfile))
+    if carried:
+        assert verdict.ok and verdict.judged, verdict.detail
+        assert "1 locked block" in verdict.detail
+    else:
+        assert verdict.ok and not verdict.judged
+        assert "no locked block" in verdict.detail
