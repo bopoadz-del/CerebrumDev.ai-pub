@@ -126,3 +126,137 @@ def test_emit_worker_stalled_skips_a_missing_callback():
 
     # Must return normally without ever attempting to call ``None``.
     _emit_worker_stalled(None, _WorkerStall(480.0, 3, 7), 1)
+
+
+@pytest.mark.parametrize(
+    ("rel_parts", "expected"),
+    [
+        # The writer CLI's own runtime home is state, never output.
+        ((".codewhale-home", "tmp", "churn"), 0),
+        # A product source file IS output.
+        (("app", "main.py"), 1),
+    ],
+)
+def test_authored_file_count_treats_state_and_product_differently(
+    tmp_path, rel_parts, expected
+):
+    """Only product files count as authored output; the CLI's own home is
+    excluded from the idle watchdog's file-write signal."""
+    from app.factory.build.codewhale_worker import count_authored_files
+
+    target = tmp_path.joinpath(*rel_parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x", encoding="utf-8")
+
+    assert count_authored_files(tmp_path) == expected
+
+
+def test_a_heartbeating_worker_with_no_output_is_stalled(monkeypatch, tmp_path):
+    """Two-input rule, input 1: the factory heartbeat narrates silence without
+    resetting the idle clock. A worker that produces no step, file or stdout
+    line is declared stalled at the idle limit even while heartbeats fire."""
+    from app.factory.build import codewhale_worker as worker_mod
+
+    fake = tmp_path / "fake-codewhale"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codewhale 0.9.13-test"; exit 0; fi\n'
+        "sleep 300\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: str(fake))
+    monkeypatch.setattr(worker_mod, "_dns_probe", lambda cwd, env: {})
+    # Fire the heartbeat many times inside the idle window: narration must
+    # never look like work.
+    monkeypatch.setattr(worker_mod, "HEARTBEAT_EVERY_S", 0.1)
+    monkeypatch.setenv("FACTORY_CODEWHALE_IDLE_S", "1.0")
+
+    progress_lines: list = []
+    with pytest.raises(WorkerError) as exc:
+        run_worker_job_with_stall_retry(
+            "build it",
+            tmp_path,
+            tenant_store=_binding("heartbeat"),
+            progress=lambda line, info: progress_lines.append((line, info)),
+        )
+
+    assert WORKER_STALLED in str(exc.value)
+    assert "worker_timed_out" not in str(exc.value)
+    assert any(
+        line.startswith("writer working") for line, _ in progress_lines
+    ), "heartbeats fired yet the writer was still declared stalled"
+
+
+def test_a_worker_writing_product_files_is_not_stalled(monkeypatch, tmp_path):
+    """Two-input rule, input 2: files landing on disk ARE progress. A writer
+    that keeps creating product files runs to the wall, never a stall."""
+    from app.factory.build import codewhale_worker as worker_mod
+
+    fake = tmp_path / "fake-codewhale"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codewhale 0.9.13-test"; exit 0; fi\n'
+        "mkdir -p app\n"
+        "i=0\n"
+        "while :; do\n"
+        "  i=$((i+1))\n"
+        '  echo "x" > "app/gen_${i}.py"\n'
+        "  sleep 0.2\n"
+        "done\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: str(fake))
+    monkeypatch.setattr(worker_mod, "_dns_probe", lambda cwd, env: {})
+    monkeypatch.setenv("FACTORY_CODEWHALE_IDLE_S", "0.5")
+
+    with pytest.raises(WorkerError) as exc:
+        run_worker_job_with_stall_retry(
+            "build it",
+            tmp_path,
+            tenant_store=_binding("writer"),
+            timeout_s=2.0,
+        )
+
+    assert WORKER_STALLED not in str(exc.value)
+    assert "worker_timed_out" in str(exc.value)
+
+
+def test_a_worker_churning_its_own_home_is_stalled(monkeypatch, tmp_path):
+    """The live shape the fix closes: the CLI churns its own runtime state
+    while the model call hangs. State files are not authored output, so the
+    idle clock still elapses and the pass is declared stalled at the idle
+    limit -- not left to die at the wall."""
+    from app.factory.build import codewhale_worker as worker_mod
+
+    fake = tmp_path / "fake-codewhale"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codewhale 0.9.13-test"; exit 0; fi\n'
+        "mkdir -p .codewhale-home/tmp\n"
+        "i=0\n"
+        "while :; do\n"
+        "  i=$((i+1))\n"
+        '  echo "x" > ".codewhale-home/tmp/churn_${i}"\n'
+        "  sleep 0.2\n"
+        "done\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: str(fake))
+    monkeypatch.setattr(worker_mod, "_dns_probe", lambda cwd, env: {})
+    monkeypatch.setenv("FACTORY_CODEWHALE_IDLE_S", "1.0")
+
+    with pytest.raises(WorkerError) as exc:
+        run_worker_job_with_stall_retry(
+            "build it",
+            tmp_path,
+            tenant_store=_binding("churn"),
+        )
+
+    assert WORKER_STALLED in str(exc.value)
+    assert "worker_timed_out" not in str(exc.value)

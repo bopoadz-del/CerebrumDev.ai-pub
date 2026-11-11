@@ -179,6 +179,14 @@ DEFAULT_IDLE_S = 480.0
 IDLE_ENV = "FACTORY_CODEWHALE_IDLE_S"
 #: One fresh-process retry after a stall, as ordered. The second stall fails.
 WORKER_STALL_RETRIES = 1
+#: The writer CLI's own runtime home, pinned inside the checkout so the
+#: tailer can read its agent-loop log. It is the agent's state, never its
+#: output: a stalled writer that keeps churning its own logs/state must not
+#: look like it is authoring files (live 2026-11-11 pilot 43013469394:
+#: written=0, stub_rate=1.0 while ``count_authored_files`` rose 8 -> 136 on
+#: the CLI's own home, resetting the idle clock so the 480s stall never
+#: fired and only the 1800s wall ended the pass).
+WORKER_CLI_HOME_DIR = ".codewhale-home"
 
 #: Kept for the existing operator contract: this env var has always named
 #: the PROCESS cap and still does.
@@ -1782,10 +1790,11 @@ def is_narration_line(line: str) -> bool:
 def count_authored_files(root: Path) -> int:
     """Files the pass has put on disk so far, the factory's own view.
 
-    Vendored blocks, VCS internals and the progress logs themselves are not
-    the agent's output. Best-effort: an unreadable tree counts as zero.
+    Vendored blocks, VCS internals, the writer CLI's own runtime home and
+    the progress logs themselves are not the agent's output. Best-effort:
+    an unreadable tree counts as zero.
     """
-    skip = {"vendor", ".git", "node_modules", "__pycache__"}
+    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
     total = 0
     try:
         for path in Path(root).rglob("*"):
