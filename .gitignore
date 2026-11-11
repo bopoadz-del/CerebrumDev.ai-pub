@@ -3,8 +3,10 @@ dist
 *.pyc
 __pycache__
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+.claude/settings.local.json
+.codewhale/
 *.pem
 *.key
 *.log
