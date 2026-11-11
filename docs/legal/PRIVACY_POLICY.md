@@ -12,7 +12,7 @@
 **Effective date:** `[[NEEDS INPUT: date of publication]]`
 **Controller:** `[[NEEDS INPUT: registered legal entity, address]]`
 **Privacy contact:** support@cerebrum-dev.com
-**Facts verified against production code on:** 2026-09-16
+**Facts verified against production code on:** 2026-11-11
 
 ---
 
@@ -46,7 +46,7 @@ is derived from the production code.
 
 | Processor | What it receives | Purpose | Location |
 |---|---|---|---|
-| Render | Everything hosted — the application, database and disks | Hosting | Oregon, USA |
+| AWS | Everything hosted — the application, database and disks (ECS + managed Postgres) | Hosting | Oregon, USA (us-west-2) |
 | DeepSeek | **Your Content** — briefs, chat messages, and document text sent for inference | Generating output (primary model provider, active) | PRC (China) |
 | OpenRouter | **Your Content** — only if the fallback model leg is armed (it is not armed today: a fail-closed guard refuses it unless an operator explicitly enables it) | Fallback model routing | USA |
 | Stripe | Email, billing identifiers, payment details | Subscriptions | Global |
@@ -154,7 +154,7 @@ These are product gaps this document exposes, listed so they are not lost:
 1. **Self-service data export and account deletion.** Neither exists today.
 2. **Defined retention, and a job that enforces it.** Nothing expires now.
 3. **A monitored privacy inbox** for data-subject requests.
-4. **Signed DPAs** with Render, DeepSeek, Stripe and Sentry (and OpenRouter,
+4. **Signed DPAs** with AWS, DeepSeek, Stripe and Sentry (and OpenRouter,
    if the fallback leg is armed).
 5. **A documented breach-notification process** meeting the 72-hour rule.
 6. **Confirmation of what DeepSeek does with submitted content** — this is
