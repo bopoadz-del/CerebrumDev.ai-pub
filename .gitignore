@@ -3,6 +3,8 @@ dist
 *.pyc
 __pycache__
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
 *.pem
@@ -35,3 +37,5 @@ artifacts/audits/
 artifacts/steward_*.json
 backend/.venv-factory/
 store-blocks/
+.claude/settings.local.json
+.codewhale/
