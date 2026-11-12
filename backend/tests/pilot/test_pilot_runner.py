@@ -320,3 +320,74 @@ def test_write_pilot_timeline_writes_jsonl(tmp_path, events, expected_lines):
     joined = "\n".join(raw)
     for word in ("secret", "prompt", "session_id", "payload"):
         assert word not in joined
+
+
+@pytest.mark.parametrize(
+    "reasons, expected_pairs, expected_counts",
+    [
+        (
+            [
+                {"capability": "zorblat_sum", "class": "stub_handler", "layer": "function"},
+                {"capability": "plinket_rate", "class": "stub_handler", "layer": "function"},
+                {"capability": "-", "class": "layer2_fail", "layer": "layer2", "detail": "SECRETPROSE"},
+                {"capability": "/ws/secret path", "class": "missing_route"},
+                {"capability": "quarm_index", "class": "Writer said SECRETPROSE"},
+                "SECRETSTRING",
+            ],
+            [
+                {"capability": "zorblat_sum", "class": "stub_handler"},
+                {"capability": "plinket_rate", "class": "stub_handler"},
+                {"capability": "-", "class": "layer2_fail"},
+            ],
+            {"stub_handler": 2, "layer2_fail": 1},
+        ),
+        (
+            [
+                {"capability": "glim_score", "class": "handler_error"},
+                {"capability": "glim_score", "class": "wrong_envelope"},
+                {"capability": "trell_mean", "class": "missing_route"},
+                {"capability": "trell_mean", "class": "missing_route"},
+            ],
+            [
+                {"capability": "glim_score", "class": "handler_error"},
+                {"capability": "glim_score", "class": "wrong_envelope"},
+                {"capability": "trell_mean", "class": "missing_route"},
+                {"capability": "trell_mean", "class": "missing_route"},
+            ],
+            {"handler_error": 1, "wrong_envelope": 1, "missing_route": 2},
+        ),
+    ],
+    ids=["mix_with_junk", "clean_mix"],
+)
+def test_grader_reasons_pass_through_by_shape_and_are_counted(tmp_path, reasons, expected_pairs, expected_counts):
+    # Option (b): the timeline relays class + capability id per failing item and
+    # counts the classes; prose, paths and extra fields never pass.
+    event = {
+        "ts": "t",
+        "role": "WRITER",
+        "kind": "NOTE",
+        "detail": "GRADER: NOT_CERTIFIED: -",
+        "payload": {"grader_tier": "NOT_CERTIFIED", "grader_items": ["SECRETITEM"], "grader_reasons": reasons},
+    }
+    red = pilot.redact_event(event)
+    assert red["grader_reasons"] == expected_pairs
+    assert red["grader_class_counts"] == expected_counts
+    target = tmp_path / "timeline.jsonl"
+    assert pilot.write_pilot_timeline([event], target)
+    line = pilot.render_timeline([event])[0]
+    for cls, n in expected_counts.items():
+        assert f"{cls}={n}" in line
+    for public in (target.read_text(encoding="utf-8"), line):
+        for word in ("SECRETPROSE", "SECRETSTRING", "SECRETITEM", "/ws/secret", "Writer said", "\"layer\":"):
+            assert word not in public
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"grader_reasons": "stub_handler"}, {"grader_reasons": None}, {}],
+)
+def test_no_grader_reasons_leaves_the_line_unchanged(payload):
+    event = {"ts": "t", "role": "WRITER", "kind": "NOTE", "detail": "d", "payload": payload}
+    red = pilot.redact_event(event)
+    assert red["grader_reasons"] == [] and red["grader_class_counts"] == {}
+    assert "grader_classes" not in pilot.render_timeline([event])[0]

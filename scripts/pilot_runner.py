@@ -33,6 +33,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -235,6 +236,15 @@ COUNT_FIELDS: Dict[str, Tuple[str, ...]] = {
 }
 
 
+#: Option (b), Advisor 13:24Z: a grader NOT_CERTIFIED round carries, per
+#: failing item, a reason CLASS and the capability id. The timeline passes
+#: exactly those two tokens through, by SHAPE: a class is a lowercase
+#: snake_case token, a capability id an identifier token or ``-``. Anything
+#: else (prose, paths, product text) is dropped, never relayed.
+REASON_CLASS_SHAPE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+CAPABILITY_ID_SHAPE = re.compile(r"-|[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+
+
 def record(stage: str, ok: bool, evidence: str) -> None:
     tag = "PASS" if ok else "FAIL"
     print(f"[{tag}] {stage} -- {evidence}")
@@ -295,6 +305,29 @@ def counts_of(ev: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def grader_reasons_of(ev: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The grader's ``{capability, class}`` pairs on a ledger event, each
+    token shape-checked; every other field of a reason is dropped."""
+    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+    reasons = payload.get("grader_reasons")
+    out: List[Dict[str, str]] = []
+    for reason in reasons if isinstance(reasons, list) else []:
+        if not isinstance(reason, dict):
+            continue
+        cls, cid = str(reason.get("class") or ""), str(reason.get("capability") or "")
+        if REASON_CLASS_SHAPE.fullmatch(cls) and CAPABILITY_ID_SHAPE.fullmatch(cid):
+            out.append({"capability": cid, "class": cls})
+    return out
+
+
+def class_counts(reasons: List[Dict[str, str]]) -> Dict[str, int]:
+    """How many failing items each reason class has."""
+    counts: Dict[str, int] = {}
+    for reason in reasons:
+        counts[reason["class"]] = counts.get(reason["class"], 0) + 1
+    return counts
+
+
 def redact_event(ev: Any) -> Dict[str, Any]:
     """The ONLY fields of a ledger event the public pilot may print/upload.
 
@@ -304,6 +337,7 @@ def redact_event(ev: Any) -> Dict[str, Any]:
     """
     if not isinstance(ev, dict):
         return {"event": "unreadable", "reason": str(ev)[:80]}
+    reasons = grader_reasons_of(ev)
     return {
         "ts": str(ev.get("ts") or ""),
         "phase": str(ev.get("role") or "-"),
@@ -311,6 +345,8 @@ def redact_event(ev: Any) -> Dict[str, Any]:
         "failure_kind": failure_kind_of(ev),
         "reason": str(ev.get("detail") or "")[:200],
         "counts": counts_of(ev),
+        "grader_reasons": reasons,
+        "grader_class_counts": class_counts(reasons),
     }
 
 
@@ -333,6 +369,10 @@ def render_timeline(events: Any, limit: int = 20) -> List[str]:
         )
         if counts_s:
             line += f" counts={{{counts_s}}}"
+        if red["grader_reasons"]:
+            classes_s = ",".join(f"{k}={v}" for k, v in sorted(red["grader_class_counts"].items()))
+            pairs_s = ",".join(f"{r['capability']}:{r['class']}" for r in red["grader_reasons"])
+            line += f" grader_classes={{{classes_s}}} grader_reasons=[{pairs_s}]"
         lines.append(line)
     return lines
 
