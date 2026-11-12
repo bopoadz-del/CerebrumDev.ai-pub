@@ -11,8 +11,8 @@
 
 **Effective date:** `[[NEEDS INPUT: date of publication]]`
 **Controller:** `[[NEEDS INPUT: registered legal entity, address]]`
-**Privacy contact:** `[[NEEDS INPUT: email address for data-subject requests]]`
-**Facts verified against production code on:** 2026-09-16
+**Privacy contact:** support@cerebrum-dev.com
+**Facts verified against production code on:** 2026-11-11
 
 ---
 
@@ -35,10 +35,9 @@ documents — and the prototypes and artefacts the Service generates from it.
 Service, which may include IP address, request paths, timestamps and diagnostic
 context.
 
-**Payment data.** Handled by Stripe. `[[NEEDS INPUT: confirm the platform never
-stores card details itself — the code uses Stripe Checkout, which means card
-data goes directly to Stripe and does not touch our servers. State this
-explicitly once confirmed.]]`
+**Payment data.** Handled by Stripe. We never see or store card numbers; payment
+is taken by Stripe Checkout on Stripe pages, and card data goes directly to
+Stripe and does not touch our servers.
 
 ## 2. Third parties who process your data
 
@@ -47,11 +46,11 @@ is derived from the production code.
 
 | Processor | What it receives | Purpose | Location |
 |---|---|---|---|
-| Render | Everything hosted — the application, database and disks | Hosting | Oregon, USA |
-| DeepSeek | **Your Content** — briefs, chat messages, and document text sent for inference | Generating output (primary model provider, active) | `[[NEEDS INPUT: confirm region and obtain their DPA]]` |
-| OpenRouter | **Your Content** — only if the fallback model leg is armed (it is not armed today: a fail-closed guard refuses it unless an operator explicitly enables it) | Fallback model routing | `[[NEEDS INPUT: confirm region and obtain their DPA]]` |
+| AWS | Everything hosted — the application, database and disks (ECS + managed Postgres) | Hosting | Oregon, USA (us-west-2) |
+| DeepSeek | **Your Content** — briefs, chat messages, and document text sent for inference | Generating output (primary model provider, active) | PRC (China) |
+| OpenRouter | **Your Content** — only if the fallback model leg is armed (it is not armed today: a fail-closed guard refuses it unless an operator explicitly enables it) | Fallback model routing | USA |
 | Stripe | Email, billing identifiers, payment details | Subscriptions | Global |
-| Sentry | Error reports, which may incidentally include request context | Error tracking | `[[NEEDS INPUT: confirm region]]` |
+| Sentry | Error reports, which may incidentally include request context | Error tracking | USA |
 
 Moonshot AI (Kimi) is **not** in the production data path: no Moonshot
 credentials are configured, and the legacy compatibility resolver in code
@@ -90,13 +89,11 @@ publishing, because publishing it while untrue would be a misrepresentation.]]`
 
 ## 4. How long we keep it
 
-`[[NEEDS INPUT: retention periods. Nothing in the current code deletes anything
-automatically, which means the honest answer today is "indefinitely, until you
-ask us to delete it". That is a weak position under GDPR and should be replaced
-with defined periods — a common shape is: account data for the life of the
-account plus 30 days; Your Content until you delete it or close your account;
-logs and error reports 30-90 days; billing records for the statutory period,
-typically 6-7 years.]]`
+Account data is kept for the life of the account plus 30 days after closure.
+Your Content is kept until you delete it or close your account. Server logs and
+error reports are kept for 90 days. Backups are kept for 14 days. Billing
+records are kept for the statutory period (typically 6–7 years). Automatic
+purge is being implemented; until it ships, deletion is on request.
 
 ## 5. Your rights
 
@@ -104,13 +101,14 @@ Depending on where you live you may have the right to access, correct, delete,
 export, or restrict processing of your personal data, to object to processing
 based on legitimate interests, and to complain to a supervisory authority.
 
-To exercise any of these, contact `[[NEEDS INPUT: privacy contact]]`. We will
+To exercise any of these, contact support@cerebrum-dev.com. We will
 respond within `[[NEEDS INPUT: 30 days is the GDPR default]]`.
 
-`[[NEEDS INPUT: there is currently no self-service account-deletion or
-data-export path in the product. Until one exists these requests must be
-handled manually, and someone has to own that inbox. Building self-service
-deletion and export is recommended before opening public registration.]]`
+Self-service data export and account deletion are not yet surfaced in the
+product's interface (the backend exposes export and delete endpoints, but the
+web interface does not yet offer them). Until the interface ships, deletion and
+export are handled by email: contact support@cerebrum-dev.com and we will
+complete your request within 30 days.
 
 ## 6. Security
 
@@ -118,17 +116,17 @@ Passwords are stored as salted PBKDF2 hashes. Login tokens and API keys are
 stored hashed. Traffic is served over HTTPS. Access to the production
 environment is limited to the operator.
 
-`[[NEEDS INPUT: describe the breach-notification process. GDPR requires
-notifying the supervisory authority within 72 hours of becoming aware of a
-personal-data breach. There is currently no documented incident process —
-one should exist before launch.]]`
+Our personal-data incident process is documented in
+`docs/runbooks/INCIDENT_PERSONAL_DATA.md`: detect, contain, assess within
+24 hours, notify affected customers without undue delay and any supervisory
+authority within 72 hours where GDPR applies, then run a post-mortem.
+`[[NEEDS INPUT: counsel to review and finalise the breach-notification wording.]]`
 
 ## 7. Cookies and local storage
 
 The Service stores your login token in your browser's local storage so you stay
-signed in. `[[NEEDS INPUT: confirm whether any analytics or advertising cookies
-are used — none were found in the code. If none, say so plainly; if you add
-analytics later, a cookie banner is likely required in the EU/UK.]]`
+signed in. Only strictly necessary cookies (session sign-in) are used. No
+analytics or advertising cookies are used, so no cookie banner is required.
 
 ## 8. Children
 
@@ -156,7 +154,7 @@ These are product gaps this document exposes, listed so they are not lost:
 1. **Self-service data export and account deletion.** Neither exists today.
 2. **Defined retention, and a job that enforces it.** Nothing expires now.
 3. **A monitored privacy inbox** for data-subject requests.
-4. **Signed DPAs** with Render, DeepSeek, Stripe and Sentry (and OpenRouter,
+4. **Signed DPAs** with AWS, DeepSeek, Stripe and Sentry (and OpenRouter,
    if the fallback leg is armed).
 5. **A documented breach-notification process** meeting the 72-hour rule.
 6. **Confirmation of what DeepSeek does with submitted content** — this is

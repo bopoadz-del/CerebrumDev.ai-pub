@@ -323,3 +323,28 @@ def test_ownership_comes_from_the_one_registry():
     # Every stamp the structural test cannot drive is still classed.
     undriven = [s.name for s in stamps() if s.apply is None]
     assert all(s.kind == OWNED for s in stamps() if s.apply is None), undriven
+
+
+@pytest.mark.parametrize(
+    "prewritten",
+    [False, True],
+    ids=["fresh_tree", "overwrites_a_writer_authored_scaffold"],
+)
+def test_the_deploy_scaffold_stamp_renders_the_factory_files(tmp_path, prewritten):
+    """The Dockerfile/.dockerignore stamp is a real renderer, not a no-op:
+    applying it must write both Factory-owned files (whether the tree is
+    fresh or a writer authored its own scaffold first), and the Dockerfile
+    must copy the whole context -- so the vendored tree the lock pins reaches
+    the image -- while .dockerignore must not exclude ``vendor/``."""
+    from app.factory.build.stamp_registry import _deploy_scaffold
+
+    if prewritten:
+        (tmp_path / "Dockerfile").write_text(
+            "FROM python:3.11\nCOPY app ./app\n", encoding="utf-8"
+        )
+        (tmp_path / ".dockerignore").write_text("vendor/\n", encoding="utf-8")
+
+    changed = _deploy_scaffold(tmp_path)
+    assert changed == ["Dockerfile", ".dockerignore"]
+    assert "COPY . ." in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "vendor/" not in (tmp_path / ".dockerignore").read_text(encoding="utf-8")

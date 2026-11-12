@@ -5,6 +5,7 @@ import {
   clearSession,
   domains,
   factoryAccessPaused,
+  getSupportEmail,
   isDomainStoreUnreachable,
   isEmailNotVerifiedError,
   isTransientBootError,
@@ -15,6 +16,7 @@ import {
   type AccountInfo,
 } from './api/factory'
 import { AuthGate, VerifyEmailGate } from './authGates'
+import { SupportContact } from './supportContact'
 import { Account, Floor, Platforms, Subscription } from './factoryViews'
 
 export { AuthGate, VerifyEmailGate } from './authGates'
@@ -334,8 +336,21 @@ export default function App() {
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [sessionList, setSessionList] = useState<SessionListItem[]>([])
   const [locationEpoch, setLocationEpoch] = useState(0)
+  const [supportEmail, setSupportEmail] = useState<string | null>(null)
   const sessionListRef = useRef<SessionListItem[]>([])
   sessionListRef.current = sessionList
+
+  // The support/legal contact is operator config (SUPPORT_EMAIL); resolve it
+  // once at boot and render it in the shell footer. Failure leaves it null.
+  useEffect(() => {
+    let cancelled = false
+    getSupportEmail().then((email) => {
+      if (!cancelled) setSupportEmail(email)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Titles and stages move as a conversation does; the boot-time list would
   // leave a session reading "New session" long after it has a blueprint.
@@ -731,6 +746,7 @@ export default function App() {
         <div className="rail-foot">
           <span className="dot" aria-hidden="true" />
           <span className="rail-foot-text">session {sessionId.slice(0, 12)}…</span>
+          <SupportContact email={supportEmail} />
         </div>
       </aside>
       <main>

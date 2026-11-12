@@ -100,7 +100,7 @@ def test_brief_renders_requirements_verbatim(requirements):
 )
 def test_writer_prompt_states_source_of_record_and_coverage(requirements):
     text = render_writer_prompt(_blueprint(requirements), brief="build it")
-    assert PROMPT_VERSION == "writer_worker_prompt.v16"
+    assert PROMPT_VERSION == "writer_worker_prompt.v17"
     assert "SOURCE OF RECORD" in text
     assert "REQUIREMENTS COVERAGE" in text
 

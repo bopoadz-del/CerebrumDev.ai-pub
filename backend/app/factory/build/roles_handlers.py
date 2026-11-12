@@ -3961,9 +3961,10 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         SLOT_WAIT_EXHAUSTED,
         SLOT_WAIT_OPEN,
         WRITER_PROGRESS_FIELDS,
+        WRITER_STALL_FIELDS,
         WorkerError,
         is_narration_line,
-        run_worker_job,
+        run_worker_job_with_stall_retry,
         writer_specialist_cap,
     )
     from app.factory.build.writer_prompt import render_writer_prompt
@@ -3974,10 +3975,24 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
 
     product_tree = Path(getattr(ctx.workspace, "destination", None) or dest)
     formula_sources = _formula_sources(ctx)
+    # The Factory-owned paths the previous pass wrote and the Factory put back
+    # in place: that pass was kept, so the writer hears of them here, one
+    # REWORK FINDINGS line per path (Advisor 12:15Z).
+    from app.factory.build import factory_owned as _owned
+
+    owned_lines = tuple(_owned.rework_findings(_owned.recorded(Path(dest))))
     prompt = render_writer_prompt(
         ctx.blueprint,
         brief=_compiled_writer_brief(ctx),
         resume=bool(ctx.state.get("writer_resumed")),
+        # The work list a rework round was handed (grader / gate findings):
+        # rendered as REWORK FINDINGS so the agent patches in place and fixes
+        # only these instead of re-authoring the whole product (v16).
+        findings=tuple(
+            dict.fromkeys(
+                str(item) for item in (*(getattr(ctx, "work_list", ()) or ()), *owned_lines)
+            )
+        ),
         # K-F7 (ORDERS_1900Z): kernel first, then the Store, then labelled
         # improvisation -- the writer sees what already exists.
         **formula_sources,
@@ -4001,6 +4016,9 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         # was nowhere in the prompt (co-op, craft marketplace).
         locked_blocks=image_locked_entries(product_tree),
     )
+    # The Factory-owned files are read-only for the pass (factory_owned.lock);
+    # their modes come back however the pass ends.
+    owned_modes: Dict[str, int] = {}
     try:
         # The writer narrates itself on the Floor: CLI progress lines
         # become throttled ledger NOTEs (one per ~3s), so build-status
@@ -4036,7 +4054,7 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             # 3 minutes before the 2700s wall cut a 238-file pass).
             progress_fields = {
                 key: info[key]
-                for key in WRITER_PROGRESS_FIELDS
+                for key in (*WRITER_PROGRESS_FIELDS, *WRITER_STALL_FIELDS)
                 if isinstance(info, dict) and info.get(key) is not None
             }
             ctx.note(
@@ -4116,9 +4134,12 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                     source="factory",
                 )
         owned_before = factory_owned.snapshot(Path(dest))
+        # Unwritable for the duration of the pass: a write to one fails in
+        # the writer's own tool instead of costing the pass afterwards.
+        owned_modes = factory_owned.lock(Path(dest))
 
         def _launch_writer() -> Any:
-            return run_worker_job(
+            return run_worker_job_with_stall_retry(
                 prompt,
                 dest,
                 tenant_store=ctx.state.get("tenant_store"),
@@ -4191,6 +4212,10 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             reason="codewhale_worker_failed",
             location="WRITER",
         ) from exc
+    finally:
+        from app.factory.build import factory_owned as _owned_unlock
+
+        _owned_unlock.unlock(Path(dest), owned_modes)
 
     # E2: the session status must reflect the leg that actually ran —
     # write the worker's own receipt where the Floor monitor reads it,
@@ -4213,20 +4238,30 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     # The writer never authors a Factory-owned file (owner rule 2026-10-08;
     # live: the cycle-2 fintech writer invented docs/provenance/provenance.json
     # and the gap-filling converge kept it). Put the Factory's version back
-    # and record the paths: the WRITER gate turns them into rework naming
-    # each one.
+    # IN PLACE and keep the pass (Advisor 12:15Z, pilot 43202035946: rejecting
+    # the pass re-dispatched the whole writer, ~38 min each time). Every path
+    # is recorded; the next prompt names each as a REWORK FINDINGS line. Only
+    # a path that could not be put back rejects the pass at the WRITER gate.
     from app.factory.build import factory_owned
 
     touched = factory_owned.writer_touched(owned_before, factory_owned.snapshot(Path(dest)))
+    still: List[Dict[str, str]] = []
     if touched:
-        factory_owned.restore(Path(dest), owned_before, touched)
+        still = factory_owned.restore_in_place(Path(dest), owned_before, touched)
         ctx.note(
-            "the writer touched Factory-owned files (restored; sent to rework): "
-            + ", ".join(f"{row['path']} ({row['change']})" for row in touched),
+            "the writer touched Factory-owned files (restored in place; the pass continues): "
+            + ", ".join(f"{row['path']} ({row['change']})" for row in touched)
+            + (
+                "; NOT restored: " + ", ".join(row["path"] for row in still)
+                if still
+                else ""
+            ),
             stage="factory-owned",
             source="factory",
+            touched=touched,
+            unrestored=still,
         )
-    factory_owned.record(Path(dest), touched)
+    factory_owned.record(Path(dest), touched, unrestored_rows=still)
 
     # K-F7 (ORDERS_1900Z): every formula the writer authored is graded
     # against the kernel and the Store it was shown; a re-written or

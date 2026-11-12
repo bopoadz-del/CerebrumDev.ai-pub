@@ -46,6 +46,8 @@ from app.factory.build.brief_gates import WRITER_BEHAVIOUR_CHECK
 
 import json
 import re
+from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.factory.build.entity_contract import ENTITY_RESOLVER_SLOT, ENTITY_RESOLVER_SRC
@@ -932,6 +934,85 @@ def _render_probe() -> str:
 SELF_CHECK_REL = "scripts/factory_checks.py"
 SELF_CHECK_COMMAND = f"python {SELF_CHECK_REL}"
 
+#: The product source root the self-check watches for changes, and the test
+#: root it selects targeted tests from.
+SELF_CHECK_SRC_ROOT = "app"
+SELF_CHECK_TEST_ROOT = "tests"
+
+
+def _source_reference_tokens(relpath: str) -> list[str]:
+    """The names a product test may use to reference a source file.
+
+    A handler path ``app/actions/<name>.py`` yields the tokens ``<name>`` and
+    ``app.actions.<name>``. A test file whose text names one of these exercises
+    that file; a test that names none of them does not. Never a hardwired name:
+    the tokens come from the path alone.
+    """
+    parts = Path(str(relpath)).as_posix().split("/")
+    if parts and parts[-1] == "__init__.py":
+        parts = parts[:-1]
+    if not parts:
+        return []
+    stem = parts[-1].rsplit(".", 1)[0]
+    if not stem or stem == "__init__":
+        return []
+    module = ".".join(parts[:-1] + [stem]) if len(parts) > 1 else stem
+    return [stem, module]
+
+
+def select_targeted_tests(
+    changed_sources: Sequence[str],
+    test_files: Sequence[tuple[str, str]],
+) -> list[str]:
+    """Test files that exercise any changed source -- and nothing else.
+
+    ``changed_sources`` are repo-relative product source paths (``app/...``);
+    ``test_files`` is ``(relpath, source_text)`` for every test file on disk.
+    A test file is selected when its text names one of the changed files'
+    reference tokens as a whole word. Everything else is the code-phase gate's
+    and TESTER's to run, not the writer's (F2: the writer never re-runs suites
+    the gates own).
+    """
+    tokens: list[str] = []
+    for rel in changed_sources or ():
+        tokens.extend(_source_reference_tokens(rel))
+    tokens = [t for t in dict.fromkeys(tokens) if t]
+    selected = []
+    for rel, text in test_files:
+        if any(re.search(rf"\b{re.escape(tok)}\b", text or "") for tok in tokens):
+            selected.append(rel)
+    return sorted(selected)
+
+
+def _render_targeted_selection() -> str:
+    """The two selection functions above, rendered from their own source
+    (annotations dropped) -- not a copy the self-check can drift from."""
+    import ast
+    import inspect
+    import textwrap
+
+    class _Unannotate(ast.NodeTransformer):
+        def visit_FunctionDef(self, node):
+            self.generic_visit(node)
+            node.returns = None
+            for arg in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+                node.args.vararg,
+                node.args.kwarg,
+            ):
+                if arg is not None:
+                    arg.annotation = None
+            return node
+
+    lines: list[str] = []
+    for fn in (_source_reference_tokens, select_targeted_tests):
+        tree = _Unannotate().visit(ast.parse(textwrap.dedent(inspect.getsource(fn))))
+        lines += ["", "", ast.unparse(ast.fix_missing_locations(tree))]
+    return "\n".join(lines)
+
+
 _SELF_CHECK_TEMPLATE = '''"""Factory self-check -- the WRITER gate's own behaviour probe.
 
 Factory-owned and re-stamped on every writer pass: editing it changes
@@ -944,35 +1025,101 @@ It forces every block call to fail and records what each capability does.
 Each line is one typed record: [halt] or [finding] fails the WRITER gate;
 [miss] is a capability that reported success over a failed block (F1),
 refused its own schema, or declared blocks it never calls (F11) -- fix
-every one. Then it runs the product-gate suites TESTER stamped (once a
-TESTER pass has put them on disk): the same files that judge you, rendered
-from your own app/models.py. A [suite] line is a failing test -- every field
-a handler requires must be declared in that capability's model FIELDS, and
-a payload built from those FIELDS must be accepted. Exit 0 only when there
-is nothing to fix.
+every one. Then it runs the targeted tests for the files this pass changed
+(once a TESTER pass has put suites on disk): the tests that reference what
+you touched, and nothing else -- the code-phase gate and TESTER own their
+suites. A [suite] line is a failing test -- every field a handler requires
+must be declared in that capability's model FIELDS, and a payload built from
+those FIELDS must be accepted. Exit 0 only when there is nothing to fix.
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 PROBE = {probe}
 RECORD_LEVELS = {levels}
-SUITES = {suites}
+SRC_ROOT = {src_root}
+TEST_ROOT = {test_root}
 TIMEOUT_S = 900
 
+{targeted_selection}
 
-def run_suites(root, env):
-    """The TESTER suites on disk, every marker; one [suite] line per failure."""
-    present = [s for s in SUITES if os.path.isfile(os.path.join(root, s))]
-    if not present:
-        print("[suite] none on disk yet (first writer pass): TESTER stamps them; "
-              "the probe above already checks the same schema contract")
+
+def _changed_sources(root):
+    """app/** files modified after this script was stamped (mtime > ours).
+
+    The Factory writes this script at the start of the writer pass, after the
+    rework seed; the writer's edits land later, so their mtime sorts after
+    ours. No git and no content baseline: the staged tree is not a repository,
+    and a baseline of the product's own files would put agent bytes into a
+    Factory-owned stamp. A first pass has no suites on disk to select, so a
+    whole-tree "changed" there selects nothing."""
+    try:
+        marker = os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        return []
+    out = []
+    base = os.path.join(root, SRC_ROOT)
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            try:
+                if os.path.getmtime(full) <= marker:
+                    continue
+            except OSError:
+                continue
+            out.append(os.path.relpath(full, root).replace(os.sep, "/"))
+    return sorted(out)
+
+
+def _test_files(root):
+    """Every test file under tests/ as (relpath, source_text)."""
+    out = []
+    base = os.path.join(root, TEST_ROOT)
+    if not os.path.isdir(base):
+        return out
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in filenames:
+            if not (name.startswith("test_") or name.endswith("_test.py")):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            try:
+                with open(full, "r", encoding="utf-8") as fh:
+                    out.append((rel, fh.read()))
+            except OSError:
+                continue
+    return sorted(out)
+
+
+def run_targeted_tests(root, env):
+    """The tests for the files this pass changed, and nothing else.
+
+    The code-phase gate (roles_handlers) and TESTER own their suites; the
+    writer re-runs only the tests that exercise what it touched, one [suite]
+    line per failure.
+    """
+    changed = _changed_sources(root)
+    if not changed:
+        print("[suite] no app/ file changed this pass: nothing to re-run here; "
+              "the code-phase gate and TESTER own their suites")
+        return []
+    targeted = select_targeted_tests(changed, _test_files(root))
+    if not targeted:
+        print("[suite] no test references the changed file(s): "
+              + ", ".join(changed))
         return []
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-rfE", "-p", "no:cacheprovider",
-         "-m", "pilot or not pilot", *present],
+         "-m", "pilot or not pilot", *targeted],
         cwd=root, capture_output=True, text=True, env=env, timeout=TIMEOUT_S,
     )
     failures = [
@@ -1033,9 +1180,9 @@ def main():
         else str(len(to_fix)) + " capability record(s) to fix" if to_fix
         else "every capability fails closed when its blocks fail"
     )
-    suite_failures = run_suites(root, env)
+    suite_failures = run_targeted_tests(root, env)
     if suite_failures:
-        print(str(len(suite_failures)) + " product-gate test(s) failing")
+        print(str(len(suite_failures)) + " targeted test(s) failing")
     return 1 if (halted or to_fix or suite_failures) else 0
 
 
@@ -1046,15 +1193,15 @@ if __name__ == "__main__":
 
 def render_self_check() -> str:
     """The stamped self-check: the SAME rendered probe the gate runs (its
-    payload base read off the live models when it runs), then the
-    product-gate suites TESTER stamped (product_suites)."""
-    from app.factory.build.product_suites import PRODUCT_SUITES
-
+    payload base read off the live models when it runs), plus the targeted
+    tests for the files this pass changes -- never the suites the gates own."""
     return _SELF_CHECK_TEMPLATE.format(
         command=SELF_CHECK_COMMAND,
         probe=repr(_render_probe()),
         levels=repr(RECORD_LEVELS),
-        suites=repr(PRODUCT_SUITES),
+        src_root=repr(SELF_CHECK_SRC_ROOT),
+        test_root=repr(SELF_CHECK_TEST_ROOT),
+        targeted_selection=_render_targeted_selection(),
     )
 
 
@@ -1063,7 +1210,9 @@ def emit_self_check(workspace: object) -> None:
     re-stamped by factory_refresh before every TESTER."""
     from app.factory.build.workspace import write_workspace_text
 
-    write_workspace_text(workspace, SELF_CHECK_REL, render_self_check())
+    write_workspace_text(
+        workspace, SELF_CHECK_REL, render_self_check()
+    )
 
 
 def gate_writer_behaviour(ctx: "GateContext") -> "GateResult":
