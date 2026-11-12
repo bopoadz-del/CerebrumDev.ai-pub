@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.factory.build import factory_owned
 
 
@@ -133,14 +135,26 @@ def _run_pass(tmp_path, monkeypatch, write):
     return ctx, dest, result
 
 
+def _force_write(target, text):
+    """A writer that ignores the read-only lock: make the file writable, then
+    write it (what the after-pass check must still catch)."""
+    import os
+    import stat
+    from pathlib import Path
+
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        os.chmod(target, stat.S_IMODE(target.stat().st_mode) | stat.S_IWUSR)
+    target.write_text(text, encoding="utf-8")
+
+
 def _writer_invents_provenance(root):
     from pathlib import Path
 
-    target = Path(root) / factory_owned.PROVENANCE_REL
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
+    _force_write(
+        Path(root) / factory_owned.PROVENANCE_REL,
         json.dumps({"product_id": "product", "schema_version": "1.0.0", "sources": [], "bindings": []}),
-        encoding="utf-8",
     )
 
 
@@ -169,7 +183,7 @@ def test_a_writer_that_edits_a_stamped_file_is_recorded_and_restored(tmp_path, m
     (tmp_path / "build" / rel).write_text("# the factory's self-check\n", encoding="utf-8")
 
     def edit(root):
-        (Path(root) / rel).write_text("# the writer's version\n", encoding="utf-8")
+        _force_write(Path(root) / rel, "# the writer's version\n")
 
     _ctx, dest, _result = _run_pass(tmp_path, monkeypatch, edit)
     assert {"path": rel, "change": "modified"} in factory_owned.recorded(dest)
@@ -253,7 +267,7 @@ def test_a_writer_that_edits_a_prestamped_file_is_still_sent_to_rework(tmp_path,
     from pathlib import Path
 
     def edit(root):
-        (Path(root) / "app/health.py").write_text("# the writer's health\n", encoding="utf-8")
+        _force_write(Path(root) / "app/health.py", "# the writer's health\n")
 
     _ctx, dest, _result = _run_pass(tmp_path, monkeypatch, edit)
     assert {"path": "app/health.py", "change": "modified"} in factory_owned.recorded(dest)
@@ -329,3 +343,188 @@ def test_prestamp_never_overwrites_a_bootstrap_or_record_already_there(tmp_path)
     changed = factory_owned.prestamp_late_files(tmp_path, ctx=None)
     assert "conftest.py" not in changed
     assert (tmp_path / "conftest.py").read_text(encoding="utf-8") == "# already here\n"
+
+
+# -- restored in place, the pass continues (Advisor 12:15Z) --------------------------
+#
+# Pilot 43202035946: the writer twice authored a Factory-owned file; each time
+# the WRITER gate rejected the pass and the runner re-dispatched the whole
+# writer (~38 min lost each). Now the owned files are read-only for the pass,
+# a write that gets through is put back in place, the writer's own files are
+# kept, the gate does not reject the pass for it, and the next prompt names
+# the path as a REWORK FINDINGS line.
+
+
+def _writer_gate(dest):
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.gates import GateContext, gate_writer_contract
+
+    return gate_writer_contract(GateContext(workspace=dest, role=BuildRole.WRITER))
+
+
+def _own_file_and_owned_write(root):
+    from pathlib import Path
+
+    mine = Path(root) / "app" / "writer_own_module.py"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    mine.write_text("VALUE = 1\n", encoding="utf-8")
+    _force_write(Path(root) / "app/health.py", "# the writer's health\n")
+
+
+def _own_file_only(root):
+    from pathlib import Path
+
+    mine = Path(root) / "app" / "writer_own_module.py"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    mine.write_text("VALUE = 1\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "write, expected_recorded",
+    [
+        # A: the writer also wrote an owned file -- it is corrected in place.
+        (_own_file_and_owned_write, [{"path": "app/health.py", "change": "modified"}]),
+        # B: a clean pass -- nothing is recorded or corrected.
+        (_own_file_only, []),
+    ],
+)
+def test_a_pass_keeps_its_own_files_and_only_an_owned_write_is_corrected(
+    tmp_path, monkeypatch, write, expected_recorded
+):
+    _ctx, dest, _result = _run_pass(tmp_path, monkeypatch, write)
+    # The Factory's file is the Factory's either way...
+    assert (dest / "app/health.py").read_text(encoding="utf-8") != "# the writer's health\n"
+    # ...the writer's own work is untouched...
+    assert (dest / "app" / "writer_own_module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    # ...only an owned write is recorded, and nothing is left unrestored...
+    assert factory_owned.recorded(dest) == expected_recorded
+    assert factory_owned.unrestored(dest) == []
+    # ...so the WRITER gate does not reject the pass (no restart).
+    assert _writer_gate(dest).reason != factory_owned.WRITER_AUTHORED
+
+
+def test_input_a_the_next_prompt_names_the_path_as_a_rework_finding(tmp_path, monkeypatch):
+    from app.factory.build.roles_handlers import _run_writer_via_codewhale_worker
+    from tests.factory.test_codewhale_writer_dispatch import _receipt
+
+    ctx, _dest, _result = _run_pass(tmp_path, monkeypatch, _own_file_and_owned_write)
+    prompts = []
+
+    def worker(prompt, _root, **_kw):
+        prompts.append(prompt)
+        return _receipt(tools=[{"tool": "write", "path": "app/actions/cap.py"}])
+
+    monkeypatch.setattr("app.factory.build.codewhale_worker.run_worker_job", worker)
+    _run_writer_via_codewhale_worker(ctx)
+    assert prompts
+    findings = prompts[-1].partition("REWORK FINDINGS")[2]
+    assert "app/health.py" in findings and "Factory-owned" in findings
+
+
+def test_owned_files_are_read_only_during_the_pass_and_writable_after(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+
+    seen = {}
+
+    def look(root):
+        seen["writable"] = os.access(Path(root) / "app/health.py", os.W_OK)
+        mine = Path(root) / "app" / "writer_own_module.py"
+        mine.parent.mkdir(parents=True, exist_ok=True)
+        mine.write_text("VALUE = 3\n", encoding="utf-8")
+        seen["own_written"] = mine.is_file()
+
+    _ctx, dest, _result = _run_pass(tmp_path, monkeypatch, look)
+    if os.name == "posix" and os.geteuid() != 0:
+        assert seen["writable"] is False
+    assert seen["own_written"] is True
+    assert os.access(dest / "app/health.py", os.W_OK)
+
+
+@pytest.mark.parametrize(
+    "unrestored_rows, rejects",
+    [
+        ([{"path": factory_owned.PROVENANCE_REL, "change": "modified"}], True),
+        ([], False),
+    ],
+)
+def test_only_a_path_that_could_not_be_put_back_rejects_the_pass(tmp_path, unrestored_rows, rejects):
+    rows = [{"path": factory_owned.PROVENANCE_REL, "change": "modified"}]
+    factory_owned.record(tmp_path, rows, unrestored_rows=unrestored_rows)
+    result = _writer_gate(tmp_path)
+    assert (result.reason == factory_owned.WRITER_AUTHORED) == rejects
+    assert factory_owned.unrestored(tmp_path) == unrestored_rows
+
+
+def _writer_edits_and_creates(root):
+    _force_write(Path(root) / "a.txt", "writer")
+    (Path(root) / "b.txt").write_text("writer", encoding="utf-8")
+
+
+def _writer_deletes(root):
+    target = Path(root) / "a.txt"
+    import os
+    import stat
+
+    os.chmod(target, stat.S_IMODE(target.stat().st_mode) | stat.S_IWUSR)
+    target.unlink()
+
+
+@pytest.mark.parametrize(
+    "write, expected_touched",
+    [
+        (_writer_edits_and_creates, [{"path": "a.txt", "change": "modified"}, {"path": "b.txt", "change": "created"}]),
+        (_writer_deletes, [{"path": "a.txt", "change": "deleted"}]),
+    ],
+)
+def test_restore_in_place_reports_only_what_still_differs(tmp_path, write, expected_touched):
+    paths = ["a.txt", "b.txt"]
+    (tmp_path / "a.txt").write_text("factory", encoding="utf-8")
+    before = factory_owned.snapshot(tmp_path, paths)
+    modes = factory_owned.lock(tmp_path, paths)
+    write(tmp_path)
+    factory_owned.unlock(tmp_path, modes)
+    touched = factory_owned.writer_touched(before, factory_owned.snapshot(tmp_path, paths))
+    assert touched == expected_touched
+    assert factory_owned.restore_in_place(tmp_path, before, touched) == []
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "factory"
+    assert not (tmp_path / "b.txt").exists()
+
+
+def _absent(_target):
+    return None
+
+
+def _a_directory(target):
+    target.mkdir(parents=True)
+
+
+@pytest.mark.parametrize("make_other", [_absent, _a_directory])
+def test_lock_takes_only_present_files_and_leaves_anything_else_alone(tmp_path, make_other):
+    """An owned path that is absent -- or a directory -- is not locked:
+    directories stay writable so the writer's own files are never blocked."""
+    (tmp_path / "a.txt").write_text("factory", encoding="utf-8")
+    make_other(tmp_path / "other")
+    modes = factory_owned.lock(tmp_path, ["a.txt", "other"])
+    try:
+        assert set(modes) == {"a.txt"}
+    finally:
+        factory_owned.unlock(tmp_path, modes)
+
+
+_ROW = {"path": factory_owned.PROVENANCE_REL, "change": "modified"}
+
+
+@pytest.mark.parametrize(
+    "payload, expected",
+    [
+        ({"touched": [_ROW], "unrestored": []}, []),
+        ({"touched": [_ROW]}, [_ROW]),  # a record from before the field: every touch counts
+        ([_ROW], []),  # not a record at all: nothing is read from it
+    ],
+)
+def test_unrestored_reads_only_a_well_formed_record(tmp_path, payload, expected):
+    target = tmp_path / factory_owned.VIOLATIONS_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload), encoding="utf-8")
+    assert factory_owned.unrestored(tmp_path) == expected
