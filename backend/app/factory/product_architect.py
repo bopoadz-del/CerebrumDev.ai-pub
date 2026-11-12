@@ -436,6 +436,38 @@ def _blueprint_from_llm_payload(
     if not caps:
         raise ValueError("LLM draft produced no usable capabilities")
 
+    # The closure is the source of record, not a filter on the model's pick:
+    # the model chooses WHERE a closure block goes, it cannot drop one. Every
+    # closure block no capability bound is bound anyway, the way the no-LLM
+    # draft binds a block: its own REUSE capability (or the capability that
+    # already carries its id). An empty closure adds nothing, so the draft
+    # stays an honest pure-GENERATE plan.
+    bound = {b for cap in caps for b in cap["block_ids"]}
+    for bid in sorted(allowed - bound):
+        same = next((c for c in caps if c["id"] == bid), None)
+        if same is not None:
+            same["block_ids"].append(bid)
+            same["strategy_hint"] = "REUSE"
+            continue
+        caps.append(
+            {
+                "id": bid,
+                "description": f"{bid.replace('_', ' ').title()} capability (reused from the block store)",
+                "block_ids": [bid],
+                "strategy_hint": "REUSE",
+                "connectors": [],
+            }
+        )
+
+    # An empty kit closure while the pinned registry holds blocks has two
+    # causes the draft cannot tell apart; say so instead of drafting silently.
+    from app.factory.store_kits import kit_closure
+
+    drafting_note = None
+    if dual and not kit_closure(vertical):
+        drafting_note = "closure empty: Store unreachable or vertical has no kit"
+        logger.warning("architect draft: %s (vertical=%s)", drafting_note, vertical)
+
     # The vertical is the USER's choice (the Floor's typed field), never the
     # model's reading of the brief: a "vertical" key in the payload is ignored.
     product_name = str(data.get("product_name", "")).strip()[:120] or vertical.replace(
@@ -458,6 +490,7 @@ def _blueprint_from_llm_payload(
         "connectors": list(dict.fromkeys(c for cap in caps for c in cap["connectors"])),
         "edge_profile": "standard",
         "human_authority": True,
+        "drafting_note": drafting_note,
     }
     return ProductBlueprint.model_validate(raw)
 
