@@ -996,6 +996,7 @@ class RoleRunner:
                 "grader_tier": verdict.tier,
                 "grader_items": list(verdict.items),
                 "grader_ungraded": list(verdict.ungraded),
+                "grader_reasons": [dict(r) for r in verdict.reasons],
             },
         )
         if verdict.ok:

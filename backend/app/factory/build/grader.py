@@ -467,6 +467,95 @@ class _UiNotRun:
         return {"ok": self.ok, "ran": self.ran, "failing": self.failing, "steps": list(self.steps)}
 
 
+#: The fixed reason-class enum a NOT_CERTIFIED round carries per failing
+#: item (option (b), Advisor 13:24Z). Every class is derived from what the
+#: grade record already holds -- no new check runs to produce one.
+REASON_CLASSES: FrozenSet[str] = frozenset({
+    "missing_route",      # no gradeable handle, or a route step that does not answer
+    "stub_handler",       # one result for two inputs, or a mutant the test cannot tell apart
+    "handler_error",      # the handle raised, exited, timed out or did not import
+    "wrong_envelope",     # the honest-error step did not get an honest error back
+    "wrong_computation",  # outputs differ but do not match the kernel's
+    "hardwired_value",    # an input-specific branch, a baked literal or a prompt leak
+    "failed_ui_step",     # any other UI step that did not pass
+    "layer2_fail",        # a Layer-2 question left open
+    "ungraded",           # a layer that did not run (the report says what it did not check)
+})
+
+#: UI step kind -> reason class; every other failing kind is failed_ui_step.
+_UI_KIND_CLASS: Mapping[str, str] = {"route": "missing_route", "honest_error": "wrong_envelope"}
+
+
+def _named_capability(text: str, capability_ids: List[str]) -> str:
+    """The capability id a recorded item names -- the item IS the id, ends in
+    ``/<id>`` (a route target) or quotes ``'<id>'`` (a Layer-2 question) --
+    else ``-``. Only ids from the blueprint are ever returned."""
+    for cid in capability_ids:
+        if text == cid or text.endswith("/" + cid) or f"'{cid}'" in text:
+            return cid
+    return "-"
+
+
+def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[Dict[str, str]]:
+    """Per failing item of a grade record: ``{capability, class, layer}``.
+
+    ``class`` is from REASON_CLASSES; ``capability`` is a blueprint capability
+    id or ``-``; ``layer`` names the grade layer. Read only from the record
+    (no new check), and never product text or the writer's prose -- the
+    pilot's public timeline relays these as they are.
+    """
+    from app.factory.build.product_grader.function_grader import ONE_RESULT
+    from app.factory.build.product_grader.two_dataset import (
+        HARDWIRED_CONSTANT,
+        WRONG_COMPUTATION,
+    )
+
+    cids = [str(c) for c in capability_ids]
+    out: List[Dict[str, str]] = []
+
+    def add(text: str, cls: str, layer: str) -> None:
+        out.append({"capability": _named_capability(text, cids), "class": cls, "layer": layer})
+
+    layer1 = grade.get("layer1") or {}
+    graded = set()
+    for fn in (layer1.get("functions") or {}).get("functions") or []:
+        cid = str(fn.get("capability_id") or "")
+        graded.add(cid)
+        if fn.get("ok") is True:
+            continue
+        if fn.get("two_input_passed") is True or fn.get("detail") == ONE_RESULT:
+            add(cid, "stub_handler", "function")
+        else:
+            add(cid, "handler_error", "function")
+    for cid in cids:
+        if cid not in graded:
+            add(cid, "missing_route", "function")
+
+    ui = layer1.get("ui") or {}
+    if ui.get("ran") is not True:
+        add("", "ungraded", "ui")
+    for step in ui.get("steps") or []:
+        if not step.get("passed"):
+            add(str(step.get("target") or ""), _UI_KIND_CLASS.get(str(step.get("kind")), "failed_ui_step"), "ui")
+
+    for finding in (grade.get("hardwiring") or {}).get("findings") or []:
+        verdict = finding.get("verdict")
+        cls = (
+            "stub_handler" if verdict == HARDWIRED_CONSTANT
+            else "wrong_computation" if verdict == WRONG_COMPUTATION
+            else "hardwired_value"
+        )
+        add(str(finding.get("capability") or ""), cls, "hardwiring")
+
+    layer2 = grade.get("layer2") or {}
+    if layer2.get("ran") is not True:
+        add("", "ungraded", "layer2")
+    else:
+        for question in layer2.get("open_fails") or []:
+            add(str(question), "layer2_fail", "layer2")
+    return out
+
+
 @dataclass(frozen=True)
 class GraderVerdict:
     """The grader's verdict. ``tier`` is CERTIFIED / NOT_CERTIFIED / ERROR;
@@ -477,6 +566,8 @@ class GraderVerdict:
     items: Tuple[str, ...] = ()
     ungraded: Tuple[str, ...] = ()
     grade: Optional[Mapping[str, Any]] = None
+    #: NOT_CERTIFIED only: the reason class per failing item (reason_classes).
+    reasons: Tuple[Mapping[str, str], ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -687,12 +778,14 @@ def run_grader(
 
     # A refused layer is a quoted NOT_CERTIFIED gap -- the report says what
     # it did not check, and no tier is issued over the gap.
+    reasons = tuple(reason_classes(grade, cids))
     if refusal:
         return GraderVerdict(
             tier=NOT_CERTIFIED,
             items=(refusal,) + tuple(items),
             ungraded=tuple(ungraded),
             grade=grade,
+            reasons=reasons,
         )
 
     # A Layer 2 that never answered is an outage -- a verdict about the run
@@ -713,5 +806,6 @@ def run_grader(
             items=tuple(items) + tuple(ungraded),
             ungraded=tuple(ungraded),
             grade=grade,
+            reasons=reasons,
         )
     return GraderVerdict(tier=CERTIFIED, grade=grade)
