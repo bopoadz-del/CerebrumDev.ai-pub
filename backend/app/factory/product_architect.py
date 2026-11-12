@@ -168,6 +168,7 @@ Return ONLY a JSON object with this shape:
     {
       "id": "<snake_case capability id>",
       "description": "<what this capability does>",
+      "requirements": ["<the customer's own asks for THIS capability, one verbatim clause/line each>"],
       "block_ids": ["<ids from the AVAILABLE BLOCKS list only>"],
       "strategy_hint": "REUSE",
       "connectors": ["<external systems this capability calls that no AVAILABLE BLOCK supplies>"]
@@ -181,6 +182,10 @@ Rules:
   they called the work and who it is for -- and keep it plain. Never invent a
   brand, a product line, or a word the user did not use.
 - 3 to 8 capabilities, ordered by importance.
+- requirements carries the customer's own asks for that ONE capability,
+  verbatim where the brief gave them (a clause list, a BOQ line set, a
+  traceability demand). Use [] when the brief says nothing specific for it.
+  Never summarize away a requirement the customer named.
 - block_ids may ONLY contain ids from the AVAILABLE BLOCKS list. Never invent ids.
 - If no available block fits a capability, use "block_ids": [] and
   "strategy_hint": "GENERATE".
@@ -378,6 +383,29 @@ def _deterministic_closure(
     return frozenset(allowed & dual)
 
 
+def _sanitize_requirements(value: Any) -> List[str]:
+    """Keep only the customer's real clause-level asks, bounded.
+
+    The architect LLM may return junk shapes (nested dicts, blanks, whole
+    briefs). Fail-safe content handling: drop non-strings, trim, cap each
+    item and the count. Requirements are a passthrough — this function never
+    invents or rewrites them.
+    """
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text:
+            continue
+        out.append(text[:400])
+        if len(out) >= 12:
+            break
+    return out
+
+
 def _blueprint_from_llm_payload(
     data: Dict[str, Any],
     brief: str,
@@ -430,6 +458,7 @@ def _blueprint_from_llm_payload(
                 or f"Capability {cap_id}",
                 "block_ids": block_ids,
                 "strategy_hint": "REUSE" if block_ids else "GENERATE",
+                "requirements": _sanitize_requirements(item.get("requirements")),
                 "connectors": connectors,
             }
         )

@@ -3813,6 +3813,12 @@ def _compiled_writer_brief(ctx: RoleContext) -> str:
         desc = str(getattr(cap, "description", "") or "").strip()
         if cid:
             cap_lines.append(f"- {cid}: {desc}".rstrip())
+            for req in (
+                str(r).strip()
+                for r in (getattr(cap, "requirements", None) or [])
+                if str(r).strip()
+            ):
+                cap_lines.append(f"    requirement: {req}")
     if cap_lines:
         sections.append("CAPABILITIES\n" + "\n".join(cap_lines))
     if not sections:
