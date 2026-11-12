@@ -2191,6 +2191,22 @@ class RoleRunner:
             payload=bar.to_json(),
         )
 
+    def _note_drafting_note(self) -> None:
+        """Carry the architect's drafting note into the public timeline.
+
+        The draft happens on the Floor, before any build exists; a note it
+        carried (a fallback draft, an empty kit closure) is otherwise visible
+        only in the chat turn that drafted it.
+        """
+        note = str(getattr(self.blueprint, "drafting_note", "") or "").strip()
+        if note:
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.COLLECTOR,
+                detail=f"architect: {note}",
+                payload={"drafting_note": note},
+            )
+
     def _note_plan_budget(self) -> None:
         """State the plan-time budget before any phase runs (1330Z).
 
@@ -2787,6 +2803,7 @@ class RoleRunner:
         # PLAN_BUDGET note never hides it (see the note at the top of run()).
         self._note_build_level()
         self._note_plan_budget()
+        self._note_drafting_note()
 
         index = 0
         while True:
