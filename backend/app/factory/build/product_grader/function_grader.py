@@ -38,6 +38,9 @@ from app.factory.build.product_grader import vault
 MIN_FUNCTIONS = 4
 MUTANTS: Sequence[str] = ("constant_return", "drop_rule")
 RUN_TIMEOUT_S = 60
+#: The detail a handle earns when its two inputs gave one result (it answers
+#: like a stub). The reason-class derivation reads this constant, never prose.
+ONE_RESULT = "two inputs gave one result"
 
 
 @dataclass(frozen=True)
@@ -229,7 +232,7 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
                               f"handle exited the grader (rc={proc.returncode}): {tail[0]}"[:300])
     killed = [m for m, v in data["mutants"].items() if v == "killed"]
     survived = [m for m, v in data["mutants"].items() if v != "killed"]
-    detail = data.get("error") or ("two inputs gave one result" if not data["two_input"] else "")
+    detail = data.get("error") or (ONE_RESULT if not data["two_input"] else "")
     return FunctionResult(fn.capability_id, data["two_input"] is True, killed, survived, detail)
 
 

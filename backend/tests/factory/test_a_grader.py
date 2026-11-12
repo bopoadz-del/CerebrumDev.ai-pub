@@ -511,6 +511,8 @@ def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, inde
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert f"function grade FAIL: {bad_cid}" in verdict.items
+    # option (b): the verdict carries the failing capability's reason class
+    assert {"capability": bad_cid, "class": "stub_handler", "layer": "function"} in verdict.reasons
 
 
 @pytest.mark.parametrize("crash_message", ["grader exploded", "grader blew up"])
@@ -630,7 +632,9 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
 
     def not_certified(**kwargs):
         return grader_mod.GraderVerdict(
-            tier=grader_mod.NOT_CERTIFIED, items=(f"function grade FAIL: {capability}",)
+            tier=grader_mod.NOT_CERTIFIED,
+            items=(f"function grade FAIL: {capability}",),
+            reasons=({"capability": capability, "class": "stub_handler", "layer": "function"},),
         )
 
     monkeypatch.setattr(grader_mod, "run_grader", not_certified)
@@ -657,6 +661,17 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
     assert all((r.payload or {}).get("source") == "GRADER" for r in reworks)
     # the writer received the quoted items as its work list
     assert any(f"function grade FAIL: {capability}" in item for wl in captured for item in wl)
+    # option (b): every grader NOTE carries the verdict's reason classes as they are
+    notes = [
+        e for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and (e.payload or {}).get("grader_tier") == grader_mod.NOT_CERTIFIED
+    ]
+    assert notes
+    assert all(
+        (n.payload or {}).get("grader_reasons")
+        == [{"capability": capability, "class": "stub_handler", "layer": "function"}]
+        for n in notes
+    )
 
 
 def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path, monkeypatch):
