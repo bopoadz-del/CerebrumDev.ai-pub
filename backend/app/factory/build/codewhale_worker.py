@@ -179,6 +179,11 @@ DEFAULT_IDLE_S = 480.0
 IDLE_ENV = "FACTORY_CODEWHALE_IDLE_S"
 #: One fresh-process retry after a stall, as ordered. The second stall fails.
 WORKER_STALL_RETRIES = 1
+#: Seconds to wait after a ``worker_stalled`` event before re-dispatching the
+#: one fresh-process retry. A provider blip that caused the stall needs time
+#: to recover; an instant re-dispatch burns the second pass on the same
+#: failing upstream (live 2026-11-11: retry written=0, stub_rate=1.0).
+STALL_RETRY_BACKOFF_S = 120.0
 #: The writer CLI's own runtime home, pinned inside the checkout so the
 #: tailer can read its agent-loop log. It is the agent's state, never its
 #: output: a stalled writer that keeps churning its own logs/state must not
@@ -1689,6 +1694,16 @@ def _emit_worker_stalled(
             pass
 
 
+def _stall_retry_backoff(seconds: float) -> None:
+    """Wait ``seconds`` before re-dispatching the retry pass.
+
+    Split out from the wrapper so tests can record the call without sleeping.
+    ``time.sleep(0)`` is a no-op, so a zeroed STALL_RETRY_BACKOFF_S keeps the
+    unit suite fast.
+    """
+    time.sleep(seconds)
+
+
 def run_worker_job_with_stall_retry(
     prompt: str,
     checkout_dir: Path | str,
@@ -1735,6 +1750,7 @@ def run_worker_job_with_stall_retry(
                     f"line ({stall.files} files on disk, "
                     f"{stall.steps} steps reported)"
                 ) from stall
+            _stall_retry_backoff(STALL_RETRY_BACKOFF_S)
 
 
 def _cli_log_tailer(home: Optional[Path] = None) -> Any:

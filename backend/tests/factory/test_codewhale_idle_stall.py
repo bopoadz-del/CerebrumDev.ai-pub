@@ -50,6 +50,16 @@ def _fresh_slots(monkeypatch):
         set_slot_counter(previous)
 
 
+@pytest.fixture(autouse=True)
+def _no_backoff(monkeypatch):
+    """Existing stall tests exercise the retry loop; the real 120s backoff is
+    a sleep that would slow the unit suite. Zero it here; the dedicated
+    backoff test re-enables a sub-second value and records the call."""
+    from app.factory.build import codewhale_worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "STALL_RETRY_BACKOFF_S", 0.0)
+
+
 @pytest.mark.parametrize("idle_s", [1.0, 2.0])
 def test_idle_writer_is_killed_and_retried_exactly_once(monkeypatch, tmp_path, idle_s):
     """A fake codewhale that prints two steps then sleeps forever is killed at
@@ -260,3 +270,48 @@ def test_a_worker_churning_its_own_home_is_stalled(monkeypatch, tmp_path):
 
     assert WORKER_STALLED in str(exc.value)
     assert "worker_timed_out" not in str(exc.value)
+
+
+@pytest.mark.parametrize("backoff_s", [60.0, 120.0])
+def test_stall_retry_backoff_is_between_the_two_passes(monkeypatch, tmp_path, backoff_s):
+    """A provider blip that caused the stall must get time to recover: the one
+    retry pass is re-dispatched only AFTER a backoff, never instantly on the
+    same failing upstream. Mocked at the ``run_worker_job`` boundary so the
+    retry-loop logic is verifiable without a subprocess (the subprocess path
+    needs Linux landlock, which this dev box cannot provide)."""
+    from app.factory.build import codewhale_worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "STALL_RETRY_BACKOFF_S", backoff_s)
+
+    order: list = []
+
+    def fake_run(prompt, checkout_dir, **kwargs):
+        order.append("pass")
+        raise worker_mod._WorkerStall(480.0, 3, 7)
+
+    monkeypatch.setattr(worker_mod, "run_worker_job", fake_run)
+    monkeypatch.setattr(
+        worker_mod, "_stall_retry_backoff", lambda s: order.append(("backoff", s))
+    )
+
+    with pytest.raises(WorkerError) as exc:
+        run_worker_job_with_stall_retry(
+            "build it", tmp_path, tenant_store=_binding("retryloop")
+        )
+
+    assert WORKER_STALLED in str(exc.value)
+    # One backoff, strictly between the original pass and the one retry, with
+    # the configured delay; the second stall raises without a second backoff.
+    assert order == ["pass", ("backoff", backoff_s), "pass"], order
+
+
+@pytest.mark.parametrize("delay", [0.25, 3.0])
+def test_stall_retry_backoff_sleeps_the_configured_delay(monkeypatch, delay):
+    """The helper really sleeps; a constant_return mutant (return None) must
+    not pass as a backoff."""
+    from app.factory.build import codewhale_worker as worker_mod
+
+    slept: list = []
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: slept.append(s))
+    worker_mod._stall_retry_backoff(delay)
+    assert slept == [delay]
