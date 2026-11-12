@@ -272,7 +272,8 @@ def test_a_worker_churning_its_own_home_is_stalled(monkeypatch, tmp_path):
     assert "worker_timed_out" not in str(exc.value)
 
 
-def test_stall_retry_backoff_is_between_the_two_passes(monkeypatch, tmp_path):
+@pytest.mark.parametrize("backoff_s", [60.0, 120.0])
+def test_stall_retry_backoff_is_between_the_two_passes(monkeypatch, tmp_path, backoff_s):
     """A provider blip that caused the stall must get time to recover: the one
     retry pass is re-dispatched only AFTER a backoff, never instantly on the
     same failing upstream. Mocked at the ``run_worker_job`` boundary so the
@@ -280,7 +281,7 @@ def test_stall_retry_backoff_is_between_the_two_passes(monkeypatch, tmp_path):
     needs Linux landlock, which this dev box cannot provide)."""
     from app.factory.build import codewhale_worker as worker_mod
 
-    monkeypatch.setattr(worker_mod, "STALL_RETRY_BACKOFF_S", 120.0)
+    monkeypatch.setattr(worker_mod, "STALL_RETRY_BACKOFF_S", backoff_s)
 
     order: list = []
 
@@ -301,15 +302,16 @@ def test_stall_retry_backoff_is_between_the_two_passes(monkeypatch, tmp_path):
     assert WORKER_STALLED in str(exc.value)
     # One backoff, strictly between the original pass and the one retry, with
     # the configured delay; the second stall raises without a second backoff.
-    assert order == ["pass", ("backoff", 120.0), "pass"], order
+    assert order == ["pass", ("backoff", backoff_s), "pass"], order
 
 
-def test_stall_retry_backoff_sleeps_the_configured_delay(monkeypatch):
+@pytest.mark.parametrize("delay", [0.25, 3.0])
+def test_stall_retry_backoff_sleeps_the_configured_delay(monkeypatch, delay):
     """The helper really sleeps; a constant_return mutant (return None) must
     not pass as a backoff."""
     from app.factory.build import codewhale_worker as worker_mod
 
     slept: list = []
     monkeypatch.setattr(worker_mod.time, "sleep", lambda s: slept.append(s))
-    worker_mod._stall_retry_backoff(3.0)
-    assert slept == [3.0]
+    worker_mod._stall_retry_backoff(delay)
+    assert slept == [delay]
