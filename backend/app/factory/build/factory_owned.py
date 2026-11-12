@@ -23,6 +23,8 @@ nothing here names a product, a blueprint or a branch:
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -262,14 +264,91 @@ def restore(root: Path | str, before: Mapping[str, Optional[bytes]], touched: It
                 target.unlink()
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_file():
+                # A file :func:`lock` made read-only is still the Factory's
+                # to put back.
+                os.chmod(target, stat.S_IMODE(target.stat().st_mode) | stat.S_IWUSR)
             target.write_bytes(old)
 
 
-def record(root: Path | str, touched: List[Dict[str, str]]) -> None:
-    """Write this pass's record (an empty list on a clean pass)."""
+def restore_in_place(
+    root: Path | str, before: Mapping[str, Optional[bytes]], touched: Iterable[Mapping[str, str]]
+) -> List[Dict[str, str]]:
+    """Put every touched path back (:func:`restore`) and return the rows that
+    still differ from the Factory's version -- empty when the correction held.
+
+    Advisor 12:15Z (pilot 43202035946): each Factory-owned write rejected the
+    whole pass and re-dispatched the writer (~38 min lost per restart). The
+    correction is made in place instead; only the touched paths are read or
+    written here, so the writer's own files stay exactly as the pass left them."""
+    rows = [dict(row) for row in touched]
+    restore(root, before, rows)
+    now = snapshot(root, [row["path"] for row in rows])
+    return [row for row in rows if now.get(row["path"]) != before.get(row["path"])]
+
+
+def lock(root: Path | str, paths: Optional[Iterable[str]] = None) -> Dict[str, int]:
+    """Make every present Factory-owned file read-only for a writer pass;
+    returns ``{path: previous mode}`` for :func:`unlock`. Directories stay
+    writable, so the writer's own files are never in the way. A file that
+    cannot be locked is skipped: the after-pass check still catches a write."""
+    base = Path(root)
+    modes: Dict[str, int] = {}
+    for rel in paths if paths is not None else factory_owned_paths():
+        target = base / rel
+        try:
+            if not target.is_file():
+                continue
+            mode = stat.S_IMODE(target.stat().st_mode)
+            os.chmod(target, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        except OSError:
+            continue
+        modes[rel] = mode
+    return modes
+
+
+def unlock(root: Path | str, modes: Mapping[str, int]) -> None:
+    """Give every file :func:`lock` made read-only its mode back."""
+    base = Path(root)
+    for rel, mode in modes.items():
+        try:
+            if (base / rel).is_file():
+                os.chmod(base / rel, mode)
+        except OSError:
+            continue
+
+
+def record(
+    root: Path | str,
+    touched: List[Dict[str, str]],
+    unrestored_rows: Optional[List[Dict[str, str]]] = None,
+) -> None:
+    """Write this pass's record (an empty list on a clean pass).
+
+    ``unrestored_rows``: the touched paths the Factory could NOT put back in
+    place. Unstated, every touched path counts as unrestored, and the WRITER
+    gate rejects the pass on them."""
     target = Path(root) / VIOLATIONS_REL
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"touched": touched}, indent=2) + "\n", encoding="utf-8")
+    data = {
+        "touched": touched,
+        "unrestored": list(touched if unrestored_rows is None else unrestored_rows),
+    }
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def unrestored(root: Path | str) -> List[Dict[str, str]]:
+    """The last pass's touched paths the Factory could not restore in place --
+    the only ones that reject the pass. A record written before this field
+    existed counts every touched path."""
+    try:
+        data = json.loads((Path(root) / VIOLATIONS_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("unrestored") if "unrestored" in data else data.get("touched")
+    return [r for r in rows or [] if isinstance(r, dict) and r.get("path")]
 
 
 def recorded(root: Path | str) -> List[Dict[str, str]]:

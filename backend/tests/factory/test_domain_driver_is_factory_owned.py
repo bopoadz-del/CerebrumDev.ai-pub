@@ -113,8 +113,13 @@ def test_a_writer_that_authors_the_domain_driver_is_put_back_and_told(tmp_path, 
     back naming it."""
 
     def author(root):
+        import os
+        import stat
+
         path = Path(root) / "app" / "domain_ops.py"
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():  # a writer that ignores the read-only lock
+            os.chmod(path, stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
         path.write_text("async def perform_all(capability_id=None):\n    return {}\n", encoding="utf-8")
 
     _ctx, dest, _result = _run_pass(tmp_path, monkeypatch, author)

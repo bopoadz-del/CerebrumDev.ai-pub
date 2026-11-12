@@ -962,7 +962,11 @@ def gate_writer_contract(ctx: GateContext) -> GateResult:
     from app.factory.build.authorship import agent_written_handler_ids_in_workspace
     WRITER_NO_OUTPUT = "writer_no_output"
 
-    touched = factory_owned.recorded(ctx.workspace)
+    # Only a Factory-owned path the Factory could NOT put back rejects the
+    # pass. One restored in place is named to the writer as a REWORK FINDINGS
+    # line on its next prompt; the pass itself is judged on its own work
+    # (Advisor 12:15Z: rejecting it re-dispatched the whole writer).
+    touched = factory_owned.unrestored(ctx.workspace)
     if touched:
         return GateResult(
             ok=False,
