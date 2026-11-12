@@ -22,7 +22,12 @@ import pytest
 
 from app.factory.blueprint import load_blueprint
 from app.factory.build import codewhale_worker
-from app.factory.build.budget_inspect import STAGE_1_S, STAGE_2_S, inspect_build
+from app.factory.build.budget_inspect import (
+    STAGE_1_S,
+    STAGE_2_S,
+    inspect_build,
+    written_label,
+)
 from app.factory.build.codewhale_worker import (
     FILES_ON_DISK,
     STEPS_REPORTED,
@@ -202,3 +207,46 @@ def test_the_inspector_written_count_equals_the_floor_file_count(tmp_path, tree)
 
     decided = _inspect_one_heartbeat_before_the_mark(runner, clock)
     assert f"written={floor_count} file(s) on disk" in decided["reason"]
+
+
+@pytest.mark.parametrize(
+    "snapshot, label",
+    [
+        # No coding agent has reported a file count: the capability count alone.
+        ({"agent_written": 3}, "3"),
+        ({"agent_written": 0, "cli_files_on_disk": None}, "0"),
+        # A reported file count leads, the capability count sits beside it.
+        ({"agent_written": 0, "cli_files_on_disk": 101}, "101 file(s) on disk, caps=0"),
+    ],
+)
+def test_written_prints_the_file_count_only_when_one_was_reported(snapshot, label):
+    assert written_label(snapshot) == label
+
+
+@pytest.mark.parametrize("deadline", [50_000.0, 90_000.0])
+def test_the_extend_note_reads_the_runner_deadline_when_the_box_is_empty(
+    tmp_path, deadline
+):
+    runner, clock = _small_plan_runner(tmp_path, phase=5400.0)
+    runner._deadline_box.pop("at", None)
+    runner._deadline = deadline
+    clock["t"] = 100.0
+
+    runner._emit_cli_watchdog_extend(
+        {"next_wall_s": STAGE_2_S}, applied_wall_s=STAGE_2_S, before_wall_s=STAGE_1_S
+    )
+
+    note = _wall_notes(runner)[-1]
+    assert note.payload["deadline_s"] == pytest.approx(deadline - clock["t"] - 15.0)
+
+
+@pytest.mark.parametrize("t", [0.0, STAGE_1_S])
+def test_no_inspect_before_the_run_has_started(tmp_path, t):
+    runner, clock = _small_plan_runner(tmp_path, phase=5400.0)
+    runner._run_started = None
+    clock["t"] = t
+    before = len(runner.ledger.events())
+
+    assert runner._maybe_stage_inspect() is None
+    assert not runner._inspects_done
+    assert len(runner.ledger.events()) == before

@@ -31,6 +31,37 @@ def _ledger(tmp_path: Path) -> BuildLedger:
     return ledger
 
 
+@pytest.mark.parametrize(
+    "sources, agent, grounded",
+    [
+        ({"site_visits": "codewhale writer"}, ["site_visits"], []),
+        (
+            {"a": "coder CLI (deepseek)", "b": "factory persist", "c": "coder LLM (kimi)"},
+            ["a", "c"],
+            None,
+        ),
+    ],
+)
+def test_inspect_reads_authorship_from_provenance_on_disk(tmp_path, sources, agent, grounded):
+    import json
+
+    from app.factory.build.authorship import is_factory_grounded_source
+
+    ledger = _ledger(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "docs").mkdir(parents=True)
+    (ws / "docs" / "build_provenance.json").write_text(
+        json.dumps({"artifact_sources": sources}), encoding="utf-8"
+    )
+    if grounded is None:
+        grounded = sorted(k for k, v in sources.items() if is_factory_grounded_source(v))
+
+    snap = inspect_build(ledger, ws)
+
+    assert sorted(snap["caps_written"]) == sorted(agent + grounded)
+    assert snap["agent_written"] == len(agent) + len(grounded)
+
+
 def test_inspect_reads_caps_timeouts_stubs_and_contract_misses(tmp_path):
     ledger = _ledger(tmp_path)
     ledger.append(
