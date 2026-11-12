@@ -144,3 +144,39 @@ def test_architect_llm_payload_sanitizes_requirements(requirements, expected):
 def test_architect_llm_payload_refuses_malformed(payload):
     with pytest.raises(ValueError):
         _blueprint_from_llm_payload(payload, "brief", "construction", [])
+
+
+@pytest.mark.parametrize(
+    "user_brief,requirements",
+    [
+        ("", []),
+        ("build me a claims ledger", ["clause 8.2 traceable", "BOQ P1-P5"]),
+    ],
+)
+def test_writer_seam_brief_carries_user_words_and_requirements(tmp_path, user_brief, requirements):
+    """The WRITER seam (_compiled_writer_brief) is where the requirements
+    actually reach the worker: the user's Floor words appear only when given,
+    and every requirement is rendered under its capability, none when empty."""
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.roles_handlers import _compiled_writer_brief
+    from app.factory.build.roles_models import RoleContext
+    from app.factory.build.workspace import RoleWorkspace
+
+    bp = _blueprint(requirements)
+    ctx = RoleContext(
+        role=BuildRole.WRITER,
+        workspace=RoleWorkspace("WRITER", tmp_path),
+        blueprint=bp,
+        plan=plan_blueprint(bp),
+        state={"brief": user_brief},
+    )
+    brief = _compiled_writer_brief(ctx)
+    assert isinstance(brief, str)
+    cap = bp.capabilities[0]
+    assert f"- {cap.id}: {cap.description}" in brief
+    assert ("USER BRIEF" in brief) == bool(user_brief)
+    if user_brief:
+        assert user_brief in brief
+    assert brief.count("requirement: ") == len(requirements)
+    for req in requirements:
+        assert f"    requirement: {req}" in brief
