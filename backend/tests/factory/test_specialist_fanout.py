@@ -171,6 +171,31 @@ def test_a_second_tenants_job_is_never_starved_by_a_child(process_cap, prefill):
     assert _wait_until(lambda: "A-child" in got)
 
 
+@pytest.mark.parametrize("tenant_cap", [1, 2])
+def test_the_wait_record_names_the_first_queue_place(tenant_cap):
+    """No wait reads position 0; a job that queued reports the place it
+    first held (1: it was next in line)."""
+    counter = InProcessSlotCounter()
+    first = counter.acquire_waiting("T", process_cap=10, tenant_cap=tenant_cap, time_left=_within())
+    assert first["position"] == 0
+    for _ in range(tenant_cap - 1):
+        counter.acquire("T", process_cap=10, tenant_cap=tenant_cap)
+    rec = {}
+    t = threading.Thread(
+        target=lambda: rec.update(
+            counter.acquire_waiting(
+                "T", process_cap=10, tenant_cap=tenant_cap, time_left=_within(), poll_s=0.01
+            )
+        ),
+        daemon=True,
+    )
+    t.start()
+    assert _wait_until(lambda: len(counter._waiters) == 1)
+    counter.release("T")
+    t.join(5)
+    assert rec.get("position") == 1, rec
+
+
 @pytest.mark.parametrize("other_holder", [None, "B"])
 def test_a_child_with_no_held_writer_slot_is_refused_by_name(other_holder):
     """Refused whether the box is idle or another tenant holds a slot."""
@@ -230,6 +255,8 @@ def test_tree_rss_sums_the_process_and_its_descendants(tmp_path, pid, expected):
 @pytest.mark.parametrize("pid,measured", [(100, True), (None, False), ("100", False), (True, False)])
 def test_tree_rss_needs_an_integer_pid(tmp_path, pid, measured):
     _proc(tmp_path, 100, 1, 1024)
+    # pid 1 is in the table: a bool (True == 1) must still read as no pid.
+    _proc(tmp_path, 1, 0, 512)
     assert (tree_rss_mb(pid, proc_root=str(tmp_path)) is not None) is measured
 
 
@@ -463,6 +490,37 @@ def test_fanout_runs_parallel_then_merges_then_serial(tmp_path, fail, merged_tot
     assert (record["sessions"]["FRONTEND"]["status"] == "error") == (fail == "FRONTEND")
     assert any("specialist sessions:" in text for text, _ in notes)
     assert not any(p.name.startswith("specialists-") for p in tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("rival", ["INFRA", "FRONTEND"])
+def test_a_finish_conflict_is_kept_by_the_writer_sessions_own_scope(tmp_path, rival):
+    """The writer session's change wins a two-writer conflict, and the
+    record names it by the writer's own scope."""
+    dest = tmp_path / "dest"
+    _write(dest, "app/shared.py", "BASE")
+
+    def launch(name, prompt, checkout, progress):
+        if name == rival:
+            _write(Path(checkout), "app/shared.py", name)
+        return SimpleNamespace(status="completed", rounds={})
+
+    fo = fan.SpecialistFanout(
+        dest,
+        brief="B",
+        launch=launch,
+        note=lambda *a, **k: None,
+        owned=(),
+        workroot=tmp_path,
+        serial=(),
+    )
+    fo.start()
+    _write(dest, "app/shared.py", "WRITER")
+    record = fo.finish()
+    fo.cleanup()
+    assert [(c["path"], c["kept"], c["not_applied"]) for c in record["conflicts"]] == [
+        ("app/shared.py", WRITER_SPECIALIST, rival)
+    ]
+    assert (dest / "app/shared.py").read_text(encoding="utf-8") == "WRITER"
 
 
 @pytest.mark.parametrize("heartbeat_s,expect_beats", [(0.0, True), (1000.0, False)])
