@@ -2311,6 +2311,41 @@ class RoleRunner:
         self._emit_inspect(decided, reason=reason)
         return decided
 
+    def _grantable_wall_s(self) -> float:
+        """The largest wall ``_extend_wall`` can apply to the open pass.
+
+        With a plan wall: the progress-evidenced bound (max of plan wall x
+        passes and the phase budget, ``phase_bounded_wall``); without one the
+        grant is unclamped by plan. Either way never above the hard ceiling.
+        0.0 when nothing bounds it.
+        """
+        from app.factory.build.budget_inspect import phase_bounded_wall
+
+        plan_wall = float(getattr(self, "_plan_wall_s", 0.0) or 0.0)
+        ceiling = float(self.budget.hard_ceiling_s or 0.0)
+        if plan_wall > 0:
+            bound = phase_bounded_wall(
+                plan_wall_s=plan_wall,
+                plan_wall_passes=int(getattr(self, "_plan_wall_passes", 1) or 1),
+                phase_wall_s=float(self.budget.phase_wall_clock_s or 0.0),
+            )
+            bound = float(bound or 0.0)
+        else:
+            bound = ceiling
+        if ceiling > 0 and bound > 0:
+            bound = min(bound, ceiling)
+        return max(bound, float(self.budget.wall_clock_s or 0.0))
+
+    def _grantable_wall_left(self) -> Optional[float]:
+        """Seconds from now to the end of ``_grantable_wall_s``; None before
+        the run starts or when nothing bounds the wall."""
+        if self._run_started is None:
+            return None
+        bound = self._grantable_wall_s()
+        if bound <= 0:
+            return None
+        return float(self._run_started) + bound - float(self.clock())
+
     def _extend_wall(
         self, new_wall: float, *, progress_evidenced: bool = False
     ) -> float:
@@ -2569,10 +2604,42 @@ class RoleRunner:
                 self._emit_cli_watchdog_extend(
                     decided, applied_wall_s=applied, before_wall_s=before
                 )
+            else:
+                # F-W2c: every stage-inspect grant books the wall it APPLIED
+                # under the one ledger key, CLI in flight or not.
+                self._emit_wall_applied(
+                    decided, applied_wall_s=applied, before_wall_s=before
+                )
         elif decided.get("decision") == "hard_stop":
             self._stage_halt = decided
             self.state["stage_halt"] = decided
         return decided
+
+    def _emit_wall_applied(
+        self,
+        decided: Mapping[str, Any],
+        *,
+        applied_wall_s: float,
+        before_wall_s: float,
+    ) -> None:
+        """The stage-inspect grant's applied wall, under ``wall_applied_s``
+        -- the same key the in-flight CLI NOTE carries -- so the ledger has
+        one key for "the wall that actually happened"."""
+        applied = float(applied_wall_s)
+        payload: Dict[str, Any] = {
+            "stage": "budget",
+            "source": "factory",
+            "wall_requested_s": float(decided.get("next_wall_s") or 0.0),
+            "wall_applied_s": applied,
+        }
+        if applied <= float(before_wall_s) + 1e-9:
+            payload["wall_denied"] = True
+        self.ledger.append(
+            EventKind.NOTE,
+            detail=f"stage inspect grant: wall_applied_s={applied:g}",
+            payload=payload,
+        )
+        logger.info("factory stage inspect grant: wall_applied_s=%.0f", applied)
 
     def _emit_cli_watchdog_extend(
         self,
@@ -2619,13 +2686,15 @@ class RoleRunner:
         if moved:
             detail = (
                 "FACTORY_CODE_CLI still in-flight — staged wall extended "
-                f"to {applied:g}s; model call still inside watchdog"
+                f"to {applied:g}s; model call still inside watchdog "
+                f"(wall_applied_s={applied:g})"
             )
         else:
             payload["wall_denied"] = True
             detail = (
                 "FACTORY_CODE_CLI still in-flight — staged wall extension "
-                f"denied by plan wall (applied {applied:g}s)"
+                f"denied by plan wall (applied {applied:g}s) "
+                f"(wall_applied_s={applied:g})"
             )
         self.ledger.append(EventKind.NOTE, detail=detail, payload=payload)
 
@@ -2730,6 +2799,10 @@ class RoleRunner:
         # only"). None when the run has no ceiling.
         ceiling = float(self.budget.hard_ceiling_s or 0.0)
         self._deadline_box["ceiling_at"] = (started + ceiling) if ceiling > 0 else None
+        # Ruling F-W2c: the largest wall this run may still grant the open
+        # pass, read live by the writer dispatch so the coding-agent CLI's own
+        # per-turn budget is never below a wall ``_extend_wall`` can apply.
+        self._deadline_box["grant_bound_left"] = self._grantable_wall_left
         inputs_hash = self.inputs_hash
         self.state["inputs_hash"] = inputs_hash
 
