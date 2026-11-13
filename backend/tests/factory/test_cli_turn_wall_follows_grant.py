@@ -103,6 +103,36 @@ def test_no_bound_set_leaves_the_turn_at_the_dispatch_wall():
         assert _writer_cli_turn_wall_s(ctx) is None
 
 
+_NO_PROBE = "cli_turn_wall: no grant-bound probe; dispatch wall kept"
+_PROBE_FAILED = "cli_turn_wall: grant-bound probe failed"
+
+
+def _raises():
+    raise RuntimeError("probe broke")
+
+
+@pytest.mark.parametrize(
+    "box,expected,line",
+    [
+        ({}, None, _NO_PROBE),
+        ({"grant_bound_left": _raises}, None, _PROBE_FAILED + " (RuntimeError)"),
+        ({"grant_bound_left": lambda: 900.0}, 900.0, None),
+    ],
+)
+def test_the_two_no_bound_paths_log_their_own_line(caplog, box, expected, line):
+    """Ruling (d): an absent probe and a probe that raised are told apart."""
+    ctx = type("C", (), {"deadline_box": box})()
+    with caplog.at_level("INFO", logger="cerebrumdev.factory.roles_handlers"):
+        assert _writer_cli_turn_wall_s(ctx) == expected
+    seen = [r.getMessage() for r in caplog.records if "cli_turn_wall:" in r.getMessage()]
+    if line is None:
+        assert seen == []
+    else:
+        assert len(seen) == 1 and seen[0].startswith(line)
+        other = _PROBE_FAILED if line == _NO_PROBE else _NO_PROBE
+        assert other not in seen[0]
+
+
 @pytest.mark.parametrize("bound,expected", [(5400.0, "5400"), (None, "1800")])
 def test_worker_stamps_the_turn_budget_into_the_cli_env(
     tmp_path, monkeypatch, bound, expected

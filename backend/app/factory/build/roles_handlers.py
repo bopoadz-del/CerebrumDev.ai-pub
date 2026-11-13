@@ -3865,14 +3865,22 @@ def _writer_cli_turn_wall_s(ctx: RoleContext) -> Optional[float]:
     carries that bound -- the writer phase can always become progress-
     evidenced -- never the plan wall. ``None`` when the runner set no bound:
     the worker then keeps its dispatch wall as the turn budget.
+
+    The two ``None`` causes are told apart in the log: no probe set by the
+    runner, versus a probe that raised (named by exception type).
     """
     box = ctx.deadline_box or {}
     reader = box.get("grant_bound_left")
     if not callable(reader):
+        logger.info("cli_turn_wall: no grant-bound probe; dispatch wall kept")
         return None
     try:
         left = reader()
-    except Exception:  # noqa: BLE001 -- a broken probe keeps the dispatch wall
+    except Exception as exc:  # noqa: BLE001 -- a broken probe keeps the dispatch wall
+        logger.warning(
+            "cli_turn_wall: grant-bound probe failed (%s); dispatch wall kept",
+            type(exc).__name__,
+        )
         return None
     if left is None:
         return None
