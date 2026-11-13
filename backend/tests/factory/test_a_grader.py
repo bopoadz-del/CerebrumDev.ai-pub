@@ -21,11 +21,10 @@ import pytest
 # function in grader.py.
 import app.factory.build.grader as grader
 from app.factory.build.product_grader import grade_record, layer2
+from tests.factory.grader_contract import COMPUTES, write_models
 
-READS_INPUT = (
-    "def handle(payload):\n"
-    "    return {'ok': True, 'echo': sorted(payload.items())}\n"
-)
+# A handle that computes from the contract grader_contract declares.
+READS_INPUT = COMPUTES
 CONSTANT = "def handle(payload):\n    return {'ok': True}\n"
 
 IDS = ["intake_form", "invoice_total", "visit_log", "tenant_notice"]
@@ -38,6 +37,7 @@ def _workspace(tmp_path: Path, bodies: dict, extra: dict = None) -> Path:
     (actions / "__init__.py").write_text("")
     for cid, body in bodies.items():
         (actions / f"{cid}.py").write_text(body)
+    write_models(tmp_path, list(bodies))
     for rel, text in (extra or {}).items():
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -501,6 +501,20 @@ def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path,
     # the record still lands; N3 refuses an uncertified build
     assert (ws / "grade.json").is_file()
     assert grade_record.certification_refusal(ws) is not None
+
+
+@pytest.mark.parametrize("gap", ["invoice_total", "visit_log"])
+def test_capability_without_a_declared_contract_is_ungraded_not_a_writer_fail(
+    tmp_path, independent_grader, green_ui, gap
+):
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    write_models(ws, IDS, declared=[i for i in IDS if i != gap])
+    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert any(u.startswith(f"function ungraded: {gap}: ") for u in verdict.ungraded)
+    assert f"function grade FAIL: {gap}" not in verdict.items
+    assert {"capability": gap, "class": "ungraded", "layer": "function"} in verdict.reasons
+    assert not any(r["class"] == "stub_handler" for r in verdict.reasons)
 
 
 @pytest.mark.parametrize("bad_cid", ["invoice_total", "visit_log"])
