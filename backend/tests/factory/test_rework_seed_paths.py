@@ -102,12 +102,14 @@ def test_seed_staging_copies_top_level_files_byte_identical(tmp_path, extra):
     assert kept == 2
 
 
-def test_real_factory_owned_set_is_never_seeded(tmp_path, monkeypatch):
+@pytest.mark.parametrize("writer_file", ["app/actions/a.py", "alembic.ini"])
+def test_real_factory_owned_set_is_never_seeded(tmp_path, monkeypatch, writer_file):
     monkeypatch.undo()
     from app.factory.build.factory_owned import factory_owned_paths
 
     owned = factory_owned_paths()
     assert owned
-    root = _tree(tmp_path, {**{rel: "F" for rel in owned}, "app/actions/a.py": "H"})
+    assert writer_file not in owned
+    root = _tree(tmp_path, {**{rel: "F" for rel in owned}, writer_file: "H"})
     seeded = rework_seed_paths(root)
-    assert seeded == ["app/actions/a.py"]
+    assert seeded == [writer_file]
