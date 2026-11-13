@@ -32,6 +32,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
+from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
+from app.factory.build.image_sufficiency import GATE_RUN_ENV
 from app.factory.build.product_grader import vault
 
 #: ORDERS_1710Z-B: "graded on at least 4-5 of its functions".
@@ -41,6 +43,12 @@ RUN_TIMEOUT_S = 60
 #: The detail a handle earns when its two inputs gave one result (it answers
 #: like a stub). The reason-class derivation reads this constant, never prose.
 ONE_RESULT = "two inputs gave one result"
+#: The detail a handle earns when both inputs answered ONE honest-error
+#: envelope (``ok`` is False with a non-empty ``error``): the handle failed
+#: closed -- its blocks did not answer -- which is a handler_error, never a
+#: stub. A stub answers a fixed result; a fail-closed handle answers its
+#: error. Neither is ok, so the bar is unchanged; only the class differs.
+BLOCK_UNAVAILABLE = "block_unavailable: two inputs gave one honest-error envelope"
 
 
 @dataclass(frozen=True)
@@ -157,7 +165,43 @@ def derive_functions(blueprint: Mapping[str, Any], workspace: Path) -> List[Grad
     return found
 
 
-_RUNNER = r"""
+#: F-G1: the grader probes a handle in the SAME environment the WRITER gate
+#: (writer_behaviour's probe) and the stamped test harness give it -- the
+#: workspace's vendored blocks on the path, a scratch store, the gate's
+#: test-context token, deploy-time settings stood in, the product's own
+#: migrations applied, and no outbound network. Graded bare, a correct
+#: handle that fails closed when its blocks fail answered one honest error
+#: for both inputs and was read as a stub.
+_HARNESS = r"""
+import os, socket, sys
+os.environ["STORAGE_PATH"] = spec["storage"]
+for _k, _v in spec["harness_env"].items():
+    os.environ.setdefault(_k, _v)
+_stand_in_for_deploy_time_settings(os.getcwd())
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_real_connect = socket.socket.connect
+def _offline_connect(self, address):
+    host = address[0] if isinstance(address, tuple) else address
+    if isinstance(host, (bytes, bytearray)):
+        host = host.decode("utf-8", "replace")
+    if str(host) not in _LOCAL_HOSTS:
+        raise OSError(f"grader: outbound connection to {host!r} refused (no network)")
+    return _real_connect(self, address)
+socket.socket.connect = _offline_connect
+try:
+    from app.migrations import upgrade_head
+except ImportError:
+    upgrade_head = None
+if upgrade_head is not None:
+    try:
+        upgrade_head()
+    except BaseException as exc:
+        emit({"two_input": False, "mutants": {m: "not_run" for m in spec["mutants"]},
+              "error": "harness migration failed: " + why(exc)})
+        sys.exit(0)
+"""
+
+_RUNNER = _DEPLOY_TIME_SNIPPET + r"""
 import importlib, json, sys
 spec = json.loads(sys.stdin.read())
 def emit(out):
@@ -169,6 +213,7 @@ def emit(out):
 def why(exc):
     kind = "exited" if isinstance(exc, SystemExit) else "raised"
     return f"handle {kind}: {type(exc).__name__}: {exc}"[:300]
+""" + _HARNESS + r"""
 try:
     original = importlib.import_module(spec["module"]).handle
 except BaseException as exc:
@@ -177,12 +222,21 @@ except BaseException as exc:
     sys.exit(0)
 def canon(r):
     return json.dumps(r, sort_keys=True, default=str)
-def two_input(handle):
-    a, b = (canon(handle(dict(p))) for p in spec["inputs"])
-    return a != b
+def honest_error(r):
+    # The fail-closed envelope every handle answers when a block failed:
+    # ok is False and the error is named. Typed fields, never the words.
+    return (isinstance(r, dict) and r.get("ok") is False
+            and isinstance(r.get("error"), str) and bool(r["error"].strip()))
+def two_input(handle, first=None):
+    answers = [handle(dict(p)) for p in spec["inputs"]]
+    if first is not None:
+        first.append(answers[0])
+    return canon(answers[0]) != canon(answers[1])
 out = {"two_input": None, "mutants": {}}
 try:
-    out["two_input"] = two_input(original)
+    _first = []
+    out["two_input"] = two_input(original, _first)
+    out["honest_error"] = (not out["two_input"]) and honest_error(_first[0])
 except BaseException as exc:
     # A handle that raises or exits answered nothing: never ok, mutants prove nothing.
     out["two_input"] = False
@@ -211,8 +265,11 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
     nonce = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="f8a-") as tmp:
         out_path = Path(tmp) / "grade.json"
+        storage = Path(tmp) / "store"
+        storage.mkdir()
         spec = json.dumps({"module": fn.module, "inputs": fn.inputs, "mutants": list(MUTANTS),
-                           "nonce": nonce, "out": str(out_path)})
+                           "nonce": nonce, "out": str(out_path), "storage": str(storage),
+                           "harness_env": dict(GATE_RUN_ENV)})
         try:
             proc = subprocess.run(
                 [python, "-c", _RUNNER],
@@ -232,7 +289,11 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
                               f"handle exited the grader (rc={proc.returncode}): {tail[0]}"[:300])
     killed = [m for m, v in data["mutants"].items() if v == "killed"]
     survived = [m for m, v in data["mutants"].items() if v != "killed"]
-    detail = data.get("error") or (ONE_RESULT if not data["two_input"] else "")
+    detail = data.get("error") or (
+        "" if data["two_input"]
+        else BLOCK_UNAVAILABLE if data.get("honest_error") is True
+        else ONE_RESULT
+    )
     return FunctionResult(fn.capability_id, data["two_input"] is True, killed, survived, detail)
 
 
