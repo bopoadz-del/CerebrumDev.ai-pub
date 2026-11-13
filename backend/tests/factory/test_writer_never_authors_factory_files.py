@@ -338,11 +338,32 @@ def test_the_prestamped_bootstrap_is_testers_own(tmp_path, monkeypatch):
     assert seen["text"] == _CONFTEST
 
 
-def test_prestamp_never_overwrites_a_bootstrap_or_record_already_there(tmp_path):
-    (tmp_path / "conftest.py").write_text("# already here\n", encoding="utf-8")
+def _bootstrap_with_loader() -> str:
+    from app.factory.build.pytest_policy import CONFTEST_LOADER
+
+    return "# already here\n" + CONFTEST_LOADER
+
+
+@pytest.mark.parametrize(
+    "existing, kept",
+    [
+        # A bootstrap that already loads the pytest policy is never overwritten.
+        (_bootstrap_with_loader(), True),
+        # F-S2a-2: one that predates the loader (a resumed build's checkpoint)
+        # is the Factory's own file and is re-rendered with the loader.
+        ("# already here\n", False),
+    ],
+)
+def test_prestamp_never_overwrites_a_bootstrap_or_record_already_there(tmp_path, existing, kept):
+    from app.factory.build.pytest_policy import loader_present
+    from app.factory.build.roles_handlers import _CONFTEST
+
+    (tmp_path / "conftest.py").write_text(existing, encoding="utf-8")
     changed = factory_owned.prestamp_late_files(tmp_path, ctx=None)
-    assert "conftest.py" not in changed
-    assert (tmp_path / "conftest.py").read_text(encoding="utf-8") == "# already here\n"
+    text = (tmp_path / "conftest.py").read_text(encoding="utf-8")
+    assert ("conftest.py" not in changed) is kept
+    assert text == (existing if kept else _CONFTEST)
+    assert loader_present(tmp_path) is True
 
 
 # -- restored in place, the pass continues (Advisor 12:15Z) --------------------------
