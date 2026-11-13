@@ -90,6 +90,7 @@ def _classes(grade):
     return {r["capability"]: r["class"] for r in reason_classes(record, IDS) if r["layer"] == "function"}
 
 
+@pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)
 def test_correct_handle_ok_with_blocks_block_unavailable_without(tmp_path, env):
     grade = fg.grade_functions(_bp(), _workspace(tmp_path, FAILS_CLOSED))
     if env == "harness":
@@ -111,6 +112,7 @@ def test_store_missing_reads_block_unavailable_never_stub(tmp_path, migrations):
     assert "stub_handler" not in _classes(grade).values()
 
 
+@pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)
 def test_true_stub_reads_stub_in_both_environments(tmp_path, env):
     grade = fg.grade_functions(_bp(), _workspace(tmp_path, STUB))
     assert not grade.ok
@@ -136,6 +138,7 @@ def test_only_a_named_honest_error_is_block_unavailable(tmp_path, envelope, deta
     assert {f.detail for f in grade.functions} == {detail}
 
 
+@pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="the grader's minimal env carries no SYSTEMROOT, so Winsock cannot open a socket (CI is Linux)",
