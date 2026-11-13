@@ -227,9 +227,16 @@ def test_loader_present_reads_the_rootdir_bootstrap(tmp_path, text, present):
     assert loader_present(tmp_path) is present
 
 
-def test_the_shipped_bootstrap_carries_the_loader_once():
-    assert _CONFTEST.count(LOADER_MARKER) == 1
-    assert _CONFTEST.endswith(CONFTEST_LOADER)
+@pytest.mark.parametrize(
+    "bootstrap,count",
+    [(_CONFTEST, 1), (_CONFTEST.replace(CONFTEST_LOADER, ""), 0)],
+)
+def test_the_shipped_bootstrap_carries_the_loader_once(tmp_path, bootstrap, count):
+    assert bootstrap.count(LOADER_MARKER) == count
+    assert bootstrap.endswith(CONFTEST_LOADER) is (count == 1)
+    (tmp_path / CONFTEST_REL).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / CONFTEST_REL).write_text(bootstrap, encoding="utf-8")
+    assert loader_present(tmp_path) is (count == 1)
     assert "os.environ" not in CONFTEST_LOADER
 
 
