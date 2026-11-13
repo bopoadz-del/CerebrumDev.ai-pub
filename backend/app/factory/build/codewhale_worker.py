@@ -27,9 +27,11 @@ result is recorded in the PR report; T5.1 re-runs it wherever the CLI
 exists and SKIPS with a reason elsewhere (CI has no codewhale binary).
 
 The receipt records what the CLI actually reports: status,
-termination_reason, provider, model, tool outcomes, output. Token-level
-COGS is a named gap -- the CLI summary does not emit usage, so no cost
-number is invented.
+termination_reason, provider, model, tool outcomes, output. F-S1: the CLI
+runs with its exec stream (``--output-format stream-json``); the receipt
+also carries the Factory's own per-round timing of that stream and the
+token counts the stream's ``turn_usage`` events report, when they report
+any -- no count is invented.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Optional, Tuple
@@ -512,6 +514,10 @@ class WorkerReceipt:
     tools: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     error_category: Optional[str] = None
+    #: F-S1: per-round timing summary measured by the Factory from the CLI's
+    #: exec stream (``writer_round_stats``). Empty when the CLI printed only
+    #: a summary (no stream to measure).
+    rounds: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -523,6 +529,7 @@ class WorkerReceipt:
             "tools": list(self.tools),
             "error": self.error,
             "error_category": self.error_category,
+            "rounds": dict(self.rounds),
         }
 
 
@@ -1021,7 +1028,17 @@ def _parse_writer_receipt(
     whose ``error_category=network`` / ``termination_reason=model_error`` -- the
     caller retries those, so the receipt must be parsed and RETURNED before the
     non-zero exit is raised (Advisor 13:12Z, pilot-live 42633433251).
+
+    Two stdout shapes are read. The exec stream (``--output-format
+    stream-json``, one ``codewhale.exec-stream`` event per line) carries the
+    receipt in its terminal ``metadata`` event -- the same status /
+    termination_reason / provider / model / error fields the ``--json``
+    summary printed -- and the tool rounds as ``tool_use`` events. A stdout
+    with no stream events is read as the legacy single summary object.
     """
+    events = exec_stream_events(stdout_lines)
+    if events:
+        return _receipt_from_stream(events, stdout_lines, returncode)
     payload = None
     candidates = [stdout_lines[-1]] if stdout_lines else []
     candidates.append("\n".join(stdout_lines))
@@ -1054,6 +1071,294 @@ def _parse_writer_receipt(
         error=payload.get("error"),
         error_category=payload.get("error_category"),
     )
+
+
+#: The schema tag every exec-stream event carries (codewhale 0.9.13,
+#: ``exec --output-format stream-json``; observed as ``"schema":
+#: "codewhale.exec-stream", "schema_version": 1`` on every line).
+EXEC_STREAM_SCHEMA = "codewhale.exec-stream"
+EXEC_STREAM_FLAGS = ("--output-format", "stream-json")
+#: Event fields that name a tool, a token count or a sub-agent. Read in this
+#: order; the first one present wins. Absent fields are never invented.
+_TOOL_NAME_KEYS = ("name", "tool_name", "tool")
+_PROMPT_TOKEN_KEYS = ("input_tokens", "prompt_tokens")
+_COMPLETION_TOKEN_KEYS = ("output_tokens", "completion_tokens")
+_AGENT_LABEL_KEYS = ("label", "name", "role", "agent_type", "subagent_type", "agent")
+_AGENT_ID_KEYS = ("run_id", "agent_id", "id", "tool_id")
+_STREAM_HOUSEKEEPING_KEYS = ("schema", "schema_version", "input")
+
+
+def exec_stream_event(line: str) -> Optional[Dict[str, Any]]:
+    """One stdout line as an exec-stream event, or None when it is not one."""
+    text = (line or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or parsed.get("schema") != EXEC_STREAM_SCHEMA:
+        return None
+    return parsed
+
+
+def exec_stream_events(stdout_lines: List[str]) -> List[Dict[str, Any]]:
+    """Every exec-stream event in the captured stdout, in arrival order."""
+    out = []
+    for line in stdout_lines:
+        event = exec_stream_event(line)
+        if event is not None:
+            out.append(event)
+    return out
+
+
+def _first_present(source: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _input_bytes(event: Dict[str, Any]) -> int:
+    value = event.get("input")
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    try:
+        return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tool_record(event: Dict[str, Any]) -> Dict[str, Any]:
+    """A tool_use event as a receipt tool entry: its own fields, minus the
+    stream framing and the (possibly whole-file) input, plus its size."""
+    record = {
+        k: v for k, v in event.items() if k not in _STREAM_HOUSEKEEPING_KEYS
+    }
+    record["input_bytes"] = _input_bytes(event)
+    return record
+
+
+def _usage_tokens(event: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """(prompt, completion) tokens a usage event reports, None when absent."""
+    sources = [event]
+    for nested in ("usage", "meta"):
+        if isinstance(event.get(nested), dict):
+            sources.insert(0, event[nested])
+    prompt = completion = None
+    for source in sources:
+        if prompt is None:
+            value = _first_present(source, _PROMPT_TOKEN_KEYS)
+            prompt = value if isinstance(value, int) else None
+        if completion is None:
+            value = _first_present(source, _COMPLETION_TOKEN_KEYS)
+            completion = value if isinstance(value, int) else None
+    return prompt, completion
+
+
+def _receipt_from_stream(
+    events: List[Dict[str, Any]], stdout_lines: List[str], returncode: int
+) -> WorkerReceipt:
+    metas = [
+        e.get("meta")
+        for e in events
+        if e.get("type") == "metadata" and isinstance(e.get("meta"), dict)
+    ]
+    if not metas:
+        errors = [str(e.get("error")) for e in events if e.get("type") == "error"]
+        tail = (errors[-1] if errors else "\n".join(stdout_lines))[-400:]
+        if returncode != 0:
+            raise WorkerError(f"{WORKER_EXEC_FAILED}: exit {returncode}: {tail}")
+        raise WorkerError(
+            f"{WORKER_EXEC_FAILED}: exec stream ended without a metadata receipt"
+        )
+    meta = metas[-1]
+    listed = meta.get("tools")
+    if isinstance(listed, list):
+        tools = [dict(t) for t in listed if isinstance(t, dict)]
+    else:
+        tools = [_tool_record(e) for e in events if e.get("type") == "tool_use"]
+    output = meta.get("output")
+    if output is None:
+        output = meta.get("visible_final_answer_excerpt")
+    return WorkerReceipt(
+        status=str(meta.get("status") or ""),
+        termination_reason=meta.get("termination_reason"),
+        provider=str(meta.get("provider") or ""),
+        model=str(meta.get("model") or ""),
+        output=str(output or ""),
+        tools=tools,
+        error=meta.get("error"),
+        error_category=meta.get("error_category"),
+    )
+
+
+def _percentile(values: List[float], pct: float) -> float:
+    """Nearest-rank percentile of a non-empty list."""
+    ordered = sorted(values)
+    rank = max(1, min(len(ordered), int(-(-pct * len(ordered) // 100))))
+    return ordered[rank - 1]
+
+
+def writer_round_stats(
+    timed_events: List[Tuple[float, Dict[str, Any]]],
+    end_t: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Per-round timing of one writer session, measured by the Factory.
+
+    ``timed_events`` are exec-stream events with the monotonic second each
+    line ARRIVED on the worker's stdout -- the Factory's clock, so the
+    numbers never depend on a timestamp format the CLI may change. A round
+    is one ``tool_use`` event; its wall is the time to the next round (the
+    last round runs to ``end_t``, the moment the session ended), so it
+    covers the model's think time plus the tool's own run.
+
+    Token counts are the last ``turn_usage`` the stream reported; absent
+    usage fields leave the keys out rather than invent a zero. Specialists
+    are ``agent_spawned`` events; a specialist's wall runs from its spawn to
+    the last later event that names the same id, or to ``end_t`` when the
+    stream never names it again (counted in ``specialists_unended``).
+    """
+    ordered = sorted(
+        ((float(t), e) for t, e in timed_events if isinstance(e, dict)),
+        key=lambda pair: pair[0],
+    )
+    round_times = [t for t, e in ordered if e.get("type") == "tool_use"]
+    walls = [b - a for a, b in zip(round_times, round_times[1:])]
+    if round_times and end_t is not None and end_t >= round_times[-1]:
+        walls.append(end_t - round_times[-1])
+    stats: Dict[str, Any] = {"rounds": len(round_times)}
+    if walls:
+        stats["round_p50_s"] = round(_percentile(walls, 50), 1)
+        stats["round_p95_s"] = round(_percentile(walls, 95), 1)
+        stats["round_max_s"] = round(max(walls), 1)
+    usage_turns = 0
+    for _, event in ordered:
+        if event.get("type") != "turn_usage":
+            continue
+        prompt, completion = _usage_tokens(event)
+        if prompt is None and completion is None:
+            continue
+        usage_turns += 1
+        if prompt is not None:
+            stats["prompt_tokens_last"] = prompt
+        if completion is not None:
+            stats["completion_tokens_last"] = completion
+    if usage_turns:
+        stats["usage_turns"] = usage_turns
+
+    specialists: List[Dict[str, Any]] = []
+    for index, (spawn_t, event) in enumerate(ordered):
+        if event.get("type") != "agent_spawned":
+            continue
+        label = _first_present(event, _AGENT_LABEL_KEYS)
+        ident_key = next(
+            (k for k in _AGENT_ID_KEYS if event.get(k) not in (None, "")), None
+        )
+        end_seen: Optional[float] = None
+        if ident_key is not None:
+            ident = event[ident_key]
+            for later_t, later in ordered[index + 1 :]:
+                if later.get("type") == "agent_spawned":
+                    continue
+                if any(later.get(k) == ident for k in _AGENT_ID_KEYS):
+                    end_seen = later_t
+        stop = end_seen if end_seen is not None else end_t
+        specialists.append(
+            {
+                "label": str(label) if label is not None else "",
+                "start": spawn_t,
+                "stop": stop,
+                "ended": end_seen is not None,
+            }
+        )
+    stats["specialists"] = len(specialists)
+    if specialists:
+        points = []
+        for s in specialists:
+            points.append((s["start"], 1))
+            if s["stop"] is not None:
+                points.append((s["stop"], -1))
+        # An end at the same instant as another start is not an overlap.
+        points.sort(key=lambda p: (p[0], p[1]))
+        live = peak = 0
+        for _, delta in points:
+            live += delta
+            peak = max(peak, live)
+        stats["max_concurrent"] = peak
+        stats["specialists_unended"] = sum(1 for s in specialists if not s["ended"])
+        stats["specialist_walls"] = [
+            {
+                "label": s["label"],
+                "wall_s": (
+                    round(s["stop"] - s["start"], 1)
+                    if s["stop"] is not None
+                    else None
+                ),
+                "ended": s["ended"],
+            }
+            for s in specialists
+        ]
+    return stats
+
+
+def stream_progress_record(
+    event: Dict[str, Any], next_round: int
+) -> Optional[Dict[str, Any]]:
+    """The docs/writer_progress.jsonl record for one exec-stream event.
+
+    A ``tool_use`` is round ``next_round`` (tool name, bytes of input); a
+    ``turn_usage`` records the token counts it reports (none when it reports
+    none); ``agent_spawned`` records the specialist's label. Other events
+    write nothing here (the receipt keeps them for timing).
+    """
+    kind = event.get("type")
+    if kind == "tool_use":
+        name = _first_present(event, _TOOL_NAME_KEYS)
+        return {
+            "round": next_round,
+            "tool": str(name) if name is not None else "",
+            "bytes": _input_bytes(event),
+        }
+    if kind == "turn_usage":
+        prompt, completion = _usage_tokens(event)
+        record: Dict[str, Any] = {"turn_usage": True}
+        if prompt is not None:
+            record["prompt_tokens"] = prompt
+        if completion is not None:
+            record["completion_tokens"] = completion
+        return record
+    if kind == "agent_spawned":
+        label = _first_present(event, _AGENT_LABEL_KEYS)
+        return {"specialist_spawned": str(label) if label is not None else ""}
+    return None
+
+
+def rounds_summary_line(stats: Dict[str, Any]) -> str:
+    """The receipt's round summary as ``key=value`` pairs; ``-`` = not reported."""
+    keys = (
+        "rounds",
+        "round_p50_s",
+        "round_p95_s",
+        "prompt_tokens_last",
+        "specialists",
+        "max_concurrent",
+    )
+    parts = [f"{k}={stats[k] if stats.get(k) is not None else '-'}" for k in keys]
+    walls = stats.get("specialist_walls") or []
+    if walls:
+        parts.append(
+            "specialist_walls="
+            + ",".join(
+                f"{w.get('label') or '?'}:"
+                f"{w['wall_s'] if w.get('wall_s') is not None else '-'}s"
+                for w in walls
+            )
+        )
+    return " ".join(parts)
 
 
 #: Hosts the writer must resolve; probed from inside the confinement before the
@@ -1242,7 +1547,11 @@ def run_worker_job(
         api_key = worker_api_key()
         if api_key:
             argv += ["--provider", worker_provider()]
-        argv += ["exec", "--auto", "--json"]
+        # F-S1: the exec STREAM, not the one-line ``--json`` summary (the two
+        # flags are mutually exclusive in 0.9.13). The stream's terminal
+        # ``metadata`` event carries the same receipt fields; its tool_use /
+        # turn_usage / agent_spawned events are what the round timing reads.
+        argv += ["exec", "--auto", *EXEC_STREAM_FLAGS]
 
         # The brief does NOT ride in argv. Linux caps one exec argument at
         # 128 KiB (MAX_ARG_STRLEN); a full brief -- template + floor + the
@@ -1346,6 +1655,9 @@ def run_worker_job(
         except OSError:
             progress_handle = None
         stdout_lines: List[str] = []
+        # Monotonic arrival second of each stdout line (appended BEFORE the
+        # line, so it is never shorter than stdout_lines): the round clock.
+        stdout_times: List[float] = []
         relay_queue: "queue.Queue[str]" = queue.Queue()
         quiet_clock = {"last": time.monotonic()}
 
@@ -1380,6 +1692,7 @@ def run_worker_job(
                 assert proc.stdout is not None
                 for raw in iter(proc.stdout.readline, ""):
                     if raw.strip():
+                        stdout_times.append(time.monotonic())
                         stdout_lines.append(raw.rstrip("\r\n"))
             except (OSError, ValueError):  # closed pipe on kill
                 pass
@@ -1466,6 +1779,9 @@ def run_worker_job(
         # checkout before the CLI starts; only growth past this baseline is
         # the agent's output.
         files_at_start = count_authored_files(cwd)
+        # The last count a walk actually completed: an unreadable sample
+        # repeats it (marked) instead of reporting an empty tree.
+        last_files = {"n": 0}
         started_at = time.monotonic()
         # The progress watchdog's own clock -- separate from the wall. It
         # remembers when observable progress last landed and the snapshots it
@@ -1487,12 +1803,24 @@ def run_worker_job(
             if since < HEARTBEAT_EVERY_S:
                 return
             narration["last_said"] = now
-            files = max(0, count_authored_files(cwd) - files_at_start)
+            walked = authored_files_or_none(cwd)
+            unreadable = walked is None
+            if walked is not None:
+                last_files["n"] = max(0, walked - files_at_start)
+            files = last_files["n"]
+            fields: Dict[str, Any] = {
+                FILES_ON_DISK: files,
+                STEPS_REPORTED: narration["steps"],
+            }
+            if unreadable:
+                fields[FILES_UNREADABLE] = True
             _relay(
-                heartbeat_line(now - started_at, files, narration["steps"]),
+                heartbeat_line(
+                    now - started_at, files, narration["steps"], unreadable=unreadable
+                ),
                 # The same facts as data, for the budget ramp: the line is for
                 # people, these fields are what the inspector counts.
-                {FILES_ON_DISK: files, STEPS_REPORTED: narration["steps"]},
+                fields,
             )
 
         def _pump_prompt_progress() -> None:
@@ -1518,6 +1846,42 @@ def run_worker_job(
                 if raw.strip():
                     narration["steps"] += 1
                     _relay("writer: " + raw, {STEPS_REPORTED: narration["steps"]})
+
+        # F-S1: each exec-stream event is logged as it arrives (on THIS
+        # thread, so docs/writer_progress.jsonl stays single-writer) and kept
+        # with its arrival second for the receipt's round summary.
+        stream_state: Dict[str, Any] = {"cursor": 0, "rounds": 0, "timed": []}
+
+        def _log_stream_events() -> None:
+            upto = min(len(stdout_lines), len(stdout_times))
+            while stream_state["cursor"] < upto:
+                index = stream_state["cursor"]
+                stream_state["cursor"] += 1
+                event = exec_stream_event(stdout_lines[index])
+                if event is None:
+                    continue
+                arrived = stdout_times[index]
+                stream_state["timed"].append((arrived, event))
+                record = stream_progress_record(event, stream_state["rounds"] + 1)
+                if record is None:
+                    continue
+                if "round" in record:
+                    stream_state["rounds"] += 1
+                if progress_handle is not None:
+                    try:
+                        progress_handle.write(
+                            json.dumps(
+                                {
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                    "elapsed_s": round(arrived - started_at, 1),
+                                    **record,
+                                }
+                            )
+                            + "\n"
+                        )
+                        progress_handle.flush()
+                    except OSError:
+                        pass
 
         stdout_reader.start()
         stderr_reader.start()
@@ -1630,6 +1994,7 @@ def run_worker_job(
                             break
                     tailer.pump(_relay)
                     _pump_prompt_progress()
+                    _log_stream_events()
                     _heartbeat()
                     # Progress watchdog -- a separate clock from the wall.
                     # Cheap progress (a new step, stdout line or relayed line)
@@ -1650,9 +2015,16 @@ def run_worker_job(
                             }
                         )
                     else:
-                        files_now = max(
-                            0, count_authored_files(cwd) - files_at_start
+                        walked = authored_files_or_none(cwd)
+                        # An unreadable walk is no sample: it neither counts
+                        # as new files nor as an empty tree.
+                        files_now = (
+                            progress_state["files"]
+                            if walked is None
+                            else max(0, walked - files_at_start)
                         )
+                        if walked is not None:
+                            last_files["n"] = files_now
                         if files_now != progress_state["files"]:
                             progress_state.update({"t": now, "files": files_now})
                         elif now - progress_state["t"] >= idle_limit:
@@ -1677,6 +2049,8 @@ def run_worker_job(
                     break
             tailer.pump(_relay)
             _pump_prompt_progress()
+            _log_stream_events()
+            session_end_t = time.monotonic()
             # The subprocess is over on every path through here (returned,
             # bad exit, or killed at the wall): close the model call NOW,
             # before the post-loop raises, so the Floor never ages a
@@ -1693,16 +2067,22 @@ def run_worker_job(
         # code) lets the caller retry error_category=network before the
         # writer_no_output abort (Advisor 13:12Z, pilot-live 42633433251).
         receipt = _parse_writer_receipt(stdout_lines, proc.returncode)
+        if stream_state["timed"]:
+            receipt = replace(
+                receipt,
+                rounds=writer_round_stats(stream_state["timed"], session_end_t),
+            )
         # E3 part 2: the verdict line.
         logger.info(
             "codewhale writer receipt: status=%s reason=%s provider=%s "
-            "model=%s tools=%d error=%s",
+            "model=%s tools=%d error=%s %s",
             receipt.status,
             receipt.termination_reason or "-",
             receipt.provider,
             receipt.model,
             len(receipt.tools),
             receipt.error_category or "-",
+            rounds_summary_line(receipt.rounds),
         )
         return receipt
 
@@ -1830,7 +2210,10 @@ _STEP_PREFIX = "writer: STEP"
 STEPS_REPORTED = "steps_reported"
 FILES_ON_DISK = "files_on_disk"
 DNS_PROBE = "dns_probe"
-WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK, DNS_PROBE)
+#: Set on a heartbeat whose tree walk raised: FILES_ON_DISK then repeats the
+#: last count a walk completed, never a zero the tree did not have.
+FILES_UNREADABLE = "files_unreadable"
+WRITER_PROGRESS_FIELDS = (STEPS_REPORTED, FILES_ON_DISK, DNS_PROBE, FILES_UNREADABLE)
 #: The ``worker_stalled`` ledger event: a named marker plus the facts the
 #: order demands -- idle seconds, files at stall, steps at stall. Forwarded
 #: by the writer relay exactly like WRITER_PROGRESS_FIELDS.
@@ -1869,6 +2252,29 @@ def count_authored_files(root: Path) -> int:
     return total
 
 
+def authored_files_or_none(root: Path) -> Optional[int]:
+    """``count_authored_files``, but None when the walk raised part-way.
+
+    A tree being rewritten under the walk (a test run creating and removing
+    temporary paths) can raise mid-walk; the partial count it would return
+    is indistinguishable from a tree that shrank. The heartbeat and the
+    stall watchdog read None as "no sample", never as an empty tree.
+    """
+    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
+    total = 0
+    try:
+        for path in Path(root).rglob("*"):
+            if not path.is_file():
+                continue
+            parts = set(path.relative_to(root).parts)
+            if parts & skip or path.name.startswith("writer_progress"):
+                continue
+            total += 1
+    except OSError:
+        return None
+    return total
+
+
 #: Files the WORKER itself writes at dispatch (the brief pointer target and
 #: the argv audit). Never evidence that the agent produced anything.
 DISPATCH_AUDIT_FILES = frozenset({"docs/writer_prompt.txt", "docs/writer_argv.json"})
@@ -1896,14 +2302,23 @@ def agent_file_paths(root: Path) -> FrozenSet[str]:
     return frozenset(found)
 
 
-def heartbeat_line(elapsed_s: float, files: int, steps_seen: int) -> str:
+def heartbeat_line(
+    elapsed_s: float, files: int, steps_seen: int, *, unreadable: bool = False
+) -> str:
     """What the factory can honestly say about a quiet agent.
 
     Observed facts only -- elapsed time, files on disk, steps reported. It
-    never claims a step the agent did not report.
+    never claims a step the agent did not report. ``unreadable``: this
+    sample's walk failed, so ``files`` is the last count a walk completed.
     """
     minutes, seconds = divmod(int(elapsed_s), 60)
     clock = f"{minutes}m{seconds:02d}s"
+    if unreadable:
+        return (
+            f"{HEARTBEAT_PREFIX} — {clock} in, tree unreadable this sample "
+            f"(last good count {files} file(s)), {steps_seen} step(s) "
+            "reported so far."
+        )
     if steps_seen == 0 and files == 0:
         return (
             f"{HEARTBEAT_PREFIX} \u2014 {clock} in, still on its first pass: reading "

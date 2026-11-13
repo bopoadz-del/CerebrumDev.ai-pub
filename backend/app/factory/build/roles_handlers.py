@@ -4516,6 +4516,20 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         len(carried_over),
         files_written,
     )
+    # F-S1: the session's round timing, measured by the worker from the exec
+    # stream, rides the ledger next to the receipt (rounds=, round_p50_s=,
+    # round_p95_s=, prompt_tokens_last=, specialists=, max_concurrent=).
+    rounds = dict(getattr(receipt, "rounds", None) or {})
+    if rounds:
+        from app.factory.build.codewhale_worker import rounds_summary_line
+
+        ctx.note(
+            "codewhale writer rounds: " + rounds_summary_line(rounds),
+            stage="writer",
+            source="factory",
+            reason="writer_rounds",
+            writer_rounds=rounds,
+        )
     # F-W2c: a turn that did not complete (the CLI ended it on its own
     # budget, or was cut) while the pass put files on disk is INTERRUPTED,
     # not "no output": the files and progress log are committed with the

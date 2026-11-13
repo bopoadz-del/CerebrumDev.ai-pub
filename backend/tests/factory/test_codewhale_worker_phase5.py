@@ -280,8 +280,10 @@ def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_pat
     assert argv[argv.index("--provider") + 1] == "deepseek"
     assert argv[argv.index("exec") + 1 : argv.index("exec") + 3] == [
         "--auto",
-        "--json",
+        "--output-format",
     ]
+    # F-S1: the exec stream (per-round events), not the --json summary.
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--provider" in argv and "deepseek" in argv
     # Reversed with evidence: the key USED to ride on argv (--api-key <value>),
     # which puts a secret on the process cmdline (G2 bar 7). ORDERS 2026-10-27:
