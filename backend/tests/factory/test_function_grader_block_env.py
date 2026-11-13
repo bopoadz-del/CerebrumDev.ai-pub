@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from app.factory.build.grader import reason_classes
-from app.factory.build.product_grader import function_grader as fg
+import app.factory.build.grader as _grader_module
+import app.factory.build.product_grader.function_grader as fg
 from tests.factory.grader_contract import write_models
 
 #: A vendored block that needs the store the harness provides: a scratch
@@ -90,7 +90,7 @@ def env(request, monkeypatch):
 
 def _classes(grade):
     record = {"layer1": {"functions": grade.to_dict()}, "layer2": {"ran": True}, "ui": {"ran": True}}
-    return {r["capability"]: r["class"] for r in reason_classes(record, IDS) if r["layer"] == "function"}
+    return {r["capability"]: r["class"] for r in _grader_module.reason_classes(record, IDS) if r["layer"] == "function"}
 
 
 @pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)

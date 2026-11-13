@@ -13,7 +13,7 @@ from collections import Counter
 
 import pytest
 
-from app.factory.build import grader
+import app.factory.build.grader as grader
 from app.factory.build.product_grader.function_grader import NO_INPUT_CONTRACT, ONE_RESULT
 
 PRODUCT_TEXT = ("Clientco", "secret", "Secret", "handle raised", "brief asked")

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from app.factory.build.grader import reason_classes
-from app.factory.build.product_grader import function_grader as fg
+import app.factory.build.grader as _grader_module
+import app.factory.build.product_grader.function_grader as fg
 from tests.factory.grader_contract import COMPUTES, write_models
 
 READS_INPUT = COMPUTES
@@ -38,7 +38,7 @@ def _bp(ids):
 
 def _classes(grade, ids):
     record = {"layer1": {"functions": grade.to_dict()}, "layer2": {"ran": True}, "ui": {"ran": True}}
-    return {r["capability"]: r["class"] for r in reason_classes(record, ids) if r["layer"] == "function"}
+    return {r["capability"]: r["class"] for r in _grader_module.reason_classes(record, ids) if r["layer"] == "function"}
 
 
 BLUEPRINTS = [
