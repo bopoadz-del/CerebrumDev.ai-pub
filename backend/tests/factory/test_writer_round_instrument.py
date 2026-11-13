@@ -415,3 +415,97 @@ def test_targeted_tests_now_follows_what_changed(tmp_path, touched):
 def test_suite_runs_rides_the_summary_line():
     assert "suite_runs=2" in rounds_summary_line({"rounds": 3, "suite_runs": 2})
     assert "suite_runs=-" in rounds_summary_line({"rounds": 3})
+
+
+# --------------------------------------------------------------------------
+# CI-M survivors on 34f7c8a: each rule pinned by two inputs that disagree.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line,parsed",
+    [("engine turn completion settled status=ok", 0), (json.dumps(_ev("done")), 1)],
+)
+def test_only_object_framed_lines_reach_the_json_parser(monkeypatch, line, parsed):
+    """The writer's stdout mixes plain log text with stream events; only a
+    line framed as a JSON object is handed to the parser."""
+    calls = []
+    real_loads = json.loads
+
+    def _spy(text, *a, **k):
+        calls.append(text)
+        return real_loads(text, *a, **k)
+
+    monkeypatch.setattr(worker_mod.json, "loads", _spy)
+    event = worker_mod.exec_stream_event(line)
+    assert len(calls) == parsed
+    assert (event is not None) is bool(parsed)
+
+
+@pytest.mark.parametrize(
+    "event,size",
+    [(_ev("tool_use", name="bash"), 0), (_ev("tool_use", name="bash", input="abcd"), 4)],
+)
+def test_tool_without_input_has_zero_input_bytes(event, size):
+    assert worker_mod._input_bytes(event) == size
+    assert worker_mod._tool_record(event)["input_bytes"] == size
+
+
+@pytest.mark.parametrize(
+    "code,named",
+    [(0, "without a metadata receipt"), (3, "exit 3")],
+)
+def test_stream_without_metadata_fails_named_on_every_exit_code(code, named):
+    lines = [json.dumps(_ev("tool_use", name="bash", input="ls"))]
+    with pytest.raises(worker_mod.WorkerError, match=named):
+        _parse_writer_receipt(lines, code)
+
+
+@pytest.mark.parametrize("kind,count", [("tool_use", 1), ("tool_result", 0)])
+def test_only_a_tool_use_event_counts_as_a_suite_run(kind, count):
+    """A tool_result echoing the command is the same run, never a second one."""
+    event = _ev(kind, name="bash", input={"command": "python -m pytest -q"})
+    assert worker_mod.suite_runs_in(event, lambda: ["tests/test_a.py"]) == count
+
+
+@pytest.mark.parametrize("every_s,max_beats", [(1000.0, 0), (0.5, 3)])
+def test_heartbeat_waits_its_interval(monkeypatch, tmp_path, every_s, max_beats):
+    """A silent CLI gets one heartbeat per interval, not one per wait tick."""
+    import time
+
+    from app.factory.build.tenant_bind import TenantStoreBinding
+
+    monkeypatch.setattr(worker_mod, "HEARTBEAT_EVERY_S", every_s)
+    stdout = "".join(json.dumps(e) + "\n" for e in (_meta(), _ev("done")))
+
+    class _SilentProc:
+        def __init__(self, argv, **kwargs):
+            self.stdout = io.StringIO(stdout)
+            self.stderr = io.StringIO("")
+            self.returncode = None
+            self._until = time.monotonic() + 1.3
+
+        def wait(self, timeout=None):
+            if time.monotonic() < self._until:
+                time.sleep(0.05)
+                raise subprocess.TimeoutExpired("codewhale", timeout)
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.returncode = 9
+
+    monkeypatch.setattr(subprocess, "Popen", _SilentProc)
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/nonexistent/codewhale")
+    relayed: list = []
+    binding = TenantStoreBinding(
+        tenant_key="key_fs1", store_dir=Path("/tmp/tenant-fs1"), bound_at=0.0
+    )
+    worker_mod.run_worker_job(
+        "build it", tmp_path, tenant_store=binding,
+        progress=lambda line, info: relayed.append(line),
+    )
+    beats = [ln for ln in relayed if ln.startswith(worker_mod.HEARTBEAT_PREFIX)]
+    assert len(beats) <= max_beats, beats
+    if max_beats:
+        assert beats, relayed
