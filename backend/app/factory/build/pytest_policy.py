@@ -200,3 +200,69 @@ def read_denials(cli_home: Path | str) -> Optional[List[Dict[str, Any]]]:
             entry = {"unparsed": line[:200]}
         out.append(entry if isinstance(entry, dict) else {"unparsed": line[:200]})
     return out
+
+
+#: Findings kept on the ledger record; the full list stays with the gate.
+SUITE_FINDINGS_KEPT = 10
+
+
+def factory_suite_after_pass(
+    root: Path | str,
+    *,
+    runner: Optional[Any] = None,
+    timeout_s: Optional[float] = None,
+) -> Dict[str, Any]:
+    """F-S2b: the Factory runs the full suite ONCE after a writer pass.
+
+    The policy (above) refuses the writer's own full-suite runs; this is the
+    run the writer no longer makes. It happens after the writer's session has
+    ended, so it is outside the model's wall, and it runs the SAME suite
+    runner the code-phase gate uses (``gate_suite_green``: JUnit-read
+    verdict, the Factory's environment, no policy env) on the tree the writer
+    worked in. Telemetry only: the record goes to the ledger, and nothing here
+    passes or fails a phase -- the gates are unchanged. A runner that raises
+    is recorded as ``error``, never as green.
+    """
+    import time
+
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.gates import DEFAULT_GATE_TIMEOUT_S, GateContext, gate_suite_green
+
+    ctx = GateContext(
+        workspace=Path(root),
+        role=BuildRole.TESTER,
+        runner=runner,
+        timeout_s=DEFAULT_GATE_TIMEOUT_S if timeout_s is None else float(timeout_s),
+    )
+    started = time.monotonic()
+    try:
+        result = gate_suite_green(ctx)
+    except Exception as exc:  # noqa: BLE001 -- recorded, never green
+        return {
+            "outcome": "error",
+            "reason": type(exc).__name__,
+            "detail": str(exc)[:300],
+            "failures": None,
+            "findings": [],
+            "elapsed_s": round(time.monotonic() - started, 1),
+        }
+    findings = [str(f) for f in (result.findings or [])]
+    return {
+        "outcome": "green" if result.ok else (result.reason or "failed"),
+        "reason": result.reason or "",
+        "detail": str(result.detail or "")[:300],
+        "failures": 0 if result.ok else len(findings),
+        "findings": findings[:SUITE_FINDINGS_KEPT],
+        "elapsed_s": round(time.monotonic() - started, 1),
+    }
+
+
+def factory_suite_line(record: Dict[str, Any]) -> str:
+    """The ledger line: ``suite=`` outcome, ``failures=`` (``-`` = not counted)."""
+    failures = record.get("failures")
+    return (
+        f"factory suite after pass: suite={record.get('outcome', '-')} "
+        f"failures={'-' if failures is None else failures} "
+        f"elapsed_s={record.get('elapsed_s', '-')}"
+        + (f" -- {record['detail']}" if record.get("detail") else "")
+    )

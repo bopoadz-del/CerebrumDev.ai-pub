@@ -4577,6 +4577,24 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             location="WRITER",
             notes={"codewhale_worker": receipt.to_dict()},
         )
+    # F-S2b: the writer's own full-suite runs are refused (F-S2a); the
+    # Factory runs the suite itself, once, now that the writer's session has
+    # ended -- outside the model's wall, on the tree the writer worked in.
+    # The result goes to the ledger; it is telemetry and judges nothing.
+    from app.factory.build.pytest_policy import (
+        factory_suite_after_pass,
+        factory_suite_line,
+    )
+
+    suite_record = factory_suite_after_pass(dest)
+    ctx.state["factory_suite"] = suite_record
+    ctx.note(
+        factory_suite_line(suite_record),
+        stage="writer",
+        source="factory",
+        reason="factory_suite",
+        factory_suite=suite_record,
+    )
     # docs/build_provenance.json is part of WRITER's contract. It is the
     # FACTORY's record and does not ship (builds_push.FACTORY_INTERNAL_PATHS);
     # scripts/release_gate.py used to fail the image build without it, which
