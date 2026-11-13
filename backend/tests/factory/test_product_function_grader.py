@@ -303,9 +303,9 @@ def test_timeout_is_a_fail_with_every_mutant_unkilled(tmp_path, monkeypatch, cid
     assert not r.ok and r.detail == "timeout" and r.mutants_survived == list(fg.MUTANTS)
 
 
-@pytest.mark.parametrize("name", ["field_dependence"])
-def test_mutant_set_is_field_dependence(name):  # F17
-    assert set(fg.MUTANTS) == {"field_dependence"} and name in fg.MUTANTS
+@pytest.mark.parametrize("name,member", [("field_dependence", True), ("constant_return", False), ("drop_rule", False)])
+def test_mutant_set_is_field_dependence(name, member):  # F17: the tautological pair is gone
+    assert set(fg.MUTANTS) == {"field_dependence"} and (name in fg.MUTANTS) is member
 
 
 @pytest.mark.parametrize("body", [
