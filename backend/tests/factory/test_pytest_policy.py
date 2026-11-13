@@ -106,7 +106,9 @@ def test_policy_binds_only_where_the_writer_env_names_a_root(
     assert len(read_denials(home)) == (1 if refused else 0)
 
 
-def test_stamp_wires_the_plugin_and_resets_this_pass_log(tmp_path):
+@pytest.mark.parametrize("prior_denials", [1, 3])
+def test_stamp_wires_the_plugin_and_resets_this_pass_log(tmp_path, prior_denials):
+    """A later pass starts from an empty log whatever the previous pass left."""
     home = tmp_path / "home"
     env = stamp_policy(home, tmp_path)
     policy = home / POLICY_DIR_NAME
@@ -114,8 +116,10 @@ def test_stamp_wires_the_plugin_and_resets_this_pass_log(tmp_path):
     assert env["PYTHONPATH"] == str(policy)
     assert env[ROOT_ENV] == str(tmp_path)
     assert (policy / f"{PLUGIN_MODULE}.py").is_file()
-    (policy / DENIALS_FILE).write_text('{"selection": []}\n', encoding="utf-8")
-    assert len(read_denials(home)) == 1
+    (policy / DENIALS_FILE).write_text(
+        '{"selection": []}\n' * prior_denials, encoding="utf-8"
+    )
+    assert len(read_denials(home)) == prior_denials
     stamp_policy(home, tmp_path)
     assert read_denials(home) == []
 
