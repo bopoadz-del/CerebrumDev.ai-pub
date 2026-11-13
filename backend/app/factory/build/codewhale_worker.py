@@ -1481,6 +1481,12 @@ def suite_runs_in(
     return sum(1 for s in selections if is_suite_run(s, targeted))
 
 
+def suite_denied_count(denials: Optional[List[Dict[str, Any]]]) -> Optional[int]:
+    """Refused pytest runs this pass; None (printed ``-``) when the policy's
+    denial log could not be read -- unreadable never reads as 0."""
+    return None if denials is None else len(denials)
+
+
 def rounds_summary_line(stats: Dict[str, Any]) -> str:
     """The receipt's round summary as ``key=value`` pairs; ``-`` = not reported."""
     keys = (
@@ -1491,6 +1497,7 @@ def rounds_summary_line(stats: Dict[str, Any]) -> str:
         "specialists",
         "max_concurrent",
         "suite_runs",
+        "suite_denied",
     )
     parts = [f"{k}={stats[k] if stats.get(k) is not None else '-'}" for k in keys]
     walls = stats.get("specialist_walls") or []
@@ -1863,6 +1870,18 @@ def run_worker_job(
         child_env = _child_env(session_id, cli_home)
         turn_secs = cli_turn_wall_secs(timeout, turn_wall_s)
         child_env[CLI_TURN_WALL_ENV] = str(turn_secs)
+        # F-S2a: the pytest tool policy rides the WRITER's env only (the
+        # Factory's gate and TESTER runs never carry it). Stamped per pass;
+        # an unwritable policy dir fails the dispatch like an unwritable
+        # brief -- a writer without the policy is not the writer ordered.
+        from app.factory.build.pytest_policy import read_denials, stamp_policy
+
+        try:
+            child_env.update(stamp_policy(cli_home, cwd))
+        except OSError as exc:
+            raise WorkerError(
+                f"worker_policy_unwritable: could not stamp the pytest policy: {exc}"
+            ) from exc
         # Advisor 14:42Z: measure DNS from INSIDE the confinement before the
         # writer CLI starts, so a deterministic resolver failure is attributed
         # (a typed ledger NOTE), not assumed. Telemetry only -- it never
@@ -2229,6 +2248,7 @@ def run_worker_job(
                 rounds={
                     **writer_round_stats(stream_state["timed"], session_end_t),
                     "suite_runs": stream_state["suite_runs"],
+                    "suite_denied": suite_denied_count(read_denials(cli_home)),
                 },
             )
         # E3 part 2: the verdict line.
