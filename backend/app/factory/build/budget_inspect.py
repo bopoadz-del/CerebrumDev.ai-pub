@@ -441,6 +441,53 @@ def coder_stall_reason(snapshot: Mapping[str, Any], stage: str) -> str:
     )
 
 
+def phase_bounded_wall(
+    *, plan_wall_s: float, plan_wall_passes: int, phase_wall_s: float
+) -> Optional[float]:
+    """The wall a producing CLI may hold: max(plan wall x passes, phase
+    budget), never above ``CEILING_S``. The same bound ``_extend_wall``
+    applies to a progress-evidenced grant, so proposer and enforcer agree.
+    None when the runner has no budget to bound it."""
+    try:
+        plan = float(plan_wall_s or 0.0) * max(1, int(plan_wall_passes or 1))
+        phase = float(phase_wall_s or 0.0)
+    except (TypeError, ValueError):
+        return None
+    bound = max(plan, phase)
+    if bound <= 0:
+        return None
+    return min(bound, CEILING_S)
+
+
+def _progress_evidenced_grant(
+    snapshot: Mapping[str, Any],
+    *,
+    decision: str,
+    current_wall_s: float,
+    proposed_wall_s: Optional[float],
+    plan_wall_s: float,
+    plan_wall_passes: int,
+    phase_wall_s: float,
+) -> Optional[float]:
+    """The phase-bounded wall for an in-flight CLI with progress evidence,
+    or None. Never overrides a pilot-ready close or a stalled leg, and never
+    proposes a wall at or below what is already held or proposed."""
+    if decision in ("already_pilot_ready", "coder_stalled"):
+        return None
+    if not snapshot.get("cli_in_flight") or not cli_progress_evidenced(snapshot):
+        return None
+    bound = phase_bounded_wall(
+        plan_wall_s=plan_wall_s,
+        plan_wall_passes=plan_wall_passes,
+        phase_wall_s=phase_wall_s,
+    )
+    if bound is None:
+        return None
+    if bound <= max(float(current_wall_s or 0.0), float(proposed_wall_s or 0.0)):
+        return None
+    return bound
+
+
 def inspect_decision(
     *,
     elapsed_s: float,
@@ -450,8 +497,16 @@ def inspect_decision(
     state: Optional[Mapping[str, Any]] = None,
     workspace: Any = None,
     lead_s: float = 0.0,
+    plan_wall_s: float = 0.0,
+    plan_wall_passes: int = 1,
+    phase_wall_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Attach a continue/stop decision to an inspect snapshot.
+
+    ``plan_wall_s`` / ``plan_wall_passes`` / ``phase_wall_s``: the runner's
+    budget, so an in-flight CLI that shows progress since the last inspect is
+    granted the phase-bounded wall (``phase_bounded_wall``) at this inspect
+    (owner ruling F-W2b). Without progress evidence they change nothing.
 
     ``lead_s``: how far ahead of a stage mark the runner inspected because a
     coding-agent call is live (runner._maybe_stage_inspect). The in-flight
@@ -595,6 +650,29 @@ def inspect_decision(
                 f"contract_misses={len(snapshot.get('contract_misses') or [])}, "
                 f"pilot_ready=false ({'; '.join(snapshot.get('pilot_ready_blockers') or ['unknown'])})"
             )
+    granted = _progress_evidenced_grant(
+        snapshot,
+        decision=decision,
+        current_wall_s=current_wall_s,
+        proposed_wall_s=new_wall,
+        plan_wall_s=plan_wall_s,
+        plan_wall_passes=plan_wall_passes,
+        phase_wall_s=phase_wall_s,
+    )
+    if granted is not None:
+        # Owner ruling F-W2b: an in-flight CLI that is producing gets its
+        # wall at the inspect. "wait" with no wall is not a decision -- the
+        # runner only extends the live deadline when the inspect names one.
+        new_wall = granted
+        decision = "continue_progress_evidenced"
+        reason = (
+            f"inspect {stage}: FACTORY_CODE_CLI in-flight and producing "
+            f"(written={written_label(snapshot)}, steps_since_inspect="
+            f"{snapshot.get('cli_steps_since_inspect')}, files_grown="
+            f"{snapshot.get('cli_files_grown_since_inspect')}) — "
+            f"phase-bounded wall {current_wall_s:g}s → {new_wall:g}s; "
+            "not FACTORY_CODE_CLI_UNUSED"
+        )
     if str(stage) == "pilot_open" and decision == "hard_stop":
         # _grant_pilot_budget treats this inspect as informational.
         # sess_d10dfc28 logged hard-stop here (written=7, timeouts=7

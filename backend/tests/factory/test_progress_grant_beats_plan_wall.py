@@ -110,17 +110,18 @@ def _inspect_one_heartbeat_before_the_mark(runner, clock):
 
 
 @pytest.mark.parametrize(
-    "phase, progress, applied",
+    "phase, progress, requested, applied",
     [
-        # Files on disk rising: the grant goes through, bounded by the phase.
-        (5400.0, "files", STAGE_2_S),
+        # Files on disk rising: the inspect asks for the phase-bounded wall
+        # (F-W2b) and the grant goes through, bounded by the phase.
+        (5400.0, "files", 5400.0, 5400.0),
         # Only steps reported, and a phase budget below the requested wall:
         # the phase budget, not the plan wall, bounds the grant.
-        (2400.0, "steps", 2400.0),
+        (2400.0, "steps", STAGE_2_S, 2400.0),
     ],
 )
 def test_a_small_plan_with_progress_gets_its_grant_to_live_time_left(
-    tmp_path, phase, progress, applied
+    tmp_path, phase, progress, requested, applied
 ):
     runner, clock = _small_plan_runner(tmp_path, phase=phase)
     if progress == "files":
@@ -132,7 +133,7 @@ def test_a_small_plan_with_progress_gets_its_grant_to_live_time_left(
 
     decided = _inspect_one_heartbeat_before_the_mark(runner, clock)
 
-    assert decided and decided["next_wall_s"] == STAGE_2_S
+    assert decided and decided["next_wall_s"] == requested
     assert runner._extend_wall(STAGE_2_S, progress_evidenced=True) == applied
     assert runner._deadline_box["at"] == applied
     left = _live_time_left(runner)()
