@@ -1337,6 +1337,150 @@ def stream_progress_record(
     return None
 
 
+#: Keys a shell tool's input may carry its command line under.
+_SHELL_INPUT_KEYS = ("command", "cmd", "script", "args", "argv")
+#: Tokens that end one shell command and start the next.
+_SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
+#: pytest options whose value is the NEXT token (never a test path).
+_PYTEST_VALUE_OPTS = frozenset(
+    {
+        "-m", "-k", "-p", "-c", "-o", "-W", "-n", "--rootdir", "--deselect",
+        "--ignore", "--ignore-glob", "--maxfail", "--tb", "--confcutdir",
+        "--basetemp", "--junitxml", "--durations", "--timeout", "--import-mode",
+    }
+)
+
+
+def _command_text(event: Dict[str, Any]) -> str:
+    """The command line a tool_use event runs, '' when it carries none."""
+    value = event.get("input")
+    if isinstance(value, dict):
+        value = _first_present(value, _SHELL_INPUT_KEYS)
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(v) for v in value)
+    return value if isinstance(value, str) else ""
+
+
+def pytest_selections(command: str) -> List[List[str]]:
+    """Every pytest invocation in a shell command line, as the positional
+    arguments (test paths / node ids) it selects. [] when none runs pytest.
+
+    Recognised by shape only: a ``pytest`` / ``py.test`` executable, or any
+    command whose arguments run ``-m pytest`` (an interpreter, whatever its
+    name).
+    """
+    import shlex
+
+    try:
+        tokens = shlex.split(command or "", posix=True)
+    except ValueError:
+        tokens = (command or "").split()
+    out: List[List[str]] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        base = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        start: Optional[int] = None
+        if base in ("pytest", "py.test", "pytest.exe"):
+            start = i + 1
+        elif (
+            tok not in _SHELL_SEPARATORS
+            and tokens[i + 1 : i + 3] == ["-m", "pytest"]
+        ):
+            start = i + 3
+        if start is None:
+            i += 1
+            continue
+        selected: List[str] = []
+        j = start
+        while j < len(tokens) and tokens[j] not in _SHELL_SEPARATORS:
+            arg = tokens[j]
+            if arg in _PYTEST_VALUE_OPTS:
+                j += 2
+                continue
+            if not arg.startswith("-"):
+                selected.append(arg)
+            j += 1
+        out.append(selected)
+        i = j
+    return out
+
+
+def _norm_test_path(arg: str) -> str:
+    import posixpath
+
+    path = arg.split("::", 1)[0].replace("\\", "/")
+    return posixpath.normpath(path)
+
+
+def is_suite_run(selection: List[str], targeted: Optional[List[str]]) -> bool:
+    """True when a pytest invocation is NOT confined to the targeted set.
+
+    No path selects the whole collection; a path that is not a test FILE (a
+    directory) selects everything under it; a file outside ``targeted`` (the
+    self-check's selection at that moment) is not targeted. ``targeted`` None
+    means the set could not be computed: only the shape is judged.
+    """
+    if not selection:
+        return True
+    allowed = (
+        None if targeted is None else {_norm_test_path(t) for t in targeted}
+    )
+    for arg in selection:
+        path = _norm_test_path(arg)
+        if not path.endswith(".py"):
+            return True
+        if allowed is not None and path not in allowed:
+            return True
+    return False
+
+
+def targeted_tests_now(root: Path) -> Optional[List[str]]:
+    """The targeted set the stamped self-check would run from ``root`` now.
+
+    Executes the Factory's OWN rendered self-check source (never the
+    workspace copy the writer can edit) with its ``__file__`` at the
+    workspace stamp, so "changed this pass" is read off the same marker the
+    self-check uses. None when it cannot be computed.
+    """
+    try:
+        from app.factory.build.writer_behaviour import (
+            SELF_CHECK_REL,
+            render_self_check,
+        )
+
+        namespace: Dict[str, Any] = {
+            "__name__": "factory_checks_targeted",
+            "__file__": str(Path(root) / SELF_CHECK_REL),
+        }
+        exec(compile(render_self_check(), SELF_CHECK_REL, "exec"), namespace)  # noqa: S102 -- Factory-rendered source
+        changed = namespace["_changed_sources"](str(root))
+        return list(
+            namespace["select_targeted_tests"](
+                changed, namespace["_test_files"](str(root))
+            )
+        )
+    except Exception:  # noqa: BLE001 -- an uncomputable set is reported as None, never as empty
+        return None
+
+
+def suite_runs_in(
+    event: Dict[str, Any], targeted_for: Any
+) -> int:
+    """How many pytest invocations in one tool_use are not the targeted set.
+
+    ``targeted_for`` is called (once, only when the event runs pytest) for
+    the targeted set at that moment.
+    """
+    if event.get("type") != "tool_use":
+        return 0
+    selections = pytest_selections(_command_text(event))
+    if not selections:
+        return 0
+    targeted = targeted_for()
+    return sum(1 for s in selections if is_suite_run(s, targeted))
+
+
 def rounds_summary_line(stats: Dict[str, Any]) -> str:
     """The receipt's round summary as ``key=value`` pairs; ``-`` = not reported."""
     keys = (
@@ -1346,6 +1490,7 @@ def rounds_summary_line(stats: Dict[str, Any]) -> str:
         "prompt_tokens_last",
         "specialists",
         "max_concurrent",
+        "suite_runs",
     )
     parts = [f"{k}={stats[k] if stats.get(k) is not None else '-'}" for k in keys]
     walls = stats.get("specialist_walls") or []
@@ -1850,7 +1995,12 @@ def run_worker_job(
         # F-S1: each exec-stream event is logged as it arrives (on THIS
         # thread, so docs/writer_progress.jsonl stays single-writer) and kept
         # with its arrival second for the receipt's round summary.
-        stream_state: Dict[str, Any] = {"cursor": 0, "rounds": 0, "timed": []}
+        stream_state: Dict[str, Any] = {
+            "cursor": 0,
+            "rounds": 0,
+            "timed": [],
+            "suite_runs": 0,
+        }
 
         def _log_stream_events() -> None:
             upto = min(len(stdout_lines), len(stdout_times))
@@ -1867,6 +2017,12 @@ def run_worker_job(
                     continue
                 if "round" in record:
                     stream_state["rounds"] += 1
+                    # F-S1: a pytest run that is not the targeted set, read
+                    # off the tool stream with the set computed NOW.
+                    suites = suite_runs_in(event, lambda: targeted_tests_now(cwd))
+                    if suites:
+                        stream_state["suite_runs"] += suites
+                        record = {**record, "suite_runs": suites}
                 if progress_handle is not None:
                     try:
                         progress_handle.write(
@@ -2070,7 +2226,10 @@ def run_worker_job(
         if stream_state["timed"]:
             receipt = replace(
                 receipt,
-                rounds=writer_round_stats(stream_state["timed"], session_end_t),
+                rounds={
+                    **writer_round_stats(stream_state["timed"], session_end_t),
+                    "suite_runs": stream_state["suite_runs"],
+                },
             )
         # E3 part 2: the verdict line.
         logger.info(

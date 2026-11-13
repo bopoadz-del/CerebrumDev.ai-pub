@@ -71,10 +71,13 @@ def test_round_count_and_walls_follow_the_stream(times, end_t, rounds, p50, p95)
     assert stats["round_p95_s"] == p95
 
 
-def test_no_rounds_reports_zero_and_no_walls():
-    stats = writer_round_stats([(1.0, _ev("done"))], 2.0)
-    assert stats["rounds"] == 0
-    assert "round_p50_s" not in stats and "round_p95_s" not in stats
+@pytest.mark.parametrize("tool_times,rounds,has_walls", [([], 0, False), ([1.0], 1, True)])
+def test_no_rounds_reports_zero_and_no_walls(tool_times, rounds, has_walls):
+    timed = [(t, _ev("tool_use", name="w")) for t in tool_times] + [(1.5, _ev("done"))]
+    stats = writer_round_stats(timed, 2.0)
+    assert stats["rounds"] == rounds
+    assert ("round_p50_s" in stats) is has_walls
+    assert ("round_p95_s" in stats) is has_walls
 
 
 # --------------------------------------------------------------------------
@@ -82,31 +85,33 @@ def test_no_rounds_reports_zero_and_no_walls():
 # --------------------------------------------------------------------------
 
 
-def test_usage_fields_give_last_prompt_tokens():
-    timed = [
-        (0.0, _ev("tool_use", name="read")),
-        (1.0, _ev("turn_usage", turn=1, input_tokens=1200, output_tokens=80)),
-        (2.0, _ev("tool_use", name="write")),
-        (3.0, _ev("turn_usage", turn=2, usage={"prompt_tokens": 4800, "completion_tokens": 90})),
-    ]
+@pytest.mark.parametrize(
+    "usage,prompt_last,completion_last,turns",
+    [
+        (
+            [
+                {"input_tokens": 1200, "output_tokens": 80},
+                {"usage": {"prompt_tokens": 4800, "completion_tokens": 90}},
+            ],
+            4800,
+            90,
+            2,
+        ),
+        ([{}, {}], None, None, 0),  # turn_usage events that report no tokens
+    ],
+)
+def test_usage_fields_give_last_prompt_tokens(usage, prompt_last, completion_last, turns):
+    timed = []
+    for i, fields in enumerate(usage):
+        timed.append((2.0 * i, _ev("tool_use", name="w")))
+        timed.append((2.0 * i + 1, _ev("turn_usage", turn=i + 1, **fields)))
     stats = writer_round_stats(timed, 4.0)
     assert stats["rounds"] == 2
-    assert stats["prompt_tokens_last"] == 4800
-    assert stats["completion_tokens_last"] == 90
-    assert stats["usage_turns"] == 2
-
-
-def test_stream_without_usage_gives_counts_without_tokens():
-    timed = [
-        (0.0, _ev("tool_use", name="read")),
-        (1.0, _ev("turn_usage", turn=1)),  # reports no token fields
-        (2.0, _ev("tool_use", name="write")),
-    ]
-    stats = writer_round_stats(timed, 4.0)
-    assert stats["rounds"] == 2
-    assert "prompt_tokens_last" not in stats
-    assert "usage_turns" not in stats
-    assert "prompt_tokens_last=-" in rounds_summary_line(stats)
+    assert stats.get("prompt_tokens_last") == prompt_last
+    assert stats.get("completion_tokens_last") == completion_last
+    assert stats.get("usage_turns", 0) == turns
+    shown = prompt_last if prompt_last is not None else "-"
+    assert f"prompt_tokens_last={shown}" in rounds_summary_line(stats)
 
 
 # --------------------------------------------------------------------------
@@ -122,31 +127,35 @@ def _specialists(spans):
     return timed
 
 
-def test_overlapping_specialists_count_concurrency():
-    timed = _specialists([("ALPHA", "r1", 0.0, 50.0), ("BETA", "r2", 10.0, 30.0)])
-    stats = writer_round_stats(timed, 60.0)
+@pytest.mark.parametrize(
+    "spans,peak,walls",
+    [
+        ([("ALPHA", "r1", 0.0, 50.0), ("BETA", "r2", 10.0, 30.0)], 2, {"ALPHA": 50.0, "BETA": 20.0}),
+        ([("ALPHA", "r1", 0.0, 20.0), ("BETA", "r2", 20.0, 45.0)], 1, {"ALPHA": 20.0, "BETA": 25.0}),
+    ],
+)
+def test_specialist_concurrency_follows_overlap(spans, peak, walls):
+    stats = writer_round_stats(_specialists(spans), 60.0)
     assert stats["specialists"] == 2
-    assert stats["max_concurrent"] == 2
-    walls = {w["label"]: w["wall_s"] for w in stats["specialist_walls"]}
-    assert walls == {"ALPHA": 50.0, "BETA": 20.0}
+    assert stats["max_concurrent"] == peak
+    assert {w["label"]: w["wall_s"] for w in stats["specialist_walls"]} == walls
     assert stats["specialists_unended"] == 0
-
-
-def test_sequential_specialists_run_one_at_a_time():
-    timed = _specialists([("ALPHA", "r1", 0.0, 20.0), ("BETA", "r2", 20.0, 45.0)])
-    stats = writer_round_stats(timed, 60.0)
-    assert stats["specialists"] == 2
-    assert stats["max_concurrent"] == 1
     line = rounds_summary_line(stats)
-    assert "specialists=2" in line and "max_concurrent=1" in line
-    assert "ALPHA:20.0s" in line and "BETA:25.0s" in line
+    assert "specialists=2" in line and f"max_concurrent={peak}" in line
+    for label, wall in walls.items():
+        assert f"{label}:{wall}s" in line
 
 
-def test_specialist_never_named_again_runs_to_session_end():
+@pytest.mark.parametrize("named_again,wall,unended", [(False, 60.0, 1), (True, 15.0, 0)])
+def test_specialist_never_named_again_runs_to_session_end(named_again, wall, unended):
     timed = [(5.0, _ev("agent_spawned", label="ALPHA", run_id="r1"))]
+    if named_again:
+        timed.append((20.0, _ev("workflow_event", run_id="r1")))
     stats = writer_round_stats(timed, 65.0)
-    assert stats["specialist_walls"] == [{"label": "ALPHA", "wall_s": 60.0, "ended": False}]
-    assert stats["specialists_unended"] == 1
+    assert stats["specialist_walls"] == [
+        {"label": "ALPHA", "wall_s": wall, "ended": named_again}
+    ]
+    assert stats["specialists_unended"] == unended
 
 
 # --------------------------------------------------------------------------
@@ -154,14 +163,17 @@ def test_specialist_never_named_again_runs_to_session_end():
 # --------------------------------------------------------------------------
 
 
-def test_progress_record_per_round_and_usage():
-    rec = stream_progress_record(_ev("tool_use", name="write_file", input="abcd"), 7)
-    assert rec == {"round": 7, "tool": "write_file", "bytes": 4}
-    with_usage = stream_progress_record(_ev("turn_usage", input_tokens=10), 1)
-    without = stream_progress_record(_ev("turn_usage"), 1)
-    assert with_usage == {"turn_usage": True, "prompt_tokens": 10}
-    assert without == {"turn_usage": True}
-    assert stream_progress_record(_ev("done"), 1) is None
+@pytest.mark.parametrize(
+    "event,expected",
+    [
+        (_ev("tool_use", name="write_file", input="abcd"), {"round": 7, "tool": "write_file", "bytes": 4}),
+        (_ev("turn_usage", input_tokens=10), {"turn_usage": True, "prompt_tokens": 10}),
+        (_ev("turn_usage"), {"turn_usage": True}),
+        (_ev("done"), None),
+    ],
+)
+def test_progress_record_per_round_and_usage(event, expected):
+    assert stream_progress_record(event, 7) == expected
 
 
 # --------------------------------------------------------------------------
@@ -169,32 +181,35 @@ def test_progress_record_per_round_and_usage():
 # --------------------------------------------------------------------------
 
 
-def test_receipt_from_exec_stream_reads_metadata_and_tool_rounds():
-    lines = [
-        json.dumps(_ev("tool_use", name="write_file", input="x" * 50)),
-        "not json at all",
-        json.dumps(_ev("tool_result", completed_at="t")),
-        json.dumps(_ev("tool_use", name="shell", input={"cmd": "ls"})),
-        json.dumps(_meta()),
-        json.dumps(_ev("done")),
-    ]
+@pytest.mark.parametrize(
+    "tools,first_bytes",
+    [
+        ([("write_file", "x" * 50), ("shell", {"cmd": "ls"})], 50),
+        ([("read_file", "abc")], 3),
+    ],
+)
+def test_receipt_from_exec_stream_reads_metadata_and_tool_rounds(tools, first_bytes):
+    lines = [json.dumps(_ev("tool_use", name=n, input=i)) for n, i in tools]
+    lines[1:1] = ["not json at all", json.dumps(_ev("tool_result", completed_at="t"))]
+    lines += [json.dumps(_meta()), json.dumps(_ev("done"))]
     receipt = _parse_writer_receipt(lines, 0)
     assert receipt.status == "completed"
     assert receipt.termination_reason == "resolved"
     assert (receipt.provider, receipt.model) == ("prov", "mdl")
-    assert [t["name"] for t in receipt.tools] == ["write_file", "shell"]
-    assert receipt.tools[0]["input_bytes"] == 50
+    assert [t["name"] for t in receipt.tools] == [n for n, _ in tools]
+    assert receipt.tools[0]["input_bytes"] == first_bytes
     assert all("input" not in t and "schema" not in t for t in receipt.tools)
 
 
-def test_receipt_from_failed_stream_keeps_error_category():
+@pytest.mark.parametrize("category,code", [("network", 75), ("model", 1)])
+def test_receipt_from_failed_stream_keeps_error_category(category, code):
     lines = [
         json.dumps(_ev("error", error="boom")),
-        json.dumps(_meta(status="failed", error_category="network", error="boom")),
+        json.dumps(_meta(status="failed", error_category=category, error="boom")),
     ]
-    receipt = _parse_writer_receipt(lines, 75)
+    receipt = _parse_writer_receipt(lines, code)
     assert receipt.status == "failed"
-    assert receipt.error_category == "network"
+    assert receipt.error_category == category
     assert receipt.tools == []
 
 
@@ -204,11 +219,12 @@ def test_stream_without_metadata_is_a_named_failure():
         _parse_writer_receipt(lines, 1)
 
 
-def test_legacy_summary_still_parses():
-    lines = ['{"status": "completed", "termination_reason": "resolved", "tools": [{"tool": "write"}]}']
+@pytest.mark.parametrize("tools", [[{"tool": "write"}], [{"tool": "read"}, {"tool": "write"}]])
+def test_legacy_summary_still_parses(tools):
+    lines = [json.dumps({"status": "completed", "termination_reason": "resolved", "tools": tools})]
     receipt = _parse_writer_receipt(lines, 0)
     assert receipt.status == "completed"
-    assert receipt.tools == [{"tool": "write"}]
+    assert receipt.tools == tools
     assert receipt.rounds == {}
 
 
@@ -217,11 +233,13 @@ def test_legacy_summary_still_parses():
 # --------------------------------------------------------------------------
 
 
-def test_readable_tree_counts_files(tmp_path):
-    (tmp_path / "a.py").write_text("x")
-    (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "b.py").write_text("y")
-    assert authored_files_or_none(tmp_path) == 2
+@pytest.mark.parametrize("files,count", [(["a.py", "pkg/b.py"], 2), (["a.py"], 1)])
+def test_readable_tree_counts_files(tmp_path, files, count):
+    for rel in files:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    assert authored_files_or_none(tmp_path) == count
 
 
 def test_walk_that_raises_is_no_sample(monkeypatch, tmp_path):
@@ -291,5 +309,109 @@ def test_run_worker_job_records_rounds(monkeypatch, tmp_path, n_rounds):
     assert all(r["bytes"] == 2 and "elapsed_s" in r for r in logged)
 
 
+@pytest.mark.parametrize(
+    "command,suite_runs",
+    [('python -m pytest -m "not pilot" -q', 1), ("ls -la", 0)],
+)
+def test_run_worker_job_counts_suite_runs(monkeypatch, tmp_path, command, suite_runs):
+    lines = [
+        json.dumps(_ev("tool_use", name="bash", input={"command": command})),
+        json.dumps(_meta()),
+        json.dumps(_ev("done")),
+    ]
+    stdout = "".join(line + "\n" for line in lines)
+    receipt = _run_with_stdout(monkeypatch, tmp_path, stdout)
+    assert receipt.rounds["suite_runs"] == suite_runs
+    assert f"suite_runs={suite_runs}" in rounds_summary_line(receipt.rounds)
+
+
 def test_files_on_disk_field_is_unchanged():
     assert FILES_ON_DISK in WRITER_PROGRESS_FIELDS
+
+
+# --------------------------------------------------------------------------
+# suite_runs: a pytest run outside the targeted set vs one inside it.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ('python -m pytest -m "not pilot" -q', [[]]),
+        ("cd /w && pytest tests/test_a.py::test_x -k foo", [["tests/test_a.py::test_x"]]),
+        ("ls -la && cat app/main.py", []),
+        ("pytest tests && python -m pytest tests/test_b.py", [["tests"], ["tests/test_b.py"]]),
+    ],
+)
+def test_pytest_selections_by_shape(command, expected):
+    assert worker_mod.pytest_selections(command) == expected
+
+
+@pytest.mark.parametrize(
+    "selection,targeted,suite",
+    [
+        ([], ["tests/test_a.py"], True),  # no path: the whole collection
+        (["tests"], ["tests/test_a.py"], True),  # a directory
+        (["tests/test_b.py"], ["tests/test_a.py"], True),  # outside the set
+        (["./tests/test_a.py::test_x"], ["tests/test_a.py"], False),  # inside
+        (["tests/test_b.py"], None, False),  # set unknown: shape only
+    ],
+)
+def test_is_suite_run_against_the_targeted_set(selection, targeted, suite):
+    assert worker_mod.is_suite_run(selection, targeted) is suite
+
+
+@pytest.mark.parametrize(
+    "command,targeted,count",
+    [
+        ('python -m pytest -m "not pilot" -q', ["tests/test_a.py"], 1),
+        ("python -m pytest -q tests/test_a.py", ["tests/test_a.py"], 0),
+    ],
+)
+def test_suite_runs_in_counts_only_non_targeted(command, targeted, count):
+    calls = []
+
+    def _targeted():
+        calls.append(1)
+        return targeted
+
+    event = _ev("tool_use", name="bash", input={"command": command})
+    assert worker_mod.suite_runs_in(event, _targeted) == count
+    # A tool that runs no pytest never computes the set.
+    quiet = _ev("tool_use", name="bash", input={"command": "ls"})
+    assert worker_mod.suite_runs_in(quiet, _targeted) == 0
+    assert len(calls) == 1
+
+
+def _tree(root: Path, touched: str) -> None:
+    from app.factory.build.writer_behaviour import SELF_CHECK_REL
+
+    (root / "app" / "actions").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "tests" / "test_alpha.py").write_text("from app.actions import alpha\n")
+    (root / "tests" / "test_beta.py").write_text("from app.actions import beta\n")
+    for name in ("alpha", "beta"):
+        (root / "app" / "actions" / f"{name}.py").write_text("x = 1\n")
+    stamp = root / SELF_CHECK_REL
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text("# stamp\n")
+    import os
+    import time
+
+    marker = os.path.getmtime(stamp)
+    for name in ("alpha", "beta"):
+        p = root / "app" / "actions" / f"{name}.py"
+        os.utime(p, (time.time(), marker - 10))
+    changed = root / "app" / "actions" / f"{touched}.py"
+    os.utime(changed, (time.time(), marker + 10))
+
+
+@pytest.mark.parametrize("touched", ["alpha", "beta"])
+def test_targeted_tests_now_follows_what_changed(tmp_path, touched):
+    _tree(tmp_path, touched)
+    assert worker_mod.targeted_tests_now(tmp_path) == [f"tests/test_{touched}.py"]
+
+
+def test_suite_runs_rides_the_summary_line():
+    assert "suite_runs=2" in rounds_summary_line({"rounds": 3, "suite_runs": 2})
+    assert "suite_runs=-" in rounds_summary_line({"rounds": 3})
