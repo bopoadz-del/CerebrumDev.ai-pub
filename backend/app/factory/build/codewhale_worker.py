@@ -1606,14 +1606,16 @@ def suite_denied_count(denials: Optional[List[Dict[str, Any]]]) -> Optional[int]
 RSS_SAMPLE_EVERY_S = 5.0
 
 
-def tree_rss_mb(pid: int, proc_root: str = "/proc") -> Optional[float]:
+def tree_rss_mb(pid: Optional[int], proc_root: str = "/proc") -> Optional[float]:
     """Resident memory of ``pid`` and every descendant, in MB, read from
     ``proc_root``; None when the process table cannot be read (not Linux,
-    or the process is gone).
+    or the process is gone) or there is no process id to read it for.
 
     F-S2c: PER_JOB_MB is an ESTIMATE; this is the measurement. One child's
     peak rides its receipt (``peak_rss_mb``) into the ledger, and that number
     decides whether the specialist cap holds."""
+    if isinstance(pid, bool) or not isinstance(pid, int):
+        return None
     root = Path(proc_root)
     parents: Dict[int, int] = {}
     rss_kb: Dict[int, int] = {}
@@ -2308,7 +2310,8 @@ def run_worker_job(
             if now < rss_state["next"]:
                 return
             rss_state["next"] = now + RSS_SAMPLE_EVERY_S
-            sample = tree_rss_mb(proc.pid)
+            # A process handle with no pid is unmeasured, never a crash.
+            sample = tree_rss_mb(getattr(proc, "pid", None))
             if sample is not None and (rss_state["peak"] is None or sample > rss_state["peak"]):
                 rss_state["peak"] = sample
 

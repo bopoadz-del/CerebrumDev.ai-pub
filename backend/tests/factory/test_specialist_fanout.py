@@ -227,6 +227,12 @@ def test_tree_rss_sums_the_process_and_its_descendants(tmp_path, pid, expected):
     assert tree_rss_mb(pid, proc_root=str(tmp_path)) == expected
 
 
+@pytest.mark.parametrize("pid,measured", [(100, True), (None, False), ("100", False), (True, False)])
+def test_tree_rss_needs_an_integer_pid(tmp_path, pid, measured):
+    _proc(tmp_path, 100, 1, 1024)
+    assert (tree_rss_mb(pid, proc_root=str(tmp_path)) is not None) is measured
+
+
 def test_tree_rss_is_none_without_a_process_table(tmp_path):
     assert tree_rss_mb(1, proc_root=str(tmp_path / "absent")) is None
 
