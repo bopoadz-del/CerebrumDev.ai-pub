@@ -47,7 +47,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Optional, Tuple
 
 from app.factory.build.agent_process import agent_popen_kwargs, kill_agent_tree, track_agent
 
@@ -170,6 +170,14 @@ DEFAULT_PROCESS_CAP = 3
 #: than the process cap on purpose -- see WORKER_PROFILES.
 DEFAULT_TENANT_CAP = 1
 DEFAULT_WORKER_TIMEOUT_S = 1800.0
+#: The coding-agent CLI's OWN per-turn wall-clock budget (codewhale 0.9.13:
+#: env ``CODEWHALE_TURN_WALL_CLOCK_SECS`` / config ``[tui].turn_wall_clock_secs``,
+#: default 3600s). The Factory never set it, so a turn the Factory had granted
+#: 5400s stopped itself at the CLI default 3600s ("Per-turn wall-clock budget
+#: exhausted after 3843s (limit: 3600s)", pilot b34dfdc). The env is read once
+#: at CLI start, so the dispatch carries the largest wall the Factory may grant
+#: this pass (ruling F-W2c) and the Factory's own wall stays the binding one.
+CLI_TURN_WALL_ENV = "CODEWHALE_TURN_WALL_CLOCK_SECS"
 #: Idle limit for the PROGRESS watchdog -- a separate clock from the wall. A
 #: live-but-silent writer sits inside one model call that never returns for
 #: the whole wall (09:38Z: one DeepSeek call, 30 min, written=0); the wall
@@ -1138,6 +1146,24 @@ def _fmt_dns_probe(v: Any) -> str:
     return f"error {v.get('error', '?')} ({v.get('elapsed_ms', '?')}ms)"
 
 
+def cli_turn_wall_secs(
+    timeout_s: float, turn_wall_s: Optional[float] = None
+) -> int:
+    """The CLI per-turn budget for one dispatch: never below the Factory's
+    dispatch wall, raised to ``turn_wall_s`` (the largest wall the runner may
+    still grant this pass) when that is larger. Whole seconds, rounded up, so
+    the CLI never ends a turn before the Factory's own wall would."""
+    import math
+
+    bound = float(timeout_s or 0.0)
+    if turn_wall_s is not None:
+        try:
+            bound = max(bound, float(turn_wall_s))
+        except (TypeError, ValueError):
+            pass
+    return max(1, int(math.ceil(bound)))
+
+
 def run_worker_job(
     prompt: str,
     checkout_dir: Path | str,
@@ -1150,6 +1176,7 @@ def run_worker_job(
     live_time_left: Optional[Callable[[], Optional[float]]] = None,
     slot_wait_left: Optional[Callable[[], Optional[float]]] = None,
     on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
+    turn_wall_s: Optional[float] = None,
 ) -> WorkerReceipt:
     """Run one headless CodeWhale exec — non-interactive, JSON summary.
 
@@ -1168,6 +1195,12 @@ def run_worker_job(
     ``session_id`` is this build's own identity, threaded from the runner
     state. It stamps the child environment so a concurrent build cannot
     hand its session id to this one.
+
+    ``turn_wall_s`` (ruling F-W2c): the largest wall the runner may grant
+    this pass (phase-bounded, ceiling-capped). The CLI's own per-turn budget
+    is stamped from it at dispatch (``CLI_TURN_WALL_ENV``, never below the
+    dispatch wall) because the CLI cannot take a raise once running; the two
+    budgets then never disagree and the Factory's wall is the one that binds.
     """
     cli = worker_cli_path()
     # The tenant boundary precedes everything: an unbound job is refused
@@ -1257,11 +1290,13 @@ def run_worker_job(
 
         # E3 part 1: the dispatch line an operator can tail on Render.
         logger.info(
-            "codewhale writer dispatch: cli=%s provider=%s session=%s timeout=%ss",
+            "codewhale writer dispatch: cli=%s provider=%s session=%s timeout=%ss "
+            "cli_turn_wall=%ss",
             cli,
             worker_provider(),
             str(session_id or "")[:12] or "-",
             timeout,
+            cli_turn_wall_secs(timeout, turn_wall_s),
         )
         # E3 part 0: pre-flight probe — a broken binary or a config prompt
         # must fail in seconds, not sit silent for the full worker wall.
@@ -1368,6 +1403,8 @@ def run_worker_job(
         except ConfinementUnavailable as exc:
             raise WorkerError(f"{WORKER_EXEC_FAILED}: {exc}") from exc
         child_env = _child_env(session_id, cli_home)
+        turn_secs = cli_turn_wall_secs(timeout, turn_wall_s)
+        child_env[CLI_TURN_WALL_ENV] = str(turn_secs)
         # Advisor 14:42Z: measure DNS from INSIDE the confinement before the
         # writer CLI starts, so a deterministic resolver failure is attributed
         # (a typed ledger NOTE), not assumed. Telemetry only -- it never
@@ -1716,6 +1753,7 @@ def run_worker_job_with_stall_retry(
     live_time_left: Optional[Callable[[], Optional[float]]] = None,
     slot_wait_left: Optional[Callable[[], Optional[float]]] = None,
     on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
+    turn_wall_s: Optional[float] = None,
 ) -> WorkerReceipt:
     """``run_worker_job`` with the progress watchdog's one-retry loop.
 
@@ -1728,6 +1766,11 @@ def run_worker_job_with_stall_retry(
     """
     for attempt in range(1, WORKER_STALL_RETRIES + 2):
         try:
+            # The turn bound rides only when the runner set one, so a caller
+            # with no bound dispatches exactly as before.
+            extra: Dict[str, Any] = {}
+            if turn_wall_s is not None:
+                extra["turn_wall_s"] = turn_wall_s
             return run_worker_job(
                 prompt,
                 checkout_dir,
@@ -1739,6 +1782,7 @@ def run_worker_job_with_stall_retry(
                 live_time_left=live_time_left,
                 slot_wait_left=slot_wait_left,
                 on_slot_wait=on_slot_wait,
+                **extra,
             )
         except _WorkerStall as stall:
             _emit_worker_stalled(progress, stall, attempt)
@@ -1823,6 +1867,33 @@ def count_authored_files(root: Path) -> int:
     except OSError:
         return total
     return total
+
+
+#: Files the WORKER itself writes at dispatch (the brief pointer target and
+#: the argv audit). Never evidence that the agent produced anything.
+DISPATCH_AUDIT_FILES = frozenset({"docs/writer_prompt.txt", "docs/writer_argv.json"})
+
+
+def agent_file_paths(root: Path) -> FrozenSet[str]:
+    """Relative paths of the files ``count_authored_files`` counts, minus the
+    worker's own dispatch audit files. A pass's new files are the difference
+    of two snapshots taken around it."""
+    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
+    found = set()
+    try:
+        for path in Path(root).rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root)
+            if set(rel.parts) & skip or path.name.startswith("writer_progress"):
+                continue
+            posix = rel.as_posix()
+            if posix in DISPATCH_AUDIT_FILES:
+                continue
+            found.add(posix)
+    except OSError:
+        pass
+    return frozenset(found)
 
 
 def heartbeat_line(elapsed_s: float, files: int, steps_seen: int) -> str:

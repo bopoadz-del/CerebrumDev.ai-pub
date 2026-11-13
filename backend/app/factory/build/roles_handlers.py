@@ -3856,6 +3856,37 @@ def _writer_worker_timeout_s(ctx: RoleContext) -> Optional[float]:
     return max(float(DEFAULT_WORKER_TIMEOUT_S), float(left) - MODEL_CALL_GRACE_S)
 
 
+def _writer_cli_turn_wall_s(ctx: RoleContext) -> Optional[float]:
+    """The CLI's own per-turn budget for this dispatch (ruling F-W2c).
+
+    The runner's ``deadline_box['grant_bound_left']`` reads the largest wall
+    ``_extend_wall`` may still apply to this pass (phase-bounded, ceiling-
+    capped). The CLI reads its turn budget once at start, so the dispatch
+    carries that bound -- the writer phase can always become progress-
+    evidenced -- never the plan wall. ``None`` when the runner set no bound:
+    the worker then keeps its dispatch wall as the turn budget.
+
+    The two ``None`` causes are told apart in the log: no probe set by the
+    runner, versus a probe that raised (named by exception type).
+    """
+    box = ctx.deadline_box or {}
+    reader = box.get("grant_bound_left")
+    if not callable(reader):
+        logger.info("cli_turn_wall: no grant-bound probe; dispatch wall kept")
+        return None
+    try:
+        left = reader()
+    except Exception as exc:  # noqa: BLE001 -- a broken probe keeps the dispatch wall
+        logger.warning(
+            "cli_turn_wall: grant-bound probe failed (%s); dispatch wall kept",
+            type(exc).__name__,
+        )
+        return None
+    if left is None:
+        return None
+    return float(left)
+
+
 def _writer_slot_wait_left(ctx: RoleContext) -> Callable[[], Optional[float]]:
     """Seconds this run may still wait for a build slot: up to its phase-wall
     CEILING (``deadline_box['ceiling_at']``, set by the runner) and never a
@@ -4134,6 +4165,11 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                     source="factory",
                 )
         owned_before = factory_owned.snapshot(Path(dest))
+        # F-W2c: the pass's own new files are told apart from a pass that
+        # wrote nothing, so a turn the CLI ends on its budget is resumable.
+        from app.factory.build.codewhale_worker import agent_file_paths
+
+        files_before = agent_file_paths(Path(dest))
         # Unwritable for the duration of the pass: a write to one fails in
         # the writer's own tool instead of costing the pass afterwards.
         owned_modes = factory_owned.lock(Path(dest))
@@ -4160,6 +4196,10 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                 live_time_left=_writer_worker_live_time_left(ctx),
                 slot_wait_left=_writer_slot_wait_left(ctx),
                 on_slot_wait=note_slot_wait,
+                # F-W2c: the CLI's own per-turn budget is the largest wall
+                # the runner may grant this pass, so it never ends a turn the
+                # Factory would have kept alive.
+                turn_wall_s=_writer_cli_turn_wall_s(ctx),
             )
 
         def _raise_worker_failure(exc: WorkerError) -> None:
@@ -4216,6 +4256,11 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         from app.factory.build import factory_owned as _owned_unlock
 
         _owned_unlock.unlock(Path(dest), owned_modes)
+
+    # F-W2c: what THIS pass put on disk, read the moment the worker returns
+    # -- before the receipt, substrate and converge writes below, which are
+    # the Factory's files, never the writer's.
+    files_written = len(agent_file_paths(Path(dest)) - files_before)
 
     # E2: the session status must reflect the leg that actually ran —
     # write the worker's own receipt where the Floor monitor reads it,
@@ -4463,13 +4508,46 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         if destination is not None and Path(destination) != Path(dest):
             carried_over = agent_written_handler_ids_in_workspace(Path(destination))
     logger.info(
-        "codewhale writer result: status=%s tools=%d authored=%d carried=%d",
+        "codewhale writer result: status=%s tools=%d authored=%d carried=%d "
+        "files_written=%d",
         receipt.status,
         len(receipt.tools),
         len(authored),
         len(carried_over),
+        files_written,
     )
-    if (
+    # F-W2c: a turn that did not complete (the CLI ended it on its own
+    # budget, or was cut) while the pass put files on disk is INTERRUPTED,
+    # not "no output": the files and progress log are committed with the
+    # pass and the build continues -- the gates grade what is there and a
+    # rework pass resumes on it. writer_no_output stays reserved for a pass
+    # that wrote nothing (authored=0 and no files written).
+    interrupted = receipt.status != "completed" and (
+        files_written > 0 or bool(authored)
+    )
+    if interrupted:
+        detail = (
+            "writer_interrupted: "
+            f"status={receipt.status!r} "
+            f"reason={receipt.termination_reason or '-'} "
+            f"files_written={files_written} authored={len(authored)} "
+            f"carried={len(carried_over)} -- files kept, the pass continues"
+        )
+        ctx.state["writer_interrupted"] = {
+            "status": receipt.status,
+            "termination_reason": receipt.termination_reason,
+            "files_written": files_written,
+            "authored": len(authored),
+            "carried": len(carried_over),
+        }
+        ctx.note(
+            detail,
+            stage="writer",
+            source="factory",
+            reason="writer_interrupted",
+            files_written=files_written,
+        )
+    elif (
         receipt.status != "completed"
         or not receipt.tools
         or not (authored or carried_over)
