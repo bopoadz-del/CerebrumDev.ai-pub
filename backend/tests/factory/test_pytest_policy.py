@@ -183,6 +183,10 @@ def test_run_worker_job_reports_this_pass_refusals(monkeypatch, tmp_path, refusa
 
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/nonexistent/codewhale")
+    # The in-confinement DNS probe spawns its own child through the same
+    # (patched) subprocess layer on hosts where confinement is available;
+    # stub it so only the writer spawn is observed, on every platform.
+    monkeypatch.setattr(worker_mod, "_dns_probe", lambda *a, **k: {})
     binding = TenantStoreBinding(
         tenant_key="key_fs2", store_dir=Path("/tmp/tenant-fs2"), bound_at=0.0
     )
@@ -229,6 +233,10 @@ def test_unwritable_policy_fails_the_dispatch_named(monkeypatch, tmp_path, writa
     monkeypatch.setattr(pytest_policy, "stamp_policy", _stamp)
     monkeypatch.setattr(subprocess, "Popen", _popen)
     monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/nonexistent/codewhale")
+    # The in-confinement DNS probe spawns its own child through the same
+    # (patched) subprocess layer on hosts where confinement is available;
+    # stub it so only the writer spawn is observed, on every platform.
+    monkeypatch.setattr(worker_mod, "_dns_probe", lambda *a, **k: {})
     binding = TenantStoreBinding(
         tenant_key="key_fs2", store_dir=Path("/tmp/tenant-fs2"), bound_at=0.0
     )
