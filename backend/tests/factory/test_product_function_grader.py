@@ -94,6 +94,7 @@ SPECS = [
         {"name": "slot", "type": "str", "format": "time"},
         {"name": "ref", "type": "uuid"},
         {"name": "size", "type": "int", "min": 3, "max": 3},
+        {"name": "share", "type": "float", "min": 0.2, "max": 0.8},
     ]},
 ]
 

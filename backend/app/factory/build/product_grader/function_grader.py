@@ -224,8 +224,7 @@ def contract_inputs(spec: Any) -> Optional[List[Dict[str, Any]]]:
 
     declared = spec.get("fields") if isinstance(spec, Mapping) else None
     fields = [f for f in declared or [] if isinstance(f, dict) and f.get("name")]
-    if not fields:
-        return None
+    # No declared field: both instances are {} and compare equal -> None.
     first = _sample_payload({"fields": fields})
     second = {
         str(f["name"]): _other_value({"type": "str", **f}, first[str(f["name"])])
