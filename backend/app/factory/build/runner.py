@@ -2308,8 +2308,21 @@ class RoleRunner:
         self._emit_inspect(decided, reason=reason)
         return decided
 
-    def _extend_wall(self, new_wall: float) -> None:
+    def _extend_wall(
+        self, new_wall: float, *, progress_evidenced: bool = False
+    ) -> float:
         """Lengthen the build wall and the live role deadline. Never shrink.
+
+        Returns the wall it actually APPLIED (the old wall when nothing
+        moved), so a caller never reports a wall that did not happen.
+
+        ``progress_evidenced`` (owner ruling F-W2, 2026-11-12): a grant for a
+        coding-agent CLI that shows progress since the last inspect (files on
+        disk / steps reported, rising -- the counter the Floor prints) is
+        evidence beating plan. It is bounded by the phase budget and the
+        hard ceiling only, not by the per-pass plan wall. A grant WITHOUT
+        progress evidence stays clamped to the plan wall: a plan must not
+        keep a dead CLI alive.
 
         Clamped to ``budget.hard_ceiling_s`` HERE rather than at each caller:
         this is the only writer of the deadline, and two of its callers pass
@@ -2333,7 +2346,14 @@ class RoleRunner:
             # via the caller's requested wall -- so no caller can grow the
             # wall past ``plan_wall * passes``.
             passes = int(getattr(self, "_plan_wall_passes", 1) or 1)
-            new_wall = min(new_wall, plan_wall * passes)
+            bound = plan_wall * passes
+            if progress_evidenced:
+                # Evidence beats plan: the phase budget bounds this grant
+                # (never below the plan bound); ``capped`` above already
+                # applied the ceiling. An unbounded phase leaves the ceiling.
+                phase_cap = float(self.budget.phase_wall_clock_s or 0.0)
+                bound = max(bound, phase_cap) if phase_cap > 0 else new_wall
+            new_wall = min(new_wall, bound)
         target = None
         if self._run_started is not None and new_wall > 0:
             target = float(self._run_started) + float(new_wall)
@@ -2375,7 +2395,7 @@ class RoleRunner:
                     requested,
                     float(self.budget.hard_ceiling_s),
                 )
-            return
+            return old_wall
 
         extra = ""
         if requested > new_wall:
@@ -2389,6 +2409,7 @@ class RoleRunner:
             extra,
         )
         self._record_lifted_model_call_deadline()
+        return new_wall
 
     def _record_lifted_model_call_deadline(self) -> None:
         """Write the lifted deadline onto the open coding-agent model call.
@@ -2532,16 +2553,38 @@ class RoleRunner:
         )
         new_wall = decided.get("next_wall_s")
         if new_wall:
-            self._extend_wall(float(new_wall))
+            from app.factory.build.budget_inspect import cli_progress_evidenced
+
+            before = float(self.budget.wall_clock_s or 0.0)
+            applied = self._extend_wall(
+                float(new_wall),
+                progress_evidenced=bool(
+                    decided.get("cli_in_flight") and cli_progress_evidenced(decided)
+                ),
+            )
             if decided.get("cli_in_flight"):
-                self._emit_cli_watchdog_extend(decided)
+                self._emit_cli_watchdog_extend(
+                    decided, applied_wall_s=applied, before_wall_s=before
+                )
         elif decided.get("decision") == "hard_stop":
             self._stage_halt = decided
             self.state["stage_halt"] = decided
         return decided
 
-    def _emit_cli_watchdog_extend(self, decided: Mapping[str, Any]) -> None:
-        """Keep Floor Last:/watchdog aligned with the bumped CLI wall."""
+    def _emit_cli_watchdog_extend(
+        self,
+        decided: Mapping[str, Any],
+        *,
+        applied_wall_s: float,
+        before_wall_s: float,
+    ) -> None:
+        """Keep Floor Last:/watchdog aligned with the wall ACTUALLY applied.
+
+        The ledger never prints a wall that did not happen: it reports the
+        value ``_extend_wall`` applied, or that the plan wall denied the
+        grant (live 2026-11-12, 72ebc93: "staged wall extended to 2700s"
+        while the clamp kept 1800s and the writer died at 1800s).
+        """
         from app.factory.build.coder_session import cli_watchdog_remaining_s
 
         boxed = self._deadline_box.get("at")
@@ -2556,23 +2599,32 @@ class RoleRunner:
         deadline_s = cli_watchdog_remaining_s(
             leftover_s=left, elapsed_s=elapsed
         )
+        applied = float(applied_wall_s)
+        moved = applied > float(before_wall_s) + 1e-9
         payload: Dict[str, Any] = {
             "stage": "dispatch",
             "source": "coder CLI",
             "model_call": True,
+            # Marks this NOTE as the SAME open call, not a new one
+            # (``_cli_flight``); ``wall_denied`` says whether it moved.
             "cli_wall_extended": True,
+            "wall_requested_s": float(decided.get("next_wall_s") or 0.0),
+            "wall_applied_s": applied,
         }
         if deadline_s is not None:
             payload["deadline_s"] = round(deadline_s, 1)
-        self.ledger.append(
-            EventKind.NOTE,
-            detail=(
+        if moved:
+            detail = (
                 "FACTORY_CODE_CLI still in-flight — staged wall extended "
-                f"to {decided.get('next_wall_s'):g}s; model call still "
-                "inside watchdog"
-            ),
-            payload=payload,
-        )
+                f"to {applied:g}s; model call still inside watchdog"
+            )
+        else:
+            payload["wall_denied"] = True
+            detail = (
+                "FACTORY_CODE_CLI still in-flight — staged wall extension "
+                f"denied by plan wall (applied {applied:g}s)"
+            )
+        self.ledger.append(EventKind.NOTE, detail=detail, payload=payload)
 
     def _grant_pilot_budget(self) -> None:
         """Keep rework room for the pilot cycle. Do not jump the wall to 2h.
