@@ -171,12 +171,16 @@ def test_a_second_tenants_job_is_never_starved_by_a_child(process_cap, prefill):
     assert _wait_until(lambda: "A-child" in got)
 
 
-def test_a_child_with_no_held_writer_slot_is_refused_by_name():
+@pytest.mark.parametrize("other_holder", [None, "B"])
+def test_a_child_with_no_held_writer_slot_is_refused_by_name(other_holder):
+    """Refused whether the box is idle or another tenant holds a slot."""
     counter = InProcessSlotCounter()
+    if other_holder:
+        counter.acquire(other_holder, process_cap=5, tenant_cap=1)
     with pytest.raises(WorkerError) as exc:
         counter.acquire_child("A", process_cap=5, child_cap=3, time_left=_within())
     assert SPECIALIST_WITHOUT_PARENT in str(exc.value)
-    assert counter.snapshot()["total"] == 0
+    assert counter.snapshot()["total"] == (1 if other_holder else 0)
 
 
 def test_a_child_waiting_past_the_ceiling_stops_with_slot_wait_exhausted():
