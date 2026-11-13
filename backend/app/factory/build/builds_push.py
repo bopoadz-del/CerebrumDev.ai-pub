@@ -140,6 +140,12 @@ def is_exported(rel: Path) -> bool:
         return False
     if Path(rel).as_posix() in FACTORY_INTERNAL_PATHS:
         return False
+    # F-S2a-2: the writer pass's pytest policy stamp (removed when the pass
+    # ends; never shipped even if a crash left it behind).
+    from app.factory.build.pytest_policy import POLICY_DIR_REL
+
+    if parts[: len(POLICY_DIR_REL.split("/"))] == tuple(POLICY_DIR_REL.split("/")):
+        return False
     return Path(rel).suffix not in EXPORT_SKIP_SUFFIXES
 
 

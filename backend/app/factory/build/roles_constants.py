@@ -925,6 +925,12 @@ def _with_refusal_log(text: str) -> str:
 
 _CONFTEST = _with_refusal_log(_CONFTEST)
 
+# F-S2a-2: the writer's pytest policy loads from this bootstrap, not from an
+# env the writer CLI's shell strips. A no-op outside a writer pass.
+from app.factory.build.pytest_policy import CONFTEST_LOADER as _POLICY_LOADER  # noqa: E402
+
+_CONFTEST = _CONFTEST.rstrip("\n") + _POLICY_LOADER
+
 #: Where TESTER writes the Factory's test bootstrap: the rootdir conftest,
 #: which pytest loads BEFORE ``tests/conftest.py``. Never ``tests/conftest.py``
 #: -- that is the product's own file (the names its tests import live there),

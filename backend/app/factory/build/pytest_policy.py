@@ -3,17 +3,28 @@
 The writer prompt already says "run only the targeted tests"; live passes
 still spent their wall on full-suite runs (F-S1 ``suite_runs=``). A prompt
 line is not a mechanism. This module stamps a pytest plugin into the
-writer's CLI home and loads it into every pytest the writer's shell starts
-(``PYTEST_ADDOPTS=-p <plugin>`` on the writer's child environment only --
-the Factory's own gate and TESTER runs never carry it).
+workspace (``POLICY_DIR_REL``) for the duration of ONE writer pass.
+
+F-S2a-2: the first version loaded the plugin through the writer's env
+(``PYTEST_ADDOPTS=-p``, ``PYTHONPATH`` and a root variable). The writer CLI's
+shell tool rebuilds its children's environment from a fixed allowlist
+(PATH, HOME, locale, proxies ...), so all three were dropped and the plugin
+never loaded: pilot 43469565180 read ``suite_runs=20 suite_denied=0``. No env
+is relied on now. The Factory's rootdir test bootstrap (``conftest.py``,
+Factory-owned, which pytest loads for every run under the workspace) carries
+:data:`CONFTEST_LOADER`, which loads the plugin from the stamped file when
+it exists. The Factory removes the stamp when the pass ends, so its own gate,
+TESTER and after-pass suite runs never carry the policy.
 
 The plugin judges each invocation with the SAME rule F-S1 counts with
 (``is_suite_run`` against the self-check's targeted set at that moment,
 both rendered from their own source, never a copy that can drift). A run
 that is not the targeted set is refused with a usage error that names the
 targeted set, and the refusal is appended to ``denials.jsonl`` beside the
-plugin; the worker reads that file after the pass and reports
-``suite_denied=`` on the receipt. A refusal is never silent.
+plugin; every invocation the plugin judged is appended to ``seen.jsonl``.
+The worker reads both after the pass: ``suite_denied=`` and ``policy=`` on
+the receipt. A refusal is never silent, and neither is a policy that did not
+load (``policy=unbound``: pytest ran and the plugin saw none of it).
 """
 
 from __future__ import annotations
@@ -22,16 +33,44 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-#: Directory (under the writer's CLI home) the plugin is stamped into.
-POLICY_DIR_NAME = "pytest_policy"
+#: Workspace-relative directory the plugin is stamped into for one pass.
+#: Factory-internal: removed when the pass ends and never exported.
+POLICY_DIR_REL = ".factory/pytest_policy"
 #: Module name ``-p`` loads; the file is ``<name>.py`` in the policy dir.
 PLUGIN_MODULE = "factory_pytest_policy"
 #: The Factory-rendered self-check source the plugin reads its targeted set from.
 SELF_CHECK_COPY = "factory_self_check_source.py"
 #: One JSON line per refused invocation.
 DENIALS_FILE = "denials.jsonl"
-#: The workspace root the targeted set is computed from.
-ROOT_ENV = "FACTORY_PYTEST_POLICY_ROOT"
+#: One JSON line per invocation the plugin judged (refused or not).
+SEEN_FILE = "seen.jsonl"
+#: The marker line the root bootstrap's loader carries.
+LOADER_MARKER = "# factory pytest policy loader (F-S2a-2)"
+
+#: Appended to the Factory's rootdir bootstrap (roles_constants._CONFTEST).
+#: A no-op unless the plugin file is stamped, i.e. only during a writer pass.
+#: It reads no environment variable: the writer CLI's shell strips them.
+CONFTEST_LOADER = (
+    "\n\n"
+    + LOADER_MARKER
+    + """
+# The writer's pytest runs are judged by the Factory's policy while a writer
+# pass is in progress (the plugin file exists only then). The Factory's own
+# gate and TESTER runs happen after the stamp is removed: this is a no-op.
+_FACTORY_POLICY_PLUGIN = Path(__file__).resolve().parent.joinpath(
+    *{dir_parts!r}, {module!r} + ".py"
+)
+if _FACTORY_POLICY_PLUGIN.is_file():
+    import importlib.util as _factory_policy_util
+
+    _factory_policy_spec = _factory_policy_util.spec_from_file_location(
+        {module!r}, _FACTORY_POLICY_PLUGIN
+    )
+    _factory_policy = _factory_policy_util.module_from_spec(_factory_policy_spec)
+    _factory_policy_spec.loader.exec_module(_factory_policy)
+    pytest_cmdline_main = _factory_policy.pytest_cmdline_main
+""".format(dir_parts=tuple(POLICY_DIR_REL.split("/")), module=PLUGIN_MODULE)
+)
 
 _PLUGIN_HEADER = '''"""Factory pytest policy -- Factory-owned, re-stamped on every writer pass.
 
@@ -51,7 +90,9 @@ _HERE = Path(__file__).resolve().parent
 SELF_CHECK_REL = {self_check!r}
 SELF_CHECK_COPY = {copy!r}
 DENIALS_FILE = {denials!r}
-ROOT_ENV = {root_env!r}
+SEEN_FILE = {seen!r}
+#: The workspace root: this file sits at <root>/{policy_dir}/.
+ROOT = str(_HERE.parents[{depth}])
 '''
 
 _PLUGIN_BODY = '''
@@ -90,9 +131,9 @@ def _selection(config, root):
     return out
 
 
-def _record(entry):
+def _record(name, entry):
     try:
-        with open(_HERE / DENIALS_FILE, "a", encoding="utf-8") as fh:
+        with open(_HERE / name, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, sort_keys=True) + "\\n")
     except OSError:
         pass
@@ -100,22 +141,21 @@ def _record(entry):
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_cmdline_main(config):
-    root = os.environ.get(ROOT_ENV)
-    if not root:
-        return None
     if config.getoption("version", False) or config.getoption("help", False):
         return None
+    root = ROOT
     selection = _selection(config, root)
     targeted = _targeted(root)
-    if not is_suite_run(selection, targeted):
+    refused = is_suite_run(selection, targeted)
+    entry = {
+        "t": time.time(),
+        "selection": selection,
+        "targeted": targeted,
+    }
+    _record(SEEN_FILE, dict(entry, refused=refused))
+    if not refused:
         return None
-    _record(
-        {
-            "t": time.time(),
-            "selection": selection,
-            "targeted": targeted,
-        }
-    )
+    _record(DENIALS_FILE, entry)
     named = ", ".join(targeted or []) or "none (no changed source has a test yet)"
     raise pytest.UsageError(
         "factory policy: this pytest run is not the targeted set and is "
@@ -156,7 +196,9 @@ def render_plugin() -> str:
             self_check=SELF_CHECK_REL,
             copy=SELF_CHECK_COPY,
             denials=DENIALS_FILE,
-            root_env=ROOT_ENV,
+            seen=SEEN_FILE,
+            policy_dir=POLICY_DIR_REL,
+            depth=len(POLICY_DIR_REL.split("/")) - 1,
         )
         + _render_rule()
         + "\n"
@@ -164,30 +206,51 @@ def render_plugin() -> str:
     )
 
 
-def stamp_policy(cli_home: Path | str, root: Path | str) -> Dict[str, str]:
-    """Stamp the plugin for one writer pass; return the child-env entries.
+def policy_dir(root: Path | str) -> Path:
+    """Where one pass's plugin and logs live in the workspace."""
+    return Path(root).joinpath(*POLICY_DIR_REL.split("/"))
 
-    A fresh denials file per pass: the receipt counts this pass's refusals.
+
+def stamp_policy(root: Path | str) -> Path:
+    """Stamp the plugin into the workspace for one writer pass; return its dir.
+
+    Fresh denial and seen logs per pass: the receipt counts this pass only.
+    Raises OSError when the directory cannot be written (the worker names it).
     """
     from app.factory.build.writer_behaviour import render_self_check
 
-    policy_dir = Path(cli_home) / POLICY_DIR_NAME
-    policy_dir.mkdir(parents=True, exist_ok=True)
-    (policy_dir / f"{PLUGIN_MODULE}.py").write_text(render_plugin(), encoding="utf-8")
-    (policy_dir / SELF_CHECK_COPY).write_text(render_self_check(), encoding="utf-8")
-    (policy_dir / DENIALS_FILE).write_text("", encoding="utf-8")
-    return {
-        "PYTHONPATH": str(policy_dir),
-        "PYTEST_ADDOPTS": f"-p {PLUGIN_MODULE}",
-        ROOT_ENV: str(Path(root)),
-    }
+    target = policy_dir(root)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / f"{PLUGIN_MODULE}.py").write_text(render_plugin(), encoding="utf-8")
+    (target / SELF_CHECK_COPY).write_text(render_self_check(), encoding="utf-8")
+    (target / DENIALS_FILE).write_text("", encoding="utf-8")
+    (target / SEEN_FILE).write_text("", encoding="utf-8")
+    return target
 
 
-def read_denials(cli_home: Path | str) -> Optional[List[Dict[str, Any]]]:
-    """This pass's refused invocations; None when the file cannot be read."""
-    path = Path(cli_home) / POLICY_DIR_NAME / DENIALS_FILE
+def remove_policy(root: Path | str) -> None:
+    """Drop the stamp when the pass ends: the Factory's own runs never carry it."""
+    import shutil
+
+    shutil.rmtree(policy_dir(root), ignore_errors=True)
+
+
+def loader_present(root: Path | str) -> Optional[bool]:
+    """Whether the rootdir bootstrap loads the policy; None when it is absent."""
+    from app.factory.build.roles_constants import CONFTEST_REL
+
     try:
-        text = path.read_text(encoding="utf-8")
+        text = (Path(root) / CONFTEST_REL).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return False
+    return LOADER_MARKER in text
+
+
+def _read_log(root: Path | str, name: str) -> Optional[List[Dict[str, Any]]]:
+    try:
+        text = (policy_dir(root) / name).read_text(encoding="utf-8")
     except OSError:
         return None
     out: List[Dict[str, Any]] = []
@@ -200,6 +263,34 @@ def read_denials(cli_home: Path | str) -> Optional[List[Dict[str, Any]]]:
             entry = {"unparsed": line[:200]}
         out.append(entry if isinstance(entry, dict) else {"unparsed": line[:200]})
     return out
+
+
+def read_denials(root: Path | str) -> Optional[List[Dict[str, Any]]]:
+    """This pass's refused invocations; None when the file cannot be read."""
+    return _read_log(root, DENIALS_FILE)
+
+
+def read_seen(root: Path | str) -> Optional[List[Dict[str, Any]]]:
+    """Every invocation the plugin judged this pass; None when unreadable."""
+    return _read_log(root, SEEN_FILE)
+
+
+POLICY_BOUND = "bound"
+POLICY_UNBOUND = "unbound"
+POLICY_IDLE = "idle"
+
+
+def policy_binding(
+    pytest_runs: int, seen: Optional[List[Dict[str, Any]]]
+) -> Optional[str]:
+    """``bound`` when the plugin judged a run; ``unbound`` when the writer ran
+    pytest and the plugin saw none of it; ``idle`` when no pytest ran; None
+    (printed ``-``) when the seen log could not be read."""
+    if seen is None:
+        return None
+    if seen:
+        return POLICY_BOUND
+    return POLICY_UNBOUND if pytest_runs > 0 else POLICY_IDLE
 
 
 #: Findings kept on the ledger record; the full list stays with the gate.

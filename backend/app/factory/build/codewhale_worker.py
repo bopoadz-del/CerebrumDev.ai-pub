@@ -1579,6 +1579,13 @@ def targeted_tests_now(root: Path) -> Optional[List[str]]:
         return None
 
 
+def pytest_runs_in(event: Dict[str, Any]) -> int:
+    """How many pytest invocations one tool_use starts, targeted or not."""
+    if event.get("type") != "tool_use":
+        return 0
+    return len(pytest_selections(_command_text(event)))
+
+
 def suite_runs_in(
     event: Dict[str, Any], targeted_for: Any
 ) -> int:
@@ -1660,6 +1667,7 @@ def rounds_summary_line(stats: Dict[str, Any]) -> str:
         "max_concurrent",
         "suite_runs",
         "suite_denied",
+        "policy",
     )
     parts = [f"{k}={stats[k] if stats.get(k) is not None else '-'}" for k in keys]
     # F-S2c: the child's measured peak, only when one was read.
@@ -2039,18 +2047,36 @@ def run_worker_job(
         child_env = _child_env(session_id, cli_home)
         turn_secs = cli_turn_wall_secs(timeout, turn_wall_s)
         child_env[CLI_TURN_WALL_ENV] = str(turn_secs)
-        # F-S2a: the pytest tool policy rides the WRITER's env only (the
-        # Factory's gate and TESTER runs never carry it). Stamped per pass;
-        # an unwritable policy dir fails the dispatch like an unwritable
-        # brief -- a writer without the policy is not the writer ordered.
-        from app.factory.build.pytest_policy import read_denials, stamp_policy
+        # F-S2a: the pytest tool policy binds the WRITER's pytest runs only
+        # (the Factory's gate and TESTER runs never carry it). F-S2a-2: it is
+        # loaded by the Factory's rootdir bootstrap from a file stamped into
+        # the workspace for this pass -- never through the writer's env,
+        # which the writer CLI's shell tool rebuilds from its own allowlist.
+        # An unwritable stamp, or a bootstrap present without the loader,
+        # fails the dispatch by name: a writer without the policy is not the
+        # writer ordered. The stamp is removed when the pass ends.
+        from app.factory.build.pytest_policy import (
+            loader_present,
+            policy_binding,
+            read_denials,
+            read_seen,
+            remove_policy,
+            stamp_policy,
+        )
 
+        if loader_present(cwd) is False:
+            raise WorkerError(
+                "worker_policy_unbound: the rootdir test bootstrap does not "
+                "load the pytest policy"
+            )
         try:
-            child_env.update(stamp_policy(cli_home, cwd))
+            stamp_policy(cwd)
         except OSError as exc:
+            remove_policy(cwd)
             raise WorkerError(
                 f"worker_policy_unwritable: could not stamp the pytest policy: {exc}"
             ) from exc
+        policy_logs: Dict[str, Any] = {"denials": None, "seen": None}
         # Advisor 14:42Z: measure DNS from INSIDE the confinement before the
         # writer CLI starts, so a deterministic resolver failure is attributed
         # (a typed ledger NOTE), not assumed. Telemetry only -- it never
@@ -2088,6 +2114,7 @@ def run_worker_job(
                 **agent_popen_kwargs(),
             )
         except OSError as exc:
+            remove_policy(cwd)
             raise WorkerError(
                 f"{WORKER_EXEC_FAILED}: could not start {cli}: {exc}"
             ) from exc
@@ -2188,6 +2215,7 @@ def run_worker_job(
             "rounds": 0,
             "timed": [],
             "suite_runs": 0,
+            "pytest_runs": 0,
         }
 
         def _log_stream_events() -> None:
@@ -2207,6 +2235,7 @@ def run_worker_job(
                     stream_state["rounds"] += 1
                     # F-S1: a pytest run that is not the targeted set, read
                     # off the tool stream with the set computed NOW.
+                    stream_state["pytest_runs"] += pytest_runs_in(event)
                     suites = suite_runs_in(event, lambda: targeted_tests_now(cwd))
                     if suites:
                         stream_state["suite_runs"] += suites
@@ -2409,6 +2438,10 @@ def run_worker_job(
             _pump_prompt_progress()
             _log_stream_events()
             session_end_t = time.monotonic()
+            # The pass is over on every path through here: read this pass's
+            # policy logs, then drop the stamp so no Factory run carries it.
+            policy_logs = {"denials": read_denials(cwd), "seen": read_seen(cwd)}
+            remove_policy(cwd)
             # The subprocess is over on every path through here (returned,
             # bad exit, or killed at the wall): close the model call NOW,
             # before the post-loop raises, so the Floor never ages a
@@ -2431,7 +2464,10 @@ def run_worker_job(
                 rounds={
                     **writer_round_stats(stream_state["timed"], session_end_t),
                     "suite_runs": stream_state["suite_runs"],
-                    "suite_denied": suite_denied_count(read_denials(cli_home)),
+                    "suite_denied": suite_denied_count(policy_logs["denials"]),
+                    "policy": policy_binding(
+                        stream_state["pytest_runs"], policy_logs["seen"]
+                    ),
                 },
             )
         if rss_state["peak"] is not None:

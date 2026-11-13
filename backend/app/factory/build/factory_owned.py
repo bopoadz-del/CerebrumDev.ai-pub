@@ -186,13 +186,19 @@ def prestamp_late_files(root: Path | str, ctx: Any = None) -> List[str]:
     Live cycle 7 (a3e1fd7): smoke A, fintech and vineyard writers found
     conftest.py and docs/provenance/provenance.json absent, created them for
     their own self-check, were restored and sent back, created them again,
-    and stopped on the WRITER gate budget."""
+    and stopped on the WRITER gate budget. The bootstrap is also re-rendered
+    when it lacks the pytest policy loader (F-S2a-2)."""
     from app.factory.build.roles_constants import CONFTEST_REL
 
     base = Path(root)
     changed: List[str] = []
     bootstrap = base / CONFTEST_REL
-    if not bootstrap.exists():
+    # F-S2a-2: a bootstrap that predates the pytest policy loader (a resumed
+    # build's checkpoint) is the Factory's own file: re-rendered before the
+    # snapshot, so the writer's pytest runs are judged.
+    from app.factory.build.pytest_policy import loader_present
+
+    if not loader_present(base):
         from app.factory.build.roles_handlers import _CONFTEST
 
         bootstrap.write_text(_CONFTEST, encoding="utf-8")
