@@ -177,6 +177,46 @@ def _failure_keys(verdict: Any, exclude: Sequence[str] = ()) -> List[str]:
 REWORK_TARGET = BuildRole.WRITER
 
 
+def rework_seed_paths(root: Path, sealed: Sequence[str] = SEALED_AFTER_CLONER) -> List[str]:
+    """F-R1: the committed product files a WRITER rework round is seeded with.
+
+    Derived from the committed tree itself: every file that ships
+    (``builds_push.is_exported`` -- so no data/, caches, bytecode, ledger or
+    Factory-internal record), minus the Factory-owned paths and the Store
+    gate, minus vendor (the globs sealed after CLONER, CLONER's lock and
+    every path that lock vendored). Top-level writer files (alembic/,
+    alembic.ini, requirements*.txt, ...) are seeded like nested ones -- the
+    old app/docs/tests/scripts list dropped them and the writer re-made
+    them. Sorted POSIX paths."""
+    from app.factory.build.authority import FACTORY_RESIDUE, _matches_lane
+    from app.factory.build.builds_push import is_exported, is_gate_owned
+    from app.factory.build.factory_owned import factory_owned_paths
+    from app.factory.build.factory_receipt import _vendored_paths
+    from app.factory.build.image_sufficiency import LOCKFILE
+
+    root = Path(root)
+    owned = set(factory_owned_paths())
+    vendored = tuple(v.rstrip("/") for v in (*_vendored_paths(root), LOCKFILE) if v)
+    out: List[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root)
+        posix = rel.as_posix()
+        if not is_exported(rel):
+            continue  # a build artifact or Factory-internal record
+        if posix in owned or is_gate_owned(posix):
+            continue
+        if rel.name in FACTORY_RESIDUE or posix in FACTORY_RESIDUE:
+            continue
+        if any(_matches_lane(rel, glob) for glob in sealed):
+            continue
+        if any(posix == v or posix.startswith(v + "/") for v in vendored):
+            continue
+        out.append(posix)
+    return sorted(out)
+
+
 def runner_enabled() -> bool:
     """The runner is opt-in. The template path stays the default until cutover."""
     return os.getenv(RUNNER_FLAG_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -862,32 +902,18 @@ class RoleRunner:
         return self._writer_committed_before()
 
     def _seed_rework_staging(self, staging: Path) -> int:
-        """Copy the committed product's writer-authored areas into the fresh
-        staging tree so a rework round patches in place. Only the dirs the
-        WRITER authors are seeded (app/docs/tests/scripts); vendor, the
-        ledger and build artifacts are not. Factory-owned paths are then
-        removed from the seed so prestamp re-renders them fresh and the
-        writer-touched-factory-file guard compares against a clean stamp.
+        """Copy the committed product's writer-authored files into the fresh
+        staging tree so a rework round patches in place. The set is derived
+        from the committed tree (``rework_seed_paths``), never a dir list:
+        every file except vendor, Factory-owned paths and build artifacts.
+        Factory-owned paths stay out so prestamp re-renders them fresh and
+        the writer-touched-factory-file guard compares against a clean stamp.
         Returns the count of seeded files kept."""
-        from app.factory.build import factory_owned
-
         dest = self.workspace
-        seed_dirs = ("app", "docs", "tests", "scripts")
-        for top in seed_dirs:
-            base = dest / top
-            if not base.is_dir():
-                continue
-            for src in base.rglob("*"):
-                if not src.is_file():
-                    continue
-                rel = src.relative_to(dest).as_posix()
-                out = staging / rel
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_bytes(src.read_bytes())
-        for rel in factory_owned.factory_owned_paths():
-            p = staging / rel
-            if p.is_file():
-                p.unlink()
+        for rel in rework_seed_paths(dest):
+            out = staging / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes((dest / rel).read_bytes())
         return sum(1 for p in staging.rglob("*") if p.is_file())
 
     def _writer_can_resume(self, staging: Path) -> bool:
