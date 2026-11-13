@@ -261,3 +261,59 @@ def test_stage_inspect_grant_books_wall_applied_s(tmp_path, monkeypatch, cli_in_
     assert keyed[0].payload["wall_requested_s"] == 2700.0
     assert keyed[0].payload["wall_applied_s"] == float(runner.budget.wall_clock_s)
 
+
+
+# -- the stall-retry wrapper forwards the turn bound only when one is set ----
+
+
+@pytest.mark.parametrize("turn_wall_s", [5400.0, None])
+def test_stall_retry_forwards_the_turn_bound_only_when_set(
+    tmp_path, monkeypatch, turn_wall_s
+):
+    seen = {}
+
+    def _fake_run(prompt, checkout_dir, **kw):
+        seen.update(kw)
+        return "receipt"
+
+    monkeypatch.setattr(codewhale_worker, "run_worker_job", _fake_run)
+    got = codewhale_worker.run_worker_job_with_stall_retry(
+        "p", tmp_path, turn_wall_s=turn_wall_s
+    )
+    assert got == "receipt"
+    if turn_wall_s is None:
+        assert "turn_wall_s" not in seen
+    else:
+        assert seen["turn_wall_s"] == turn_wall_s
+
+
+# -- no grant bound before the run starts -------------------------------------
+
+
+@pytest.mark.parametrize("started,expected", [(None, None), (0.0, 5400.0)])
+def test_grantable_wall_left_is_none_before_the_run_starts(
+    tmp_path, started, expected
+):
+    runner, _clock = _runner(tmp_path, plan=STAGE_1_S, phase=5400.0)
+    runner._run_started = started
+    assert runner._grantable_wall_left() == expected
+
+
+# -- the applied-wall NOTE marks a grant that moved nothing as denied --------
+
+
+@pytest.mark.parametrize(
+    "applied,before,denied", [(1800.0, 1800.0, True), (5400.0, 1800.0, False)]
+)
+def test_wall_applied_note_marks_a_denied_grant(tmp_path, applied, before, denied):
+    runner, _clock = _runner(tmp_path, plan=STAGE_1_S, phase=5400.0)
+    runner._emit_wall_applied(
+        {"next_wall_s": 5400.0}, applied_wall_s=applied, before_wall_s=before
+    )
+    keyed = [
+        e for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and "wall_applied_s" in (e.payload or {})
+    ]
+    assert len(keyed) == 1
+    assert keyed[0].payload["wall_applied_s"] == applied
+    assert bool(keyed[0].payload.get("wall_denied", False)) is denied
