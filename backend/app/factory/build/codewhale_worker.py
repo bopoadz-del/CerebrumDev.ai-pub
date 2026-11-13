@@ -122,6 +122,9 @@ WORKER_PROFILE_UNKNOWN = "worker_profile_unknown"
 #: Phase 1's named refusal, mirrored here so the builder's isolation
 #: boundary uses the same reason string as the runtime seam.
 NO_AUTHENTICATED_TENANT = "no_authenticated_tenant"
+#: A specialist child slot asked for by a tenant that holds no writer slot
+#: (F-S2c ruling (a): children exist only under a held writer slot).
+SPECIALIST_WITHOUT_PARENT = "specialist_without_parent"
 
 # ---------------------------------------------------------------------------
 # THE MEMORY BUDGET -- recompute these three numbers before raising a cap.
@@ -606,6 +609,9 @@ class InProcessSlotCounter:
         # told the owner nothing about WHICH of their builds held it).
         # Parallel to _tenant_active, same lock, popped at zero with it.
         self._tenant_holders: Dict[str, list] = {}
+        # Specialist children in flight per parent writer key (F-S2c). Same
+        # lock, popped at zero, counted in _process_active only.
+        self._children: Dict[str, int] = {}
 
     def acquire(
         self,
@@ -734,7 +740,14 @@ class InProcessSlotCounter:
         started = _time.monotonic()
         with self._turn:
             self._seq = getattr(self, "_seq", 0) + 1
-            waiter = {"key": key, "reserved": bool(reserved), "seq": self._seq}
+            waiter = {
+                "key": key,
+                "reserved": bool(reserved),
+                "seq": self._seq,
+                # A specialist child yields to this waiter (F-S2c), and must
+                # judge it against the waiter's own tenant cap.
+                "tenant_cap": tenant_cap,
+            }
             self._waiters.append(waiter)
             first_place = 0
             try:
@@ -770,6 +783,77 @@ class InProcessSlotCounter:
                 # A departing waiter may unblock the one behind it.
                 self._turn.notify_all()
         return {"waited_s": round(_time.monotonic() - started, 1), "position": first_place}
+
+    # -- specialist children (F-S2c ruling (a)) ----------------------------
+
+    def _child_admissible(self, key: str, process_cap: int, child_cap: int) -> bool:
+        """Whether one more specialist child of ``key``'s held writer slot may
+        start now. Caller holds the lock.
+
+        A child is counted against the PROCESS cap only (never the tenant
+        cap: it is part of the writer job that already holds the tenant's
+        slot), bounded per parent by ``child_cap``, and it never takes the
+        reserved slot. It also yields to every queued JOB that could start:
+        a child never starves another build's queued writer."""
+        if self._children.get(key, 0) >= child_cap:
+            return False
+        user_cap = process_cap - reserved_slots(process_cap)
+        if self._process_active - self._reserved_active >= user_cap:
+            return False
+        return not any(
+            self._admissible(waiter, process_cap, waiter["tenant_cap"])
+            for waiter in self._waiters
+        )
+
+    def acquire_child(
+        self,
+        key: str,
+        *,
+        process_cap: int,
+        child_cap: int,
+        time_left: Callable[[], Optional[float]],
+        poll_s: float = SLOT_WAIT_POLL_S,
+    ) -> Dict[str, Any]:
+        """Take one specialist child slot under ``key``'s HELD writer slot,
+        waiting while none is free; returns ``{"waited_s", "children"}``.
+
+        Refused by name when ``key`` holds no writer slot: a child has no
+        slot class of its own outside the writer job it belongs to."""
+        import time as _time
+
+        started = _time.monotonic()
+        with self._turn:
+            if self._tenant_active.get(key, 0) <= 0:
+                raise WorkerError(
+                    f"{SPECIALIST_WITHOUT_PARENT}: tenant {key[:8]} holds no "
+                    "writer slot -- a specialist child runs only under its "
+                    "writer's held slot"
+                )
+            while not self._child_admissible(key, process_cap, child_cap):
+                left = time_left()
+                if left is not None and left <= 0:
+                    raise WorkerError(
+                        f"{SLOT_WAIT_EXHAUSTED}: a specialist child waited "
+                        f"{_time.monotonic() - started:.0f}s for a process slot "
+                        "and the run's phase-wall ceiling is spent"
+                    )
+                wait_for = poll_s if left is None else max(0.01, min(poll_s, left))
+                self._turn.wait(timeout=wait_for)
+            self._process_active += 1
+            self._children[key] = self._children.get(key, 0) + 1
+            held = self._children[key]
+        return {"waited_s": round(_time.monotonic() - started, 1), "children": held}
+
+    def release_child(self, key: str) -> None:
+        """Give a child slot back. Mirrors acquire_child; runs from a finally."""
+        with self._lock:
+            self._process_active -= 1
+            remaining = self._children.get(key, 0) - 1
+            if remaining > 0:
+                self._children[key] = remaining
+            else:
+                self._children.pop(key, None)
+            self._turn.notify_all()
 
     def release(self, key: str) -> None:
         """Give the slot back. Mirrors acquire; runs from a finally block."""
@@ -952,6 +1036,37 @@ def worker_job_slot(
     finally:
         # An exception inside the yield still releases the slot.
         _COUNTER.release(key)
+
+
+@contextmanager
+def specialist_child_slot(
+    tenant_store: Any,
+    *,
+    wait_left: Callable[[], Optional[float]],
+    child_cap: Optional[int] = None,
+) -> Iterator[Dict[str, Any]]:
+    """One specialist session's slot: a CHILD of the tenant's held writer
+    slot (F-S2c ruling (a)).
+
+    Counted against the PROCESS cap only and bounded per writer by
+    ``writer_specialist_cap()`` -- no new number, no ceiling change. It waits
+    (never refuses) while the box is full or another build's writer is
+    queued, bounded by ``wait_left``; a tenant holding no writer slot is
+    refused by name. Yields ``{"waited_s", "children"}``.
+    """
+    _require_bound_tenant(tenant_store)
+    key = _tenant_slot_key(tenant_store)
+    cap = writer_specialist_cap() if child_cap is None else int(child_cap)
+    record = _COUNTER.acquire_child(
+        key,
+        process_cap=worker_process_cap(),
+        child_cap=max(1, cap),
+        time_left=wait_left,
+    )
+    try:
+        yield record
+    finally:
+        _COUNTER.release_child(key)
 
 
 def _require_bound_tenant(tenant_store: Any) -> None:
@@ -1487,6 +1602,53 @@ def suite_denied_count(denials: Optional[List[Dict[str, Any]]]) -> Optional[int]
     return None if denials is None else len(denials)
 
 
+#: Seconds between two RSS samples of a running writer child's process tree.
+RSS_SAMPLE_EVERY_S = 5.0
+
+
+def tree_rss_mb(pid: Optional[int], proc_root: str = "/proc") -> Optional[float]:
+    """Resident memory of ``pid`` and every descendant, in MB, read from
+    ``proc_root``; None when the process table cannot be read (not Linux,
+    or the process is gone) or there is no process id to read it for.
+
+    F-S2c: PER_JOB_MB is an ESTIMATE; this is the measurement. One child's
+    peak rides its receipt (``peak_rss_mb``) into the ledger, and that number
+    decides whether the specialist cap holds."""
+    if isinstance(pid, bool) or not isinstance(pid, int):
+        return None
+    root = Path(proc_root)
+    parents: Dict[int, int] = {}
+    rss_kb: Dict[int, int] = {}
+    try:
+        entries = [e for e in root.iterdir() if e.name.isdigit()]
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            status = (entry / "status").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fields = dict(
+            line.split(":", 1) for line in status.splitlines() if ":" in line
+        )
+        try:
+            parents[int(entry.name)] = int(fields.get("PPid", "0").strip() or 0)
+            rss_kb[int(entry.name)] = int((fields.get("VmRSS", "0 kB").split() or ["0"])[0])
+        except ValueError:
+            continue
+    if pid not in parents:
+        return None
+    tree = {pid}
+    grew = True
+    while grew:
+        grew = False
+        for child, parent in parents.items():
+            if parent in tree and child not in tree:
+                tree.add(child)
+                grew = True
+    return round(sum(rss_kb.get(p, 0) for p in tree) / 1024.0, 1)
+
+
 def rounds_summary_line(stats: Dict[str, Any]) -> str:
     """The receipt's round summary as ``key=value`` pairs; ``-`` = not reported."""
     keys = (
@@ -1500,6 +1662,9 @@ def rounds_summary_line(stats: Dict[str, Any]) -> str:
         "suite_denied",
     )
     parts = [f"{k}={stats[k] if stats.get(k) is not None else '-'}" for k in keys]
+    # F-S2c: the child's measured peak, only when one was read.
+    if stats.get("peak_rss_mb") is not None:
+        parts.append(f"peak_rss_mb={stats['peak_rss_mb']}")
     walls = stats.get("specialist_walls") or []
     if walls:
         parts.append(
@@ -1634,6 +1799,7 @@ def run_worker_job(
     slot_wait_left: Optional[Callable[[], Optional[float]]] = None,
     on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
     turn_wall_s: Optional[float] = None,
+    slot_scope: Optional[Callable[[], Any]] = None,
 ) -> WorkerReceipt:
     """Run one headless CodeWhale exec — non-interactive, JSON summary.
 
@@ -1669,7 +1835,10 @@ def run_worker_job(
             f"{WORKER_CLI_MISSING}: codewhale executable not found — the "
             "worker cannot run headless"
         )
-    with worker_job_slot(
+    # F-S2c: a session that runs under a slot its caller already holds (the
+    # writer's own held slot, or a specialist child of it) is handed that
+    # scope instead of taking a second job slot of its own.
+    with slot_scope() if slot_scope is not None else worker_job_slot(
         tenant_store,
         # Name THIS job so a capped sibling's refusal can say which of the
         # owner's builds holds the slot (live 2026-09-30: "holds 1/1" with
@@ -2133,6 +2302,19 @@ def run_worker_job(
                 except Exception:  # noqa: BLE001 — telemetry never fails the build
                     pass
 
+        # F-S2c: this child's measured peak RSS (its whole process tree).
+        rss_state: Dict[str, Any] = {"peak": None, "next": 0.0}
+
+        def _sample_rss() -> None:
+            now = time.monotonic()
+            if now < rss_state["next"]:
+                return
+            rss_state["next"] = now + RSS_SAMPLE_EVERY_S
+            # A process handle with no pid is unmeasured, never a crash.
+            sample = tree_rss_mb(getattr(proc, "pid", None))
+            if sample is not None and (rss_state["peak"] is None or sample > rss_state["peak"]):
+                rss_state["peak"] = sample
+
         _note_cli_started()
         wait_started = time.monotonic()
         deadline = wait_started + timeout
@@ -2171,6 +2353,7 @@ def run_worker_job(
                     _pump_prompt_progress()
                     _log_stream_events()
                     _heartbeat()
+                    _sample_rss()
                     # Progress watchdog -- a separate clock from the wall.
                     # Cheap progress (a new step, stdout line or relayed line)
                     # resets the clock without touching the disk; only when
@@ -2251,6 +2434,10 @@ def run_worker_job(
                     "suite_denied": suite_denied_count(read_denials(cli_home)),
                 },
             )
+        if rss_state["peak"] is not None:
+            receipt = replace(
+                receipt, rounds={**receipt.rounds, "peak_rss_mb": rss_state["peak"]}
+            )
         # E3 part 2: the verdict line.
         logger.info(
             "codewhale writer receipt: status=%s reason=%s provider=%s "
@@ -2313,6 +2500,7 @@ def run_worker_job_with_stall_retry(
     slot_wait_left: Optional[Callable[[], Optional[float]]] = None,
     on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
     turn_wall_s: Optional[float] = None,
+    slot_scope: Optional[Callable[[], Any]] = None,
 ) -> WorkerReceipt:
     """``run_worker_job`` with the progress watchdog's one-retry loop.
 
@@ -2330,6 +2518,9 @@ def run_worker_job_with_stall_retry(
             extra: Dict[str, Any] = {}
             if turn_wall_s is not None:
                 extra["turn_wall_s"] = turn_wall_s
+            # F-S2c: a held (or child) slot rides the same way.
+            if slot_scope is not None:
+                extra["slot_scope"] = slot_scope
             return run_worker_job(
                 prompt,
                 checkout_dir,
