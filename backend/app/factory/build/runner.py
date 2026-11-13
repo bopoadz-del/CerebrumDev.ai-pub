@@ -2304,6 +2304,9 @@ class RoleRunner:
             state=self.state,
             workspace=self.workspace,
             lead_s=lead_s,
+            plan_wall_s=float(getattr(self, "_plan_wall_s", 0.0) or 0.0),
+            plan_wall_passes=int(getattr(self, "_plan_wall_passes", 1) or 1),
+            phase_wall_s=float(self.budget.phase_wall_clock_s or 0.0),
         )
         self._emit_inspect(decided, reason=reason)
         return decided
