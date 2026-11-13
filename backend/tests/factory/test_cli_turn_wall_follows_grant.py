@@ -163,9 +163,9 @@ def _ctx(tmp_path):
     )
 
 
-def _budget_ended_receipt():
+def _budget_ended_receipt(status="failed"):
     base = {
-        "status": "failed",
+        "status": status,
         "termination_reason": "turn_budget",
         "provider": "deepseek",
         "model": "m",
@@ -180,7 +180,7 @@ def _budget_ended_receipt():
     return type("R", (), base)()
 
 
-def _fake_worker(files):
+def _fake_worker(files, status="failed"):
     def fake(prompt, dest, tenant_store=None, session_id="", product_id="",
              progress=None, timeout_s=None, live_time_left=None,
              slot_wait_left=None, on_slot_wait=None):
@@ -191,7 +191,7 @@ def _fake_worker(files):
             target = Path(dest) / "app" / "models" / f"m{i}.py"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(f"X = {i}\n", encoding="utf-8")
-        return _budget_ended_receipt()
+        return _budget_ended_receipt(status)
 
     return fake
 
@@ -217,9 +217,12 @@ def test_budget_ended_turn_with_files_is_interrupted_and_continues(
     assert (tmp_path / "build" / "app" / "models" / "m0.py").is_file()
 
 
-def test_budget_ended_turn_with_no_files_is_writer_no_output(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_budget_ended_turn_with_no_files_is_writer_no_output(
+    tmp_path, monkeypatch, status
+):
     monkeypatch.setattr(
-        "app.factory.build.codewhale_worker.run_worker_job", _fake_worker(0)
+        "app.factory.build.codewhale_worker.run_worker_job", _fake_worker(0, status)
     )
     ctx = _ctx(tmp_path)
     result = _run_writer_via_codewhale_worker(ctx)
