@@ -172,33 +172,68 @@ def derive_functions(blueprint: Mapping[str, Any], workspace: Path) -> List[Grad
 #: migrations applied, and no outbound network. Graded bare, a correct
 #: handle that fails closed when its blocks fail answered one honest error
 #: for both inputs and was read as a stub.
-_HARNESS = r"""
-import os, socket, sys
-os.environ["STORAGE_PATH"] = spec["storage"]
-for _k, _v in spec["harness_env"].items():
-    os.environ.setdefault(_k, _v)
-_stand_in_for_deploy_time_settings(os.getcwd())
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
-_real_connect = socket.socket.connect
-def _offline_connect(self, address):
-    host = address[0] if isinstance(address, tuple) else address
-    if isinstance(host, (bytes, bytearray)):
-        host = host.decode("utf-8", "replace")
-    if str(host) not in _LOCAL_HOSTS:
-        raise OSError(f"grader: outbound connection to {host!r} refused (no network)")
-    return _real_connect(self, address)
-socket.socket.connect = _offline_connect
-try:
-    from app.migrations import upgrade_head
-except ImportError:
-    upgrade_head = None
-if upgrade_head is not None:
+#:
+#: F-G1c: and the product's app is BOOTED -- ``app.main``'s app entered
+#: through ``TestClient`` exactly as the gate's probe enters it, so whatever
+#: the product wires at startup (its store, its block registry) is wired
+#: before any handle is called. Called straight off ``app.actions`` with no
+#: lifespan, a handle whose store is wired at startup answered one result for
+#: two inputs and the grade said stub on one product and not the next --
+#: which product depended only on where the writer put its wiring.
+#:
+#: ONE definition, every grader runner: ``function_grader`` and
+#: ``two_dataset`` both paste PROBE_ENV and call ``_enter_probe_env(spec)``
+#: before importing a handle (a test pins that), so no runner can probe in an
+#: environment of its own. It returns None, or the named harness error.
+PROBE_ENV = r"""
+def _enter_probe_env(spec):
+    global _PROBE_APP_CLIENT
+    import importlib.util, os, socket
+    def _named(exc):
+        return f"{type(exc).__name__}: {exc}"[:240]
+    os.environ["STORAGE_PATH"] = spec["storage"]
+    for _k, _v in spec["harness_env"].items():
+        os.environ.setdefault(_k, _v)
+    _stand_in_for_deploy_time_settings(os.getcwd())
+    _local_hosts = {"localhost", "127.0.0.1", "::1"}
+    _real_connect = socket.socket.connect
+    def _offline_connect(self, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, (bytes, bytearray)):
+            host = host.decode("utf-8", "replace")
+        if str(host) not in _local_hosts:
+            raise OSError(f"grader: outbound connection to {host!r} refused (no network)")
+        return _real_connect(self, address)
+    socket.socket.connect = _offline_connect
     try:
-        upgrade_head()
+        from app.migrations import upgrade_head
+    except ImportError:
+        upgrade_head = None
+    if upgrade_head is not None:
+        try:
+            upgrade_head()
+        except BaseException as exc:
+            return "harness migration failed: " + _named(exc)
+    if importlib.util.find_spec("app.main") is None:
+        return None
+    try:
+        from fastapi.testclient import TestClient
+        from app.main import app as _app
+        _client = TestClient(_app)
+        _client.__enter__()
     except BaseException as exc:
-        emit({"two_input": False, "mutants": {m: "not_run" for m in spec["mutants"]},
-              "error": "harness migration failed: " + why(exc)})
-        sys.exit(0)
+        return "harness boot failed: " + _named(exc)
+    # Held for the life of the process, as the gate's probe holds its client.
+    _PROBE_APP_CLIENT = _client
+    return None
+"""
+
+_HARNESS = PROBE_ENV + r"""
+_harness_error = _enter_probe_env(spec)
+if _harness_error is not None:
+    emit({"two_input": False, "mutants": {m: "not_run" for m in spec["mutants"]},
+          "error": _harness_error})
+    sys.exit(0)
 """
 
 _RUNNER = _DEPLOY_TIME_SNIPPET + r"""

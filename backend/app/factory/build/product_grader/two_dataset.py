@@ -26,7 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
+from app.factory.build.image_sufficiency import GATE_RUN_ENV
 from app.factory.build.product_grader import vault
+from app.factory.build.product_grader.function_grader import PROBE_ENV
 
 #: Verdicts. OK is the only pass; the three FAILs are the ORDERS_0320Z names.
 OK = "ok"
@@ -106,11 +109,19 @@ _RUN_TIMEOUT_S = 60
 #: Runs the product's handle for dataset A and B in a fresh subprocess (cwd +
 #: PYTHONPATH = the product workspace, exactly as function_grader.run_function
 #: runs the writer's code) and writes the two results to a nonce file -- never
-#: stdout, which the product can print to.
-_RUNNER = r'''
+#: stdout, which the product can print to. F-G1c: in function_grader's ONE
+#: probe environment (PROBE_ENV: blocks, scratch store, gate token, deploy-time
+#: settings, migrations, no network, the app booted), never bare -- a harness
+#: error is both datasets absent, never two equal outputs.
+_RUNNER = _DEPLOY_TIME_SNIPPET + r'''
 import importlib, json, sys
 spec = json.loads(sys.stdin.read())
 out = {}
+''' + PROBE_ENV + r'''
+_harness_error = _enter_probe_env(spec)
+if _harness_error is not None:
+    out["a"] = None; out["b"] = None; out["error"] = _harness_error
+    open(spec["out"], "w", encoding="utf-8").write(json.dumps(out)); sys.exit(0)
 try:
     handle = importlib.import_module(spec["module"]).handle
 except BaseException as exc:
@@ -155,9 +166,11 @@ def run_function_pair(
         # (the product's cwd), so the product cannot write to it -- that
         # isolation, not a nonce, is what keeps the result the grader's own.
         out_path = Path(tmp) / "r.json"
+        storage = Path(tmp) / "store"
+        storage.mkdir()
         spec = json.dumps({
             "module": module, "inputs_a": dict(inputs_a), "inputs_b": dict(inputs_b),
-            "out": str(out_path),
+            "out": str(out_path), "storage": str(storage), "harness_env": dict(GATE_RUN_ENV),
         })
         try:
             subprocess.run(
