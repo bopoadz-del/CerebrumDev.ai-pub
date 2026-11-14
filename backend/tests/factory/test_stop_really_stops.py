@@ -474,3 +474,53 @@ def test_a_new_build_resets_the_control_and_a_refused_one_does_not(
     write_control(out, "stop", by="owner-account")
     start_runner_build(_bp(), out)
     assert read_control(out) == expected
+
+
+# --- the control refuses what it does not know --------------------------------
+
+
+@pytest.mark.parametrize("action", ["halt", "kill"])
+def test_an_unknown_control_action_is_refused_and_writes_nothing(tmp_path, action):
+    with pytest.raises(ValueError):
+        write_control(tmp_path, action, by="owner-account")
+    assert read_control_record(tmp_path) == {}
+    assert read_control(tmp_path) == "run"
+
+
+@pytest.mark.parametrize("generation, status", [(None, 409), ({"output_dir": "gone"}, 404)])
+def test_the_route_refuses_a_session_with_no_workspace(tmp_path, monkeypatch, generation, status):
+    from fastapi.testclient import TestClient
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session, get_session, update_session
+    from app.main import app
+
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "factory_outputs"))
+    monkeypatch.setenv("BILLING_ENFORCEMENT", "0")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    session_id = "sess_owner_stop_refused"
+    create_session(session_id, DEV_LOCAL_TENANT)
+    state = get_session(session_id)
+    if generation is not None:
+        generation = {"output_dir": str(tmp_path / generation["output_dir"])}
+    state.product_design.generation = generation
+    update_session(session_id, state)
+
+    res = TestClient(app, raise_server_exceptions=False).post(
+        f"/v1/sessions/{session_id}/product/coder-control", json={"action": "stop"}
+    )
+    assert res.status_code == status, res.text
+
+
+@pytest.mark.parametrize("cycle, expected", [("pilot", "pilot"), ("nonsense", "code")])
+def test_a_new_build_runs_a_known_cycle_only(tmp_path, monkeypatch, cycle, expected):
+    from app.factory.build_jobs import start_runner_build
+
+    monkeypatch.setenv("FACTORY_BUILD_ENGINE", "runner")
+    monkeypatch.setattr("threading.Thread.start", lambda self: None)
+    out = tmp_path / "product"
+    out.mkdir()
+    started = start_runner_build(_bp(), out, cycle=cycle)
+    assert started["cycle"] == expected

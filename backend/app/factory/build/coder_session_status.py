@@ -57,12 +57,12 @@ def write_control(root: Path, action: str, *, by: Optional[str] = None) -> Dict[
 def read_control_record(root: Path) -> Dict[str, Any]:
     """The whole control record (action, updated_at, by); {} when absent."""
     path = Path(root) / CONTROL_REL
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    data: Any = {}
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
     return data if isinstance(data, dict) else {}
 
 
@@ -113,14 +113,16 @@ def check_owner(read: Optional[Callable[[], str]] = None) -> None:
     control installed, or a reader that cannot answer, runs on (a broken
     reader never stops a build)."""
     reader = read if read is not None else current_owner_control()
-    if reader is None:
-        return
-    try:
-        action = str(reader() or "").strip().lower()
-    except Exception:  # noqa: BLE001 -- unreadable control = run
-        return
-    if action == CONTROL_STOP:
+    if reader is not None and _reader_action(reader) == CONTROL_STOP:
         raise OwnerStopped("owner stopped the build")
+
+
+def _reader_action(reader: Callable[[], str]) -> str:
+    """What the control reader answers; ``run`` when it cannot answer."""
+    try:
+        return str(reader() or "").strip().lower()
+    except Exception:  # noqa: BLE001 -- unreadable control = run
+        return CONTROL_RUN
 
 
 def read_receipt(root: Path) -> Dict[str, Any]:
