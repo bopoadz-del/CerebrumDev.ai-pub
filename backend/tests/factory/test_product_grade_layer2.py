@@ -27,7 +27,7 @@ def test_message_shape(inputs, bp):  # G23
     assert msgs[0]["content"] == l2.GRADER_SYSTEM_PROMPT
     body = json.loads(msgs[1]["content"])
     assert sorted(body) == sorted([*l2.LAYER2_INPUTS, "questions"])
-    assert body["questions"] == qs
+    assert body["questions"] == [{"id": q["id"], "text": q["text"]} for q in qs]
     assert {k: body[k] for k in l2.LAYER2_INPUTS} == {k: inputs.get(k) for k in l2.LAYER2_INPUTS}
 
 
@@ -38,7 +38,7 @@ def test_any_other_input_is_refused(key):  # G24
 
 
 @pytest.mark.parametrize("bp", BPS)
-def test_run_layer2_sends_exactly_the_built_messages_once(bp):  # G25
+def test_run_layer2_sends_exactly_the_built_messages_once_per_group(bp):  # G25
     calls = []
 
     def complete(msgs):
@@ -46,7 +46,9 @@ def test_run_layer2_sends_exactly_the_built_messages_once(bp):  # G25
         return "[]"
 
     l2.run_layer2(INPUTS[0], bp, complete)
-    assert calls == [l2.layer2_messages(INPUTS[0], l2.layer2_questions(bp))]
+    qs = l2.layer2_questions(bp)
+    groups = [[q] for q in qs if q["capability"]] + [[q for q in qs if not q["capability"]]]
+    assert calls == [l2.layer2_messages(INPUTS[0], g) for g in groups]
 
 
 @pytest.mark.parametrize("bp", BPS)
@@ -68,23 +70,25 @@ def test_questions_cover_capabilities_screens_and_grounding(bp):
     qs = l2.layer2_questions(bp)
     assert len(qs) == len(bp["capabilities"]) + len(bp["ui_modules"]) + 1
     for m in bp["ui_modules"]:
-        assert sum(f"'{m}'" in q for q in qs) == 1
-    assert qs[-1].startswith("Is every number the product shows grounded")
+        assert sum(f"'{m}'" in q["text"] for q in qs) == 1
+    assert [q["id"] for q in qs] == [f"q{n}" for n in range(1, len(qs) + 1)]
+    assert qs[-1]["text"].startswith("Is every number the product shows grounded")
 
 
-@pytest.mark.parametrize("raw,reason", [("not json", "JSONDecodeError"), ("{}", "not a JSON list"), ('"x"', "not a JSON list")])
+@pytest.mark.parametrize("raw,reason", [("not json", "JSONDecodeError"), ("{}", "ValueError"), ('"x"', "ValueError")])
 def test_no_answer_is_recorded_not_run(raw, reason):
     r = l2.run_layer2(INPUTS[1], BPS[0], lambda m: raw)
     assert r["ran"] is False and r["verdicts"] == [] and reason in r["open_fails"][0]
+    assert len(r["open_fails"]) == len(l2.layer2_questions(BPS[0]))
 
 
 @pytest.mark.parametrize("bp", BPS)
 def test_unanswered_questions_are_open(bp):
     qs = l2.layer2_questions(bp)
-    raw = json.dumps([{"question": qs[0], "verdict": "PASS", "evidence": "e" * 900}, "junk"])
+    raw = json.dumps([{"id": qs[0]["id"], "verdict": "PASS", "evidence": "e" * 900}, "junk"])
     r = l2.run_layer2(INPUTS[1], bp, lambda m: raw)
-    assert r["open_fails"] == qs[1:]
-    assert r["verdicts"] == [{"question": qs[0], "verdict": "PASS", "evidence": "e" * l2.EVIDENCE_MAX}]
+    assert r["open_fails"] == [q["text"] for q in qs[1:]]
+    assert r["verdicts"] == [{"question": qs[0]["text"], "verdict": "PASS", "evidence": "e" * l2.EVIDENCE_MAX}]
 
 
 # --- G2 L6: a successful Layer-2 run records ran True (and only it does) ---
@@ -99,9 +103,9 @@ def test_successful_run_records_ran_true(bp):
     from app.factory.build.product_grader import layer2 as l2m
 
     qs = l2m.layer2_questions(bp)
-    answer = json.dumps([{"question": q, "verdict": "PASS", "evidence": f'"{q[:20]}"'} for q in qs])
+    answer = json.dumps([{"id": q["id"], "verdict": "PASS", "evidence": f'"{q["text"][:20]}"'} for q in qs])
     out = l2m.run_layer2({"compiled_brief": "b", "rendered_product": "p", "layer1": {}}, bp, lambda m: answer)
-    assert out["ran"] is True and out["open_fails"] == [] and [v["question"] for v in out["verdicts"]] == qs
+    assert out["ran"] is True and out["open_fails"] == [] and [v["question"] for v in out["verdicts"]] == [q["text"] for q in qs]
 
 
 @pytest.mark.parametrize("reply,ran", [("not json", False), ('{"a": 1}', False), ("[]", True)])
@@ -117,7 +121,7 @@ def test_ran_is_true_exactly_when_the_grader_answered_a_list(reply, ran):
 def test_recorded_verdict_is_the_graders_verdict(verdicts):
     bp = {"capabilities": [{"id": f"c{i}", "description": f"D{i}."} for i in range(len(verdicts) - 1)]}
     qs = l2.layer2_questions(bp)
-    raw = json.dumps([{"question": q, "verdict": v, "evidence": "e"} for q, v in zip(qs, verdicts)])
+    raw = json.dumps([{"id": q["id"], "verdict": v, "evidence": "e"} for q, v in zip(qs, verdicts)])
     out = l2.run_layer2(INPUTS[0], bp, lambda m: raw)
     assert [v["verdict"] for v in out["verdicts"]] == verdicts
 
@@ -140,4 +144,4 @@ def test_a_fenced_json_answer_is_parsed(fenced, ran):
 def test_capability_question_carries_its_description(caps):
     qs = l2.layer2_questions({"capabilities": caps})
     for c, q in zip(caps, qs):
-        assert f"'{c['id']}'" in q and c["description"] in q
+        assert f"'{c['id']}'" in q["text"] and c["description"] in q["text"]

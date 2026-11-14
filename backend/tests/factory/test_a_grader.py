@@ -20,7 +20,7 @@ import pytest
 # tests by the module's dotted token) associates this file with every
 # function in grader.py.
 import app.factory.build.grader as grader
-from app.factory.build.product_grader import grade_record, layer2
+from app.factory.build.product_grader import grade_record
 from tests.factory.grader_contract import COMPUTES, write_models
 
 # A handle that computes from the contract grader_contract declares.
@@ -53,14 +53,14 @@ def _bp(ids, ui_modules=()):
 
 
 def _passing_l2(blueprint):
-    """A Layer-2 completion that PASSes every generated question, quoting
-    evidence -- built from the blueprint, never hand-answered."""
+    """A Layer-2 completion that PASSes every question it is sent, by id,
+    quoting evidence -- read from the call, never hand-answered."""
 
     def complete(messages):
-        questions = layer2.layer2_questions(blueprint)
+        questions = json.loads(messages[-1]["content"])["questions"]
         return json.dumps(
             [
-                {"question": q, "verdict": "PASS", "evidence": "the product delivers this (quoted)"}
+                {"id": q["id"], "verdict": "PASS", "evidence": "the product delivers this (quoted)"}
                 for q in questions
             ]
         )
@@ -158,7 +158,7 @@ def test_render_product_includes_app_and_frontend_only_bounded():
 # --- independence (The_Level #6) ---------------------------------------------
 
 
-@pytest.mark.parametrize("content", ['[{"question": "q", "verdict": "PASS", "evidence": "e"}]', "[]"])
+@pytest.mark.parametrize("content", ['[{"id": "q1", "verdict": "PASS", "evidence": "e"}]', "[]"])
 def test_grader_complete_returns_the_models_raw_content(monkeypatch, content):
     """Layer 2's completion posts to the dedicated grader endpoint and
     returns the model's raw content text."""

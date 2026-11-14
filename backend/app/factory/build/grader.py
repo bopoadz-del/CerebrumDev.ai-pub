@@ -212,14 +212,23 @@ def derive_forbidden(
     return frozenset(sorted(v for v in out if len(v) <= 80))
 
 
-def render_product(workspace: Path | str) -> str:
+def render_product(workspace: Path | str, first: Sequence[str] = ()) -> str:
     """A bounded, deterministic render of the product source for Layer 2:
     sorted relative paths, per-file and total caps, scaffold directories
-    excluded. Ordering and caps are structural -- no file is named."""
+    excluded. Ordering and caps are structural -- no file is named.
+
+    ``first`` are path stems (the capability under grade): files whose
+    relative path contains one are rendered before the rest and are exempt
+    from the per-file cap; the total cap still holds."""
     root = Path(workspace)
+    stems = [s for s in first if s]
+    files = sorted(root.rglob("*"))
+    lead = [p for p in files if any(s in p.relative_to(root).as_posix() for s in stems)]
+    lead_set = set(lead)
+    rest = [p for p in files if p not in lead_set]
     blocks: List[str] = []
     budget = _TOTAL_CHARS
-    for py in sorted(root.rglob("*")):
+    for py in [*lead, *rest]:
         # Non-files (directories) reach read_text and raise OSError, which
         # the except skips -- one exclusion path, no redundant guard.
         rel_parts = py.relative_to(root).parts
@@ -235,7 +244,7 @@ def render_product(workspace: Path | str) -> str:
         except OSError:
             continue
         rel = py.relative_to(root).as_posix()
-        if len(text) > _FILE_CHARS:
+        if py not in lead_set and len(text) > _FILE_CHARS:
             text = text[:_FILE_CHARS] + "\n# ... truncated by the grader\n"
         block = f"## file: {rel}\n{text}\n"
         if len(block) > budget:
@@ -745,7 +754,9 @@ def run_grader(
         ui_dict = ui.to_dict()
         layer1_view = _layer2_layer1_view(fn_dict, ui_dict)
         l2_inputs = {"compiled_brief": brief, "rendered_product": rendered, "layer1": layer1_view}
-        l2 = layer2.run_layer2(l2_inputs, blueprint, _grader_complete)
+        l2 = layer2.run_layer2(
+            l2_inputs, blueprint, _grader_complete, render=lambda stems: render_product(root, first=stems)
+        )
 
     # --- the record --------------------------------------------------------
     if functions is not None:
