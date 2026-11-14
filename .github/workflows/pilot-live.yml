@@ -9,12 +9,9 @@ name: Pilot (live)
 # skip-pass. Uploads the two synthetic fixtures before the build, then drives the
 # five stages with per-stage PASS/FAIL checks.
 #
-# Fires on every successful deploy-aws, and on manual dispatch.
+# Fires on manual dispatch only (F-U0): a deploy never starts a pilot.
 
 on:
-  workflow_run:
-    workflows: [deploy-aws]
-    types: [completed]
   workflow_dispatch:
     inputs:
       base:
@@ -37,10 +34,6 @@ env:
 jobs:
   pilot:
     name: Pilot build on live
-    # Only after a SUCCESSFUL deploy, or a manual dispatch.
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
