@@ -1,4 +1,4 @@
-﻿"""S10 data lifecycle emitters for RoleRunner products.
+"""S10 data lifecycle emitters for RoleRunner products.
 
 Unused kits already carry Alembic (steward_runtime/migrations). RoleRunner
 did not emit it; generated products used ``CREATE TABLE IF NOT EXISTS`` on
