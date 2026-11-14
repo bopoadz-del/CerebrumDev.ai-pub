@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Optional, Tuple
 
 from app.factory.build.agent_process import agent_popen_kwargs, kill_agent_tree, track_agent
+from app.factory.build.coder_session_status import OwnerStopped, check_owner
 
 logger = logging.getLogger("cerebrumdev.factory.codewhale_worker")
 
@@ -2072,6 +2073,9 @@ def run_worker_job(
                 )
             except Exception:  # noqa: BLE001 -- telemetry never fails the build
                 pass
+        # F-U1a: no CLI (and so no model call) starts once the owner has
+        # pressed Stop.
+        check_owner()
         try:
             proc = subprocess.Popen(
                 argv,
@@ -2324,6 +2328,15 @@ def run_worker_job(
                     proc.wait(timeout=0.5)
                     break
                 except subprocess.TimeoutExpired:
+                    # F-U1a: the owner's Stop comes before every clock. It
+                    # kills the CLI and everything it started, then ends
+                    # the job.
+                    try:
+                        check_owner()
+                    except OwnerStopped:
+                        kill_agent_tree(proc)
+                        proc.wait()
+                        raise
                     if live_time_left is not None:
                         try:
                             left = live_time_left()
