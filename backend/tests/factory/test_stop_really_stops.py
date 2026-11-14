@@ -53,10 +53,14 @@ def _alive(pid: int) -> bool:
 
 
 def _fake_agent(tmp_path: Path, ticks: int) -> Path:
-    """A CLI that starts a child, then 'calls the model' once per tick."""
+    """A CLI that starts a child, then 'calls the model' once per tick.
+
+    Its evidence lives under the checkout: the CLI is confined (Landlock) to
+    write only beneath its working directory.
+    """
     script = tmp_path / "fake_agent.sh"
-    out = tmp_path / "out"
-    out.mkdir(exist_ok=True)
+    out = _out(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
     script.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = "--version" ]; then echo 1.0; exit 0; fi\n'
@@ -70,9 +74,13 @@ def _fake_agent(tmp_path: Path, ticks: int) -> Path:
     return script
 
 
+def _out(tmp_path: Path) -> Path:
+    return tmp_path / "checkout" / "out"
+
+
 def _calls(tmp_path: Path) -> int:
     try:
-        return len((tmp_path / "out" / "calls").read_text().splitlines())
+        return len((_out(tmp_path) / "calls").read_text().splitlines())
     except OSError:
         return 0
 
@@ -107,7 +115,7 @@ def _run_job(tmp_path: Path, agent: Path, control, timeout_s: float = 60) -> dic
 @pytest.mark.parametrize("pressed, stopped", [("stop", True), ("run", False)])
 def test_stop_kills_the_writer_tree_and_frees_the_slot(tmp_path, pressed, stopped):
     agent = _fake_agent(tmp_path, ticks=10)
-    child_pid_file = tmp_path / "out" / "child.pid"
+    child_pid_file = _out(tmp_path) / "child.pid"
 
     def control() -> str:
         # The owner presses once the CLI is working (its first model call).
@@ -115,7 +123,7 @@ def test_stop_kills_the_writer_tree_and_frees_the_slot(tmp_path, pressed, stoppe
 
     result = _run_job(tmp_path, agent, control)
     assert ("stopped" in result) == stopped, result
-    assert (tmp_path / "out" / "done").exists() == (not stopped)
+    assert (_out(tmp_path) / "done").exists() == (not stopped)
     child = int(child_pid_file.read_text().strip())
     if stopped:
         assert result["wall"] < 10, "a stop ends the job within seconds"
@@ -162,7 +170,7 @@ def test_pause_freezes_the_writer_and_resume_continues(tmp_path, pressed, paused
     job.join(timeout=30)
     assert "receipt" in holder, holder
     assert _calls(tmp_path) == ticks, "resume continues, it never restarts"
-    os.kill(int((tmp_path / "out" / "child.pid").read_text().strip()), 9)
+    os.kill(int((_out(tmp_path) / "child.pid").read_text().strip()), 9)
 
 
 # --- (c): Stop mid model call (the HTTP stages) -------------------------------

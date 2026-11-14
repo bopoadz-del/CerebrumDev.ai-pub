@@ -279,4 +279,4 @@ def test_the_run_loop_hands_decide_the_pass_work_list():
 
     from app.factory.build.runner import RoleRunner
 
-    assert "handed=work_list" in inspect.getsource(RoleRunner.run)
+    assert "handed=work_list" in inspect.getsource(RoleRunner._run_controlled)

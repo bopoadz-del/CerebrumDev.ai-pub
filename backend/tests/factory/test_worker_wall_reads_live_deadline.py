@@ -43,6 +43,9 @@ class _SlowProc:
         time.sleep(min(timeout or 0.05, 0.05))
         raise subprocess.TimeoutExpired("codewhale", timeout)
 
+    def poll(self):
+        return self.returncode
+
     def kill(self):
         self.returncode = 9
 
