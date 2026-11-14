@@ -419,53 +419,6 @@ Everything below is the original brief, unchanged.
 """
 
 
-#: Where the SPECIALISTS block starts and where the section after it starts:
-#: the block is ONE text, rendered whole into a single writer's prompt or cut
-#: out of it when the Factory runs the specialists itself (F-S2c).
-SPECIALISTS_HEAD = "SPECIALISTS (five of them"
-_AFTER_SPECIALISTS = "PROGRESS LOG (the operator watches"
-#: The writer session's own hat when the Factory dispatches the others.
-WRITER_SPECIALIST = "BACKEND"
-
-
-def specialist_scopes() -> Dict[str, str]:
-    """``{NAME: scope text}`` for each ``- NAME:`` hat in the SPECIALISTS
-    block, read from the template itself -- one source for the single-writer
-    prompt and for each Factory-dispatched specialist session."""
-    start = _TEMPLATE.index(SPECIALISTS_HEAD)
-    block = _TEMPLATE[start : _TEMPLATE.index(_AFTER_SPECIALISTS, start)]
-    scopes: Dict[str, List[str]] = {}
-    current: Optional[str] = None
-    for line in block.splitlines():
-        head, sep, rest = line[2:].partition(":")
-        if line.startswith("- ") and sep and head.isupper() and head.isalpha():
-            current = head
-            scopes[current] = [rest.strip()]
-        elif current is not None and line.startswith("  "):
-            scopes[current].append(line.strip())
-        else:
-            current = None
-    return {name: " ".join(lines) for name, lines in scopes.items()}
-
-
-def _fanout_scope_section(dispatched: Sequence[str]) -> str:
-    """What replaces the SPECIALISTS block when the Factory runs the other
-    hats as their own sessions: this session's own hat, and who does the rest."""
-    others = ", ".join(dispatched)
-    return (
-        f"YOUR SCOPE: {WRITER_SPECIALIST} (the Factory runs {others} as their "
-        "own sessions -- do not do their work, and do not start agents for it):\n"
-        f"{specialist_scopes()[WRITER_SPECIALIST]}\n\n"
-    )
-
-
-def _cut_specialists_block(body: str, dispatched: Sequence[str]) -> str:
-    """``body`` with its SPECIALISTS block replaced by the fan-out scope."""
-    start = body.index(SPECIALISTS_HEAD)
-    end = body.index(_AFTER_SPECIALISTS, start)
-    return body[:start] + _fanout_scope_section(dispatched) + body[end:]
-
-
 def _factory_owned_lines() -> str:
     """The declared list (factory_owned.factory_owned_paths), one per line."""
     from app.factory.build.factory_owned import factory_owned_paths
@@ -565,13 +518,8 @@ def render_writer_prompt(
     store_index: Sequence[Mapping[str, Any]] = (),
     store_sha: Optional[str] = None,
     findings: Sequence[str] = (),
-    dispatched_specialists: Sequence[str] = (),
 ) -> str:
     """Fill the template from the brief. Deterministic by construction.
-
-    ``dispatched_specialists`` (F-S2c): the hats the Factory runs as their
-    own sessions. When non-empty the SPECIALISTS block is dropped and this
-    session is told its own scope instead.
 
     ``specialist_workers`` is how many specialist agents the writer may run
     at once. It is a property of the BOX, so the caller reads it from the
@@ -621,8 +569,6 @@ def render_writer_prompt(
         # K-F7: what already exists, in the order the ruling resolves it.
         formula_sources=render_resolution_section(kernel_index, store_index, store_sha),
     )
-    if dispatched_specialists:
-        body = _cut_specialists_block(body, dispatched_specialists)
     if resume:
         body = _RESUME_PREFACE + body
     return f"<!-- {version} -->\n" + body

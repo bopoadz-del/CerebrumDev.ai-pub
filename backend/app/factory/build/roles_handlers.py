@@ -4000,19 +4000,9 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         run_worker_job_with_stall_retry,
         writer_specialist_cap,
     )
-    from app.factory.build.specialist_fanout import (
-        dispatched_specialists,
-        fanout_enabled,
-        start_for_writer,
-    )
     from app.factory.build.writer_prompt import render_writer_prompt
 
     dest = persist_workspace_root(ctx.workspace)
-    # F-S2c: with the fan-out on, the Factory runs the other hats as their own
-    # sessions and this session's prompt carries its own scope instead of the
-    # SPECIALISTS block.
-    fanout_on = fanout_enabled()
-    brief = _compiled_writer_brief(ctx)
     from app.factory.build.image_sufficiency import locked_entries as image_locked_entries
     from app.factory.build.image_sufficiency import runtime_paths as image_runtime_paths
 
@@ -4026,7 +4016,7 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     owned_lines = tuple(_owned.rework_findings(_owned.recorded(Path(dest))))
     prompt = render_writer_prompt(
         ctx.blueprint,
-        brief=brief,
+        brief=_compiled_writer_brief(ctx),
         resume=bool(ctx.state.get("writer_resumed")),
         # The work list a rework round was handed (grader / gate findings):
         # rendered as REWORK FINDINGS so the agent patches in place and fixes
@@ -4058,17 +4048,10 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         # other copy; two cycle-9 writers did exactly that because the rule
         # was nowhere in the prompt (co-op, craft marketplace).
         locked_blocks=image_locked_entries(product_tree),
-        dispatched_specialists=dispatched_specialists() if fanout_on else (),
     )
     # The Factory-owned files are read-only for the pass (factory_owned.lock);
     # their modes come back however the pass ends.
     owned_modes: Dict[str, int] = {}
-    # F-S2c: the held writer slot and the specialist sessions, when on.
-    from contextlib import ExitStack
-
-    held_slot = ExitStack()
-    fanout: Any = None
-    slot_extra: Dict[str, Any] = {}
     try:
         # The writer narrates itself on the Floor: CLI progress lines
         # become throttled ledger NOTEs (one per ~3s), so build-status
@@ -4192,23 +4175,6 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         # Unwritable for the duration of the pass: a write to one fails in
         # the writer's own tool instead of costing the pass afterwards.
         owned_modes = factory_owned.lock(Path(dest))
-        if fanout_on:
-            # The writer slot is HELD for the whole pass; the specialists run
-            # under child slots of it and this session under the held one.
-            fanout, slot_extra["slot_scope"] = start_for_writer(
-                held_slot,
-                dest,
-                brief=brief,
-                note=ctx.note,
-                tenant_store=ctx.state.get("tenant_store"),
-                session_id=str(ctx.state.get("session_id") or ""),
-                product_id=str(getattr(ctx.blueprint, "product_id", "") or ""),
-                timeout_s=_writer_worker_timeout_s(ctx),
-                live_time_left=_writer_worker_live_time_left(ctx),
-                slot_wait_left=_writer_slot_wait_left(ctx),
-                on_slot_wait=note_slot_wait,
-                turn_wall_s=_writer_cli_turn_wall_s(ctx),
-            )
 
         def _launch_writer() -> Any:
             return run_worker_job_with_stall_retry(
@@ -4236,7 +4202,6 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                 # the runner may grant this pass, so it never ends a turn the
                 # Factory would have kept alive.
                 turn_wall_s=_writer_cli_turn_wall_s(ctx),
-                **slot_extra,
             )
 
         def _raise_worker_failure(exc: WorkerError) -> None:
@@ -4283,11 +4248,6 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                 receipt = _launch_writer()
             except WorkerError as exc:
                 _raise_worker_failure(exc)
-        if fanout is not None:
-            # Join INFRA/FRONTEND, merge them back (conflicts recorded, never
-            # overwritten), then DEVOPS and SECURITY on the merged tree --
-            # all before the Factory-owned check below reads the checkout.
-            ctx.state["writer_specialists"] = fanout.finish(relay_progress)
     except WorkerError as exc:
         raise RoleError(
             f"codewhale_worker_failed: {exc}",
@@ -4297,9 +4257,6 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     finally:
         from app.factory.build import factory_owned as _owned_unlock
 
-        if fanout is not None:
-            fanout.cleanup()
-        held_slot.close()
         _owned_unlock.unlock(Path(dest), owned_modes)
 
     # F-W2c: what THIS pass put on disk, read the moment the worker returns
