@@ -30,17 +30,17 @@ _L2_PASS = {"ran": True, "verdicts": [{"question": "q", "verdict": PASS, "eviden
     ({"a": WRONG_COMPUTATION}, False),
 ])
 def test_hardwiring_section_flags_fail_verdicts(verdicts, clean):
-    sec = hardwiring_section(verdicts, {}, [])
+    sec = hardwiring_section(verdicts, {}, {})
     assert sec["ran"] is True
     assert sec["clean"] is clean
     assert bool(sec["findings"]) is (not clean)
 
 
 @pytest.mark.parametrize("hits, leaks, clean", [
-    ({}, [], True),
-    ({"app/actions/x.py": ["acme_corp"]}, [], False),
-    ({}, ["acme_corp"], False),
-    ({"app/actions/x.py": ["acme_corp"]}, ["zephyr"], False),
+    ({}, {}, True),
+    ({"app/actions/x.py": ["acme_corp"]}, {}, False),
+    ({}, {"app/actions/y.py": ["a copied clause"]}, False),
+    ({"app/actions/x.py": ["acme_corp"]}, {"app/actions/y.py": ["zephyr wing"]}, False),
 ])
 def test_hardwiring_section_flags_scan_hits(hits, leaks, clean):
     sec = hardwiring_section({"a": OK}, hits, leaks)

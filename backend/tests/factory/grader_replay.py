@@ -378,6 +378,21 @@ class Replay:
         return list(getattr(self.verdict, "items", ()) or ())
 
 
+def record_dispatch(runner: Any, supplied: Optional[str] = None) -> Mapping[str, str]:
+    """Record a writer dispatch with the production shape: the user's words
+    in ``state['brief']``, the WRITER's compiled brief and rendered prompt."""
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.roles_handlers import _compiled_writer_brief
+    from app.factory.build.writer_prompt import dispatched_writer_inputs, record_writer_dispatch, render_writer_prompt
+
+    words = str(getattr(runner.blueprint, "summary", "") or "") if supplied is None else supplied
+    runner.state["brief"] = words
+    brief = _compiled_writer_brief(_role_ctx(runner, BuildRole.WRITER))
+    prompt = render_writer_prompt(runner.blueprint, brief=brief)
+    record_writer_dispatch(runner.state, supplied=words, brief=brief, prompt=prompt)
+    return dispatched_writer_inputs(runner.state)
+
+
 class _Ledger:
     """Records the NOTEs the runner's grader call appends."""
 
@@ -395,12 +410,19 @@ def grade(
     cassette: Optional[Cassette] = None,
     ui_report: Optional[Mapping[str, Any]] = UI_GREEN,
     ui_not_run_reason: str = "",
+    supplied: Optional[str] = None,
+    dispatched: bool = True,
 ) -> Replay:
     """Grade the composed tree through ``RoleRunner._writer_grader``.
 
     The grader switch is ON (the suite turns it off session-wide), Layer 2
     runs under an independent identity against the cassette, and the UI layer
     is the recorded report (or the not-run shape when ``ui_report`` is None).
+
+    The writer dispatch is recorded the way the production writer path
+    records it (FG-4): ``supplied`` stands for the user's own brief (the
+    blueprint summary when omitted), the brief and prompt are rendered by the
+    Factory's own renderers. ``dispatched=False`` records none.
     """
     from app.factory.build import grader
     from app.factory.build.product_grader import grade_writer
@@ -416,6 +438,8 @@ def grade(
     monkeypatch.setattr(grader, "_grade_ui", ui_from_report(ui_report, ui_not_run_reason))
 
     runner = _runner(composed.blueprint_path, composed.root, composed.store)
+    if dispatched:
+        record_dispatch(runner, supplied)
     ledger = _Ledger()
     runner.ledger = ledger
     verdict = runner._writer_grader()

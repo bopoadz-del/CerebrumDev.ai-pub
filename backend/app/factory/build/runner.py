@@ -1053,12 +1053,22 @@ class RoleRunner:
 
         if not grader_enabled():
             return None
-        from app.factory.build.writer_brief import writer_system_brief
+        from app.factory.build.grader import ERROR, GraderVerdict
+        from app.factory.build.writer_prompt import DispatchRecordMissing, dispatched_writer_inputs
 
-        compiled = self.state.get("compiled_brief")
-        prompt = writer_system_brief() + "\n\n" + json.dumps(
-            compiled or {}, sort_keys=True, default=str
-        )
+        # FG-4: the grader derives from what the writer was actually told,
+        # recorded at dispatch; no record is an error about the run, never a
+        # prompt rebuilt here.
+        try:
+            told = dispatched_writer_inputs(self.state)
+        except DispatchRecordMissing as exc:
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.WRITER,
+                detail=f"GRADER: {ERROR}: {exc}",
+                payload={"grader_gate": GRADER_GATE, "grader_tier": ERROR, "grader_items": [str(exc)]},
+            )
+            return GraderVerdict(tier=ERROR, items=(str(exc),))
         product_id = (
             str(getattr(self.blueprint, "product_id", "") or "")
             or str(self.state.get("product_id") or "")
@@ -1073,8 +1083,9 @@ class RoleRunner:
                 plan_capabilities=[c.capability_id for c in self.plan.capabilities],
                 state_specs=self.state.get("model_specs"),
                 route_bodies=self.state.get("route_bodies"),
-                compiled_brief=compiled,
-                prompt_text=prompt,
+                compiled_brief=told["brief"],
+                prompt_text=told["prompt"],
+                supplied_text=told["supplied"],
                 store_root=self.store_root,
             )
         except Exception as exc:  # noqa: BLE001 -- named, never silent
@@ -1084,8 +1095,6 @@ class RoleRunner:
                 detail=f"grader crashed: {type(exc).__name__}: {exc}",
                 payload={"grader_gate": GRADER_GATE, "grader_crash": True},
             )
-            from app.factory.build.grader import ERROR, GraderVerdict
-
             return GraderVerdict(tier=ERROR, items=(f"grader crashed: {type(exc).__name__}: {exc}",))
         self.ledger.append(
             EventKind.NOTE,

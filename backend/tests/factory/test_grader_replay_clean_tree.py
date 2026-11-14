@@ -71,14 +71,27 @@ def _plant(tree, rel, literal):
     path.write_text(path.read_text(encoding="utf-8") + planted, encoding="utf-8")
 
 
-def _a_forbidden_literal(tree):
-    """A literal the grader forbids for this blueprint, read from the grader's
-    own derivation of the blueprint's structured values."""
+def client_brief(tree, *extra):
+    """An invented user brief: the blueprint's summary plus a client identity
+    minted at test time, and any ``extra`` sentences (FG-4: brief literals
+    come from what the user supplied, never from the blueprint's own
+    identity)."""
+    import uuid
+
+    from app.factory.blueprint import load_blueprint
+
+    summary = str(load_blueprint(tree.blueprint_path).summary or "")
+    return "\n".join((summary, f"Bill the work to acct_{uuid.uuid4().hex[:10]}.", *extra))
+
+
+def _a_forbidden_literal(tree, supplied):
+    """A literal the grader forbids for this brief, read from the grader's
+    own derivation."""
     from app.factory.blueprint import load_blueprint
     from app.factory.build.grader import _as_mapping, derive_forbidden
 
-    forbidden = sorted(derive_forbidden(_as_mapping(load_blueprint(tree.blueprint_path)), "", ""))
-    assert forbidden, "the blueprint yields no forbidden literal to plant"
+    forbidden = sorted(derive_forbidden(_as_mapping(load_blueprint(tree.blueprint_path)), supplied, ""))
+    assert forbidden, "the brief yields no forbidden literal to plant"
     return forbidden[0]
 
 
@@ -96,7 +109,8 @@ def test_one_literal_is_billed_by_who_wrote_the_file(tree, monkeypatch):
     """Two inputs, one literal: planted in a vendored and in a stamped module
     it is owed by the Factory and recorded; planted in a writer-authored
     module it is a writer finding handed back. The bar is unchanged."""
-    literal = _a_forbidden_literal(tree)
+    supplied = client_brief(tree)
+    literal = _a_forbidden_literal(tree, supplied)
     from app.factory.build.stamp_registry import owned_paths
 
     vendored, stamped = _a_py(tree, gr.VENDORED), _a_py(tree, gr.STAMPED, set(owned_paths()))
@@ -105,7 +119,7 @@ def test_one_literal_is_billed_by_who_wrote_the_file(tree, monkeypatch):
     _plant(tree, stamped, literal)
     tree.write_writer_file(planted, f"PLANTED = {literal!r}\n")
 
-    replay = gr.grade(tree, monkeypatch)
+    replay = gr.grade(tree, monkeypatch, supplied=supplied)
     rows = {row["file"]: row for row in _literal_rows(replay)}
     for rel in (vendored, stamped, planted):
         assert rel in rows and literal in rows[rel]["literals"], sorted(rows)

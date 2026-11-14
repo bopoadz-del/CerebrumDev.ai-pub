@@ -38,16 +38,49 @@ def test_forbidden_hits_flags_a_baked_literal(lit, tmp_path):
     assert hits and lit in hits["app/actions/y.py"]
 
 
-@pytest.mark.parametrize("shared", ["acme_corp", "Project Zephyr"])
-def test_prompt_leak_flags_a_literal_in_both_prompt_and_source(shared):
-    prompt = f"Build a platform for {shared} that tracks widgets."
-    source = f"# generated\nNAME = {shared!r}\n"
-    assert scan_generated.prompt_leak(prompt, source, FORBIDDEN) == [shared]
+@pytest.mark.parametrize("lit", ["acme_corp", "Project Zephyr"])
+def test_forbidden_hits_reads_whole_tokens_inside_a_value(lit, tmp_path):
+    root = _product(tmp_path, {
+        "app/a.py": f"MSG = 'Report for {lit} today'\n",
+        "app/b.py": f"KEY = 'x{lit}y'\n",  # a fragment of a longer token
+        "app/c.py": f'def f():\n    """About {lit}."""\n    return 1\n',  # a docstring is not a value
+        "app/d.py": f"﻿NAME = {lit!r}\n",  # BOM-prefixed source is still read
+    })
+    hits = scan_generated.forbidden_hits(root, FORBIDDEN)
+    assert sorted(hits) == ["app/a.py", "app/d.py"]
 
 
-@pytest.mark.parametrize("prompt, source", [
-    ("Build for acme_corp", "def handle(p): return p['x']\n"),   # literal in prompt only
-    ("Build a thing", "NAME = 'acme_corp'\n"),                    # literal in source only
+@pytest.mark.parametrize("head", ["class C:", "async def f():", '"""Module about acme_corp."""\nclass C:'])
+def test_forbidden_hits_skips_docstrings_but_not_a_second_string(head, tmp_path):
+    docs_only = f'{head}\n    """About acme_corp."""\n    pass\n'
+    assert scan_generated.forbidden_hits(_product(tmp_path / "a", {"app/k.py": docs_only}), FORBIDDEN) == {}
+    # The same string as a statement after the docstring is a value.
+    valued = f'{head}\n    """About it."""\n    "acme_corp"\n'
+    hits = scan_generated.forbidden_hits(_product(tmp_path / "b", {"app/k.py": valued}), FORBIDDEN)
+    assert hits == {"app/k.py": ["acme_corp"]}
+
+
+def test_forbidden_hits_skips_unparseable_source(tmp_path):
+    root = _product(tmp_path, {"app/bad.py": "NAME = 'acme_corp'\ndef (:\n"})
+    assert scan_generated.forbidden_hits(root, FORBIDDEN) == {}
+
+
+SUPPLIED = "Remind the tenant thirty days before renewal. Use the standard ledger view."
+FACTORY = "Use the standard ledger view"
+
+
+@pytest.mark.parametrize("value, leaked", [
+    ("Remind the tenant thirty days before renewal", True),   # a copied clause of the brief
+    ("Use the standard ledger view", False),                  # the Factory's own text, shared
+    ("tenant", False),                                        # one word is vocabulary
 ])
-def test_prompt_leak_needs_the_literal_in_both(prompt, source):
-    assert scan_generated.prompt_leak(prompt, source, FORBIDDEN) == []
+def test_prompt_leak_fires_on_a_copied_brief_clause_only(value, leaked, tmp_path):
+    root = _product(tmp_path, {"app/x.py": f"MSG = {value!r}\n"})
+    prompt = f"{FACTORY}.\n{SUPPLIED}"
+    found = scan_generated.prompt_leak(root, SUPPLIED, FACTORY, prompt)
+    assert found == ({"app/x.py": [value]} if leaked else {})
+
+
+def test_prompt_leak_needs_the_clause_in_the_dispatched_prompt(tmp_path):
+    root = _product(tmp_path, {"app/x.py": "MSG = 'Remind the tenant thirty days before renewal'\n"})
+    assert scan_generated.prompt_leak(root, SUPPLIED, "", "a prompt that never carried the brief") == {}
