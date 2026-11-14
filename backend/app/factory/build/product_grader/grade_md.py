@@ -55,6 +55,8 @@ def render_md(grade: Mapping[str, Any]) -> str:
         lines.append(
             f"  - `{f['capability_id']}`: {'PASS' if f.get('ok') is True else 'FAIL'}; "
             f"mutants killed {_names(f.get('mutants_killed'))}; survived {_names(f.get('mutants_survived'))}"
+            + ("; one_input (no field can vary: TESTER's one-input rule)" if f.get("one_input_passed") is True else "")
+            + (f"; {f['detail']}" if f.get("ok") is not True and f.get("detail") else "")
         )
         if f.get("ok") is not True:
             lines += _probe_lines(f)

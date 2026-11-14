@@ -45,8 +45,10 @@ from app.factory.build.roles_constants import _SAMPLE_VALUES
 
 
 def render_payload_helpers() -> List[str]:
-    """Source lines defining ``_sample_payload_for``, ``_rejection`` and
-    ``_post_accepting``. They use the module-global ``client``."""
+    """Source lines defining ``_sample_payload_for``, ``_rejection``,
+    ``_body_rejection``, ``_corrected`` and ``_post_accepting``. Only
+    ``_post_accepting`` uses the module-global ``client``; the product grader
+    renders the same lines to complete and correct what it sends a handle."""
     by_type = {k: v for k, v in _SAMPLE_VALUES.items() if k in ("str", "int", "float", "bool")}
     return [
         "import dataclasses as _dataclasses",
@@ -137,10 +139,39 @@ def render_payload_helpers() -> List[str]:
         "        body = resp.json()",
         "    except Exception:",
         "        return None",
+        "    return _body_rejection(body)",
+        "",
+        "",
+        "def _body_rejection(body):",
+        '    """The rejection an ok:false body states as keys: (field, reason,',
+        '    allowed), or None when the body names no rejected field."""',
         f"    if not isinstance(body, dict) or {REJECTED_FIELD_KEY!r} not in body:",
         "        return None",
         f"    return (body.get({REJECTED_FIELD_KEY!r}), body.get({REJECTION_REASON_KEY!r}),",
         f"            body.get({ALLOWED_VALUES_KEY!r}))",
+        "",
+        "",
+        "def _corrected(rejection, capability_id, tried):",
+        '    """The correction a stated rejection names: (field, value) -- the',
+        "    first allowed value for NOT_ALLOWED, the product's own model sample",
+        "    for MISSING_REQUIRED -- or None when it names none or the same",
+        '    (field, value) was already tried (``tried`` is updated)."""',
+        "    field, reason, allowed = rejection",
+        "    if not isinstance(field, str) or not field:",
+        "        return None",
+        f"    if reason == {NOT_ALLOWED!r} and isinstance(allowed, list) and allowed:",
+        "        value = allowed[0]",
+        f"    elif reason == {MISSING_REQUIRED!r}:",
+        "        value = _field_sample(capability_id, field)",
+        "        if value in (None, ''):",
+        "            return None",
+        "    else:",
+        "        return None",
+        "    key = (field, repr(value))",
+        "    if key in tried:",
+        "        return None",
+        "    tried.add(key)",
+        "    return field, value",
         "",
         "",
         "def _post_accepting(path, payload, headers, capability_id=None):",
@@ -165,21 +196,10 @@ def render_payload_helpers() -> List[str]:
         "        rejection = _rejection(resp)",
         "        if rejection is None:",
         "            break",
-        "        field, reason, allowed = rejection",
-        "        if not isinstance(field, str) or not field:",
+        "        correction = _corrected(rejection, capability_id, tried)",
+        "        if correction is None:",
         "            break",
-        f"        if reason == {NOT_ALLOWED!r} and isinstance(allowed, list) and allowed:",
-        "            value = allowed[0]",
-        f"        elif reason == {MISSING_REQUIRED!r}:",
-        "            value = _field_sample(capability_id, field)",
-        "            if value in (None, ''):",
-        "                break",
-        "        else:",
-        "            break",
-        "        key = (field, repr(value))",
-        "        if key in tried:",
-        "            break",
-        "        tried.add(key)",
+        "        field, value = correction",
         "        corrections.append(",
         "            str(field) + '=' + repr(payload.get(field)) + '->' + repr(value)",
         "        )",
@@ -296,6 +316,36 @@ def base_samples(workspace) -> dict:
         for cap, spec in (specs or {}).items()
         if isinstance(spec, dict)
     }
+
+
+def completed_samples(root, bases: dict) -> dict:
+    """``_sample_payload_for(cap, base)`` per capability, run in the product
+    (cwd at its root) -- the base TESTER's route suites complete with what
+    the product's own model requires before they post it. A product whose
+    models do not import answers its bases unchanged, exactly as the builder
+    does (``_model_of`` is None)."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    source = "\n".join([
+        "import json as _io_json, sys as _io_sys",
+        '_io_sys.path.insert(0, ".")',
+        *render_payload_helpers(),
+        "_bases = _io_json.loads(_io_sys.stdin.read())",
+        "print(_io_json.dumps({c: _sample_payload_for(c, b) for c, b in _bases.items()}, default=str))",
+    ])
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", source], input=json.dumps(bases, default=str),
+            cwd=str(Path(root)), capture_output=True, text=True, timeout=180,
+        )
+        lines = (proc.stdout or "").strip().splitlines()
+        out = json.loads(lines[-1]) if proc.returncode == 0 and lines else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        out = None
+    return out if isinstance(out, dict) else dict(bases)
 
 
 def render_probe_payload(source: str) -> str:

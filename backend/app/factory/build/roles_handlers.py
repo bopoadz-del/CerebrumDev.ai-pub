@@ -31,7 +31,6 @@ from app.factory.build.offline_adapters import (
 )
 from app.factory.build.block_inputs import (
     align_spec_to_handler_source,
-    extract_capability_route_source,
     render_block_inputs_module,
     sample_channel_value,
     sanitize_python_identifier,
@@ -106,6 +105,9 @@ from app.factory.build.rejection_contract import (
     ERROR_KEY,
     LISTED_RECORDS_SRC,
     OK_KEY,
+    PILOT_FAILED_BLOCK,
+    PILOT_NON_DICT,
+    PILOT_REJECTED,
     RECORD_ID_KEY,
     STORED_RECORD_KEY,
     ALLOWED_VALUES_KEY,
@@ -6182,68 +6184,33 @@ def run_tester(ctx: RoleContext) -> RoleResult:
             )
     caps = [c.capability_id.replace("-", "_") for c in ctx.plan.capabilities]
     vendored = sorted(set(ctx.state.get("vendored_blocks", ())))
-    specs = {
-        cid: dict(spec) if isinstance(spec, dict) else spec
-        for cid, spec in dict(ctx.state.get("model_specs") or {}).items()
-    }
     # The declared schema is the product's own app/models.py, read on EVERY
     # pass -- the same FIELDS/CONSTRAINTS the WRITER gate's probe builds its
     # payload from. Sampling only the captured state spec meant a field the
     # writer declared in a rework round never reached these suites, and the
-    # same test failed again (live sess_1fbea5094c2a4a57).
+    # same test failed again (live sess_1fbea5094c2a4a57). Late align: coder
+    # rework may have rewritten handlers after WRITER's first align, or left
+    # vocab/type on the handler that the spec never declared; the on-disk
+    # handler AND its route are re-mined so _sample_payload matches the body
+    # TESTER is about to exercise (#311 mined the handler only; sess_1fd1d54c's
+    # refuse lived on the route). A mined or state-carried spec can lack
+    # ``entity`` (live sess_620b8581fb224bea run3: KeyError 'entity'). One
+    # function (declared_specs.tester_specs), read by the product grader too.
     from app.factory.build.product_suites import DOMAIN_SUITE, ROUTES_SUITE, SMOKE_SUITE
-    from app.factory.build.declared_specs import (
-        merge_declared_specs,
-        product_root,
-        specs_from_product_models,
-    )
+    from app.factory.build.declared_specs import product_root, tester_specs
 
-    _root = product_root(
-        (getattr(ctx.workspace, "workspace", None), getattr(ctx.workspace, "destination", None))
+    def _read_workspace(rel: Path) -> Optional[str]:
+        return ctx.workspace.read_text(rel) if ctx.workspace.exists(rel) else None
+
+    specs = tester_specs(
+        [cap.capability_id for cap in ctx.plan.capabilities],
+        ctx.state.get("model_specs"),
+        product_root(
+            (getattr(ctx.workspace, "workspace", None), getattr(ctx.workspace, "destination", None))
+        ),
+        _read_workspace,
+        ctx.state.get("route_bodies"),
     )
-    if _root is not None:
-        specs = merge_declared_specs(specs, specs_from_product_models(_root))
-    # Late align: coder rework may have rewritten handlers after WRITER's
-    # first align, or left vocab/type on the handler that the spec never
-    # declared. Re-mine on-disk handlers AND the route (``_constraint_guard``
-    # + coder body) so _sample_payload matches the body TESTER is about
-    # to exercise. #311 mined the handler only; sess_1fd1d54c's refuse
-    # lived on the route.
-    previous_routes = dict(ctx.state.get("route_bodies") or {})
-    routes_text = ""
-    routes_rel = Path("app") / "routes.py"
-    if ctx.workspace.exists(routes_rel):
-        routes_text = ctx.workspace.read_text(routes_rel)
-    for cap in ctx.plan.capabilities:
-        cid = cap.capability_id
-        handler_rel = Path("app") / "actions" / f"{cid.replace('-', '_')}.py"
-        parts: List[str] = []
-        if ctx.workspace.exists(handler_rel):
-            parts.append(ctx.workspace.read_text(handler_rel))
-        route_src = previous_routes.get(cid) or extract_capability_route_source(
-            routes_text, cid
-        )
-        if route_src:
-            parts.append(route_src)
-        if not parts:
-            existing = specs.get(cid)
-            if isinstance(existing, dict) and existing:
-                specs[cid], _env = ensure_record_envelope(existing)
-            continue
-        specs[cid], _changed = align_spec_to_handler_source(
-            specs.get(cid) or {},
-            "\n".join(parts),
-        )
-        specs[cid], _env = ensure_record_envelope(specs[cid])
-    # A mined or state-carried spec can lack ``entity`` (the worker's
-    # handler format does not always carry it). Every suite emitter below
-    # indexes ``spec["entity"]`` (data_lifecycle, domain_acceptance,
-    # deploy) — a missing key there crashed the TESTER thread with
-    # KeyError 'entity' (live sess_620b8581fb224bea run3). Default it to
-    # the capability id, the same fallback the entities map uses.
-    for cid, spec in list(specs.items()):
-        if isinstance(spec, dict) and not spec.get("entity"):
-            spec["entity"] = cid.replace("-", "_")
     _assert_fields_sampleable(specs)
     entities = {
         cap.capability_id.replace("-", "_"): specs.get(cap.capability_id, {}).get(
@@ -6366,11 +6333,11 @@ def run_tester(ctx: RoleContext) -> RoleResult:
             f"    from app.actions import {name}",
             f"    out = {name}.handle({sample!r})",
             "    if not isinstance(out, dict):",
-            f"        failures.append('{name} returned a non-dict: ' + repr(out)[:120])",
+            f"        failures.append('{name}{PILOT_NON_DICT}' + repr(out)[:120])",
             f"        _record_capability_failure({cap.capability_id!r})",
             f"    elif out.get({OK_KEY!r}) is False:",
-            f"        failures.append('{name} rejected a payload built from its own "
-            "schema: ' + str(out.get(" + repr(ERROR_KEY) + ")))",
+            f"        failures.append('{name}{PILOT_REJECTED}' + str(out.get("
+            + repr(ERROR_KEY) + ")))",
             f"        _record_capability_failure({cap.capability_id!r})",
             # A failed block call nested in an ok answer. The statuses are the
             # DECLARED block-result contract: the Factory's own error envelope
@@ -6380,8 +6347,8 @@ def run_tester(ctx: RoleContext) -> RoleResult:
             "    elif '\\\"status\\\": \\\"error\\\"' in "
             "_json.dumps(out, default=str) or "
             "'\\\"status\\\": \\\"failed\\\"' in _json.dumps(out, default=str):",
-            f"        failures.append('{name} reported ok around a failed block "
-            "call: ' + _json.dumps(out, default=str)[:300])",
+            f"        failures.append('{name}{PILOT_FAILED_BLOCK}' + "
+            "_json.dumps(out, default=str)[:300])",
             f"        _record_capability_failure({cap.capability_id!r})",
         ]
     if caps:

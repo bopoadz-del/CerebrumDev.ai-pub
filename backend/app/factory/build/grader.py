@@ -48,7 +48,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger("cerebrumdev.factory.grader")
@@ -527,8 +527,8 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
             add(cid, "stub_handler", "function")
         else:
             add(cid, "handler_error", "function")
-    # A capability with no declared input contract was not probed: the
-    # Factory owes its spec, so it is ungraded, never a stub or an error.
+    # A function the grade did not run: the Factory owes it, so it is
+    # ungraded, never a stub or an error.
     for fn in (layer1.get("functions") or {}).get("ungraded") or []:
         cid = str(fn.get("capability_id") or "")
         graded.add(cid)
@@ -635,6 +635,9 @@ def run_grader(
     blueprint: Mapping[str, Any],
     workspace: Path | str,
     product_id: str,
+    plan_capabilities: Sequence[str],
+    state_specs: Optional[Mapping[str, Any]] = None,
+    route_bodies: Optional[Mapping[str, Any]] = None,
     compiled_brief: Any = None,
     prompt_text: str = "",
     store_root: Any = None,
@@ -644,7 +647,11 @@ def run_grader(
 ) -> GraderVerdict:
     """Grade the writer's tree and write the record into it. Returns the
     verdict; raises nothing (an outage is an ERROR verdict, never an
-    exception the runner must guess about)."""
+    exception the runner must guess about).
+
+    ``plan_capabilities`` is the plan's capability list TESTER iterates;
+    ``state_specs`` / ``route_bodies`` are the build state TESTER reads its
+    spec from -- the function grade samples exactly what TESTER samples."""
     root = Path(workspace)
     blueprint = _as_mapping(blueprint)
     gradroot = Path(grader_root) if grader_root else root.parent / (root.name + ".grader")
@@ -672,7 +679,14 @@ def run_grader(
     outage: Optional[str] = None
     try:
         functions = fg.grade_functions(
-            blueprint, root, python=python, grader_root=gradroot, store_root=store_root
+            blueprint,
+            root,
+            capability_ids=plan_capabilities,
+            state_specs=state_specs,
+            route_bodies=route_bodies,
+            python=python,
+            grader_root=gradroot,
+            store_root=store_root,
         )
     except Exception as exc:  # noqa: BLE001 -- an outage is named, never silent
         outage = f"function grade could not run: {type(exc).__name__}: {exc}"
@@ -700,8 +714,8 @@ def run_grader(
 
     # --- Layer 1 UI -------------------------------------------------------
     ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url)
-    # A capability the function grade could not probe (no declared input
-    # contract) is a gap the Factory owes: quoted as ungraded, not a FAIL.
+    # A function the grade did not run is a gap the Factory owes: quoted as
+    # ungraded, not a FAIL.
     ungraded: List[str] = [
         f"function ungraded: {f.capability_id}: {f.detail}"
         for f in (functions.ungraded if functions is not None else [])
