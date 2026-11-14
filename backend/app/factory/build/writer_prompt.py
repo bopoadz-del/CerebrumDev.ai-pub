@@ -626,3 +626,30 @@ def render_writer_prompt(
     if resume:
         body = _RESUME_PREFACE + body
     return f"<!-- {version} -->\n" + body
+
+
+#: The build-state key holding what the writer was actually told, recorded at
+#: dispatch on every writer path (FG-4). The grader reads it through
+#: :func:`dispatched_writer_inputs` and nothing else.
+DISPATCH_STATE_KEY = "writer_dispatch"
+
+
+class DispatchRecordMissing(LookupError):
+    """No writer dispatch was recorded for this build: an error about the run."""
+
+
+def record_writer_dispatch(state: Dict[str, Any], *, supplied: str, brief: str, prompt: str) -> None:
+    """Record, at dispatch, the user-supplied brief, the brief section the
+    writer was handed and the full prompt it was given."""
+    state[DISPATCH_STATE_KEY] = {"supplied": str(supplied or ""), "brief": str(brief or ""), "prompt": str(prompt or "")}
+
+
+def dispatched_writer_inputs(state: Mapping[str, Any]) -> Dict[str, str]:
+    """The recorded dispatch. A missing or empty record raises
+    :class:`DispatchRecordMissing` -- never a reconstructed fallback."""
+    record = state.get(DISPATCH_STATE_KEY)
+    if not isinstance(record, Mapping) or not str(record.get("prompt") or "").strip():
+        raise DispatchRecordMissing(
+            "no writer dispatch was recorded for this build: the grader cannot read what the writer was told"
+        )
+    return {key: str(record.get(key) or "") for key in ("supplied", "brief", "prompt")}

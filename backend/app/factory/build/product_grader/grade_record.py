@@ -54,17 +54,17 @@ def layer1_ok(functions: Mapping[str, Any], ui: Mapping[str, Any]) -> bool:
 def hardwiring_section(
     function_verdicts: Mapping[str, str],
     forbidden_hits: Mapping[str, Any],
-    prompt_leaks: Any,
+    prompt_leaks: Mapping[str, Any],
     origin: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """F-8e grade section. ``function_verdicts``: {capability_id: verdict} from
     the two-dataset check; ``forbidden_hits``: {relpath: [literals]} baked into
-    the product source; ``prompt_leaks``: literals shared by the writer prompt
-    and the source. A FAIL verdict (anything but the two-dataset OK / BOTH_ABSENT),
+    the product source; ``prompt_leaks``: {relpath: [clauses]} of the supplied
+    brief the writer was given and copied into that file (FG-4). A FAIL verdict (anything but the two-dataset OK / BOTH_ABSENT),
     a baked literal, or a prompt leak is a finding. ``clean`` == no findings.
 
     ``origin`` (FG-1) answers who wrote a file (factory_receipt.file_origin):
-    each baked-literal finding then carries its ``owner`` and ``owner_reason``.
+    each baked-literal and prompt-leak finding then carries its ``owner`` and ``owner_reason``.
     The bar is unchanged -- a Factory-owned finding still makes the section
     unclean; ownership only decides who the finding is billed to."""
     from app.factory.build.product_grader.two_dataset import BOTH_ABSENT, OK
@@ -73,15 +73,14 @@ def hardwiring_section(
     for cid, verdict in sorted(function_verdicts.items()):
         if verdict not in (OK, BOTH_ABSENT):
             findings.append({"kind": "function", "capability": str(cid), "verdict": str(verdict)})
-    for path, lits in sorted(forbidden_hits.items()):
-        row: Dict[str, Any] = {"kind": "forbidden_literal", "file": str(path), "literals": [str(x) for x in lits]}
-        if origin is not None:
-            who = origin(str(path))
-            row["owner"] = str(who.owner)
-            row["owner_reason"] = str(who.reason)
-        findings.append(row)
-    if prompt_leaks:
-        findings.append({"kind": "prompt_leak", "literals": [str(x) for x in prompt_leaks]})
+    for kind, rows in (("forbidden_literal", forbidden_hits), ("prompt_leak", prompt_leaks)):
+        for path, lits in sorted(rows.items()):
+            row: Dict[str, Any] = {"kind": kind, "file": str(path), "literals": [str(x) for x in lits]}
+            if origin is not None:
+                who = origin(str(path))
+                row["owner"] = str(who.owner)
+                row["owner_reason"] = str(who.reason)
+            findings.append(row)
     return {"ran": True, "clean": not findings, "findings": findings}
 
 
@@ -106,7 +105,7 @@ def _hardwiring_tasks(hardwiring: Optional[Mapping[str, Any]]) -> List[str]:
         elif f.get("kind") == "forbidden_literal":
             out.append(f"remove baked literals from {f.get('file')}: {f.get('literals')}")
         elif f.get("kind") == "prompt_leak":
-            out.append(f"stop leaking the prompt into the source: {f.get('literals')}")
+            out.append(f"stop copying the brief into {f.get('file')}: {f.get('literals')}")
     return out
 
 

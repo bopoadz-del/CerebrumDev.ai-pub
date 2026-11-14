@@ -120,24 +120,45 @@ def test_derive_forbidden_takes_brief_shapes_not_prose():
     forbidden = grader.derive_forbidden({}, brief, "")
     assert "Acme Trading Co" in forbidden
     assert "Nimbus" in forbidden
-    assert "240" in forbidden
+    # FG-4: a bare number is the two-dataset check's, and a capitalised
+    # word is not an identity -- neither is a brief literal.
+    assert "240" not in forbidden
+    assert "The" not in forbidden and "Plain" not in forbidden
     assert "prose" not in forbidden
     assert "lowercase" not in forbidden
 
 
 def test_derive_forbidden_reads_structured_blueprint_values():
     bp = {"client": "Blue Harbor Estates", "vertical": "property"}
-    forbidden = grader.derive_forbidden(bp, "some brief", "")
+    forbidden = grader.derive_forbidden(bp, "some brief for blue harbor estates", "")
     assert "Blue Harbor Estates" in forbidden
-    assert "property" in forbidden
+    # The vertical is the product's own (Factory-assigned) identity.
+    assert "property" not in forbidden
+    # A client value the user never said is not brief data.
+    assert "Blue Harbor Estates" not in grader.derive_forbidden(bp, "some brief", "")
+
+
+@pytest.mark.parametrize("identity", ["north_wing_b", "acct_7731"])
+def test_derive_forbidden_takes_identity_tokens_but_not_contract_or_factory_text(identity):
+    brief = f"Bill everything to {identity} via the intake_form flow."
+    bp = {"capabilities": [{"id": "intake_form", "input_schema": {"unit_ref": {}}}]}
+    assert identity in grader.derive_forbidden(bp, brief, "")
+    # A contract-required id or schema key is never a brief literal ...
+    assert "intake_form" not in grader.derive_forbidden(bp, brief, "")
+    assert "unit_ref" not in grader.derive_forbidden(bp, brief + " Key unit_ref.", "")
+    # ... and one the Factory's own prompt text carries is vocabulary.
+    assert identity not in grader.derive_forbidden(bp, brief, f"the Factory says {identity}")
 
 
 def test_derive_forbidden_takes_document_references_and_file_shapes():
-    brief = "See document:handover_notes.docx and the rates_sheet.xlsx values."
+    brief = "See document:handover_notes.docx, document:Lease and the rates_sheet.xlsx or plan.pdf values."
     forbidden = grader.derive_forbidden({}, brief, "")
     assert "handover_notes.docx" in forbidden
     assert "handover_notes" in forbidden
     assert "rates_sheet.xlsx" in forbidden
+    assert "Lease" in forbidden and "plan.pdf" in forbidden
+    # A one-word stem is vocabulary: only the full document name counts.
+    assert "plan" not in forbidden
 
 
 def test_render_product_includes_app_and_frontend_only_bounded():
@@ -325,7 +346,7 @@ def test_as_mapping_accepts_a_mapping_and_a_model_object(blueprint):
     "blueprint",
     [
         {"client": "Alpha Co"},
-        {"vertical": "beta", "product_id": "p-1"},
+        {"project": "Beta Wing", "vertical": "beta", "product_id": "p-1"},
         _ModelBlueprint({"client": "Gamma Co"}),
     ],
 )
@@ -333,7 +354,8 @@ def test_structured_literals_reads_the_schema_fields(blueprint):
     if isinstance(blueprint, _ModelBlueprint):
         expected = {"Gamma Co"}
     else:
-        expected = {v for v in blueprint.values() if isinstance(v, str) and v.strip()}
+        # The product's own identity (vertical, product id) is not client data.
+        expected = {v for k, v in blueprint.items() if k in ("client", "project")}
     assert grader._structured_literals(blueprint) == expected
 
 
@@ -594,11 +616,13 @@ def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, in
 @pytest.mark.parametrize("token", ["Nimbus", "Zephyr"])
 def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independent_grader, green_ui, token):
     brief = f"The project is code-named {token} for its portal."
-    prompt = f"Build the portal for the {token} project."
+    # The writer was given the brief (it is in the dispatched prompt) and
+    # copied one of its clauses into a value.
+    prompt = f"Build the portal.\n{brief}"
     ws = _workspace(
         tmp_path,
         {i: READS_INPUT for i in IDS},
-        extra={"app/settings.py": f'PROJECT = "{token}"\n'},
+        extra={"app/settings.py": f'PROJECT = "The project is code-named {token} for its portal"\n'},
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
@@ -610,7 +634,7 @@ def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independen
         prompt_text=prompt,
     )
     assert verdict.tier == grader.NOT_CERTIFIED
-    assert any("stop leaking the prompt into the source" in item for item in verdict.items)
+    assert any("remove copied brief from app/settings.py" in item for item in verdict.items)
 
 
 # --- the runner wiring -------------------------------------------------------
@@ -635,14 +659,24 @@ def _red_product(workspace: Path, constant: tuple = ("analytics_surface", "dashb
         (actions / f"{cid}.py").write_text(body)
 
 
+def _fake_pass(ctx):
+    """A role that passes instantly; as a writer it records what it was told
+    (FG-4), as every real writer path does."""
+    from app.factory.build.roles import RoleResult
+    from app.factory.build.writer_prompt import record_writer_dispatch
+
+    record_writer_dispatch(ctx.state, supplied="", brief="invented brief", prompt="invented prompt")
+    return RoleResult(ok=True, detail="fake pass")
+
+
 def _fake_pass_harness(monkeypatch):
     """Every phase role passes instantly and every phase gate is green, so
     the run reaches the grader step and nothing else decides."""
     from app.factory.build import runner as runner_mod
     from app.factory.build.gates import GateResult
-    from app.factory.build.roles import ROLE_IMPLEMENTATIONS, RoleResult
+    from app.factory.build.roles import ROLE_IMPLEMENTATIONS
 
-    roles = {role: (lambda ctx: RoleResult(ok=True, detail="fake pass")) for role in ROLE_IMPLEMENTATIONS}
+    roles = {role: _fake_pass for role in ROLE_IMPLEMENTATIONS}
     monkeypatch.setattr(runner_mod, "gate_for", lambda role: (lambda ctx: GateResult(ok=True, gate="fake_gate")))
     return roles
 
@@ -655,7 +689,6 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
     from app.factory.build import grader as grader_mod
     from app.factory.build.authority import BuildRole
     from app.factory.build.ledger import EventKind
-    from app.factory.build.roles import RoleResult
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
@@ -674,7 +707,7 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
 
     def recording_writer(ctx):
         captured.append(tuple(ctx.work_list))
-        return RoleResult(ok=True, detail="fake pass")
+        return _fake_pass(ctx)
 
     roles[BuildRole.WRITER] = recording_writer
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
@@ -713,7 +746,6 @@ def test_runner_spends_no_writer_round_on_rows_the_factory_owes(smoke_blueprint,
     from app.factory.build import grader as grader_mod
     from app.factory.build.authority import BuildRole
     from app.factory.build.ledger import EventKind
-    from app.factory.build.roles import RoleResult
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
@@ -730,7 +762,7 @@ def test_runner_spends_no_writer_round_on_rows_the_factory_owes(smoke_blueprint,
 
     def recording_writer(ctx):
         captured.append(tuple(ctx.work_list))
-        return RoleResult(ok=True, detail="fake pass")
+        return _fake_pass(ctx)
 
     roles[BuildRole.WRITER] = recording_writer
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)

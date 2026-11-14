@@ -83,9 +83,11 @@ _TOTAL_CHARS = 60_000
 #: How long the grader waits for a booted product to answer /health.
 _BOOT_READY_TIMEOUT_S = 60.0
 
-#: Structured brief fields whose VALUES are domain data (client, project,
-#: vertical, product names). The field NAMES are schema, not domain literals.
-_STRUCTURED_FIELDS = ("client", "project", "vertical", "name", "product_id")
+#: Structured fields whose VALUES the user supplies about themselves (who the
+#: client is, which project). The field NAMES are schema, not domain literals.
+#: The product's own identity (id, name, vertical) is not among them: the
+#: Factory assigns or defaults it and stamps it into the tree (FG-4).
+_STRUCTURED_FIELDS = ("client", "project")
 
 #: Directory names that never belong in the rendered product (grader and
 #: environment scaffolding, not product source).
@@ -122,9 +124,9 @@ def _as_mapping(blueprint: Any) -> Dict[str, Any]:
 
 
 def _structured_literals(blueprint: Mapping[str, Any]) -> set:
-    """The blueprint's own structured domain values (client, project,
-    vertical, product name): data the brief dictated, read off the schema
-    fields -- nothing hand-listed."""
+    """The blueprint's structured client/project values, read off the schema
+    fields -- nothing hand-listed. They count as brief data only where the
+    user's own words say them (``derive_forbidden``)."""
     out = set()
     if not isinstance(blueprint, Mapping):
         blueprint = dict(getattr(blueprint, "__dict__", {}) or {})
@@ -173,43 +175,78 @@ def _tokens(text: str) -> List[str]:
     return [t.strip(".,;:()[]{}\"'`") for t in (text or "").split()]
 
 
+def _said(value: str, text: str) -> bool:
+    """``value`` occurs in ``text`` as whole tokens, case-insensitively: the
+    user's own words say it."""
+    pattern = r"(?<![A-Za-z0-9_])" + re.escape(value) + r"(?![A-Za-z0-9_])"
+    return re.search(pattern, text or "", flags=re.IGNORECASE) is not None
+
+
+def _contract_ids(blueprint: Mapping[str, Any]) -> set:
+    """Identifiers the product contract REQUIRES the writer to use: the
+    product's own identity, every capability id and every declared
+    input name. They are never brief literals, whoever first said them."""
+    out = {str(blueprint.get(k) or "") for k in ("product_id", "product_name", "vertical", "name")}
+    for cap in blueprint.get("capabilities") or []:
+        if isinstance(cap, Mapping):
+            out.add(str(cap.get("id") or ""))
+            # The declared ActionSpec input names (the shape the vault reads).
+            out.update(str(k) for k in (cap.get("input_schema") or {}))
+    return {v for v in out if v}
+
+
 def derive_forbidden(
     blueprint: Mapping[str, Any],
     brief_text: str,
-    prompt_text: str,
+    factory_text: str,
 ) -> FrozenSet[str]:
-    """The hardwiring scan's forbidden set, DERIVED: structured blueprint
-    values, document references, quoted spans, amounts, proper-noun-shaped
-    tokens and file-shaped tokens from the brief. Generic lowercase prose
-    and stop-word-shaped noise never enter it. The prompt text is carried
-    for the prompt-leak diff, not for vocabulary mining."""
-    out: set = _structured_literals(blueprint)
+    """The hardwiring scan's forbidden set, by PROVENANCE (FG-4): what the
+    user's intake and documents supplied as identities and values.
+
+    ``brief_text`` is the user-supplied brief recorded at dispatch. A
+    literal enters only from it: the client/project values it says, its
+    document references, its quoted spans, and its multi-word identity
+    tokens (``product_literals.is_identity_token``, the rule brief hygiene
+    applies: a single word or a display name is vocabulary). Never capitalisation, never a bare number
+    (value hardwiring is the two-dataset check's), never a value the
+    Factory defaulted. A literal the Factory's own part of the dispatched
+    prompt (``factory_text``) also carries is platform vocabulary, and an
+    identifier the contract requires is never a brief literal."""
+    from app.factory.build.product_literals import is_identity_token
+
     text = brief_text or ""
+    out: set = {v for v in _structured_literals(blueprint) if _said(v, text)}
     for token in _tokens(text):
         # A folded-upload marker carries the file name after the protocol
         # token; the equality on the marker half is a contract check on the
         # platform's own schema, never a scan for domain vocabulary.
         marker, sep, rest = token.partition(":")
-        if sep and marker == "document" and rest:
+        if sep and marker == "document" and rest.strip():
             name = rest.strip()
-            if name:
-                out.add(name)
-                stem = Path(name).stem
-                if stem:
-                    out.add(stem)
+        elif Path(token).suffix.lower() in _DOC_EXTENSIONS:
+            name = token
+        else:
+            if is_identity_token(token):
+                out.add(token)
             continue
-        suffix = Path(token).suffix.lower()
-        if suffix and suffix in _DOC_EXTENSIONS:
-            out.add(token)
-            stem = Path(token).stem
-            if stem:
-                out.add(stem)
+        out.add(name)
+        if is_identity_token(Path(name).stem):
+            out.add(Path(name).stem)
     out.update(re.findall(r'"([^"]{3,60})"', text))
-    out.update(re.findall(r"\b\d+(?:\.\d+)?\b", text))
-    out.update(re.findall(r"\b[A-Z][a-z]{2,}(?:[A-Z][a-z]+)*\b", text))
-    # The prompt itself is not a source of forbidden literals: the leak
-    # check compares the prompt against the product separately.
-    return frozenset(sorted(v for v in out if len(v) <= 80))
+    contract = _contract_ids(blueprint)
+    return frozenset(
+        sorted(v for v in out if len(v) <= 80 and v not in contract and not _said(v, factory_text))
+    )
+
+
+def _factory_part(prompt_text: str, *spans: str) -> str:
+    """The Factory's own text in the dispatched prompt: the prompt with the
+    brief it carried cut out."""
+    out = prompt_text or ""
+    for span in spans:
+        if span and span.strip():
+            out = out.replace(span, "\n")
+    return out
 
 
 def render_product(workspace: Path | str, first: Sequence[str] = ()) -> str:
@@ -657,6 +694,7 @@ def run_grader(
     route_bodies: Optional[Mapping[str, Any]] = None,
     compiled_brief: Any = None,
     prompt_text: str = "",
+    supplied_text: Optional[str] = None,
     store_root: Any = None,
     base_url: Optional[str] = None,
     python: str = sys.executable,
@@ -724,9 +762,11 @@ def run_grader(
         pairs = two_dataset.build_datasets(cids, resolve, schemas, seed_a, seed_a + 1)
         checks = two_dataset.run_two_dataset(pairs, root, python=python)
         verdicts = {check.capability_id: check.verdict for check in checks}
-        forbidden = derive_forbidden(blueprint, brief, prompt_text)
+        supplied = brief if supplied_text is None else supplied_text
+        factory_text = _factory_part(prompt_text, brief, supplied)
+        forbidden = derive_forbidden(blueprint, supplied, factory_text)
         hits = scan_generated.forbidden_hits(root, forbidden)
-        leaks = scan_generated.prompt_leak(prompt_text, rendered, forbidden) if prompt_text else []
+        leaks = scan_generated.prompt_leak(root, supplied, factory_text, prompt_text)
         # FG-1: who wrote each file is read from the provenance the Factory
         # records (the stamp registry and the build's own CLONER lock), the
         # same file_origin the Store gate bills its audit rows by.
@@ -823,17 +863,16 @@ def run_grader(
         if kind == "function":
             cid = str(finding.get("capability") or "")
             items.append(f"de-hardwire {cid}: {finding.get('verdict')}")
-        elif kind == "forbidden_literal":
+        elif kind in ("forbidden_literal", "prompt_leak"):
             rel = str(finding.get("file") or "")
+            what = "baked literals" if kind == "forbidden_literal" else "copied brief"
             if grade_record.finding_is_writers(finding):
-                items.append(f"remove baked literals from {rel}: {finding.get('literals')}")
+                items.append(f"remove {what} from {rel}: {finding.get('literals')}")
             else:
                 factory_owed.append(
-                    f"FACTORY owes baked literals in {rel} "
+                    f"FACTORY owes {what} in {rel} "
                     f"({finding.get('owner_reason')}): {finding.get('literals')}"
                 )
-        elif kind == "prompt_leak":
-            items.append(f"stop leaking the prompt into the source: {finding.get('literals')}")
 
     # A refused layer is a quoted NOT_CERTIFIED gap -- the report says what
     # it did not check, and no tier is issued over the gap.
