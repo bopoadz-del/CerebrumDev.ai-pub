@@ -54,10 +54,15 @@ RUN npm install -g --no-fund --no-audit codewhale@${CODEWHALE_VERSION} \
 # installs from (frontend/package-lock.json), never a floating tag. The
 # grader runs Playwright with PATH only, so the browser cache resolves from
 # the app user's passwd home: install it under /app/.cache (chowned below).
+# A spec's `import '@playwright/test'` resolves by walking up from the
+# spec's own directory and never reaches the npm global prefix, so the root
+# of that walk (/node_modules) is the global prefix: a spec anywhere in the
+# image resolves the one pinned version; a closer node_modules still wins.
 COPY frontend/package-lock.json /tmp/frontend-package-lock.json
 RUN PW_VERSION="$(python -c "import json; print(json.load(open('/tmp/frontend-package-lock.json'))['packages']['node_modules/@playwright/test']['version'])")" \
     && echo "playwright ${PW_VERSION}" \
     && npm install -g --no-fund --no-audit "@playwright/test@${PW_VERSION}" \
+    && ln -s /usr/local/lib/node_modules /node_modules \
     && PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright npx playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* /tmp/frontend-package-lock.json
 
