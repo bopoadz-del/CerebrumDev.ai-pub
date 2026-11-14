@@ -50,8 +50,12 @@ def test_module_and_route_carry_one_name(cid):
     assert capability_name(cid.replace("_", "-")) == capability_name(cid.replace("-", "_"))
 
 
-def test_distinct_ids_keep_distinct_names():
-    assert len({capability_name(c) for c in IDS}) == len(IDS)
+@pytest.mark.parametrize(
+    "ids",
+    [IDS, ["ledger-close", "ledger_open", "tally"]],
+)
+def test_distinct_ids_keep_distinct_names(ids):
+    assert len({capability_name(c) for c in ids}) == len(ids)
 
 
 @pytest.mark.parametrize("cid", IDS)
