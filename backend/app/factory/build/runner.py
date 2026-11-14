@@ -29,6 +29,7 @@ is the documented revert.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -43,6 +44,13 @@ from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequ
 logger = logging.getLogger("cerebrumdev.factory.runner")
 
 from app.factory.build.failure_kinds import failure_kind
+from app.factory.build.coder_session_status import (
+    OwnerStopped,
+    check_owner,
+    owner_control_scope,
+    read_control,
+    read_control_record,
+)
 from app.factory.build.authority import (
     BUILD_PHASES,
     SEALED_AFTER_CLONER,
@@ -520,6 +528,13 @@ class Outcome(str, Enum):
     FAILED_TIME_BUDGET = "FAILED_TIME_BUDGET"
     FAILED_ROLE_ERROR = "FAILED_ROLE_ERROR"
     FAILED_AUTHORITY = "FAILED_AUTHORITY"
+    #: F-U1a: the owner pressed Stop. A final state of its own, never a
+    #: failure of the product or of a gate.
+    STOPPED_BY_OWNER = "STOPPED_BY_OWNER"
+
+
+#: The decision reason a stopped build's terminal event carries.
+STOPPED_BY_OWNER_REASON = "stopped_by_owner"
 
 
 def _collect_all_enabled() -> bool:
@@ -593,6 +608,27 @@ class BuildOutcome:
             "ledger": self.ledger_path,
         }
 
+
+
+def _under_owner_control(run: Callable[["RoleRunner"], "BuildOutcome"]) -> Callable[["RoleRunner"], "BuildOutcome"]:
+    """Run the build under the owner's Stop (F-U1a).
+
+    The owner's control file for the build's workspace is installed as this
+    thread's control, so every stage reads it before a model call and the
+    writer CLI's wait reads it on every tick. A Stop raised anywhere below
+    ends the run here, as one named final state.
+    """
+
+    @functools.wraps(run)
+    def controlled(self: "RoleRunner") -> "BuildOutcome":
+        with owner_control_scope(functools.partial(read_control, self.workspace)):
+            try:
+                return run(self)
+            except OwnerStopped as stop:
+                stopped = stop
+        return self._finish_stopped(stopped)
+
+    return controlled
 
 class RoleRunner:
     """Drives one build of *blueprint* into *workspace*."""
@@ -2142,7 +2178,9 @@ class RoleRunner:
             detail=detail,
             payload=payload,
         )
-        if kind is EventKind.RUN_FAILED:
+        if kind is EventKind.RUN_FAILED and outcome is not Outcome.STOPPED_BY_OWNER:
+            # A stopped build makes no further model call, not even to
+            # narrate itself: the owner said why it ended.
             self._attach_failure_narrative(phase)
         if (
             outcome is Outcome.SUCCESS
@@ -2816,6 +2854,36 @@ class RoleRunner:
 
     # -- the run ---------------------------------------------------------
 
+    def _finish_stopped(self, stop: OwnerStopped) -> BuildOutcome:
+        """End the run as stopped by the owner: who, when, and where."""
+        record = read_control_record(self.workspace)
+        # The phase in flight: the last one started and not yet ended (None
+        # when the stop landed between phases).
+        role: Optional[BuildRole] = None
+        for event in self.ledger.events():
+            if event.kind is EventKind.PHASE_STARTED and event.role:
+                role = event.role
+            elif event.kind in TERMINAL_KINDS and event.role is role:
+                role = None
+        if role is not None:
+            self.ledger.append(
+                EventKind.PHASE_ABORTED,
+                role=role,
+                detail=f"stopped by the owner: {stop}",
+                payload={"reason": STOPPED_BY_OWNER_REASON},
+            )
+        return self._finish(
+            Outcome.STOPPED_BY_OWNER,
+            f"stopped by the owner during {role.value if role else 'the build'}",
+            phase=role,
+            decision={
+                "reason": STOPPED_BY_OWNER_REASON,
+                "by": record.get("by"),
+                "at": record.get("updated_at"),
+            },
+        )
+
+    @_under_owner_control
     def run(self) -> BuildOutcome:
         started = self.clock()
         deadline = self.budget.deadline_from(started)
@@ -2970,6 +3038,8 @@ class RoleRunner:
                     index += 1
                     continue
 
+                # F-U1a: a Stop ends the build here, before the next phase.
+                check_owner()
                 self._maybe_stage_inspect()
                 deadline = self._deadline
                 if self._stage_halt:

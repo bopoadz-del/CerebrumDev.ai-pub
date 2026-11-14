@@ -51,6 +51,12 @@ from typing import Any, Callable, Dict, Iterable, Optional
 
 import httpx
 
+from app.factory.build.coder_session_status import (
+    OwnerStopped,
+    check_owner,
+    current_owner_control,
+)
+
 logger = logging.getLogger("cerebrumdev.factory.llm_watchdog")
 
 CODER_TIMEOUT_ENV = "FACTORY_CODER_TIMEOUT_S"
@@ -69,6 +75,8 @@ DEFAULT_ATTEMPT_WALL_S = 2400.0
 #: Sub-minute values stay honoured for tests.
 LEGACY_TIMEOUT_BAND_MIN_S = 60.0
 LEGACY_TIMEOUT_BAND_MAX_S = 180.0
+#: How often a model call in flight reads the owner's Stop (F-U1a).
+OWNER_POLL_S = 0.25
 #: One _llm_code_call may try primary + same-endpoint fallback +
 #: cross-provider. Plus a small grace so status polling does not race the
 #: last attempt. Used for test-scale walls only.
@@ -320,6 +328,10 @@ def post_with_deadline(
         float(timeout) if timeout is not None else call_timeout_s(),
         deadline_mono,
     )
+    # F-U1a: no model call starts once the owner has pressed Stop (a no-op
+    # on a thread with no owner control installed).
+    control = current_owner_control()
+    check_owner(control)
     poster = post or httpx.post
     box: Dict[str, Any] = {}
     client_holder: Dict[str, Any] = {}
@@ -384,7 +396,19 @@ def post_with_deadline(
     # happened: the worker held the caller until the socket died.
     # Never close() after the deadline on this thread either — that is
     # how live 1085s>480s happened.
-    if not done.wait(timeout_s):
+    # With an owner control installed the wait runs in short slices, so a
+    # Stop pressed mid-call cancels the call (off the caller, like the
+    # deadline) instead of waiting for its answer.
+    wait_until = time.monotonic() + timeout_s
+    finished = done.wait(timeout_s if control is None else min(timeout_s, OWNER_POLL_S))
+    while not finished and control is not None and time.monotonic() < wait_until:
+        try:
+            check_owner(control)
+        except OwnerStopped:
+            _cancel_off_caller()
+            raise
+        finished = done.wait(min(OWNER_POLL_S, max(0.0, wait_until - time.monotonic())))
+    if not finished:
         logger.warning(
             "coder LLM watchdog fired after %.1fs; aborting off-caller "
             "(Client.close must not run on this thread) url=%s",
