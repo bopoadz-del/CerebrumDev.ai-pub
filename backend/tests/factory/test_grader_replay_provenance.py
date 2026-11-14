@@ -109,3 +109,49 @@ def test_a_missing_dispatch_record_is_a_run_error_not_a_fallback(tree, monkeypat
     assert replay.verdict is not None and replay.verdict.tier == ERROR
     assert any("no writer dispatch was recorded" in item for item in replay.verdict.items)
     assert [n for n in replay.notes if n["payload"].get("grader_tier") == ERROR]
+
+
+#: How a writer handler answers: with an amount the user's brief states, as a
+#: constant (a bare number, or inside a string), or computed from its inputs.
+AS_NUMBER = "as_number"
+IN_STRING = "in_string"
+COMPUTED = "computed"
+
+
+def _handler(form, amount):
+    from tests.factory.grader_contract import COMPUTES
+
+    if form == AS_NUMBER:
+        return f"def handle(payload):\n    return {{'ok': True, 'total': {amount}}}\n"
+    if form == IN_STRING:
+        return f"def handle(payload):\n    return {{'ok': True, 'total': 'Total due: {amount}'}}\n"
+    return COMPUTES
+
+
+@pytest.mark.parametrize("form, caught", [(AS_NUMBER, True), (IN_STRING, True), (COMPUTED, False)])
+@pytest.mark.parametrize("tree", list(gr.CASES), indirect=True)
+def test_a_brief_amount_returned_as_a_constant_fails_the_grade_on_that_capability(
+    tree, form, caught, monkeypatch  # noqa: F811
+):
+    """FG-4 moved bare numbers out of the literal scan: value hardwiring is
+    the two-dataset check's to catch. A handler answering the amount the
+    user's brief states, whatever its inputs, must fail the grade on its
+    capability; the same capability computing from its inputs passes."""
+    from app.factory.build.product_grader.function_grader import ONE_RESULT
+
+    amount = 10000 + uuid.uuid4().int % 90000
+    supplied = client_brief(tree, f"The monthly fee is {amount}.")
+    target = tree.capability_ids[0]
+    tree.write_writer_file(gr.handler_rel(target), _handler(form, amount))
+    replay = gr.grade(tree, monkeypatch, supplied=supplied)
+
+    functions = replay.grade["layer1"]["functions"]
+    row = next(f for f in functions["functions"] if f["capability_id"] == target)
+    assert (target in functions["failing"]) is caught, functions["failing"]
+    assert row["ok"] is (not caught), row
+    if caught:
+        # The check that caught it: the two answers carry no result that
+        # depends on the input.
+        assert row["detail"] == ONE_RESULT, row
+        assert not replay.certified
+        assert [r for r in replay.verdict.reasons if r.get("capability") == target], replay.items()

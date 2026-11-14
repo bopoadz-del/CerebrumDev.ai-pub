@@ -60,9 +60,13 @@ def test_forbidden_hits_skips_docstrings_but_not_a_second_string(head, tmp_path)
     assert hits == {"app/k.py": ["acme_corp"]}
 
 
-def test_forbidden_hits_skips_unparseable_source(tmp_path):
-    root = _product(tmp_path, {"app/bad.py": "NAME = 'acme_corp'\ndef (:\n"})
-    assert scan_generated.forbidden_hits(root, FORBIDDEN) == {}
+@pytest.mark.parametrize("body, expected", [
+    ("NAME = 'acme_corp'\ndef (:\n", {}),                             # unparseable: skipped, not a crash
+    ("NAME = 'acme_corp'\n", {"app/bad.py": ["acme_corp"]}),          # the same value, parseable: a hit
+])
+def test_forbidden_hits_skips_unparseable_source(body, expected, tmp_path):
+    root = _product(tmp_path, {"app/bad.py": body})
+    assert scan_generated.forbidden_hits(root, FORBIDDEN) == expected
 
 
 SUPPLIED = "Remind the tenant thirty days before renewal. Use the standard ledger view."
@@ -81,6 +85,12 @@ def test_prompt_leak_fires_on_a_copied_brief_clause_only(value, leaked, tmp_path
     assert found == ({"app/x.py": [value]} if leaked else {})
 
 
-def test_prompt_leak_needs_the_clause_in_the_dispatched_prompt(tmp_path):
-    root = _product(tmp_path, {"app/x.py": "MSG = 'Remind the tenant thirty days before renewal'\n"})
-    assert scan_generated.prompt_leak(root, SUPPLIED, "", "a prompt that never carried the brief") == {}
+@pytest.mark.parametrize("prompt, leaked", [
+    ("a prompt that never carried the brief", False),   # the writer was never told it
+    (SUPPLIED, True),                                   # the writer was told it and copied it
+])
+def test_prompt_leak_needs_the_clause_in_the_dispatched_prompt(prompt, leaked, tmp_path):
+    value = "Remind the tenant thirty days before renewal"
+    root = _product(tmp_path, {"app/x.py": f"MSG = {value!r}\n"})
+    found = scan_generated.prompt_leak(root, SUPPLIED, "", prompt)
+    assert found == ({"app/x.py": [value]} if leaked else {})
