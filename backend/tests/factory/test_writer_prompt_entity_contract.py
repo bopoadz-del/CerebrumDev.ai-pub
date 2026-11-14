@@ -43,9 +43,12 @@ def test_the_prompt_rule_and_testers_default_move_together():
     If TESTER ever stops defaulting an entity to the capability id, the
     prompt's rule becomes a lie and this fails -- change both, together.
     """
-    from app.factory.build import roles_handlers
+    from app.factory.build import declared_specs, roles_handlers
 
-    tester = inspect.getsource(roles_handlers.run_tester)
+    # TESTER's spec is built by declared_specs.tester_specs (F-C1: one
+    # function, read by TESTER and the product grader).
+    assert "tester_specs(" in inspect.getsource(roles_handlers.run_tester)
+    tester = inspect.getsource(declared_specs.tester_specs)
     assert 'spec["entity"] = cid.replace("-", "_")' in tester, (
         "TESTER no longer names entities by capability id; update the "
         "writer prompt's PERSISTENCE rule to match"

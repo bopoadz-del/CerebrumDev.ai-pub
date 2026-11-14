@@ -476,6 +476,7 @@ def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grad
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
     verdict = grader.run_grader(
+        plan_capabilities=IDS,
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
@@ -493,7 +494,7 @@ def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grad
 def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path, green_ui, product_id):
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
-    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id=product_id)
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id=product_id)
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert any("may not grade the writer's tree" in item for item in verdict.items)
@@ -503,25 +504,38 @@ def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path,
     assert grade_record.certification_refusal(ws) is not None
 
 
-@pytest.mark.parametrize("gap", ["invoice_total", "visit_log"])
-def test_capability_without_a_declared_contract_is_ungraded_not_a_writer_fail(
-    tmp_path, independent_grader, green_ui, gap
+#: A handle for a capability with no declared field: it answers TESTER's
+#: one input ({}) ok, or refuses it.
+ONE_INPUT_OK = "def handle(payload):\n    return {'ok': True, 'count': len(payload) + 1}\n"
+ONE_INPUT_REFUSES = "def handle(payload):\n    return {'ok': False, 'error': 'nothing declared'}\n"
+
+
+@pytest.mark.parametrize("gap,body,certified", [
+    ("invoice_total", ONE_INPUT_OK, True),
+    ("visit_log", ONE_INPUT_OK, True),
+    ("invoice_total", ONE_INPUT_REFUSES, False),
+    ("visit_log", ONE_INPUT_REFUSES, False),
+])
+def test_capability_without_a_declared_contract_is_judged_by_testers_one_input_rule(
+    tmp_path, independent_grader, green_ui, gap, body, certified
 ):
-    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    ws = _workspace(tmp_path, {i: (body if i == gap else READS_INPUT) for i in IDS})
     write_models(ws, IDS, declared=[i for i in IDS if i != gap])
-    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
-    assert verdict.tier == grader.NOT_CERTIFIED
-    assert any(u.startswith(f"function ungraded: {gap}: ") for u in verdict.ungraded)
-    assert f"function grade FAIL: {gap}" not in verdict.items
-    assert {"capability": gap, "class": "ungraded", "layer": "function"} in verdict.reasons
-    assert not any(r["class"] == "stub_handler" for r in verdict.reasons)
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    assert verdict.tier == (grader.CERTIFIED if certified else grader.NOT_CERTIFIED)
+    assert verdict.ungraded == ()
+    assert (f"function grade FAIL: {gap}" in verdict.items) is (not certified)
+    assert not any(r["class"] in ("ungraded", "stub_handler") for r in verdict.reasons)
+    record = json.loads((ws / "grade.json").read_text("utf-8"))
+    (fn,) = [f for f in record["layer1"]["functions"]["functions"] if f["capability_id"] == gap]
+    assert fn["detail"] == ("one_input" if certified else f"{gap} rejected a payload built from its own schema: nothing declared")
 
 
 @pytest.mark.parametrize("bad_cid", ["invoice_total", "visit_log"])
 def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, independent_grader, green_ui, bad_cid):
     ws = _workspace(tmp_path, {i: (CONSTANT if i == bad_cid else READS_INPUT) for i in IDS})
     bp = _bp(IDS)
-    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert f"function grade FAIL: {bad_cid}" in verdict.items
@@ -538,7 +552,7 @@ def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path
 
     monkeypatch.setattr(fg, "grade_functions", boom)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
-    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
     assert any(crash_message in item for item in verdict.items)
@@ -550,7 +564,7 @@ def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path
 def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_grader, green_ui, monkeypatch, bad_answer):
     monkeypatch.setattr(grader, "_grader_complete", lambda messages: bad_answer)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
-    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
     assert any("Layer 2 did not run" in item for item in verdict.items)
@@ -566,6 +580,7 @@ def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, in
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
+        plan_capabilities=IDS,
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
@@ -587,6 +602,7 @@ def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independen
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
+        plan_capabilities=IDS,
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",

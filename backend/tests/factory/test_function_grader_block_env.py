@@ -95,7 +95,7 @@ def _classes(grade):
 
 @pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)
 def test_correct_handle_ok_with_blocks_block_unavailable_without(tmp_path, env):
-    grade = fg.grade_functions(_bp(), _workspace(tmp_path, FAILS_CLOSED))
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=_workspace(tmp_path, FAILS_CLOSED))
     if env == "harness":
         assert grade.ok, grade.to_dict()
         assert all(f.detail == "" for f in grade.functions)
@@ -108,7 +108,7 @@ def test_correct_handle_ok_with_blocks_block_unavailable_without(tmp_path, env):
 
 @pytest.mark.parametrize("migrations", [True, False])
 def test_store_missing_reads_block_unavailable_never_stub(tmp_path, migrations):
-    grade = fg.grade_functions(_bp(), _workspace(tmp_path, FAILS_CLOSED, migrations=migrations))
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=_workspace(tmp_path, FAILS_CLOSED, migrations=migrations))
     assert grade.ok is migrations
     expected = "" if migrations else fg.BLOCK_UNAVAILABLE
     assert {f.detail for f in grade.functions} == {expected}
@@ -117,7 +117,7 @@ def test_store_missing_reads_block_unavailable_never_stub(tmp_path, migrations):
 
 @pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)
 def test_true_stub_reads_stub_in_both_environments(tmp_path, env):
-    grade = fg.grade_functions(_bp(), _workspace(tmp_path, STUB))
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=_workspace(tmp_path, STUB))
     assert not grade.ok
     assert {f.detail for f in grade.functions} == {fg.ONE_RESULT}
     assert set(_classes(grade).values()) == {"stub_handler"}
@@ -136,7 +136,7 @@ def test_true_stub_reads_stub_in_both_environments(tmp_path, env):
 )
 def test_only_a_named_honest_error_is_block_unavailable(tmp_path, envelope, detail):
     body = f"def handle(payload):\n    return {envelope}\n"
-    grade = fg.grade_functions(_bp(), _workspace(tmp_path, body))
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=_workspace(tmp_path, body))
     assert not grade.ok
     assert {f.detail for f in grade.functions} == {detail}
 
@@ -147,7 +147,7 @@ def test_only_a_named_honest_error_is_block_unavailable(tmp_path, envelope, deta
     reason="the grader's minimal env carries no SYSTEMROOT, so Winsock cannot open a socket (CI is Linux)",
 )
 def test_outbound_network_is_refused_in_the_harness_only(tmp_path, env):
-    grade = fg.grade_functions(_bp(), _workspace(tmp_path, NETWORK))
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=_workspace(tmp_path, NETWORK))
     assert grade.ok is (env == "harness"), grade.to_dict()
 
 
@@ -160,7 +160,7 @@ def test_harness_settings_reach_the_handle(tmp_path, env, setting):
         "        return {'ok': False, 'error': 'setting missing'}\n"
         "    return {'ok': True, 'echo': payload['amount'] * 3}\n"
     )
-    grade = fg.grade_functions(_bp(), _workspace(tmp_path, body))
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=_workspace(tmp_path, body))
     assert grade.ok is (env == "harness")
 
 
@@ -175,7 +175,7 @@ def test_deploy_time_setting_is_stood_in(tmp_path, required):
         "    return {'ok': True, 'set': payload['amount'] * 3}\n"
     )
     ws = _workspace(tmp_path, body)
-    grade = fg.grade_functions(_bp(), ws)
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=ws)
     assert grade.ok, grade.to_dict()
 
 
@@ -184,7 +184,7 @@ def test_migration_failure_is_a_named_harness_error(tmp_path, fails):
     ws = _workspace(tmp_path, FAILS_CLOSED)
     if fails:
         (ws / "app" / "migrations.py").write_text("def upgrade_head():\n    raise RuntimeError('bad revision')\n")
-    grade = fg.grade_functions(_bp(), ws)
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=ws)
     assert grade.ok is (not fails)
     if fails:
         assert all(f.detail.startswith("harness migration failed") for f in grade.functions)

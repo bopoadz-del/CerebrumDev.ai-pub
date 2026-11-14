@@ -49,6 +49,18 @@ ERROR_KEY = "error"
 STORED_RECORD_KEY = "stored"
 RECORD_ID_KEY = "id"
 
+# --- TESTER's pilot rule on one capability answer ------------------------------
+# ``test_every_capability_executes_end_to_end`` (roles_handlers.run_tester)
+# fails a capability whose handle answers a non-dict, ``ok: False``, or ok
+# around a failed block call (a nested result whose ``status`` is one of
+# PILOT_FAILED_STATUSES). The product grader judges a capability with one
+# input by the same rule and quotes the same failure string:
+# ``<capability><PILOT_...><detail>``.
+PILOT_NON_DICT = " returned a non-dict: "
+PILOT_REJECTED = " rejected a payload built from its own schema: "
+PILOT_FAILED_BLOCK = " reported ok around a failed block call: "
+PILOT_FAILED_STATUSES = ("error", "failed")
+
 
 # --- The HTTP status contract every Factory check reads ----------------------
 # Each value is stated to the writer by the floor line or brief line named

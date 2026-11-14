@@ -14,7 +14,7 @@ from collections import Counter
 import pytest
 
 import app.factory.build.grader as grader
-from app.factory.build.product_grader.function_grader import NO_INPUT_CONTRACT, ONE_RESULT
+from app.factory.build.product_grader.function_grader import ONE_RESULT
 
 PRODUCT_TEXT = ("Clientco", "secret", "Secret", "handle raised", "brief asked")
 
@@ -117,15 +117,15 @@ RECORD_UNGRADED = (
 )
 
 
-#: A capability with no declared input contract is ungraded (the Factory
-#: owes its spec), never a stub, a handler error or a missing route.
-RECORD_NO_CONTRACT = (
+#: A function the grader did not run is ungraded (the Factory owes it),
+#: never a stub, a handler error or a missing route.
+RECORD_NOT_RUN = (
     ["zorblat_sum", "plinket_rate", "quarm_index"],
     _grade(
         [_fn("zorblat_sum", ok=True, two_input=True), _fn("quarm_index", detail=ONE_RESULT)],
         {"ok": True, "ran": True, "steps": []},
         {"ran": True, "open_fails": []},
-        ungraded=[_fn("plinket_rate", detail=NO_INPUT_CONTRACT)],
+        ungraded=[_fn("plinket_rate", detail="the grader did not run")],
     ),
     [("quarm_index", "stub_handler", "function"), ("plinket_rate", "ungraded", "function")],
 )
@@ -133,8 +133,8 @@ RECORD_NO_CONTRACT = (
 
 @pytest.mark.parametrize(
     "cids, grade, expected",
-    [RECORD_A, RECORD_B, RECORD_UNGRADED, RECORD_NO_CONTRACT],
-    ids=["mix_a", "mix_b", "ungraded", "no_contract"],
+    [RECORD_A, RECORD_B, RECORD_UNGRADED, RECORD_NOT_RUN],
+    ids=["mix_a", "mix_b", "ungraded", "not_run"],
 )
 def test_reason_classes_count_each_mix_and_carry_no_product_text(cids, grade, expected):
     reasons = grader.reason_classes(grade, cids)

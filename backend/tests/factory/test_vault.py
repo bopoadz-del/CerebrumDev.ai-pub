@@ -146,7 +146,7 @@ def test_grade_functions_builds_the_vault_under_the_grader_root(uncovered, tmp_p
             {"id": uncovered},
         ],
     }
-    grade = fg.grade_functions(bp, ws, grader_root=grader_root)
+    grade = fg.grade_functions(bp, ws, capability_ids=[c["id"] for c in bp["capabilities"]], grader_root=grader_root)
     d = grade.to_dict()["vault"]
     assert isinstance(d["seed"], int)
     assert "gross_profit" in {e["capability_id"] for e in d["entries"]}
