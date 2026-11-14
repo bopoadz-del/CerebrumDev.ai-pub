@@ -76,6 +76,20 @@ def kill_agent_tree(proc: Any) -> None:
         proc.kill()
 
 
+def suspend_agent_tree(proc: Any) -> bool:
+    """Freeze the agent and everything it started (owner Pause): no step,
+    tool or new model call runs until ``resume_agent_tree``. False when the
+    group cannot be signalled (not POSIX, no real pid)."""
+    sig = getattr(signal, "SIGSTOP", None)
+    return sig is not None and _signal_group(proc, sig)
+
+
+def resume_agent_tree(proc: Any) -> bool:
+    """Let a suspended agent tree run on from where it was frozen."""
+    sig = getattr(signal, "SIGCONT", None)
+    return sig is not None and _signal_group(proc, sig)
+
+
 def terminate_agent_tree(proc: Any) -> None:
     """Ask the agent and everything it started to stop."""
     if not _signal_group(proc, signal.SIGTERM):

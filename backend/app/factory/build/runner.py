@@ -43,6 +43,14 @@ from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequ
 logger = logging.getLogger("cerebrumdev.factory.runner")
 
 from app.factory.build.failure_kinds import failure_kind
+from app.factory.build.coder_session_status import (
+    CONTROL_PAUSE,
+    OwnerStopped,
+    check_owner,
+    owner_control_scope,
+    read_control,
+    read_control_record,
+)
 from app.factory.build.authority import (
     BUILD_PHASES,
     SEALED_AFTER_CLONER,
@@ -520,6 +528,12 @@ class Outcome(str, Enum):
     FAILED_TIME_BUDGET = "FAILED_TIME_BUDGET"
     FAILED_ROLE_ERROR = "FAILED_ROLE_ERROR"
     FAILED_AUTHORITY = "FAILED_AUTHORITY"
+    #: F-U1: the owner pressed Stop. A final state of its own, never a
+    #: failure of the product or of a gate.
+    STOPPED_BY_OWNER = "STOPPED_BY_OWNER"
+
+#: The decision reason a stopped build's terminal event carries.
+STOPPED_BY_OWNER_REASON = "stopped_by_owner"
 
 
 def _collect_all_enabled() -> bool:
@@ -2142,7 +2156,9 @@ class RoleRunner:
             detail=detail,
             payload=payload,
         )
-        if kind is EventKind.RUN_FAILED:
+        if kind is EventKind.RUN_FAILED and outcome is not Outcome.STOPPED_BY_OWNER:
+            # A stopped build makes no further model call, not even to
+            # narrate itself: the owner said why it ended.
             self._attach_failure_narrative(phase)
         if (
             outcome is Outcome.SUCCESS
@@ -2817,6 +2833,81 @@ class RoleRunner:
     # -- the run ---------------------------------------------------------
 
     def run(self) -> BuildOutcome:
+        """Run the build under the owner's control (F-U1).
+
+        The owner's Pause / Stop is installed for this thread, so every stage
+        reads it before a model call and the writer CLI's wait reads it on
+        every tick. A Stop raised anywhere below ends the run here, as one
+        named final state.
+        """
+        self._paused_since: Optional[float] = None
+        with owner_control_scope(self._owner_control):
+            try:
+                return self._run_controlled()
+            except OwnerStopped as stop:
+                stopped = stop
+        return self._finish_stopped(stopped)
+
+    def _owner_control(self) -> str:
+        """The owner's action for this build, read from its workspace.
+
+        Paused time is not build time: when a pause ends, the run's wall and
+        the live role deadline move on by the time it lasted, never past the
+        run's hard ceiling.
+        """
+        action = read_control(self.workspace)
+        now = self.clock()
+        if action == CONTROL_PAUSE:
+            if self._paused_since is None:
+                self._paused_since = now
+        elif self._paused_since is not None:
+            held = max(0.0, now - self._paused_since)
+            self._paused_since = None
+            self._shift_deadlines(held)
+        return action
+
+    def _shift_deadlines(self, seconds: float) -> None:
+        ceiling = self._deadline_box.get("ceiling_at")
+
+        def _moved(at: Optional[float]) -> Optional[float]:
+            if at is None:
+                return None
+            moved = float(at) + seconds
+            return moved if ceiling is None else min(moved, float(ceiling))
+
+        self._deadline = _moved(self._deadline)
+        self._deadline_box["at"] = _moved(self._deadline_box.get("at"))
+
+    def _finish_stopped(self, stop: OwnerStopped) -> BuildOutcome:
+        """End the run as stopped by the owner: who, when, and where."""
+        record = read_control_record(self.workspace)
+        # The phase in flight: the last one started and not yet ended (None
+        # when the stop landed between phases).
+        role: Optional[BuildRole] = None
+        for event in self.ledger.events():
+            if event.kind is EventKind.PHASE_STARTED and event.role:
+                role = event.role
+            elif event.kind in TERMINAL_KINDS and event.role is role:
+                role = None
+        if role is not None:
+            self.ledger.append(
+                EventKind.PHASE_ABORTED,
+                role=role,
+                detail=f"stopped by the owner: {stop}",
+                payload={"reason": STOPPED_BY_OWNER_REASON},
+            )
+        return self._finish(
+            Outcome.STOPPED_BY_OWNER,
+            f"stopped by the owner during {role.value if role else 'the build'}",
+            phase=role,
+            decision={
+                "reason": STOPPED_BY_OWNER_REASON,
+                "by": record.get("by"),
+                "at": record.get("updated_at"),
+            },
+        )
+
+    def _run_controlled(self) -> BuildOutcome:
         started = self.clock()
         deadline = self.budget.deadline_from(started)
         self._run_started = started
@@ -2970,6 +3061,9 @@ class RoleRunner:
                     index += 1
                     continue
 
+                # F-U1: no phase starts while the owner has paused the build;
+                # a Stop ends it here.
+                check_owner()
                 self._maybe_stage_inspect()
                 deadline = self._deadline
                 if self._stage_halt:

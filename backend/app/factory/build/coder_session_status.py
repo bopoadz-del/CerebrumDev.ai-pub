@@ -11,9 +11,11 @@ cursor BA) is retired; the CodeWhale worker path owns execution.
 from __future__ import annotations
 
 import json
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 BRIEF_REL = Path("docs") / "coder_brief.md"
 LOG_REL = Path("docs") / "coder_session.log"
@@ -29,35 +31,109 @@ FACTORY_STAGING_DIRNAME = ".factory-staging"
 _VALID_ACTIONS = {CONTROL_RUN, CONTROL_PAUSE, CONTROL_STOP}
 
 
-def write_control(root: Path, action: str) -> Dict[str, Any]:
-    """Owner Pause / Stop / Resume. Written outside the role workspace."""
+def write_control(root: Path, action: str, *, by: Optional[str] = None) -> Dict[str, Any]:
+    """Owner Pause / Stop / Resume. Written outside the role workspace.
+
+    ``by`` is who pressed it (the authenticated principal), recorded with
+    the time so a stopped build's ledger can say who stopped it and when.
+    """
     action = str(action or "").strip().lower()
     if action == "resume":
         action = CONTROL_RUN
     if action not in _VALID_ACTIONS:
         raise ValueError(f"unknown coder control action: {action!r}")
-    payload = {
+    payload: Dict[str, Any] = {
         "action": action,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if by:
+        payload["by"] = str(by)
     path = Path(root) / CONTROL_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
 
 
-def read_control(root: Path) -> str:
+def read_control_record(root: Path) -> Dict[str, Any]:
+    """The whole control record (action, updated_at, by); {} when absent."""
     path = Path(root) / CONTROL_REL
     if not path.is_file():
-        return CONTROL_RUN
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return CONTROL_RUN
-    if not isinstance(data, dict):
-        return CONTROL_RUN
-    action = str(data.get("action") or "").strip().lower()
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_control(root: Path) -> str:
+    action = str(read_control_record(root).get("action") or "").strip().lower()
     return action if action in _VALID_ACTIONS else CONTROL_RUN
+
+
+# --- the owner's control, reachable from every stage of a running build -----
+#
+# The control file is written by the route; it means nothing unless the code
+# doing the work reads it. A build runs on one thread (the runner's), so the
+# runner installs a reader for its own control file on that thread and every
+# place that is about to spend a model call -- the writer CLI's wait loop, the
+# HTTP model-call watchdog, the phase loop -- asks the same reader. One
+# mechanism for every build; nothing is keyed by a build, product or stage.
+
+
+class OwnerStopped(BaseException):
+    """The owner pressed Stop. A BaseException on purpose: no
+    ``except Exception`` between the model call and the runner may turn a
+    stop into a retry, a rework or a different failure."""
+
+
+_scope = threading.local()
+
+
+@contextmanager
+def owner_control_scope(read: Callable[[], str]) -> Iterator[None]:
+    """Install ``read`` as this thread's owner control for the block."""
+    previous = getattr(_scope, "read", None)
+    _scope.read = read
+    try:
+        yield
+    finally:
+        _scope.read = previous
+
+
+def current_owner_control() -> Optional[Callable[[], str]]:
+    """This thread's control reader (hand it to a thread you start)."""
+    return getattr(_scope, "read", None)
+
+
+def owner_action(read: Optional[Callable[[], str]] = None) -> str:
+    """The owner's current action; run when no control is installed or the
+    reader cannot answer (a broken reader never stops a build)."""
+    reader = read if read is not None else current_owner_control()
+    if reader is None:
+        return CONTROL_RUN
+    try:
+        action = str(reader() or "").strip().lower()
+    except Exception:  # noqa: BLE001 -- unreadable control = run
+        return CONTROL_RUN
+    return action if action in _VALID_ACTIONS else CONTROL_RUN
+
+
+def check_owner(
+    read: Optional[Callable[[], str]] = None,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_s: float = 0.25,
+) -> None:
+    """Call before starting a model call: block while paused, raise
+    ``OwnerStopped`` on stop, return on run."""
+    while True:
+        action = owner_action(read)
+        if action == CONTROL_STOP:
+            raise OwnerStopped("owner stopped the build")
+        if action != CONTROL_PAUSE:
+            return
+        sleep(poll_s)
 
 
 def read_receipt(root: Path) -> Dict[str, Any]:

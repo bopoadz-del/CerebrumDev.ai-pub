@@ -2035,6 +2035,11 @@ def start_runner_build(
         )
 
     _write_quota_marker(out, quota_account_id)
+    # F-U1: a build starts running. A Stop or Pause left by an earlier build
+    # of this workspace belongs to that build, never to this one.
+    from app.factory.build.coder_session_status import CONTROL_RUN, write_control
+
+    write_control(out, CONTROL_RUN)
 
     # Phase 1 tenant isolation: bind the store handle from the
     # authenticated identity BEFORE the thread starts. An unauthenticated

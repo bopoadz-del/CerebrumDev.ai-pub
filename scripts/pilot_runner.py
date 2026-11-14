@@ -34,6 +34,7 @@ import json
 import mimetypes
 import os
 import re
+import signal
 import sys
 import time
 import urllib.request
@@ -593,8 +594,46 @@ def finish() -> int:
     return 0 if RESULTS and all(ok for _s, ok, _e in RESULTS) else 1
 
 
+def stop_own_build(sid: str | None, token: str | None, req: Any = None) -> bool:
+    """Stop this pilot's own build through the Factory's one stop route.
+
+    True when the Factory accepted the stop. A pilot that is cancelled must
+    not leave its build running inside the service (14 Nov: a cancelled
+    pilot's writer kept spending model calls until the owner ended it).
+    """
+    if not sid or not token:
+        return False
+    call = req or smoke.req
+    try:
+        status, _body = call(
+            "POST",
+            f"/v1/sessions/{sid}/product/coder-control",
+            {"action": "stop"},
+            token=token,
+            retries=1,
+        )
+    except Exception:  # noqa: BLE001 -- a cancel never crashes on its way out
+        return False
+    return status == 200
+
+
+def on_cancel(signum: int, _frame: Any = None) -> None:
+    """The runner cancels a job with SIGINT, then SIGTERM: stop the build
+    this pilot started, say so, and exit."""
+    stopped = stop_own_build(LAST_SID, LAST_TOKEN)
+    print(
+        f"::warning title=Pilot::cancelled (signal {signum}); "
+        + ("own build stopped" if stopped else "no build of this pilot to stop")
+    )
+    raise SystemExit(128 + int(signum))
+
+
 def main() -> None:
     base = smoke.resolve_base(sys.argv)
+    for name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, on_cancel)
     sys.exit(run_pilot(base))
 
 

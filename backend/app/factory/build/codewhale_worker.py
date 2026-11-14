@@ -51,7 +51,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Optional, Tuple
 
-from app.factory.build.agent_process import agent_popen_kwargs, kill_agent_tree, track_agent
+from app.factory.build.agent_process import (
+    agent_popen_kwargs,
+    kill_agent_tree,
+    resume_agent_tree,
+    suspend_agent_tree,
+    track_agent,
+)
+from app.factory.build.coder_session_status import (
+    CONTROL_PAUSE,
+    CONTROL_STOP,
+    OwnerStopped,
+    check_owner,
+    current_owner_control,
+    owner_action,
+)
 
 logger = logging.getLogger("cerebrumdev.factory.codewhale_worker")
 
@@ -1800,6 +1814,7 @@ def run_worker_job(
     on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
     turn_wall_s: Optional[float] = None,
     slot_scope: Optional[Callable[[], Any]] = None,
+    control: Optional[Callable[[], str]] = None,
 ) -> WorkerReceipt:
     """Run one headless CodeWhale exec — non-interactive, JSON summary.
 
@@ -1824,7 +1839,14 @@ def run_worker_job(
     is stamped from it at dispatch (``CLI_TURN_WALL_ENV``, never below the
     dispatch wall) because the CLI cannot take a raise once running; the two
     budgets then never disagree and the Factory's wall is the one that binds.
+
+    ``control`` (F-U1) is the owner's Pause / Stop, read on every wait tick;
+    without one, the calling thread's installed control is used. Stop kills
+    the CLI and everything it started and raises ``OwnerStopped``; Pause
+    freezes the tree and neither the wall nor the idle watchdog counts the
+    paused time; Resume lets it run on from where it was frozen.
     """
+    control_read = control if control is not None else current_owner_control()
     cli = worker_cli_path()
     # The tenant boundary precedes everything: an unbound job is refused
     # before the binary is even looked up — isolation is the first gate,
@@ -2072,6 +2094,9 @@ def run_worker_job(
                 )
             except Exception:  # noqa: BLE001 -- telemetry never fails the build
                 pass
+        # No CLI (and so no model call) starts while the owner has paused
+        # or stopped the build.
+        check_owner(control_read)
         try:
             proc = subprocess.Popen(
                 argv,
@@ -2318,12 +2343,45 @@ def run_worker_job(
         _note_cli_started()
         wait_started = time.monotonic()
         deadline = wait_started + timeout
+        pause: Dict[str, Any] = {"at": None, "frozen": False}
         try:
             while True:
                 try:
                     proc.wait(timeout=0.5)
                     break
                 except subprocess.TimeoutExpired:
+                    # F-U1: the owner's control comes before every clock.
+                    action = owner_action(control_read)
+                    if action == CONTROL_STOP:
+                        kill_agent_tree(proc)
+                        proc.wait()
+                        raise OwnerStopped(
+                            "owner stopped the build: the writer CLI and "
+                            "everything it started were killed"
+                        )
+                    if action == CONTROL_PAUSE:
+                        if pause["at"] is None:
+                            pause["at"] = time.monotonic()
+                            pause["frozen"] = suspend_agent_tree(proc)
+                            _relay(
+                                "owner paused the build: writer CLI "
+                                + ("frozen" if pause["frozen"] else "could not be frozen"),
+                                {"owner_paused": True, "frozen": pause["frozen"]},
+                            )
+                        continue
+                    if pause["at"] is not None:
+                        held = time.monotonic() - pause["at"]
+                        if pause["frozen"]:
+                            resume_agent_tree(proc)
+                        pause.update({"at": None, "frozen": False})
+                        # Paused time is not the writer's time: neither the
+                        # wall nor the idle watchdog counts it.
+                        deadline += held
+                        progress_state["t"] += held
+                        _relay(
+                            f"owner resumed the build after {held:.0f}s paused",
+                            {"owner_paused": False, "paused_s": round(held, 1)},
+                        )
                     if live_time_left is not None:
                         try:
                             left = live_time_left()
@@ -2396,6 +2454,13 @@ def run_worker_job(
                                 files_now,
                                 narration["steps"],
                             )
+        except BaseException:
+            # Whatever ends this wait early (a stop raised from a relay, an
+            # interrupt), the CLI tree never outlives it.
+            if proc.poll() is None:
+                kill_agent_tree(proc)
+                proc.wait()
+            raise
         finally:
             # Drain the remainder so no authored evidence is lost.
             stdout_reader.join(timeout=5)
@@ -2501,6 +2566,7 @@ def run_worker_job_with_stall_retry(
     on_slot_wait: Optional[Callable[[Dict[str, Any]], None]] = None,
     turn_wall_s: Optional[float] = None,
     slot_scope: Optional[Callable[[], Any]] = None,
+    control: Optional[Callable[[], str]] = None,
 ) -> WorkerReceipt:
     """``run_worker_job`` with the progress watchdog's one-retry loop.
 
@@ -2521,6 +2587,8 @@ def run_worker_job_with_stall_retry(
             # F-S2c: a held (or child) slot rides the same way.
             if slot_scope is not None:
                 extra["slot_scope"] = slot_scope
+            if control is not None:
+                extra["control"] = control
             return run_worker_job(
                 prompt,
                 checkout_dir,
