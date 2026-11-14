@@ -80,6 +80,18 @@ class TestTheBuildsOwnRecordStaysInHouse:
         assert is_exported(Path("product-dna/build_provenance.json"))
 
 
+    def test_the_writer_pass_policy_stamp_is_withheld(self):
+        """The writer pass's pytest policy dir is the Factory's, removed when
+        the pass ends; a crash that leaves it behind must not ship it. Only
+        that dir: its parent's other files and a product dir of the same
+        leaf name still ship."""
+        from app.factory.build.pytest_policy import PLUGIN_MODULE, POLICY_DIR_REL
+
+        parts = POLICY_DIR_REL.split("/")
+        assert not is_exported(Path(*parts, PLUGIN_MODULE + ".py"))
+        assert is_exported(Path(*parts[:-1], "other.json"))
+        assert is_exported(Path("app", parts[-1], "x.py"))
+
 class TestTheProductItselfStillShips:
     def test_everything_a_customer_needs_is_still_exported(self):
         missing = [rel for rel in DELIVERED if not is_exported(Path(rel))]
