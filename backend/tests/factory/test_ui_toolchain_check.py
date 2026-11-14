@@ -143,3 +143,18 @@ def test_grade_time_toolchain_ok_runs_the_products_spec(monkeypatch, tmp_path, b
     assert ran and Path(ran[0][3]).name == "grade_ui.spec.ts"
     assert (tmp_path / "grade_ui.spec.ts").read_text(encoding="utf-8") == ug.render_spec(bp)
     assert g.errors == ["UI run did not happen: no playwright report: exit 1; stderr: no browser here"]
+
+
+@pytest.mark.parametrize("bp,base_url", [(BPS[0], None), (BPS[1], "")])
+def test_no_base_url_is_named_and_nothing_runs(monkeypatch, tmp_path, bp, base_url):
+    calls = []
+    monkeypatch.setattr(ug, "toolchain_check", lambda **kw: calls.append("check") or ug.ToolchainStatus(True, "ok"))
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    g = ug.grade_ui(bp, tmp_path / "wd", base_url=base_url, run=run)
+    assert not g.ok and not g.ran
+    assert g.errors == ["UI run did not happen: no base URL for the rendered product"]
+    assert calls == [] and not (tmp_path / "wd").exists()
