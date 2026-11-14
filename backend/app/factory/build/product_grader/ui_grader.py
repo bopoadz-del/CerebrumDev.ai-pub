@@ -20,11 +20,19 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 RUN_TIMEOUT_S = 600
+
+#: The PATH a UI run sees. One value, read by the grade and by the toolchain
+#: check, so the check proves exactly the path the grade will take.
+RUN_PATH = "/usr/bin:/bin:/usr/local/bin"
+TOOLCHAIN_TIMEOUT_S = 120
+#: How much of a failed tool's output a recorded reason keeps.
+OUTPUT_TAIL_CHARS = 400
 
 #: The fixed step kinds every product must pass. Their TARGETS come from
 #: the blueprint; the kinds are the owner's Layer-1 list.
@@ -203,10 +211,12 @@ def step_passed(results: List[Mapping[str, Any]]) -> bool:
     return bool(results) and all(r.get("status") == "passed" for r in results)
 
 
-def parse_report(report: Mapping[str, Any], blueprint: Mapping[str, Any]) -> UiGrade:
-    """Playwright JSON reporter -> UiGrade. A planned step absent from the
-    report is a failed step (a skipped step is not a passed one)."""
+def report_outcomes(report: Mapping[str, Any]) -> Dict[str, bool]:
+    """Every test title in a Playwright JSON report -> whether it passed.
+    A report that is not a JSON object has no outcomes."""
     seen: Dict[str, bool] = {}
+    if not isinstance(report, Mapping):
+        return seen
 
     def walk(suite: Mapping[str, Any]) -> None:
         for spec in suite.get("specs") or []:
@@ -217,12 +227,97 @@ def parse_report(report: Mapping[str, Any], blueprint: Mapping[str, Any]) -> UiG
 
     for s in report.get("suites") or []:
         walk(s)
+    return seen
+
+
+def parse_report(report: Mapping[str, Any], blueprint: Mapping[str, Any]) -> UiGrade:
+    """Playwright JSON reporter -> UiGrade. A planned step absent from the
+    report is a failed step (a skipped step is not a passed one)."""
+    seen = report_outcomes(report)
     steps = [
         {"name": st.name, "kind": st.kind, "target": st.target, "passed": seen.get(st.name, False)}
         for st in ui_plan(blueprint)
     ]
     errors = [] if seen else ["playwright report has no results"]
     return UiGrade(steps, errors)
+
+
+def _tail(text: Any) -> str:
+    return " ".join(str(text or "").split())[-OUTPUT_TAIL_CHARS:]
+
+
+def _playwright_run(run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int) -> Any:
+    """The one way a UI spec is run: the grade and the toolchain check both
+    come through here, with the same command and the same environment."""
+    return run(
+        ["npx", "playwright", "test", str(spec), "--reporter=json"],
+        cwd=str(spec.parent),
+        env={"PATH": RUN_PATH, "BASE_URL": base_url,
+             "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)},
+        timeout=timeout,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _report_text(out: Path, proc: Any) -> str:
+    # Playwright's JSON reporter may print to stdout rather than honour the
+    # PLAYWRIGHT_JSON_OUTPUT_NAME env; read the file first, then the captured
+    # stdout, so a reporter that ignores the env still yields a report.
+    if out.is_file():
+        return out.read_text("utf-8")
+    return getattr(proc, "stdout", "") or ""
+
+
+def _exit_detail(proc: Any) -> str:
+    return f"exit {getattr(proc, 'returncode', None)}; stderr: {_tail(getattr(proc, 'stderr', ''))}"
+
+
+#: The toolchain probe: one test that needs node, Playwright and a browser
+#: that can launch and render -- nothing about any product.
+TOOLCHAIN_TEST = "toolchain renders a page"
+TOOLCHAIN_SPEC = (
+    "import { test, expect } from '@playwright/test';\n"
+    f"test({json.dumps(TOOLCHAIN_TEST)}, async ({{ page }}) => {{\n"
+    "  await page.setContent('<p id=\"t\">rendered</p>');\n"
+    "  await expect(page.locator('#t')).toHaveText('rendered');\n"
+    "});\n"
+)
+
+
+@dataclass(frozen=True)
+class ToolchainStatus:
+    ok: bool
+    detail: str
+
+
+def toolchain_check(*, run: Any = subprocess.run, which: Any = shutil.which) -> ToolchainStatus:
+    """Can the UI grade run HERE? Runs a one-test spec through the exact
+    command and environment ``grade_ui`` uses; ok only if that test passed.
+    Used at grade time and, in CI, inside the built runtime image as the app
+    user -- one function, so the two can never disagree."""
+    if not which("npx", path=RUN_PATH):
+        return ToolchainStatus(False, f"npx is not on PATH {RUN_PATH}")
+    with tempfile.TemporaryDirectory(prefix="ui_toolchain_") as tmp:
+        wd = Path(tmp)
+        spec = wd / "toolchain.spec.ts"
+        spec.write_text(TOOLCHAIN_SPEC, encoding="utf-8")
+        out = wd / "report.json"
+        try:
+            proc = _playwright_run(run, spec, base_url="about:blank", out=out, fixtures=wd,
+                                   timeout=TOOLCHAIN_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 -- a tool that cannot start is the finding
+            return ToolchainStatus(False, f"playwright could not start: {type(exc).__name__}: {_tail(exc)}")
+        text = _report_text(out, proc)
+        try:
+            outcomes = report_outcomes(json.loads(text)) if text.strip() else {}
+        except ValueError:
+            outcomes = {}
+    if outcomes.get(TOOLCHAIN_TEST):
+        return ToolchainStatus(True, "playwright rendered a page")
+    if not outcomes:
+        return ToolchainStatus(False, f"playwright gave no report: {_exit_detail(proc)}")
+    return ToolchainStatus(False, f"playwright could not render a page: {_exit_detail(proc)}")
 
 
 def grade_ui(
@@ -234,32 +329,21 @@ def grade_ui(
 ) -> UiGrade:
     if not base_url:
         return UiGrade([], ["UI run did not happen: no base URL for the rendered product"])
-    if run is subprocess.run and not shutil.which("npx"):
-        return UiGrade([], ["UI run did not happen: npx/playwright not available"])
+    if run is subprocess.run:
+        toolchain = toolchain_check()
+        if not toolchain.ok:
+            return UiGrade([], [f"UI run did not happen: UI toolchain unavailable: {toolchain.detail}"])
     wd = Path(workdir)
     wd.mkdir(parents=True, exist_ok=True)
     fx = write_fixtures(blueprint, wd / "fixtures")
     (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint), encoding="utf-8")
     out = wd / "report.json"
     try:
-        proc = run(
-            ["npx", "playwright", "test", str(wd / "grade_ui.spec.ts"), "--reporter=json"],
-            cwd=str(wd),
-            env={"PATH": "/usr/bin:/bin:/usr/local/bin", "BASE_URL": base_url,
-                 "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fx["pdf"].parent)},
-            timeout=RUN_TIMEOUT_S,
-            capture_output=True,
-            text=True,
-        )
+        proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
+                               fixtures=fx["pdf"].parent, timeout=RUN_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
-    # Playwright's JSON reporter may print to stdout rather than honour the
-    # PLAYWRIGHT_JSON_OUTPUT_NAME env; read the file first, then the captured
-    # stdout, so a reporter that ignores the env still yields a report.
-    if out.is_file():
-        report_text = out.read_text("utf-8")
-    else:
-        report_text = getattr(proc, "stdout", "") or ""
+    report_text = _report_text(out, proc)
     if not report_text.strip():
-        return UiGrade([], ["UI run did not happen: no playwright report"])
+        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc)}"])
     return parse_report(json.loads(report_text), blueprint)
