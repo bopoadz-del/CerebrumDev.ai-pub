@@ -260,3 +260,97 @@ def test_stop_kills_a_boot_that_does_not_exit_on_terminate(tmp_path, monkeypatch
     boot.stop()
     assert boot.poll() is not None
     assert not boot.scratch.exists()
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "killpg"), reason="process groups are POSIX")
+@pytest.mark.parametrize("kill,signame", [(True, "SIGKILL"), (False, "SIGTERM")])
+def test_signal_boot_signals_the_whole_group_even_after_the_launcher_exited(monkeypatch, kill, signame):
+    """A pre-serve step outliving its launcher is reached through the
+    launcher's process group, so the group is signalled even when the
+    launcher itself has already exited."""
+    import os
+    import signal
+
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append((pgid, sig)))
+
+    class _Exited:
+        pid = 424242
+
+        def poll(self):
+            return 0
+
+    grader._signal_boot(_Exited(), kill=kill)
+    assert sent == [(424242, getattr(signal, signame))]
+
+
+@pytest.mark.parametrize("running", [True, False])
+def test_stop_twice_signals_once(monkeypatch, tmp_path, running):
+    """A second stop never signals again: the process group id may already
+    belong to something else."""
+    signals = []
+    monkeypatch.setattr(grader, "_signal_boot", lambda proc, *, kill: signals.append(kill))
+
+    class _Proc:
+        pid = 434343
+
+        def poll(self):
+            return None if running and not signals else 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    log_path = scratch / "boot.log"
+    boot = grader.GradingBoot(_Proc(), scratch, open(log_path, "wb"), log_path)
+    boot.stop()
+    first = list(signals)
+    boot.stop()
+    assert signals == first
+    assert first == ([False, True] if running else [True])
+    assert not scratch.exists()
+
+
+@pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
+def test_an_interrupted_health_wait_stops_the_boot_and_propagates_as_itself(tmp_path, monkeypatch, raised):
+    root = _product(tmp_path / "p")
+    stopped = []
+    real_stop = grader.GradingBoot.stop
+
+    def _recording_stop(self):
+        stopped.append(self)
+        real_stop(self)
+
+    def _interrupted(boot, base_url, timeout_s):
+        raise raised("health wait interrupted")
+
+    monkeypatch.setattr(grader.GradingBoot, "stop", _recording_stop)
+    monkeypatch.setattr(grader, "_await_health", _interrupted)
+    with pytest.raises(raised):
+        grader.boot_product(root, ready_timeout_s=30)
+    assert len(stopped) == 1
+    assert stopped[0].poll() is not None
+    assert not stopped[0].scratch.exists()
+
+
+@pytest.mark.parametrize("errors", [["the page did not render"], ["no route answered", "no form found"]])
+def test_grade_ui_quotes_a_run_that_rendered_nothing_with_its_own_errors(monkeypatch, tmp_path, errors):
+    import app.factory.build.product_grader as pg
+    from app.factory.build.product_grader.ui_grader import UiGrade
+
+    class _Boot:
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(grader, "boot_product", lambda root: (_Boot(), "http://127.0.0.1:9"))
+
+    class _UiGrader:
+        @staticmethod
+        def grade_ui(blueprint, workdir, *, base_url):
+            return UiGrade([], list(errors))
+
+    monkeypatch.setattr(pg, "ui_grader", _UiGrader, raising=False)
+    ui, ran, not_run = grader._grade_ui({}, tmp_path, tmp_path / "g", None)
+    assert ran is False
+    assert not_run == "; ".join(errors)
