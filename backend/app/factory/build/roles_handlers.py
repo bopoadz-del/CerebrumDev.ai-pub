@@ -20,6 +20,7 @@ from app.factory.build.failure_kinds import failure_kind, record_failure_kind
 from app.factory.build.authority import (
     KERNEL_ROUTE_NAMES,
     BuildRole,
+    capability_name,
     jobs_manifest,
 )
 from app.factory.build.offline_adapters import (
@@ -5497,7 +5498,7 @@ def run_writer(
                 body = _templated_route_body(spec)
         body = _ensure_route_persists_payload(body)
         route_bodies[cid] = body
-        name = cid.replace("-", "_")
+        name = capability_name(cid)
         if name in KERNEL_ROUTE_NAMES:
             raise RoleError(
                 f"capability {cid} collides with kernel HTTP route /v1/{name}"

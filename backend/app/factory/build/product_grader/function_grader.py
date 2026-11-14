@@ -48,6 +48,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from app.factory.build.authority import capability_module
 from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
 from app.factory.build.image_sufficiency import GATE_RUN_ENV
 from app.factory.build.payload_helpers import render_payload_helpers
@@ -272,7 +273,7 @@ def derive_functions(
     )
     firsts = completed_samples(root, {cid: _sample_payload(specs.get(cid, {})) for cid in ids})
     return [
-        GradedFunction(cid, "app.actions." + cid.replace("-", "_"), contract_inputs(specs.get(cid), firsts[cid]))
+        GradedFunction(cid, capability_module(cid), contract_inputs(specs.get(cid), firsts[cid]))
         for cid in ids
     ]
 

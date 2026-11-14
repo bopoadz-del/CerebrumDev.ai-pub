@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from app.factory.build.authority import capability_module
 from app.factory.build.product_grader import vault
 
 #: Verdicts. OK is the only pass; the three FAILs are the ORDERS_0320Z names.
@@ -177,7 +178,7 @@ def run_two_dataset(pairs: List[DatasetPair], workspace: Any, *, python: str = s
     checks: List[FunctionCheck] = []
     for pair in pairs:
         out_a, out_b = run_function_pair(
-            f"app.actions.{pair.capability_id}", pair.inputs_a, pair.inputs_b, workspace, python=python
+            capability_module(pair.capability_id), pair.inputs_a, pair.inputs_b, workspace, python=python
         )
         checks.append(FunctionCheck(pair.capability_id, verdict(out_a, out_b, pair.expected_a, pair.expected_b), out_a, out_b))
     return checks

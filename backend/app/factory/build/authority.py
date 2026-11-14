@@ -68,6 +68,31 @@ KERNEL_ROUTE_NAMES: Tuple[str, ...] = (
     "work_queue",
 )
 
+#: The prefix the generated app mounts the capability router under
+#: (``deploy.py``: ``app.include_router(router, prefix="/v1")``).
+CAPABILITY_ROUTE_PREFIX = "/v1"
+
+
+def capability_name(capability_id: Any) -> str:
+    """The one name a capability id becomes in a product: its handler module
+    ``app/actions/<name>.py`` and its route segment ``/v1/<name>``.
+
+    Every writer of that name (the route renderer) and every reader of it
+    (each grader layer) calls this, so a hyphenated id can never be
+    rendered under one name and probed under another.
+    """
+    return str(capability_id).replace("-", "_")
+
+
+def capability_module(capability_id: Any) -> str:
+    """The importable module that holds a capability's ``handle``."""
+    return "app.actions." + capability_name(capability_id)
+
+
+def capability_route(capability_id: Any) -> str:
+    """The HTTP path the product serves a capability on."""
+    return f"{CAPABILITY_ROUTE_PREFIX}/{capability_name(capability_id)}"
+
 
 # Order is the build order. Phases run front to back; a role may never run
 # before a role ahead of it in this tuple has passed its gate.

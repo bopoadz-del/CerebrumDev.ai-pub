@@ -15,6 +15,8 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from app.factory.build.authority import capability_name
+
 logger = logging.getLogger(__name__)
 
 #: The ONLY inputs Layer 2 may see, in this order.
@@ -136,7 +138,7 @@ def run_layer2(
         cid = group[0]["capability"]
         view = dict(inputs)
         if render is not None and cid:
-            view["rendered_product"] = render([cid.replace("-", "_")])
+            view["rendered_product"] = render([capability_name(cid)])
         try:
             parsed = json.loads(_strip_fences(complete(layer2_messages(view, group))))
             if not isinstance(parsed, list):
