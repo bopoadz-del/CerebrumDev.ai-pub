@@ -1,3 +1,9 @@
+# Node runtime for the CodeWhale writer and the UI grader's Playwright.
+# Playwright (pinned below from frontend/package-lock.json) declares
+# engines node >= 20; bookworm's apt nodejs is 18, so node comes from the
+# official image at the same major the backend CI job runs (24).
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS node
+
 FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm
 
 WORKDIR /app
@@ -11,7 +17,7 @@ WORKDIR /app
 # Network fetches are retried so a transient apt/curl miss (curl exit 18 /
 # apt fetch failure) is not a red build: curl --retry, apt Acquire::Retries.
 RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    build-essential gcc g++ cmake git ca-certificates curl util-linux bash nodejs npm \
+    build-essential gcc g++ cmake git ca-certificates curl util-linux bash \
     && mkdir -p /usr/share/keyrings \
     && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
       -o /usr/share/keyrings/pgdg.asc \
@@ -33,9 +39,27 @@ RUN pip install --no-cache-dir -r requirements.lock
 # WRITER role. npm-global, version-pinned like every other binary in this
 # image. Credentials stay OUT of the image: the CLI reads its model config
 # from the deployment env at runtime.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npm --version
+
 ARG CODEWHALE_VERSION=0.9.13
 RUN npm install -g --no-fund --no-audit codewhale@${CODEWHALE_VERSION} \
     && codewhale --version
+
+# FG-2(a): the UI grader's browser toolchain (ui_grader.toolchain_check).
+# The version is read from the one declared source CI's Playwright job
+# installs from (frontend/package-lock.json), never a floating tag. The
+# grader runs Playwright with PATH only, so the browser cache resolves from
+# the app user's passwd home: install it under /app/.cache (chowned below).
+COPY frontend/package-lock.json /tmp/frontend-package-lock.json
+RUN PW_VERSION="$(python -c "import json; print(json.load(open('/tmp/frontend-package-lock.json'))['packages']['node_modules/@playwright/test']['version'])")" \
+    && echo "playwright ${PW_VERSION}" \
+    && npm install -g --no-fund --no-audit "@playwright/test@${PW_VERSION}" \
+    && PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright npx playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /tmp/frontend-package-lock.json
 
 COPY backend/app /app/app
 # Golden product blueprints (Steward + examples) — required by ProductArchitect in prod
