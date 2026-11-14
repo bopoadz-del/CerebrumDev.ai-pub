@@ -654,3 +654,16 @@ jobs:
             command -v codewhale
             codewhale --version
           '
+
+      # FG-2(a): the UI grader's own toolchain check, run inside the built
+      # runtime image as the app user -- the same function the grader calls
+      # at grade time, so CI and the live grade cannot disagree.
+      - name: UI grader toolchain runs in the image as the app user
+        run: |
+          docker image inspect cerebrumdev-backend:ci --format 'image size bytes: {{.Size}}'
+          docker run --rm --user 10001 --entrypoint python cerebrumdev-backend:ci -c "
+          from app.factory.build.product_grader.ui_grader import toolchain_check
+          status = toolchain_check()
+          print('ui toolchain:', status.ok, status.detail)
+          raise SystemExit(0 if status.ok else 1)
+          "
