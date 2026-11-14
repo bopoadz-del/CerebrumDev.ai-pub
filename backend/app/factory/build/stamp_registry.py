@@ -50,6 +50,10 @@ class Stamp:
     #: destination. Such a stamp must read through the workspace (staging
     #: first, then the destination), never a raw staging path.
     staged_writer: bool = False
+    #: GAP stamps only: ``(relpath, text)`` the stamp writes where the product
+    #: has none. A gap file whose bytes still equal this render is the
+    #: Factory's (factory_receipt); one the writer wrote or changed is not.
+    render: Optional[Callable[[], Any]] = None
 
 
 class _Workspace:
@@ -194,7 +198,7 @@ def stamps() -> Tuple[Stamp, ...]:
     from app.factory.build.data_lifecycle import platform_substrate
     from app.factory.build.dependency_pins import CONSTRAINTS_REL
     from app.factory.build.deploy import FACTORY_OWNED_DEPLOY_MODULES, deploy_substrate
-    from app.factory.build.domain_acceptance import DOMAIN_GAP_RELS, domain_owned_paths
+    from app.factory.build.domain_acceptance import DOMAIN_GAP_RELS, domain_gap_files, domain_owned_paths
     from app.factory.build.kernel_publish import JOBS_REL
     from app.factory.build.money_contract import DECLARED_LOCALE_REL, MONEY_SETTINGS_REL
     from app.factory.build.placeholder_connectors import CONTRACT_TEST
@@ -239,15 +243,17 @@ def stamps() -> Tuple[Stamp, ...]:
         # construction substrate conflict). Re-rendered with the suite's specs.
         Stamp("domain acceptance driver + product kernel", OWNED, domain_owned_paths(), _domain_owned,
               staged_writer=True),
-        Stamp("domain substrate (gaps)", GAP, DOMAIN_GAP_RELS, _domain_gap, staged_writer=True),
+        Stamp("domain substrate (gaps)", GAP, DOMAIN_GAP_RELS, _domain_gap, staged_writer=True,
+              render=domain_gap_files),
         Stamp("platform substrate (gaps)", GAP, tuple(rel(p) for p, _t in platform_substrate()), _platform_gap,
-              staged_writer=True),
+              staged_writer=True, render=platform_substrate),
         Stamp(
             "deploy substrate (gaps)",
             GAP,
             tuple(rel(p) for p, _t in deploy_substrate() if rel(p) not in deploy_owned),
             _deploy_gap,
             staged_writer=True,
+            render=deploy_substrate,
         ),
     )
 
@@ -260,6 +266,21 @@ def owned_paths() -> Tuple[str, ...]:
             for p in stamp.paths:
                 seen.setdefault(p, None)
     return tuple(seen)
+
+
+def gap_renders() -> Tuple[Tuple[str, str], ...]:
+    """``(relpath, text)`` of every file a GAP stamp writes where the product
+    has none, restricted to that stamp's own paths."""
+    out: dict = {}
+    for stamp in stamps():
+        if stamp.kind != GAP or stamp.render is None:
+            continue
+        wanted = set(stamp.paths)
+        for p, text in stamp.render():
+            key = str(p).replace("\\", "/")
+            if key in wanted:
+                out.setdefault(key, str(text))
+    return tuple(out.items())
 
 
 def shared_paths() -> Tuple[str, ...]:

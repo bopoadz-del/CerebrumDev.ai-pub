@@ -6,10 +6,10 @@ cassette miss is never a pass) and keep the true positives green: a defect
 planted in the writer layer is still caught, a UI layer that did not run
 never certifies.
 
-The tests that are RED ON MASTER by design (a clean composed tree is not
-certified; findings name Factory-written paths) live in
-``red_grader_replay_clean_tree.py``, which pytest does not collect: the
-FG-1 PR enables them and turns them green.
+FG-1 enabled the ownership cases (``test_grader_replay_clean_tree.py``).
+The case still RED ON MASTER by design (a clean composed tree is not
+certified) lives in ``red_grader_replay_certifies.py``, which pytest does
+not collect until the fix that turns it green.
 
 Nothing here names a product, a capability, a block, a stamped file or a
 literal the grader is expected to report: each is read at run time.
@@ -120,7 +120,7 @@ def test_a_ui_layer_that_did_not_run_never_certifies(tree, monkeypatch):
     assert reason in replay.verdict.ungraded
 
 
-@pytest.mark.parametrize("module", ["grader_replay.py", "red_grader_replay_clean_tree.py"])
+@pytest.mark.parametrize("module", ["grader_replay.py", "test_grader_replay_clean_tree.py", "red_grader_replay_certifies.py"])
 def test_the_harness_names_nothing_it_grades(module):
     """The harness reads every capability, block, stamped path and literal
     from the Factory at run time; its source carries none of them."""

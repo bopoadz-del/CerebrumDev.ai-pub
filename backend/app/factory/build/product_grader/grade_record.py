@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 # The one writer of grade.json is F-8c-0's (#79); no copy lives here.
 from app.factory.build.product_grader.grade_writer import write_grade_json  # noqa: F401
@@ -55,12 +55,18 @@ def hardwiring_section(
     function_verdicts: Mapping[str, str],
     forbidden_hits: Mapping[str, Any],
     prompt_leaks: Any,
+    origin: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """F-8e grade section. ``function_verdicts``: {capability_id: verdict} from
     the two-dataset check; ``forbidden_hits``: {relpath: [literals]} baked into
     the product source; ``prompt_leaks``: literals shared by the writer prompt
     and the source. A FAIL verdict (anything but the two-dataset OK / BOTH_ABSENT),
-    a baked literal, or a prompt leak is a finding. ``clean`` == no findings."""
+    a baked literal, or a prompt leak is a finding. ``clean`` == no findings.
+
+    ``origin`` (FG-1) answers who wrote a file (factory_receipt.file_origin):
+    each baked-literal finding then carries its ``owner`` and ``owner_reason``.
+    The bar is unchanged -- a Factory-owned finding still makes the section
+    unclean; ownership only decides who the finding is billed to."""
     from app.factory.build.product_grader.two_dataset import BOTH_ABSENT, OK
 
     findings: List[Dict[str, Any]] = []
@@ -68,10 +74,24 @@ def hardwiring_section(
         if verdict not in (OK, BOTH_ABSENT):
             findings.append({"kind": "function", "capability": str(cid), "verdict": str(verdict)})
     for path, lits in sorted(forbidden_hits.items()):
-        findings.append({"kind": "forbidden_literal", "file": str(path), "literals": [str(x) for x in lits]})
+        row: Dict[str, Any] = {"kind": "forbidden_literal", "file": str(path), "literals": [str(x) for x in lits]}
+        if origin is not None:
+            who = origin(str(path))
+            row["owner"] = str(who.owner)
+            row["owner_reason"] = str(who.reason)
+        findings.append(row)
     if prompt_leaks:
         findings.append({"kind": "prompt_leak", "literals": [str(x) for x in prompt_leaks]})
     return {"ran": True, "clean": not findings, "findings": findings}
+
+
+def finding_is_writers(finding: Mapping[str, Any]) -> bool:
+    """A hardwiring finding is billed to the writer unless its recorded owner
+    is someone else (a finding with no owner field predates FG-1 and keeps
+    its old billing)."""
+    from app.factory.build.factory_receipt import WRITER
+
+    return str(finding.get("owner") or WRITER) == WRITER
 
 
 def _hardwiring_tasks(hardwiring: Optional[Mapping[str, Any]]) -> List[str]:
@@ -79,6 +99,8 @@ def _hardwiring_tasks(hardwiring: Optional[Mapping[str, Any]]) -> List[str]:
         return []
     out: List[str] = []
     for f in hardwiring.get("findings") or []:
+        if not finding_is_writers(f):
+            continue
         if f.get("kind") == "function":
             out.append(f"de-hardwire {f.get('capability')}: {f.get('verdict')}")
         elif f.get("kind") == "forbidden_literal":

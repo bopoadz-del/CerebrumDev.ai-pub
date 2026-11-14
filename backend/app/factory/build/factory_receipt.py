@@ -79,16 +79,19 @@ def _requirement_dists(text: str) -> FrozenSet[str]:
 
 
 def _vendored_paths(root: Path) -> Tuple[str, ...]:
-    """What CLONER vendored, from its own lock (block dirs + runtime files)."""
+    """What CLONER vendored, from its own lock (block dirs, kit dirs, runtime files)."""
     lock_path = root / "blocks.lock.json"
     try:
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ()
     out = []
-    for entry in (lock.get("blocks") or {}).values():
-        if isinstance(entry, Mapping) and entry.get("path"):
-            out.append(_norm_rel(entry["path"]))
+    # Blocks and the Store kits CLONER stocks beside them: each lock entry
+    # names the directory it vendored.
+    for section in ("blocks", "kits"):
+        for entry in (lock.get(section) or {}).values():
+            if isinstance(entry, Mapping) and entry.get("path"):
+                out.append(_norm_rel(entry["path"]))
     runtime = lock.get("runtime") or {}
     if isinstance(runtime, Mapping):
         if runtime.get("path"):
@@ -139,18 +142,38 @@ def factory_stamped_paths() -> Tuple[str, ...]:
     return tuple(seen)
 
 
-def record_receipt(root: Path | str) -> Dict[str, Any]:
-    """Write the receipt for the workspace as it is now; return it."""
-    root = Path(root)
+def _text_digest(text: str) -> str:
+    return hashlib.sha256(str(text).encode("utf-8").replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _stamped_digests(root: Path) -> Dict[str, str]:
+    """{rel: sha256} for every Factory-stamped file present in the tree: each
+    path a stamp owns, plus each GAP file whose bytes are still exactly the
+    Factory's gap render (the Factory wrote it; the writer did not)."""
+    from app.factory.build.stamp_registry import gap_renders
+
     files: Dict[str, str] = {}
     for rel in factory_stamped_paths():
         rel = _norm_rel(rel)
         path = root / rel
         if rel and path.is_file():
             files[rel] = _digest(path)
+    for rel, text in gap_renders():
+        rel = _norm_rel(rel)
+        path = root / rel
+        if rel and rel not in files and path.is_file():
+            digest = _digest(path)
+            if digest == _text_digest(text):
+                files[rel] = digest
+    return dict(sorted(files.items()))
+
+
+def record_receipt(root: Path | str) -> Dict[str, Any]:
+    """Write the receipt for the workspace as it is now; return it."""
+    root = Path(root)
     receipt = {
         "schema": SCHEMA,
-        "files": dict(sorted(files.items())),
+        "files": _stamped_digests(root),
         "vendored": list(_vendored_paths(root)),
         "base_requirements": sorted(base_requirement_dists(root) | factory_block_dists(root)),
     }
@@ -200,6 +223,20 @@ class Receipt:
         if dist and dist in declared:
             return Origin(WRITER, REASON_WRITER_DEPENDENCY)
         return Origin(FACTORY, REASON_UNDECLARED_DEPENDENCY)
+
+
+def file_receipt(root: Path | str) -> Receipt:
+    """The receipt's FILE side for the tree as it is now, in memory: the same
+    stamped-path digests and CLONER lock record_receipt writes, read at the
+    moment of asking. It answers ``file_origin`` only -- it carries no
+    dependency record, so ``dependency_origin`` is never asked of it."""
+    root = Path(root)
+    return Receipt(
+        root=root,
+        files=_stamped_digests(root),
+        vendored=_vendored_paths(root),
+        base_requirements=frozenset(),
+    )
 
 
 def load_receipt(root: Path | str) -> Optional[Receipt]:
