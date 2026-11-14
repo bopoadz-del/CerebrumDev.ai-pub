@@ -37,14 +37,58 @@ def is_pass(verdict: Any) -> bool:
     return verdict.get("verdict") == PASS and isinstance(evidence, str) and bool(evidence.strip())
 
 
-def open_fails(layer2: Mapping[str, Any]) -> List[str]:
-    """Every recorded open FAIL plus every recorded verdict that is not a PASS."""
-    out = [str(q) for q in layer2.get("open_fails") or []]
-    for v in layer2.get("verdicts") or []:
-        q = str(v.get("question") if isinstance(v, Mapping) else v)
-        if not is_pass(v) and q not in out:
-            out.append(q)
+def normalise_verdicts(verdicts: Any) -> List[Dict[str, str]]:
+    """FG-5: the one place a Layer-2 verdict is shaped before it is recorded.
+    Question and verdict become strings; evidence that is not a string is
+    recorded as none, so the verdict cannot pass on it and the record stays
+    readable with that question open."""
+    out: List[Dict[str, str]] = []
+    for v in verdicts or []:
+        if not isinstance(v, Mapping):
+            # Not a verdict: kept, open, with nothing to pass on.
+            v = {"question": v}
+        ev = v.get("evidence")
+        out.append({
+            "question": str(v.get("question") or ""),
+            "verdict": str(v.get("verdict") or ""),
+            "evidence": ev if isinstance(ev, str) else "",
+        })
     return out
+
+
+def open_layer2(layer2: Mapping[str, Any]) -> List[Dict[str, str]]:
+    """FG-5: THE derivation of what is open in Layer 2, read by the tier, the
+    writer's work list, the reason classes, the record and the Store gate.
+    Every recorded verdict that is not a PASS (with the grader's verdict and
+    quoted evidence), then every recorded open question not already listed."""
+    out = [v for v in normalise_verdicts(layer2.get("verdicts")) if not is_pass(v)]
+    seen = {v["question"] for v in out}
+    for q in layer2.get("open_fails") or []:
+        if str(q) not in seen:
+            seen.add(str(q))
+            out.append({"question": str(q), "verdict": "", "evidence": ""})
+    return out
+
+
+def open_fails(layer2: Mapping[str, Any]) -> List[str]:
+    """The questions of :func:`open_layer2`."""
+    return [row["question"] for row in open_layer2(layer2)]
+
+
+def layer2_task(row: Mapping[str, str]) -> str:
+    """The writer's work item for one open Layer-2 question; an answered
+    question carries the grader's verdict and its quoted evidence."""
+    task = f"re-run writer on: {row['question']}"
+    if row.get("verdict"):
+        task += f" -- grader {row['verdict']}: \"{row.get('evidence') or ''}\""
+    return task
+
+
+def hardwiring_ok(hardwiring: Optional[Mapping[str, Any]]) -> bool:
+    """FG-5: the one hardwiring rule, read by the record's certified flag and
+    the Store gate alike. No section is no finding; a section that did not
+    run or is not clean blocks."""
+    return hardwiring is None or (hardwiring.get("ran") is True and hardwiring.get("clean") is True)
 
 
 def layer1_ok(functions: Mapping[str, Any], ui: Mapping[str, Any]) -> bool:
@@ -114,15 +158,16 @@ def build_grade(
     hardwiring: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     l1 = layer1_ok(functions, ui)
-    fails = open_fails(layer2)
-    hw_ok = hardwiring is None or (hardwiring.get("ran") is True and hardwiring.get("clean") is True)
+    l2 = dict(layer2, verdicts=normalise_verdicts(layer2.get("verdicts")))
+    rows = open_layer2(l2)
+    l2["open_fails"] = [row["question"] for row in rows]
     grade: Dict[str, Any] = {
         "schema": SCHEMA,
         "product_id": product_id,
         "layer1": {"ok": l1, "functions": dict(functions), "ui": dict(ui)},
-        "layer2": dict(layer2, open_fails=fails),
-        "next_tasks": [f"re-run writer on: {q}" for q in fails] + _hardwiring_tasks(hardwiring),
-        "certified": l1 and layer2.get("ran") is True and bool(layer2.get("verdicts")) and not fails and hw_ok,
+        "layer2": l2,
+        "next_tasks": [layer2_task(row) for row in rows] + _hardwiring_tasks(hardwiring),
+        "certified": l1 and l2.get("ran") is True and bool(l2["verdicts"]) and not rows and hardwiring_ok(hardwiring),
     }
     if hardwiring is not None:
         grade["hardwiring"] = dict(hardwiring)
@@ -206,4 +251,8 @@ def certification_refusal(root: Path | str) -> Optional[str]:
     fails = open_fails(l2)
     if fails:
         return f"product grade has {len(fails)} open Layer-2 FAIL(s): handover blocked"
+    hardwiring = grade.get("hardwiring")
+    if not hardwiring_ok(hardwiring):
+        found = len(hardwiring.get("findings") or [])
+        return f"product grade hardwiring scan not clean ({found} finding(s)): build not certified"
     return None

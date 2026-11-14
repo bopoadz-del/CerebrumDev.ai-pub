@@ -599,12 +599,14 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
         )
         add(str(finding.get("capability") or ""), cls, "hardwiring")
 
+    from app.factory.build.product_grader.grade_record import open_fails
+
     layer2 = grade.get("layer2") or {}
     if layer2.get("ran") is not True:
         add("", "ungraded", "layer2")
     else:
-        for question in layer2.get("open_fails") or []:
-            add(str(question), "layer2_fail", "layer2")
+        for question in open_fails(layer2):
+            add(question, "layer2_fail", "layer2")
     return out
 
 
@@ -856,8 +858,11 @@ def run_grader(
         for name in ui_failing:
             items.append(f"UI step FAIL: {name}")
     if not refusal:
-        for question in l2.get("open_fails") or []:
-            items.append(f"re-run writer on: {question}")
+        # FG-5: what is open in Layer 2 is read from the record's one
+        # derivation -- an answered FAIL is open and reaches the writer with
+        # the grader's quoted evidence, so the tier cannot disagree with it.
+        for row in grade_record.open_layer2(grade["layer2"]):
+            items.append(grade_record.layer2_task(row))
     for finding in (hardwiring or {}).get("findings") or []:
         kind = finding.get("kind") if isinstance(finding, Mapping) else ""
         if kind == "function":
