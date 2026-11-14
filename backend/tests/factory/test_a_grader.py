@@ -665,6 +665,7 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
             tier=grader_mod.NOT_CERTIFIED,
             items=(f"function grade FAIL: {capability}",),
             reasons=({"capability": capability, "class": "stub_handler", "layer": "function"},),
+            writer_items=(f"function grade FAIL: {capability}",),
         )
 
     monkeypatch.setattr(grader_mod, "run_grader", not_certified)
@@ -702,6 +703,47 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
         == [{"capability": capability, "class": "stub_handler", "layer": "function"}]
         for n in notes
     )
+
+
+@pytest.mark.parametrize("owed_file", ["zorblat/stamped_mod.py", "plinket/vendored_mod.py"])
+def test_runner_spends_no_writer_round_on_rows_the_factory_owes(smoke_blueprint, tmp_path, monkeypatch, owed_file):
+    """FG-1: a NOT_CERTIFIED verdict whose rows are all Factory-owed (or
+    run-level) ends the run naming the Factory: no REWORK, the writer is
+    not dispatched again, and the tier is never CERTIFIED."""
+    from app.factory.build import grader as grader_mod
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.ledger import EventKind
+    from app.factory.build.roles import RoleResult
+    from app.factory.build.runner import RoleRunner
+
+    monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
+    owed = f"FACTORY owes baked literals in {owed_file} (in a file the Factory rendered): ['Qux']"
+
+    def factory_owed(**kwargs):
+        return grader_mod.GraderVerdict(
+            tier=grader_mod.NOT_CERTIFIED, items=(owed,), factory_owed=(owed,)
+        )
+
+    monkeypatch.setattr(grader_mod, "run_grader", factory_owed)
+    captured: list = []
+    roles = _fake_pass_harness(monkeypatch)
+
+    def recording_writer(ctx):
+        captured.append(tuple(ctx.work_list))
+        return RoleResult(ok=True, detail="fake pass")
+
+    roles[BuildRole.WRITER] = recording_writer
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    outcome = runner.run()
+    assert not outcome.ok
+    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED -- FACTORY_FAULT (no writer round)")
+    assert owed_file in outcome.detail
+    assert [e for e in runner.ledger.events() if e.kind is EventKind.REWORK] == []
+    assert len(captured) == 1  # the writer's first pass only; nothing handed back
+    assert not any(owed_file in item for wl in captured for item in wl)
+    notes = [e for e in runner.ledger.events() if (e.payload or {}).get("writer_dispatched") is False]
+    assert notes and all((n.payload or {}).get("owner") == "FACTORY" for n in notes)
+    assert all((n.payload or {}).get("factory_owed") == [owed] for n in notes)
 
 
 def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path, monkeypatch):

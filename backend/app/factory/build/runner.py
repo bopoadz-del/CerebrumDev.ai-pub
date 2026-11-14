@@ -963,6 +963,41 @@ class RoleRunner:
     def _rework_rounds_this_cycle(self) -> int:
         return sum(1 for e in self._cycle_events() if e.kind is EventKind.REWORK)
 
+    def _grader_factory_fault(self, grade_verdict: Any, rework_used: int) -> Optional[BuildOutcome]:
+        """FG-1: end the run when a NOT_CERTIFIED verdict holds no writer-owned
+        row. The Factory is named as the owner (the TESTER's FACTORY_FAULT
+        shape), the writer is not dispatched, and the tier is never CERTIFIED.
+        Returns None when the writer has rows to repair."""
+        if grade_verdict.writer_items:
+            return None
+        from app.factory.build import failure_owner
+        from app.factory.build.grader import GRADER_GATE, NOT_CERTIFIED
+
+        owed = list(grade_verdict.factory_owed) + list(grade_verdict.ungraded)
+        if not owed:
+            owed = list(grade_verdict.items)
+        self.ledger.append(
+            EventKind.NOTE,
+            role=BuildRole.WRITER,
+            detail=f"GRADER: {NOT_CERTIFIED} -- FACTORY_FAULT: " + ("; ".join(owed)[:400] or "-"),
+            payload={
+                "grader_gate": GRADER_GATE,
+                "owner": failure_owner.FACTORY,
+                "grader_tier": NOT_CERTIFIED,
+                "factory_owed": list(grade_verdict.factory_owed),
+                "grader_ungraded": list(grade_verdict.ungraded),
+                "writer_dispatched": False,
+            },
+        )
+        return self._finish(
+            Outcome.FAILED_GATE,
+            f"GRADER: {NOT_CERTIFIED} -- FACTORY_FAULT (no writer round): "
+            + ("; ".join(owed)[:400] or "-"),
+            phase=BuildRole.WRITER,
+            rework=rework_used,
+            findings=list(grade_verdict.items),
+        )
+
     def _writer_grader(self) -> Optional[Any]:
         """The GRADER: the writer's tree is graded BEFORE the TESTER judges
         it. Returns None when the grader is disabled or the verdict is
@@ -3140,6 +3175,14 @@ class RoleRunner:
                                 rework=rework_used,
                                 findings=list(grade_verdict.items),
                             )
+                        # FG-1: a NOT_CERTIFIED verdict with nothing the
+                        # writer authored to repair spends no writer round:
+                        # what remains is owed by the Factory (a stamped or
+                        # vendored file) or is a run-level gap, so the run
+                        # ends naming the Factory -- never billed to the writer.
+                        owed = self._grader_factory_fault(grade_verdict, rework_used)
+                        if owed is not None:
+                            return owed
                         # NOT_CERTIFIED: the writer's handback, two rounds.
                         grader_events = [
                             e for e in self._reworks()
@@ -3149,7 +3192,7 @@ class RoleRunner:
                         previous = set()
                         for event in grader_events:
                             previous.update((event.payload or {}).get("failure_names") or [])
-                        items = tuple(grade_verdict.items)
+                        items = tuple(grade_verdict.writer_items)
                         if rounds >= REWORK_BUDGET:
                             repeated = sorted(set(items) & previous)
                             stop_reason = (
@@ -3163,7 +3206,7 @@ class RoleRunner:
                                 f"-- {stop_reason}: " + ("; ".join(items)[:400] or "-"),
                                 phase=role,
                                 rework=rework_used,
-                                findings=list(items),
+                                findings=list(grade_verdict.items),
                             )
                         self._grant_rework_wall(
                             BuildRole.WRITER, build_round=self._rework_rounds_this_build() + 1

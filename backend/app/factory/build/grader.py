@@ -583,6 +583,14 @@ class GraderVerdict:
     grade: Optional[Mapping[str, Any]] = None
     #: NOT_CERTIFIED only: the reason class per failing item (reason_classes).
     reasons: Tuple[Mapping[str, str], ...] = ()
+    #: FG-1, owner by construction. ``writer_items``: the failing items the
+    #: writer authored and can repair -- the ONLY rows a writer round is
+    #: spent on. ``factory_owed``: findings in files the Factory wrote
+    #: (stamped or vendored), recorded and never billed to the writer.
+    #: ``items`` stays the full quoted list; run-level gaps (``ungraded``,
+    #: a refusal) are in neither owner list.
+    writer_items: Tuple[str, ...] = ()
+    factory_owed: Tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -719,7 +727,14 @@ def run_grader(
         forbidden = derive_forbidden(blueprint, brief, prompt_text)
         hits = scan_generated.forbidden_hits(root, forbidden)
         leaks = scan_generated.prompt_leak(prompt_text, rendered, forbidden) if prompt_text else []
-        hardwiring = grade_record.hardwiring_section(verdicts, hits, leaks)
+        # FG-1: who wrote each file is read from the provenance the Factory
+        # records (the stamp registry and the build's own CLONER lock), the
+        # same file_origin the Store gate bills its audit rows by.
+        from app.factory.build.factory_receipt import file_receipt
+
+        hardwiring = grade_record.hardwiring_section(
+            verdicts, hits, leaks, origin=file_receipt(root).file_origin
+        )
 
     # --- Layer 1 UI -------------------------------------------------------
     ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url)
@@ -788,8 +803,10 @@ def run_grader(
     if outage:
         return GraderVerdict(tier=ERROR, items=(outage,), ungraded=tuple(ungraded), grade=grade)
 
-    # Deterministic reds, computed once and quoted whatever the tier.
+    # Deterministic reds, computed once and quoted whatever the tier. Every
+    # red is the writer's except a finding in a file the Factory wrote.
     items: List[str] = []
+    factory_owed: List[str] = []
     fn_failing = list(functions.failing)
     if not functions.ok:
         for name in fn_failing:
@@ -808,7 +825,13 @@ def run_grader(
             items.append(f"de-hardwire {cid}: {finding.get('verdict')}")
         elif kind == "forbidden_literal":
             rel = str(finding.get("file") or "")
-            items.append(f"remove baked literals from {rel}: {finding.get('literals')}")
+            if grade_record.finding_is_writers(finding):
+                items.append(f"remove baked literals from {rel}: {finding.get('literals')}")
+            else:
+                factory_owed.append(
+                    f"FACTORY owes baked literals in {rel} "
+                    f"({finding.get('owner_reason')}): {finding.get('literals')}"
+                )
         elif kind == "prompt_leak":
             items.append(f"stop leaking the prompt into the source: {finding.get('literals')}")
 
@@ -818,10 +841,12 @@ def run_grader(
     if refusal:
         return GraderVerdict(
             tier=NOT_CERTIFIED,
-            items=(refusal,) + tuple(items),
+            items=(refusal,) + tuple(items) + tuple(factory_owed),
             ungraded=tuple(ungraded),
             grade=grade,
             reasons=reasons,
+            writer_items=tuple(items),
+            factory_owed=tuple(factory_owed),
         )
 
     # A Layer 2 that never answered is an outage -- a verdict about the run
@@ -836,12 +861,14 @@ def run_grader(
 
     # A refused or unrun layer blocks certification: the report says what it
     # did not check, and no tier is issued over the gap.
-    if ungraded or items:
+    if ungraded or items or factory_owed:
         return GraderVerdict(
             tier=NOT_CERTIFIED,
-            items=tuple(items) + tuple(ungraded),
+            items=tuple(items) + tuple(factory_owed) + tuple(ungraded),
             ungraded=tuple(ungraded),
             grade=grade,
             reasons=reasons,
+            writer_items=tuple(items),
+            factory_owed=tuple(factory_owed),
         )
     return GraderVerdict(tier=CERTIFIED, grade=grade)
