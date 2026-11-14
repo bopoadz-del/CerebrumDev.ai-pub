@@ -4,11 +4,20 @@ For a built product workspace and its blueprint:
 
 1. derive the functions to grade FROM the product: every blueprint
    capability whose ``app/actions/<capability_id>.py`` exposes ``handle``;
-2. generate a two-input test for each from the capability's own definition
-   (two different inputs must give two different results);
-3. execute the standard mutants against that test -- ``constant_return``
-   (handle answers one fixed result) and ``drop_rule`` (handle ignores its
-   input) -- each mutant must redden the test.
+2. build its two inputs from the capability's DECLARED contract -- two valid
+   instances of the spec the product's own ``app/models.py`` declares
+   (``declared_specs.specs_from_product_models``): the sample TESTER and the
+   WRITER gate post (``roles_handlers._sample_payload``) and a second
+   instance that differs in every field the declared constraints let differ.
+   A capability with no declared contract is not probed with invented input:
+   it is recorded ``NO_INPUT_CONTRACT`` (class ``ungraded``), owed by the
+   Factory, never handed to the writer as a failing function;
+3. compare the two answers with echo and noise removed -- a leaf that copies
+   the same input path in every run, or that changes when the SAME input is
+   sent twice (a timestamp, a fresh id), is not a result;
+4. field dependence: re-run input two with one declared field set back to
+   input one's value, per field. A handle whose answer changes for no single
+   field is a stub; the fields it depends on are reported.
 
 A function whose test does not pass, or whose mutant survives, makes the
 platform NOT handover-ready and is named in the grade. Fewer than
@@ -21,16 +30,16 @@ a product's imports never leak into the Factory process.
 from __future__ import annotations
 
 import ast
-import hashlib
+import datetime as _dt
 import json
-import re
 import secrets
 import subprocess
 import sys
 import tempfile
+import uuid as _uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
 from app.factory.build.image_sufficiency import GATE_RUN_ENV
@@ -38,8 +47,13 @@ from app.factory.build.product_grader import vault
 
 #: ORDERS_1710Z-B: "graded on at least 4-5 of its functions".
 MIN_FUNCTIONS = 4
-MUTANTS: Sequence[str] = ("constant_return", "drop_rule")
+#: The one mutant family: per declared field, input two with that field set
+#: back to input one's value. Killed when the answer changes for at least one
+#: field (the handle reads its input); survived when it changes for none.
+MUTANTS: Sequence[str] = ("field_dependence",)
 RUN_TIMEOUT_S = 60
+#: The probe artifact keeps at most this much of each observed answer.
+ANSWER_CHARS = 2000
 #: The detail a handle earns when its two inputs gave one result (it answers
 #: like a stub). The reason-class derivation reads this constant, never prose.
 ONE_RESULT = "two inputs gave one result"
@@ -49,13 +63,18 @@ ONE_RESULT = "two inputs gave one result"
 #: stub. A stub answers a fixed result; a fail-closed handle answers its
 #: error. Neither is ok, so the bar is unchanged; only the class differs.
 BLOCK_UNAVAILABLE = "block_unavailable: two inputs gave one honest-error envelope"
+#: The detail of a capability the grader did not probe because the product
+#: declares no input contract for it (no spec, no field, or no field that can
+#: take a second value). Class ``ungraded``: owed by the Factory, not the writer.
+NO_INPUT_CONTRACT = "no_input_contract: the capability declares no field the grader can vary"
 
 
 @dataclass(frozen=True)
 class GradedFunction:
     capability_id: str
     module: str
-    inputs: List[Dict[str, Any]]
+    #: Two valid instances of the declared spec; None when there is no contract.
+    inputs: Optional[List[Dict[str, Any]]]
 
 
 @dataclass
@@ -65,6 +84,12 @@ class FunctionResult:
     mutants_killed: List[str] = field(default_factory=list)
     mutants_survived: List[str] = field(default_factory=list)
     detail: str = ""
+    #: The declared fields whose single change moved the answer.
+    depends_on: List[str] = field(default_factory=list)
+    #: Internal grader artifact for the handback, kept on a failing handle
+    #: only: the exact inputs sent and the answers observed. The public
+    #: timeline reads reason classes, never this.
+    probe: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -79,6 +104,10 @@ class FunctionGrade:
     #: F-8d writer-blind vault for this run: {seed, entries, gaps}. None when no
     #: grader root was given (the vault is a Factory-owned, grader-root artifact).
     vault: "Dict[str, Any] | None" = None
+    #: Capabilities with a handle but no declared input contract (detail
+    #: NO_INPUT_CONTRACT). Not graded, not counted, not in ``failing`` (the
+    #: writer is not handed them); they keep the grade from being ok.
+    ungraded: List[FunctionResult] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # MIN_FUNCTIONS is a floor, not a default: a caller can ask for more
@@ -92,6 +121,7 @@ class FunctionGrade:
     def ok(self) -> bool:
         return (
             not self.errors
+            and not self.ungraded
             and len(self.functions) >= self.min_functions
             and all(f.ok for f in self.functions)
         )
@@ -112,34 +142,95 @@ class FunctionGrade:
             "graded": len(self.functions),
             "failing": self.failing,
             "functions": [dict(asdict(f), ok=f.ok) for f in self.functions],
+            "ungraded": [asdict(f) for f in self.ungraded],
             **({"vault": self.vault} if self.vault is not None else {}),
         }
 
 
-def _words(text: str) -> List[str]:
-    return [w for w in re.findall(r"[a-z][a-z0-9]+", text.lower()) if len(w) > 2]
+def _in_bounds(value: Any, field_spec: Mapping[str, Any]) -> bool:
+    lo, hi = field_spec.get("min"), field_spec.get("max")
+    try:
+        return (lo is None or value >= lo) and (hi is None or value <= hi)
+    except TypeError:
+        return False
 
 
-def two_inputs(capability: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    """Two distinct payloads built from the capability's own definition.
+def _other_number(first: Any, field_spec: Mapping[str, Any], kind: str) -> Any:
+    """The nearest value to ``first`` inside the declared min/max that differs
+    from it; ``first`` when the bounds allow only one value."""
+    step = 1 if kind == "int" else 1.0
+    candidates: List[Any] = [first + step, first - step]
+    lo, hi = field_spec.get("min"), field_spec.get("max")
+    if lo is not None and hi is not None and kind != "int":
+        candidates.append((lo + hi) / 2)
+    for cand in candidates:
+        if cand != first and _in_bounds(cand, field_spec):
+            return cand
+    return first
 
-    Keys are the capability's own description words; values differ between
-    the two inputs in every key (text and number), so a function that reads
-    its input at all must answer them differently."""
-    cid = str(capability.get("id") or "")
-    words = list(dict.fromkeys(_words(str(capability.get("description") or ""))))[:6]
-    if not words:
-        words = _words(cid.replace("_", " ")) or ["value"]
-    seed = int(hashlib.sha256(cid.encode("utf-8")).hexdigest()[:6], 16)
-    out: List[Dict[str, Any]] = []
-    for n in (1, 2):
-        payload: Dict[str, Any] = {}
-        for i, w in enumerate(words):
-            payload[w] = f"{w}-{cid}-{n}" if i % 2 == 0 else (seed % 97) + n * (i + 1)
-        payload["quantity"] = n * 7 + seed % 5
-        payload["text"] = " ".join(words[: n + 1])
-        out.append(payload)
-    return out
+
+def _shift_temporal(first: str) -> str:
+    """The ISO sample shifted by one unit (a day for a date or datetime, an
+    hour for a time); the sample itself when it does not parse."""
+    try:
+        if "T" in first or " " in first.strip():
+            return (_dt.datetime.fromisoformat(first) + _dt.timedelta(days=1)).isoformat()
+        if ":" in first:
+            moved = _dt.datetime.combine(_dt.date(2000, 1, 1), _dt.time.fromisoformat(first))
+            return (moved + _dt.timedelta(hours=1)).time().isoformat()
+        return (_dt.date.fromisoformat(first) + _dt.timedelta(days=1)).isoformat()
+    except ValueError:
+        return first
+
+
+def _other_value(field_spec: Mapping[str, Any], first: Any) -> Any:
+    """A second valid value for a declared field, different from ``first``
+    when the declared constraints allow one. Reads the declared type, format,
+    vocabulary and bounds only -- never the field's name beyond what
+    ``_sample_value`` already reads."""
+    from app.factory.build.roles_handlers import (
+        _looks_like_email_field,
+        _normalize_field_type,
+        _temporal_sample,
+    )
+
+    allowed = field_spec.get("allowed_values")
+    if allowed:
+        return next((v for v in allowed if v != first), first)
+    if isinstance(first, bool):
+        return not first
+    if _looks_like_email_field(dict(field_spec)):
+        return next(a for a in ("second@example.com", "third@example.com") if a != first)
+    if isinstance(first, str) and _temporal_sample(dict(field_spec)) is not None:
+        return _shift_temporal(first)
+    kind = _normalize_field_type(field_spec.get("type") or "str")
+    if kind in ("int", "float") and isinstance(first, (int, float)):
+        return _other_number(first, field_spec, kind)
+    if kind == "uuid" and isinstance(first, str):
+        try:
+            return str(_uuid.UUID(int=(_uuid.UUID(first).int + 1) % (1 << 128)))
+        except ValueError:
+            return first
+    if isinstance(first, str):
+        return first + " 2"
+    return first
+
+
+def contract_inputs(spec: Any) -> Optional[List[Dict[str, Any]]]:
+    """Two valid instances of the capability's declared spec that differ in
+    every field the declared constraints allow to differ; None when the spec
+    declares no field or no field can take a second value."""
+    from app.factory.build.roles_handlers import _sample_payload
+
+    declared = spec.get("fields") if isinstance(spec, Mapping) else None
+    fields = [f for f in declared or [] if isinstance(f, dict) and f.get("name")]
+    # No declared field: both instances are {} and compare equal -> None.
+    first = _sample_payload({"fields": fields})
+    second = {
+        str(f["name"]): _other_value({"type": "str", **f}, first[str(f["name"])])
+        for f in fields
+    }
+    return [first, second] if second != first else None
 
 
 def _defines_handle(text: str) -> bool:
@@ -153,6 +244,12 @@ def _defines_handle(text: str) -> bool:
 
 
 def derive_functions(blueprint: Mapping[str, Any], workspace: Path) -> List[GradedFunction]:
+    """Every blueprint capability with a module-level ``handle``, its two
+    inputs built from the product's declared spec (read once); ``inputs`` is
+    None for a capability whose contract is not declared."""
+    from app.factory.build.declared_specs import specs_from_product_models
+
+    specs: Optional[Dict[str, Any]] = None
     found: List[GradedFunction] = []
     for cap in blueprint.get("capabilities") or []:
         cid = str(cap.get("id") or "")
@@ -161,7 +258,9 @@ def derive_functions(blueprint: Mapping[str, Any], workspace: Path) -> List[Grad
         src = Path(workspace) / "app" / "actions" / f"{cid}.py"
         if not src.is_file() or not _defines_handle(src.read_text("utf-8", "replace")):
             continue
-        found.append(GradedFunction(cid, f"app.actions.{cid}", two_inputs(cap)))
+        if specs is None:
+            specs = specs_from_product_models(Path(workspace))
+        found.append(GradedFunction(cid, f"app.actions.{cid}", contract_inputs(specs.get(cid))))
     return found
 
 
@@ -222,54 +321,97 @@ except BaseException as exc:
     sys.exit(0)
 def canon(r):
     return json.dumps(r, sort_keys=True, default=str)
+def leaves(obj, path=""):
+    # path -> canonical scalar; an empty container is one leaf of its own.
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            out.update(leaves(v, path + "/" + json.dumps(str(k))))
+        return out or {path: "{}"}
+    if isinstance(obj, (list, tuple)):
+        out = {}
+        for i, v in enumerate(obj):
+            out.update(leaves(v, path + "[" + str(i) + "]"))
+        return out or {path: "[]"}
+    return {path: canon(obj)}
 def honest_error(r):
     # The fail-closed envelope every handle answers when a block failed:
     # ok is False and the error is named. Typed fields, never the words.
     return (isinstance(r, dict) and r.get("ok") is False
             and isinstance(r.get("error"), str) and bool(r["error"].strip()))
-def two_input(handle, first=None):
-    answers = [handle(dict(p)) for p in spec["inputs"]]
-    if first is not None:
-        first.append(answers[0])
-    return canon(answers[0]) != canon(answers[1])
-out = {"two_input": None, "mutants": {}}
+def echo_sources(answer, payload):
+    # Per answer leaf: the input paths whose value it copies.
+    inp = leaves(payload)
+    return {p: {q for q, w in inp.items() if w == v} for p, v in leaves(answer).items()}
+first, second = spec["inputs"]
+out = {"two_input": None, "mutants": {}, "depends_on": [], "answers": []}
+def variant_of(name):
+    v = dict(second)
+    v[name] = first.get(name)
+    return v
+varied = [n for n in spec["fields"] if canon(first.get(n)) != canon(second.get(n))]
+runs, variants = [], {}
 try:
-    _first = []
-    out["two_input"] = two_input(original, _first)
-    out["honest_error"] = (not out["two_input"]) and honest_error(_first[0])
+    runs = [(first, original(dict(first))), (first, original(dict(first))),
+            (second, original(dict(second)))]
+    for name in varied:
+        try:
+            variants[name] = original(variant_of(name))
+        except BaseException:
+            variants[name] = None  # it refused this combination: the answer changed
+    # Each input again AFTER the variants, so a coarse clock has moved on.
+    runs += [(first, original(dict(first))), (second, original(dict(second)))]
 except BaseException as exc:
     # A handle that raises or exits answered nothing: never ok, mutants prove nothing.
     out["two_input"] = False
     out["error"] = why(exc)
-fixed = None
 if not out.get("error"):
-    fixed = original(dict(spec["inputs"][0]))
-mutants = {
-    "constant_return": lambda payload: fixed,
-    "drop_rule": lambda payload: original({}),
-}
+    a1, a2 = runs[0][1], runs[2][1]
+    out["answers"] = [canon(a1), canon(a2)]
+    # Noise: a leaf that differs when the SAME input is sent again.
+    drop = set()
+    for group in ([runs[0][1], runs[1][1], runs[3][1]], [runs[2][1], runs[4][1]]):
+        seen = [leaves(g) for g in group]
+        for p in set().union(*seen):
+            if len({s.get(p) for s in seen}) > 1:
+                drop.add(p)
+    # Echo: a leaf that copies the SAME input path in every run.
+    sources = [echo_sources(ans, inp) for inp, ans in runs]
+    for p in set().union(*[set(leaves(ans)) for _inp, ans in runs]):
+        if set.intersection(*[src.get(p, set()) for src in sources]):
+            drop.add(p)
+    def signal(answer):
+        return {p: v for p, v in leaves(answer).items() if p not in drop}
+    out["two_input"] = signal(a1) != signal(a2)
+    out["honest_error"] = (not out["two_input"]) and honest_error(a1)
+    base = signal(a2)
+    out["depends_on"] = [n for n in varied
+                         if variants[n] is None or signal(variants[n]) != base]
 for name in spec["mutants"]:
     if out.get("error"):
         out["mutants"][name] = "not_run"
-        continue
-    try:
-        survived = two_input(mutants[name])
-    except BaseException:
-        survived = False  # the test reddened by raising
-    out["mutants"][name] = "survived" if survived else "killed"
+    else:
+        out["mutants"][name] = "killed" if out["depends_on"] else "survived"
 emit(out)
 """
 
 
+def _probe(fn: GradedFunction, answers: Sequence[Any]) -> Dict[str, Any]:
+    return {"inputs": fn.inputs, "answers": [str(a)[:ANSWER_CHARS] for a in answers]}
+
+
 def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.executable) -> FunctionResult:
+    if not fn.inputs:
+        return FunctionResult(fn.capability_id, False, [], [], NO_INPUT_CONTRACT)
     nonce = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="f8a-") as tmp:
         out_path = Path(tmp) / "grade.json"
         storage = Path(tmp) / "store"
         storage.mkdir()
-        spec = json.dumps({"module": fn.module, "inputs": fn.inputs, "mutants": list(MUTANTS),
+        spec = json.dumps({"module": fn.module, "inputs": fn.inputs,
+                           "fields": list(fn.inputs[0]), "mutants": list(MUTANTS),
                            "nonce": nonce, "out": str(out_path), "storage": str(storage),
-                           "harness_env": dict(GATE_RUN_ENV)})
+                           "harness_env": dict(GATE_RUN_ENV)}, default=str)
         try:
             proc = subprocess.run(
                 [python, "-c", _RUNNER],
@@ -281,12 +423,14 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
                 env={"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"},
             )
         except subprocess.TimeoutExpired:
-            return FunctionResult(fn.capability_id, False, [], list(MUTANTS), "timeout")
+            return FunctionResult(fn.capability_id, False, [], list(MUTANTS), "timeout",
+                                  probe=_probe(fn, []))
         data = _read_result(out_path, nonce)
     if data is None or proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-1:] or ["no result"]
         return FunctionResult(fn.capability_id, False, [], list(MUTANTS),
-                              f"handle exited the grader (rc={proc.returncode}): {tail[0]}"[:300])
+                              f"handle exited the grader (rc={proc.returncode}): {tail[0]}"[:300],
+                              probe=_probe(fn, []))
     killed = [m for m, v in data["mutants"].items() if v == "killed"]
     survived = [m for m, v in data["mutants"].items() if v != "killed"]
     detail = data.get("error") or (
@@ -294,7 +438,11 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
         else BLOCK_UNAVAILABLE if data.get("honest_error") is True
         else ONE_RESULT
     )
-    return FunctionResult(fn.capability_id, data["two_input"] is True, killed, survived, detail)
+    result = FunctionResult(fn.capability_id, data["two_input"] is True, killed, survived, detail,
+                            depends_on=[str(n) for n in data.get("depends_on") or []])
+    if not result.ok:
+        result.probe = _probe(fn, data.get("answers") or [])
+    return result
 
 
 def _read_result(path: Path, nonce: str) -> Dict[str, Any] | None:
@@ -398,8 +546,11 @@ def grade_functions(
 ) -> FunctionGrade:
     ws = Path(workspace)
     fns = derive_functions(blueprint, ws)
-    results = [run_function(f, ws, python=python) for f in fns]
-    grade = FunctionGrade(results, min_functions=min_functions)
+    # A capability with no declared contract is recorded, never probed with
+    # invented input: the Factory owes its spec, the writer is not handed it.
+    results = [run_function(f, ws, python=python) for f in fns if f.inputs]
+    ungraded = [run_function(f, ws, python=python) for f in fns if not f.inputs]
+    grade = FunctionGrade(results, min_functions=min_functions, ungraded=ungraded)
     # F-8d: when a grader root is given, also build the writer-blind vault
     # (seeded inputs + kernel-computed expected) and record it on the grade so
     # grade_record carries the seed + set into grade.json under layer1.functions.

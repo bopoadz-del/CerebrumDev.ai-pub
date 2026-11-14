@@ -6,6 +6,7 @@ decides -- certification is grade_record.certification_refusal's job.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, List, Mapping
 
@@ -25,6 +26,19 @@ def _shown_verdict(v: Mapping[str, Any]) -> str:
     return "FAIL" if verdict == "FAIL" else f"FAIL (recorded {verdict!r})"
 
 
+def _probe_lines(f: Mapping[str, Any]) -> List[str]:
+    """The handback for a failing handle: the exact inputs the grader sent,
+    the answers it observed and the declared fields the answer moved with.
+    Empty when the record carries no probe (a passing handle)."""
+    probe = f.get("probe") or {}
+    if not isinstance(probe, Mapping) or not probe:
+        return []
+    lines = [f"    - sent: {json.dumps(probe.get('inputs'), sort_keys=True, default=str)}"]
+    lines += [f"    - observed: {a}" for a in probe.get("answers") or []]
+    lines.append(f"    - answer moved with: {_names(f.get('depends_on'))}")
+    return lines
+
+
 def render_md(grade: Mapping[str, Any]) -> str:
     l1, l2 = grade["layer1"], grade["layer2"]
     fn, ui = l1.get("functions") or {}, l1.get("ui") or {}
@@ -42,6 +56,10 @@ def render_md(grade: Mapping[str, Any]) -> str:
             f"  - `{f['capability_id']}`: {'PASS' if f.get('ok') is True else 'FAIL'}; "
             f"mutants killed {_names(f.get('mutants_killed'))}; survived {_names(f.get('mutants_survived'))}"
         )
+        if f.get("ok") is not True:
+            lines += _probe_lines(f)
+    for u in fn.get("ungraded") or []:
+        lines.append(f"  - `{u.get('capability_id')}`: UNGRADED; {u.get('detail')}")
     lines.append(f"- UI steps passed: {sum(1 for s in steps if s.get('passed') is True)}/{len(steps)}")
     lines += [f"  - FAIL: {name}" for name in ui.get("failing") or []]
     lines += ["", f"## Layer 2 (separate grader context): {'ran' if l2.get('ran') is True else 'did not run'}"]

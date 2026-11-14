@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.factory.build.product_grader import grade_md as gm
+import app.factory.build.product_grader.grade_md as gm
 
 
 def _grade(certified=True, l1_ok=True, ran=True, fns=(), steps=(), failing=(), verdicts=(), open_fails=(), tasks=()):
@@ -113,3 +113,26 @@ def test_truthy_step_not_counted(passed):
 ])
 def test_verdict_shows_pass_only_when_it_is_one(v, shown):
     assert any(line.startswith(f"- {shown}: q -- evidence:") for line in _lines(_grade(verdicts=[v])))
+
+
+@pytest.mark.parametrize("ok,probe,want", [
+    (False, {"inputs": [{"n": 1}, {"n": 2}], "answers": ['{"ok": true}', '{"ok": true}']},
+     ['    - sent: [{"n": 1}, {"n": 2}]', '    - observed: {"ok": true}', '    - observed: {"ok": true}',
+      "    - answer moved with: none"]),
+    (True, {"inputs": [{"n": 1}, {"n": 2}], "answers": ["a", "b"]}, []),
+    (False, {}, []),
+])
+def test_failing_function_carries_its_probe(ok, probe, want):
+    f = {"capability_id": "rent_roll", "ok": ok, "mutants_killed": [], "mutants_survived": [],
+         "depends_on": [], "probe": probe}
+    lines = _lines(_grade(fns=[f]))
+    i = next(n for n, line in enumerate(lines) if line.startswith("  - `rent_roll`"))
+    assert [line for line in lines[i + 1:] if line.startswith("    - ")] == want
+
+
+@pytest.mark.parametrize("ids", [["notice_log"], ["notice_log", "rent_roll"]])
+def test_ungraded_capabilities_are_listed(ids):
+    g = _grade()
+    g["layer1"]["functions"]["ungraded"] = [{"capability_id": i, "detail": "no contract"} for i in ids]
+    lines = _lines(g)
+    assert [line for line in lines if "UNGRADED" in line] == [f"  - `{i}`: UNGRADED; no contract" for i in ids]

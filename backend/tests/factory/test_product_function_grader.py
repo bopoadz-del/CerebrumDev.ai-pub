@@ -1,4 +1,9 @@
-"""F-8a: the Layer-1 function grader is generic and its gates bite."""
+"""F-8a: the Layer-1 function grader is generic and its gates bite.
+
+Every workspace here declares its product contract in ``app/models.py``
+(``grader_contract``): the grader's two inputs are two VALID instances of
+that declared spec, never words of the capability description.
+"""
 
 from __future__ import annotations
 
@@ -8,27 +13,32 @@ from pathlib import Path
 
 import pytest
 
-from app.factory.build.product_grader import function_grader as fg
+import app.factory.build.grader as _grader_module
+import app.factory.build.product_grader.function_grader as fg
+from tests.factory.grader_contract import COMPUTES, write_models
 
-READS_INPUT = (
-    "def handle(payload):\n"
-    "    return {'ok': True, 'echo': sorted(payload.items())}\n"
-)
+READS_INPUT = COMPUTES
 CONSTANT = "def handle(payload):\n    return {'ok': True}\n"
 
 
-def _workspace(tmp_path: Path, bodies: dict) -> Path:
+def _workspace(tmp_path: Path, bodies: dict, declared=None) -> Path:
     actions = tmp_path / "app" / "actions"
     actions.mkdir(parents=True)
     (tmp_path / "app" / "__init__.py").write_text("")
     (actions / "__init__.py").write_text("")
     for cid, body in bodies.items():
         (actions / f"{cid}.py").write_text(body)
+    write_models(tmp_path, list(bodies), declared)
     return tmp_path
 
 
 def _bp(ids):
     return {"capabilities": [{"id": i, "description": f"record the {i} entry with owner and amount"} for i in ids]}
+
+
+def _classes(grade, ids):
+    record = {"layer1": {"functions": grade.to_dict()}, "layer2": {"ran": True}, "ui": {"ran": True}}
+    return {r["capability"]: r["class"] for r in _grader_module.reason_classes(record, ids) if r["layer"] == "function"}
 
 
 BLUEPRINTS = [
@@ -44,15 +54,19 @@ def test_two_blueprints_two_graded_sets(tmp_path, ids):
     assert [f.capability_id for f in grade.functions] == ids
     assert grade.ok, grade.to_dict()
     assert all(set(f.mutants_killed) == set(fg.MUTANTS) for f in grade.functions)
+    assert all(set(f.depends_on) == {"owner", "amount", "approved"} for f in grade.functions)
 
 
 @pytest.mark.parametrize("bad", ["invoice_total", "visit_log"])
-def test_constant_function_is_named_and_fails(tmp_path, bad):
+def test_constant_function_is_named_and_fails_as_stub(tmp_path, bad):
     ids = BLUEPRINTS[0]
     ws = _workspace(tmp_path, {i: (CONSTANT if i == bad else READS_INPUT) for i in ids})
     grade = fg.grade_functions(_bp(ids), ws)
     assert not grade.ok
     assert grade.failing == [bad]
+    (r,) = [f for f in grade.functions if f.capability_id == bad]
+    assert r.detail == fg.ONE_RESULT and r.mutants_survived == list(fg.MUTANTS)
+    assert _classes(grade, ids) == {bad: "stub_handler"}
 
 
 @pytest.mark.parametrize("n", [1, 3])
@@ -63,10 +77,173 @@ def test_too_few_functions_fail(tmp_path, n):
     assert not grade.ok and any("too few" in f for f in grade.failing)
 
 
-@pytest.mark.parametrize("cap", [{"id": "a_b", "description": "alpha beta gamma"}, {"id": "zz", "description": "owner amount date"}])
-def test_two_inputs_differ_in_every_key(cap):
-    a, b = fg.two_inputs(cap)
-    assert set(a) == set(b) and all(a[k] != b[k] for k in a)
+# --- the two inputs are two valid instances of the declared spec ----------
+
+SPECS = [
+    {"fields": [
+        {"name": "kind", "type": "str", "allowed_values": ["alpha", "beta"]},
+        {"name": "count", "type": "int", "min": 0, "max": 5},
+        {"name": "flag", "type": "bool"},
+        {"name": "contact", "type": "email"},
+        {"name": "on", "type": "date"},
+        {"name": "note", "type": "str"},
+    ]},
+    {"fields": [
+        {"name": "rate", "type": "float", "min": 0, "max": 1},
+        {"name": "at", "type": "datetime"},
+        {"name": "slot", "type": "str", "format": "time"},
+        {"name": "ref", "type": "uuid"},
+        {"name": "size", "type": "int", "min": 3, "max": 3},
+        {"name": "share", "type": "float", "min": 0.2, "max": 0.8},
+    ]},
+]
+
+
+@pytest.mark.parametrize("spec", SPECS)
+def test_contract_inputs_are_two_valid_instances(spec):
+    from app.factory.build.roles_handlers import _sample_payload
+
+    first, second = fg.contract_inputs(spec)
+    assert first == _sample_payload(spec)
+    assert set(first) == set(second) == {f["name"] for f in spec["fields"]}
+    for f in spec["fields"]:
+        name = f["name"]
+        pinned = f.get("min") is not None and f.get("min") == f.get("max")
+        assert (first[name] == second[name]) is pinned, name
+        if f.get("allowed_values"):
+            assert second[name] in f["allowed_values"]
+        if f.get("min") is not None:
+            assert f["min"] <= second[name] <= f["max"]
+        assert type(first[name]) is type(second[name])
+
+
+@pytest.mark.parametrize("spec", [
+    None, {}, {"fields": []}, {"fields": [{"type": "int"}]},
+    {"fields": [{"name": "only", "type": "str", "allowed_values": ["one"]}]},
+    {"fields": [{"name": "pinned", "type": "int", "min": 2, "max": 2}]},
+])
+def test_no_variable_contract_gives_no_inputs(spec):
+    assert fg.contract_inputs(spec) is None
+
+
+# --- echo, noise and validation ------------------------------------------
+
+ECHO_PLUS_ID = [
+    "import uuid\ndef handle(payload):\n    return {'ok': True, 'record': dict(payload), 'id': uuid.uuid4().hex}\n",
+    "import time\ndef handle(payload):\n"
+    "    return {'ok': True, 'echo': sorted(payload.items()), 'at': time.time_ns()}\n",
+]
+
+
+@pytest.mark.parametrize("body", ECHO_PLUS_ID)
+def test_echo_plus_fresh_id_is_a_stub(tmp_path, body):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: body for i in ids})
+    grade = fg.grade_functions(_bp(ids), ws)
+    assert not grade.ok
+    assert {f.detail for f in grade.functions} == {fg.ONE_RESULT}
+    assert all(f.depends_on == [] for f in grade.functions)
+    assert set(_classes(grade, ids).values()) == {"stub_handler"}
+
+
+TIMESTAMPED = [
+    "import datetime\ndef handle(payload):\n"
+    "    return {'ok': True, 'total': payload['amount'] * 7, 'at': datetime.datetime.now().isoformat()}\n",
+    "import time, uuid\ndef handle(payload):\n"
+    "    return {'ok': True, 'meta': {'id': str(uuid.uuid4()), 'ns': time.time_ns()},\n"
+    "            'result': [payload['owner'].upper(), not payload['approved']]}\n",
+]
+
+
+@pytest.mark.parametrize("body", TIMESTAMPED)
+def test_answer_with_a_timestamp_is_not_failed_for_it(tmp_path, body):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: body for i in ids})
+    grade = fg.grade_functions(_bp(ids), ws)
+    assert grade.ok, grade.to_dict()
+
+
+VALIDATING = [
+    # refuses any payload that is not exactly the declared fields
+    "def handle(payload):\n"
+    "    if set(payload) != {'owner', 'amount', 'approved'}:\n"
+    "        return {'ok': False, 'error': 'payload does not match the declared fields'}\n"
+    "    return {'ok': True, 'due': payload['amount'] * 11 if payload['approved'] else 0}\n",
+    # refuses a missing or mistyped declared field
+    "def handle(payload):\n"
+    "    amount = payload.get('amount')\n"
+    "    if not isinstance(amount, int) or not isinstance(payload.get('approved'), bool):\n"
+    "        return {'ok': False, 'error': 'amount and approved are required'}\n"
+    "    return {'ok': True, 'band': 'high' if amount > 1 else 'low'}\n",
+]
+
+
+@pytest.mark.parametrize("body", VALIDATING)
+def test_validating_handle_that_accepts_the_declared_sample_passes(tmp_path, body):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: body for i in ids})
+    grade = fg.grade_functions(_bp(ids), ws)
+    assert grade.ok, grade.to_dict()
+    # the same handle refuses a payload of undeclared keys
+    scope: dict = {}
+    exec(body, scope)
+    assert scope["handle"]({"record": "x", "the": 1, "text": "y"})["ok"] is False
+
+
+@pytest.mark.parametrize("body,fields", [
+    ("def handle(payload):\n    return {'ok': True, 'n': payload['amount'] + 40}\n", ["amount"]),
+    ("def handle(payload):\n    return {'ok': True, 'go': 'yes' if payload['approved'] else 'no',"
+     " 'who': len(payload['owner'])}\n", ["owner", "approved"]),
+])
+def test_field_dependence_is_reported(tmp_path, body, fields):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: body for i in ids})
+    grade = fg.grade_functions(_bp(ids), ws)
+    assert grade.ok, grade.to_dict()
+    assert all(f.depends_on == fields for f in grade.functions)
+
+
+# --- no declared contract: ungraded, owed by the Factory, never a stub ----
+
+@pytest.mark.parametrize("declared", [[], ["intake_form", "invoice_total"]])
+def test_capability_with_no_declared_fields_is_ungraded_never_stub(tmp_path, declared):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in ids}, declared=declared)
+    grade = fg.grade_functions(_bp(ids), ws)
+    missing = [i for i in ids if i not in declared]
+    assert [f.capability_id for f in grade.ungraded] == missing
+    assert {f.detail for f in grade.ungraded} == {fg.NO_INPUT_CONTRACT}
+    assert [f.capability_id for f in grade.functions] == list(declared)
+    assert not grade.ok
+    assert not set(missing) & set(grade.failing)  # the writer is not handed them
+    classes = _classes(grade, ids)
+    assert {classes[i] for i in missing} == {"ungraded"}
+    assert "stub_handler" not in classes.values()
+
+
+@pytest.mark.parametrize("models", ["", "MODELS = {}\n"])
+def test_no_models_at_all_is_ungraded(tmp_path, models):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in ids})
+    (ws / "app" / "models.py").write_text(models)
+    grade = fg.grade_functions(_bp(ids), ws)
+    assert grade.functions == [] and [f.capability_id for f in grade.ungraded] == ids
+    assert grade.to_dict()["ungraded"][0]["detail"] == fg.NO_INPUT_CONTRACT
+
+
+# --- the handback carries the exact input sent and the answer observed ----
+
+@pytest.mark.parametrize("body,failing", [(CONSTANT, True), (READS_INPUT, False)])
+def test_probe_artifact_on_a_failing_handle_only(tmp_path, body, failing):
+    ids = BLUEPRINTS[0]
+    ws = _workspace(tmp_path, {i: body for i in ids})
+    grade = fg.grade_functions(_bp(ids), ws)
+    for f in grade.functions:
+        if failing:
+            assert f.probe["inputs"] == fg.derive_functions(_bp(ids), ws)[0].inputs
+            assert [json.loads(a) for a in f.probe["answers"]] == [{"ok": True}, {"ok": True}]
+        else:
+            assert f.probe == {}
 
 
 # --- mutants on the grader itself -------------------------------------------
@@ -80,7 +257,7 @@ def test_grader_mutant_skip_a_function_reddens(tmp_path, monkeypatch):
     assert [f.capability_id for f in grade.functions] != ids
 
 
-@pytest.mark.parametrize("survivor", [["constant_return"], ["drop_rule"]])
+@pytest.mark.parametrize("survivor", [["field_dependence"], ["field_dependence", "other"]])
 def test_grader_mutant_accept_survivor_reddens(survivor):
     r = fg.FunctionResult("x", True, [], survivor)
     assert not r.ok
@@ -116,28 +293,32 @@ def test_action_module_that_fails_to_import_fails(tmp_path, body):  # F19
 @pytest.mark.parametrize("cid", ["slow_a", "slow_b"])
 def test_timeout_is_a_fail_with_every_mutant_unkilled(tmp_path, monkeypatch, cid):  # F18
     ws = _workspace(tmp_path, {cid: READS_INPUT})
+    (fn,) = fg.derive_functions(_bp([cid]), ws)
 
     def hang(*a, **k):
         raise _sp.TimeoutExpired(cmd="python", timeout=k.get("timeout"))
 
     monkeypatch.setattr(fg.subprocess, "run", hang)
-    (r,) = [fg.run_function(f, ws) for f in fg.derive_functions(_bp([cid]), ws)]
+    r = fg.run_function(fn, ws)
     assert not r.ok and r.detail == "timeout" and r.mutants_survived == list(fg.MUTANTS)
 
 
-@pytest.mark.parametrize("name", ["constant_return", "drop_rule"])
-def test_mutant_set_is_the_standard_pair(name):  # F17
-    assert set(fg.MUTANTS) == {"constant_return", "drop_rule"} and name in fg.MUTANTS
+@pytest.mark.parametrize("name,member", [("field_dependence", True), ("constant_return", False), ("drop_rule", False)])
+def test_mutant_set_is_field_dependence(name, member):  # F17: the tautological pair is gone
+    assert set(fg.MUTANTS) == {"field_dependence"} and (name in fg.MUTANTS) is member
 
 
 @pytest.mark.parametrize("body", [
-    "def handle(payload):\n    if not payload:\n        raise KeyError('empty')\n    return sorted(payload.items())\n",
-    "def handle(payload):\n    return [payload['quantity'], sorted(payload)]\n",
+    "def handle(payload):\n    if payload['approved'] and payload['amount'] > 1:\n"
+    "        raise ValueError('combination refused')\n    return {'ok': True, 'n': payload['amount'] * 2}\n",
+    "import sys\ndef handle(payload):\n    if payload['approved'] and payload['amount'] > 1:\n"
+    "        sys.exit(4)\n    return {'ok': True, 'n': payload['amount'] * 2}\n",
 ])
-def test_mutant_that_raises_counts_as_killed(tmp_path, body):  # F14
+def test_variant_that_raises_or_exits_moves_the_answer(tmp_path, body):  # F14, R5
     ws = _workspace(tmp_path, {"strict_cap": body})
     (r,) = [fg.run_function(f, ws) for f in fg.derive_functions(_bp(["strict_cap"]), ws)]
-    assert r.ok and "drop_rule" in r.mutants_killed
+    assert r.ok and r.detail == "" and r.depends_on == ["amount", "approved"]
+    assert r.mutants_killed == list(fg.MUTANTS)
 
 
 @pytest.mark.parametrize("cid,files,graded", [
@@ -160,7 +341,8 @@ EXITS = [
     "import os\ndef handle(payload):\n    os._exit(0)\n",
     "def handle(payload):\n    raise SystemExit\n",
     "import sys\ndef handle(payload):\n    print('@@GRADE@@{\"two_input\": true, \"mutants\": {}}')\n    sys.exit(0)\n",
-    "import os, sys\ndef handle(payload):\n    if payload.get('quantity', 0) > 10:\n        os._exit(0)\n    return sorted(payload.items())\n",
+    "import os\ndef handle(payload):\n    if payload['amount'] > 1:\n        os._exit(0)\n"
+    "    return {'ok': True, 'n': payload['amount'] * 2}\n",
 ]
 
 
@@ -190,7 +372,7 @@ def test_result_needs_the_runs_nonce(tmp_path, nonce, ok):
 
 # --- G2 #80: F20 min_functions enforced, F21 to_dict failing, R5, R1 -------
 def _ok_result(cid):
-    return fg.FunctionResult(cid, True, ["constant_return", "drop_rule"], [], "")
+    return fg.FunctionResult(cid, True, list(fg.MUTANTS), [], "")
 
 
 @pytest.mark.parametrize("asked,n,ok", [(0, 1, False), (-5, 3, False), (1, 1, False), (2, 3, False),
@@ -216,8 +398,9 @@ def test_grade_functions_cannot_lower_the_floor(tmp_path, asked):  # F20
 
 @pytest.mark.parametrize("bad", [["c1"], ["c0", "c3"]])
 def test_to_dict_failing_path(bad):  # F21
-    rs = [fg.FunctionResult(f"c{i}", f"c{i}" not in bad, [] if f"c{i}" in bad else ["drop_rule"],
-                            ["drop_rule"] if f"c{i}" in bad else [], "x") for i in range(5)]
+    m = list(fg.MUTANTS)
+    rs = [fg.FunctionResult(f"c{i}", f"c{i}" not in bad, [] if f"c{i}" in bad else m,
+                            m if f"c{i}" in bad else [], "x") for i in range(5)]
     d = fg.FunctionGrade(rs, errors=["derivation error"]).to_dict()
     assert d["ok"] is False and d["graded"] == 5 and d["min_functions"] == fg.MIN_FUNCTIONS
     assert d["failing"] == bad + ["derivation error"]
@@ -229,6 +412,14 @@ def test_to_dict_failing_path(bad):  # F21
 def test_to_dict_too_few_path(n):  # F21
     d = fg.FunctionGrade([_ok_result(f"c{i}") for i in range(n)]).to_dict()
     assert d["ok"] is False and d["failing"] == [f"too few gradeable functions: {n} < {fg.MIN_FUNCTIONS}"]
+
+
+@pytest.mark.parametrize("n_ungraded,ok", [(0, True), (1, False), (2, False)])
+def test_ungraded_keeps_the_grade_red_but_out_of_failing(n_ungraded, ok):
+    gaps = [fg.FunctionResult(f"u{i}", False, [], [], fg.NO_INPUT_CONTRACT) for i in range(n_ungraded)]
+    g = fg.FunctionGrade([_ok_result(f"c{i}") for i in range(4)], ungraded=gaps)
+    assert g.ok is ok and g.failing == []
+    assert [u["capability_id"] for u in g.to_dict()["ungraded"]] == [f"u{i}" for i in range(n_ungraded)]
 
 
 @pytest.mark.parametrize("raise_,word", [
@@ -262,26 +453,12 @@ def test_nonzero_returncode_fails_even_with_a_result(tmp_path, monkeypatch, rc, 
     assert (f"rc={rc}" in r.detail) is (not ok)
 
 
-# --- G2 5809bb8 exact gaps: F20 a raised floor is honoured; R5 exit on the
-# drop_rule input is a KILL of that mutant, not a grader exit --------------
+# --- G2 5809bb8 exact gaps: F20 a raised floor is honoured ----------------
 @pytest.mark.parametrize("asked,n,ok", [(5, 5, True), (6, 5, False), (5, 4, False)])
 def test_grade_functions_honours_a_raised_min(tmp_path, asked, n, ok):  # F20
     ids = BLUEPRINTS[1][:n]
     g = fg.grade_functions(_bp(ids), _workspace(tmp_path, {i: READS_INPUT for i in ids}), min_functions=asked)
     assert g.ok is ok and g.to_dict()["min_functions"] == asked
-
-
-EXIT_ON_EMPTY = [
-    "import sys\ndef handle(payload):\n    if not payload:\n        sys.exit(0)\n    return sorted(payload.items())\n",
-    "def handle(payload):\n    if not payload:\n        raise SystemExit(4)\n    return sorted(payload.items())\n",
-]
-
-
-@pytest.mark.parametrize("body", EXIT_ON_EMPTY)
-def test_exit_only_on_the_drop_rule_input_still_grades(tmp_path, body):  # R5
-    ws = _workspace(tmp_path, {"cap": body})
-    (r,) = [fg.run_function(f, ws) for f in fg.derive_functions(_bp(["cap"]), ws)]
-    assert r.ok is True and r.detail == "" and "drop_rule" in r.mutants_killed
 
 
 # --- hardwiring-gate repair: id and handle detection are derived (str.isidentifier / ast) ---
@@ -301,7 +478,7 @@ def test_derivation_is_structural(tmp_path, cid, files, graded):
 # --- G2 P8: 'graded' is the number of graded functions, not a constant ---
 @pytest.mark.parametrize("n", [0, 3, 4, 7])
 def test_to_dict_graded_counts_the_functions(n):
-    rs = [fg.FunctionResult(f"c{i}", True, ["drop_rule"], [], "x") for i in range(n)]
+    rs = [fg.FunctionResult(f"c{i}", True, list(fg.MUTANTS), [], "x") for i in range(n)]
     assert fg.FunctionGrade(rs).to_dict()["graded"] == n
 
 

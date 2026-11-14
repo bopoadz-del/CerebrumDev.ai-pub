@@ -472,7 +472,7 @@ class _UiNotRun:
 #: grade record already holds -- no new check runs to produce one.
 REASON_CLASSES: FrozenSet[str] = frozenset({
     "missing_route",      # no gradeable handle, or a route step that does not answer
-    "stub_handler",       # one result for two inputs, or a mutant the test cannot tell apart
+    "stub_handler",       # one result for two valid inputs, or an answer no single declared field moves
     "handler_error",      # the handle raised, exited, timed out or did not import
     "wrong_envelope",     # the honest-error step did not get an honest error back
     "wrong_computation",  # outputs differ but do not match the kernel's
@@ -527,6 +527,12 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
             add(cid, "stub_handler", "function")
         else:
             add(cid, "handler_error", "function")
+    # A capability with no declared input contract was not probed: the
+    # Factory owes its spec, so it is ungraded, never a stub or an error.
+    for fn in (layer1.get("functions") or {}).get("ungraded") or []:
+        cid = str(fn.get("capability_id") or "")
+        graded.add(cid)
+        add(cid, "ungraded", "function")
     for cid in cids:
         if cid not in graded:
             add(cid, "missing_route", "function")
@@ -694,10 +700,15 @@ def run_grader(
 
     # --- Layer 1 UI -------------------------------------------------------
     ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url)
+    # A capability the function grade could not probe (no declared input
+    # contract) is a gap the Factory owes: quoted as ungraded, not a FAIL.
+    ungraded: List[str] = [
+        f"function ungraded: {f.capability_id}: {f.detail}"
+        for f in (functions.ungraded if functions is not None else [])
+    ]
 
     # --- Layer 2, under an independent grader identity --------------------
     l2: Mapping[str, Any]
-    ungraded: List[str] = []
     if ui_not_run:
         ungraded.append(ui_not_run)
     refusal = independence_refusal(writer_identity(), grader_llm_config())

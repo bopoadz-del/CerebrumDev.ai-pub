@@ -1,6 +1,7 @@
 """F-G1: the function grader probes a handle in the writer gate's block
 environment, and one honest-error envelope for both inputs is
-``block_unavailable`` (a handler_error), never a stub.
+``block_unavailable`` (a handler_error), never a stub. The two inputs are two
+valid instances of the spec the workspace's ``app/models.py`` declares.
 
 Every case runs twice: once in the grader's harness and once "bare" (the
 harness text removed from the runner, which is how the grader ran before
@@ -15,8 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from app.factory.build.grader import reason_classes
-from app.factory.build.product_grader import function_grader as fg
+import app.factory.build.grader as _grader_module
+import app.factory.build.product_grader.function_grader as fg
+from tests.factory.grader_contract import write_models
 
 #: A vendored block that needs the store the harness provides: a scratch
 #: STORAGE_PATH and the product's own migrations applied to it.
@@ -27,7 +29,7 @@ BLOCK = (
     "    root = Path(os.environ['STORAGE_PATH'])\n"
     "    if not (root / 'schema.ready').is_file():\n"
     "        raise RuntimeError('store not migrated')\n"
-    "    return {'stored': sorted(data.items())}\n"
+    "    return {'stored': data['amount'] * 3, 'by': data['owner'][::-1]}\n"
 )
 MIGRATIONS = (
     "import os\n"
@@ -53,7 +55,7 @@ NETWORK = (
     "        socket.create_connection(('203.0.113.9', 9), timeout=0.5)\n"
     "    except OSError as exc:\n"
     "        if 'no network' in str(exc):\n"
-    "            return {'ok': True, 'echo': sorted(payload.items())}\n"
+    "            return {'ok': True, 'echo': payload['amount'] * 3}\n"
     "        raise\n"
     "    raise RuntimeError('outbound connection was not refused')\n"
 )
@@ -70,6 +72,7 @@ def _workspace(tmp_path: Path, body: str, *, migrations: bool = True) -> Path:
     (actions / "__init__.py").write_text("")
     for cid in IDS:
         (actions / f"{cid}.py").write_text(body)
+    write_models(tmp_path, IDS)
     return tmp_path
 
 
@@ -87,7 +90,7 @@ def env(request, monkeypatch):
 
 def _classes(grade):
     record = {"layer1": {"functions": grade.to_dict()}, "layer2": {"ran": True}, "ui": {"ran": True}}
-    return {r["capability"]: r["class"] for r in reason_classes(record, IDS) if r["layer"] == "function"}
+    return {r["capability"]: r["class"] for r in _grader_module.reason_classes(record, IDS) if r["layer"] == "function"}
 
 
 @pytest.mark.parametrize("env", ["harness", "bare"], indirect=True)
@@ -155,7 +158,7 @@ def test_harness_settings_reach_the_handle(tmp_path, env, setting):
         "def handle(payload):\n"
         f"    if not os.environ.get({setting!r}):\n"
         "        return {'ok': False, 'error': 'setting missing'}\n"
-        "    return {'ok': True, 'echo': sorted(payload.items())}\n"
+        "    return {'ok': True, 'echo': payload['amount'] * 3}\n"
     )
     grade = fg.grade_functions(_bp(), _workspace(tmp_path, body))
     assert grade.ok is (env == "harness")
@@ -168,8 +171,8 @@ def test_deploy_time_setting_is_stood_in(tmp_path, required):
         "import os\n"
         "def handle(payload):\n"
         f"    if not {read}:\n"
-        "        return {'ok': True, 'unset': sorted(payload.items())}\n"
-        "    return {'ok': True, 'set': sorted(payload.items())}\n"
+        "        return {'ok': True, 'unset': payload['amount'] * 3}\n"
+        "    return {'ok': True, 'set': payload['amount'] * 3}\n"
     )
     ws = _workspace(tmp_path, body)
     grade = fg.grade_functions(_bp(), ws)
