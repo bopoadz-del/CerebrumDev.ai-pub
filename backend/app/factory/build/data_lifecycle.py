@@ -1,4 +1,4 @@
-﻿"""S10 data lifecycle emitters for RoleRunner products.
+"""S10 data lifecycle emitters for RoleRunner products.
 
 Unused kits already carry Alembic (steward_runtime/migrations). RoleRunner
 did not emit it; generated products used ``CREATE TABLE IF NOT EXISTS`` on
@@ -846,7 +846,17 @@ def render_revision_0002() -> str:
     )
 
 
+#: The deploy entrypoint's contract, defined once: where a product declares
+#: it, the interpreter steps that run before the server (each must succeed),
+#: and the app the server serves. The rendered script and the grader's boot
+#: (FG-2) both read these, so grading boots a product the way it deploys.
+ENTRYPOINT_PATH = "scripts/entrypoint.sh"
+PRE_SERVE_STEPS: Tuple[Tuple[str, ...], ...] = (("-m", "alembic", "upgrade", "head"),)
+SERVE_TARGET = "app.main:app"
+
+
 def render_entrypoint() -> str:
+    steps = "".join("python " + " ".join(step) + "\n" for step in PRE_SERVE_STEPS)
     return (
         "#!/bin/sh\n"
         "# Apply versioned migrations against the persistent disk, then serve.\n"
@@ -854,9 +864,9 @@ def render_entrypoint() -> str:
         "# schema that is behind head.\n"
         "set -eu\n"
         "cd /app\n"
-        "python -m alembic upgrade head\n"
-        "python -c \"import json, os; print(json.dumps({'event': 'entrypoint.start', 'revision': os.getenv('APP_REVISION', ''), 'storage': os.getenv('STORAGE_PATH', '')}))\"\n"
-        'exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"\n'
+        + steps
+        + "python -c \"import json, os; print(json.dumps({'event': 'entrypoint.start', 'revision': os.getenv('APP_REVISION', ''), 'storage': os.getenv('STORAGE_PATH', '')}))\"\n"
+        + f'exec uvicorn {SERVE_TARGET} --host 0.0.0.0 --port "${{PORT:-8000}}"\n'
     )
 
 
@@ -1173,7 +1183,7 @@ def emit_writer_artifacts(workspace: Any, specs: Dict[str, Dict[str, Any]]) -> N
         workspace, Path("docs") / "data_lifecycle.json", render_lifecycle_doc()
     )
     write_workspace_text(
-        workspace, Path("scripts") / "entrypoint.sh", render_entrypoint()
+        workspace, Path(ENTRYPOINT_PATH), render_entrypoint()
     )
     # The ops floor, on THIS path too. These were added to
     # platform_substrate() (the CodeWhale backfill) and not here, so a build
@@ -1213,7 +1223,7 @@ def platform_substrate() -> List[Tuple[str, str]]:
         ("alembic/env.py", render_alembic_env()),
         ("alembic/script.py.mako", render_script_mako()),
         (f"alembic/versions/{REVISION_0002}.py", render_revision_0002()),
-        ("scripts/entrypoint.sh", render_entrypoint()),
+        (ENTRYPOINT_PATH, render_entrypoint()),
         ("docs/data_lifecycle.json", render_lifecycle_doc()),
         # The ops floor. A pilot goes to a DevOps team who cannot answer
         # "is it up, is it slow, is it being hammered" from logs alone, and

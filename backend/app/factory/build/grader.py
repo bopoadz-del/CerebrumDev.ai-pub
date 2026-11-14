@@ -42,14 +42,18 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
+
+from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
 
 logger = logging.getLogger("cerebrumdev.factory.grader")
 
@@ -298,57 +302,252 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _boot_env(scratch: Path, root: Path) -> Dict[str, str]:
-    """Scratch environment for the booted product: its own storage and
-    database under a fresh temp dir, never the runner's live state -- and the
-    PRODUCT workspace first on PYTHONPATH, so the booted process imports the
-    product's app, never the factory backend this grader runs inside."""
-    env = dict(os.environ)
-    env["STORAGE_PATH"] = str(scratch)
-    env["DATABASE_URL"] = f"sqlite:///{scratch / 'gate.db'}"
-    env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+#: FG-2: the grading boot, defined once. It boots the product the way it is
+#: deployed (the declared entrypoint's steps, then its server), in the
+#: test-context environment the function harness runs in (never a copy of
+#: the Factory's own process), in a fresh scratch directory per boot, and it
+#: is always stopped. A boot that fails keeps its status and output tail, so
+#: the finding says why.
+_BOOT_STOP_GRACE_S = 5.0
+_BOOT_POLL_S = 0.5
+_BOOT_TAIL_CHARS = 800
+_HEALTH_BODY_BYTES = 16_384
+
+#: One interpreter per boot: deploy-time settings stood in exactly as the
+#: function harness does (deploy_time_settings, one source), then the
+#: declared pre-serve steps in order -- the first that fails ends the boot
+#: with its own code, as ``set -eu`` does in the entrypoint -- then the
+#: server. ``sys.argv[1]`` is the JSON boot plan.
+_BOOT_LAUNCHER = _DEPLOY_TIME_SNIPPET + r"""
+import json, os, runpy, subprocess, sys
+_plan = json.loads(sys.argv[1])
+_stand_in_for_deploy_time_settings(os.getcwd())
+for _step in _plan["pre"]:
+    _rc = subprocess.call([sys.executable, *_step])
+    if _rc:
+        sys.stderr.write("boot step %r exited %s\n" % (" ".join(_step), _rc))
+        sys.exit(_rc)
+sys.argv = ["uvicorn", *_plan["serve"]]
+runpy.run_module("uvicorn", run_name="__main__")
+"""
+
+
+def boot_plan(workspace: Path | str, port: int) -> Dict[str, Any]:
+    """What the grading boot runs, read from the deploy entrypoint contract
+    (data_lifecycle, one source): its pre-serve steps when the product
+    declares that entrypoint, then its served app on a private port."""
+    from app.factory.build import data_lifecycle
+
+    declared = (Path(workspace) / data_lifecycle.ENTRYPOINT_PATH).is_file()
+    return {
+        "pre": [list(step) for step in data_lifecycle.PRE_SERVE_STEPS] if declared else [],
+        "serve": [data_lifecycle.SERVE_TARGET, "--host", "127.0.0.1", "--port", str(port)],
+    }
+
+
+def boot_env(
+    workspace: Path | str, storage: Path, port: int, source: Optional[Mapping[str, str]] = None
+) -> Dict[str, str]:
+    """The booted product's environment, built from an allowlist: the
+    function harness's test context, the gate's run token, a scratch store
+    and the port. From the Factory's process it keeps only what an
+    interpreter needs from the OS to start -- never its keys or settings.
+    DATABASE_URL is left unset, so the product's db contract reads its own
+    default (a database under STORAGE_PATH)."""
+    from app.factory.build.image_sufficiency import _OS_STARTUP_VARS, GATE_RUN_ENV
+    from app.factory.build.product_grader.function_grader import harness_process_env
+
+    values = os.environ if source is None else source
+    env = {k: values[k] for k in _OS_STARTUP_VARS if k in values}
+    env.update(harness_process_env(workspace))
+    env.update(GATE_RUN_ENV)
+    env["STORAGE_PATH"] = str(storage)
+    env["PORT"] = str(port)
     return env
 
 
-def boot_product(workspace: Path | str) -> Tuple[Optional[subprocess.Popen], Optional[str]]:
-    """Boot the product on a private port with a scratch STORAGE_PATH, the
-    same shape the writer's own self-check uses, and wait for /health.
-    Returns (process, base_url) or (None, reason). The caller stops the
-    process; a product that will not boot is a real finding, recorded
-    honestly by the caller -- never a skipped grade."""
-    root = Path(workspace)
-    port = _free_port()
-    scratch = root.parent / (root.name + ".grader-boot")
-    scratch.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--host", "127.0.0.1"],
-            cwd=str(root),
-            env=_boot_env(scratch, root),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        return None, f"product boot did not start: {type(exc).__name__}"
-    base_url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + _BOOT_READY_TIMEOUT_S
-    try:
-        import urllib.request
+def _signal_boot(proc: subprocess.Popen, *, kill: bool) -> None:
+    """Signal the boot's whole process group on POSIX (a pre-serve step is
+    a child of the launcher), the process itself elsewhere."""
+    if os.name == "posix":
+        import signal
 
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                return None, f"product boot exited early with code {proc.returncode}"
+        try:
+            os.killpg(proc.pid, signal.SIGKILL if kill else signal.SIGTERM)
+        except OSError:
+            pass
+    elif proc.poll() is None:
+        (proc.kill if kill else proc.terminate)()
+
+
+class GradingBoot:
+    """One grading boot: the process, its fresh scratch directory and its
+    captured output. ``stop`` ends all three and is safe to repeat."""
+
+    def __init__(self, proc: subprocess.Popen, scratch: Path, log: Any, log_path: Path) -> None:
+        self.proc = proc
+        self.scratch = scratch
+        self._log = log
+        self._log_path = log_path
+        self.stopped = False
+
+    def poll(self) -> Optional[int]:
+        return self.proc.poll()
+
+    def output_tail(self, chars: int = _BOOT_TAIL_CHARS) -> str:
+        """The last ``chars`` of the boot's own output, on one line."""
+        try:
+            self._log.flush()
+            data = self._log_path.read_bytes()
+        except (OSError, ValueError):
+            return ""
+        text = data.decode("utf-8", "replace").strip()
+        return " | ".join(line.strip() for line in text[-chars:].splitlines() if line.strip())
+
+    def stop(self) -> None:
+        if self.stopped:
+            return
+        self.stopped = True
+        try:
+            if self.proc.poll() is None:
+                _signal_boot(self.proc, kill=False)
+                try:
+                    self.proc.wait(timeout=_BOOT_STOP_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    _signal_boot(self.proc, kill=True)
+                    self.proc.wait(timeout=_BOOT_STOP_GRACE_S)
+            # A pre-serve step outliving its launcher dies with the group.
+            _signal_boot(self.proc, kill=True)
+        finally:
             try:
-                with urllib.request.urlopen(base_url + "/health", timeout=2.0) as resp:
-                    if resp.status == 200:
-                        return proc, base_url
+                self._log.close()
             except OSError:
                 pass
-            time.sleep(0.5)
-    except Exception as exc:  # noqa: BLE001 -- an unreadable health is "did not boot"
-        return None, f"product boot health check failed: {type(exc).__name__}"
-    proc.terminate()
-    return None, "product boot did not answer /health in time"
+            shutil.rmtree(self.scratch, ignore_errors=True)
+
+
+def _health(base_url: str) -> Tuple[Optional[int], bytes]:
+    """One /health read: (status, body) for any HTTP answer, (None, b"")
+    when nothing answered."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(base_url + "/health", timeout=2.0) as resp:
+            return int(resp.status), resp.read(_HEALTH_BODY_BYTES)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(_HEALTH_BODY_BYTES)
+        except OSError:
+            body = b""
+        return int(exc.code), body
+    except (OSError, http.client.HTTPException):
+        return None, b""
+
+
+def failing_health_checks(body: bytes) -> List[str]:
+    """The checks a /health body reports as not ok, read from its declared
+    shape (``{"checks": [{"name", "ok", "detail"}]}``) -- no check is named
+    here."""
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return []
+    checks = data.get("checks") if isinstance(data, dict) else None
+    out: List[str] = []
+    for check in checks if isinstance(checks, list) else []:
+        if not isinstance(check, dict) or check.get("ok") is True or not check.get("name"):
+            continue
+        detail = str(check.get("detail") or "").strip()
+        out.append(f"{check['name']} ({detail[:120]})" if detail else str(check["name"]))
+    return out
+
+
+def boot_failure_reason(
+    *, exit_code: Optional[int], health_status: Optional[int], health_body: bytes, tail: str, waited_s: float
+) -> str:
+    """Why a grading boot did not come up: the process's exit code (or the
+    wait it outlasted), the last /health status and its failing checks, and
+    the boot's own output tail."""
+    head = (
+        f"product boot exited with code {exit_code}"
+        if exit_code is not None
+        else f"product boot did not answer /health 200 within {waited_s:g}s"
+    )
+    parts = [head, "last /health: " + (str(health_status) if health_status is not None else "no answer")]
+    failing = failing_health_checks(health_body)
+    if failing:
+        parts.append("failing checks: " + ", ".join(failing))
+    parts.append("output tail: " + (tail or "(no output)"))
+    return "; ".join(parts)
+
+
+def _await_health(boot: GradingBoot, base_url: str, timeout_s: float) -> Optional[str]:
+    """None once /health answers 200; otherwise the failure reason."""
+    deadline = time.monotonic() + timeout_s
+    status: Optional[int] = None
+    body = b""
+    while True:
+        code = boot.poll()
+        if code is not None:
+            return boot_failure_reason(
+                exit_code=code, health_status=status, health_body=body, tail=boot.output_tail(), waited_s=timeout_s
+            )
+        got, got_body = _health(base_url)
+        if got == 200:
+            return None
+        if got is not None:
+            status, body = got, got_body
+        if time.monotonic() >= deadline:
+            return boot_failure_reason(
+                exit_code=None, health_status=status, health_body=body, tail=boot.output_tail(), waited_s=timeout_s
+            )
+        time.sleep(_BOOT_POLL_S)
+
+
+def boot_product(
+    workspace: Path | str,
+    *,
+    ready_timeout_s: float = _BOOT_READY_TIMEOUT_S,
+    source_env: Optional[Mapping[str, str]] = None,
+) -> Tuple[Optional[GradingBoot], str]:
+    """Boot the product for grading and wait for /health 200. Returns
+    (boot, base_url), and the caller stops the boot; or (None, reason), with
+    the boot already stopped and its scratch removed. A product that will
+    not boot is a real finding, recorded honestly by the caller -- never a
+    skipped grade."""
+    root = Path(workspace)
+    port = _free_port()
+    scratch = Path(tempfile.mkdtemp(prefix="grader-boot-"))
+    storage = scratch / "store"
+    storage.mkdir()
+    log_path = scratch / "boot.log"
+    log = open(log_path, "wb")  # noqa: SIM115 -- GradingBoot.stop closes it
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _BOOT_LAUNCHER, json.dumps(boot_plan(root, port))],
+            cwd=str(root),
+            env=boot_env(root, storage, port, source_env),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=os.name == "posix",
+        )
+    except OSError as exc:
+        log.close()
+        shutil.rmtree(scratch, ignore_errors=True)
+        return None, f"product boot did not start: {type(exc).__name__}"
+    boot = GradingBoot(proc, scratch, log, log_path)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        reason = _await_health(boot, base_url, ready_timeout_s)
+    except BaseException:
+        boot.stop()
+        raise
+    if reason is None:
+        return boot, base_url
+    boot.stop()
+    return None, reason
 
 
 # --- independence (The_Level #6: the grader is never the thing it grades) ---
@@ -644,33 +843,34 @@ def _grade_ui(
 ) -> Tuple[Any, bool, str]:
     """The UI layer, honestly: it runs when the product boots and the
     playwright toolchain exists; otherwise it is recorded as NOT RUN -- a
-    quoted gap, never a fabricated green."""
+    quoted gap, never a fabricated green. A boot this layer starts is
+    stopped on every exit path."""
     ui_not_run = ""
-    boot_proc: Optional[subprocess.Popen] = None
-    if base_url is None:
+    boot: Optional[GradingBoot] = None
+    try:
+        if base_url is None:
+            try:
+                boot, booted = boot_product(root)
+            except Exception as exc:  # noqa: BLE001 -- recorded below, not raised
+                boot = None
+                booted = ""
+                ui_not_run = f"UI run did not happen: boot failed: {type(exc).__name__}"
+            # boot_product returns (boot, url) on success and (None, reason)
+            # on failure -- only a live boot's url is a base_url.
+            if boot is None:
+                if not ui_not_run:
+                    ui_not_run = f"UI run did not happen: {booted or 'product did not boot'}"
+                base_url = None
+            else:
+                base_url = booted
         try:
-            boot_proc, booted = boot_product(root)
-        except Exception as exc:  # noqa: BLE001 -- recorded below, not raised
-            boot_proc = None
-            booted = None
-            ui_not_run = f"UI run did not happen: boot failed: {type(exc).__name__}"
-        # boot_product returns (process, url) on success and (None, reason)
-        # on failure -- only a live process's url is a base_url.
-        if boot_proc is None:
-            if not ui_not_run:
-                ui_not_run = booted or "UI run did not happen: product did not boot"
-            base_url = None
-        else:
-            base_url = booted
-    try:
-        from app.factory.build.product_grader import ui_grader
-    except Exception as exc:  # noqa: BLE001 -- a missing optional dependency
-        ui_grader = None
-        ui_not_run = ui_not_run or f"UI run did not happen: {type(exc).__name__}: {exc}"
-    if ui_grader is None:
-        ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
-        return ui, False, ui_not_run
-    try:
+            from app.factory.build.product_grader import ui_grader
+        except Exception as exc:  # noqa: BLE001 -- a missing optional dependency
+            ui_grader = None
+            ui_not_run = ui_not_run or f"UI run did not happen: {type(exc).__name__}: {exc}"
+        if ui_grader is None:
+            ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
+            return ui, False, ui_not_run
         if base_url:
             ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url)
         else:
@@ -679,8 +879,8 @@ def _grade_ui(
             )
         ui_ran = bool(ui.ran)
     finally:
-        if boot_proc is not None and boot_proc.poll() is None:
-            boot_proc.terminate()
+        if boot is not None:
+            boot.stop()
     if not ui_ran and not ui_not_run:
         ui_not_run = "; ".join(str(e) for e in ui.errors) or "UI run did not happen"
     return ui, ui_ran, ui_not_run

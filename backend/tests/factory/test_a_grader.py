@@ -11,7 +11,6 @@ the fixtures are invented.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -379,12 +378,12 @@ def test_layer2_layer1_view_reports_the_combined_ok(functions, ui):
 
 
 @pytest.mark.parametrize("root_name", ["build-one", "build-two"])
-def test_boot_env_puts_the_product_workspace_first_on_pythonpath(tmp_path, monkeypatch, root_name):
+def test_boot_env_imports_only_the_product_workspace(tmp_path, monkeypatch, root_name):
     root = tmp_path / root_name
     root.mkdir()
     monkeypatch.setenv("PYTHONPATH", "elsewhere")
-    env = grader._boot_env(tmp_path / "scratch", root)
-    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(root)
+    env = grader.boot_env(root, tmp_path / "scratch", 8123)
+    assert env["PYTHONPATH"] == str(root)
     assert str(tmp_path / "scratch") == env["STORAGE_PATH"]
 
 
@@ -414,15 +413,15 @@ def test_boot_product_failure_paths_are_named_not_raised(tmp_path, workspace_kin
         (root / "app" / "__init__.py").write_text("")
     else:
         root = tmp_path / "does-not-exist"
-    proc, reason = grader.boot_product(root)
-    assert proc is None
-    assert reason
+    boot, reason = grader.boot_product(root, ready_timeout_s=30)
+    assert boot is None
     if workspace_kind == "no_app_main":
-        # The early-exit reason is a short named phrase (7 words); the
-        # timeout reason (what a dropped early-exit check would produce)
-        # is longer (8 words). The shape check, not the words, is the
-        # contract.
-        assert len(reason.split()) < 8
+        # The product's own import error ends the boot: its exit code and
+        # its output tail are the finding, not a timeout.
+        assert reason.startswith("product boot exited with code ")
+        assert "app.main" in reason.split("output tail:", 1)[1]
+    else:
+        assert reason.startswith("product boot did not start: ")
 
 
 # --- the grader itself --------------------------------------------------------
@@ -444,15 +443,13 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
     block's effect is observable, so dropping it fails this test."""
     import app.factory.build.product_grader as pg
 
-    class _Proc:
-        def poll(self):
-            return None
-
-        def terminate(self):
-            return None
-
-    monkeypatch.setattr(grader, "boot_product", lambda root: (_Proc(), boot_url))
     recorded: dict = {}
+
+    class _Boot:
+        def stop(self):
+            recorded["stopped"] = True
+
+    monkeypatch.setattr(grader, "boot_product", lambda root: (_Boot(), boot_url))
 
     class _Ui:
         @property
@@ -490,6 +487,7 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
     ui, ran, not_run = grader._grade_ui(bp, ws, ws.parent / "g", None)
     assert ran is True
     assert recorded["base_url"] == boot_url
+    assert recorded["stopped"] is True
     assert ui.ok is True
 
 
