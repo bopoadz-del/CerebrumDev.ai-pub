@@ -479,6 +479,16 @@ def _probe(
     }
 
 
+def harness_process_env(workspace: Path | str) -> Dict[str, str]:
+    """The test-context environment every grader process starts from, built
+    here once: the product workspace as the only import root, a fixed system
+    PATH, and the test context flag. Nothing is copied from the Factory's own
+    process, so its keys and settings never reach model-written code. The
+    function harness runs in exactly this; the grading boot (FG-2) adds only
+    what booting needs on top of it."""
+    return {"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"}
+
+
 def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.executable) -> FunctionResult:
     nonce = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="f8a-") as tmp:
@@ -497,7 +507,7 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
                 text=True,
                 cwd=str(workspace),
                 timeout=RUN_TIMEOUT_S,
-                env={"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"},
+                env=harness_process_env(workspace),
             )
         except subprocess.TimeoutExpired:
             return FunctionResult(fn.capability_id, False, [], list(MUTANTS), "timeout",
