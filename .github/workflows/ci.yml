@@ -7,6 +7,10 @@ name: CI
 on:
   pull_request:
     branches: [master]
+    # Fast checks run on every PR event. The full suite runs whenever the PR
+    # is not a draft; a draft runs only the targeted fast path, and marking
+    # a draft READY FOR REVIEW is what turns the full suite on.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,6 +39,7 @@ jobs:
   # bumps is a manual step that nothing here enforces.
   lockfile-consistency:
     name: Lockfile consistency
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,7 +183,19 @@ jobs:
           echo "Store head: $(git rev-parse HEAD)  ($(ls block_registry | wc -l) blocks)"
           echo "CEREBRUM_BLOCKS_ROOT=$RUNNER_TEMP/Cerebrum-Blocks" >> "$GITHUB_ENV"
 
+      # DRAFT fast path: run only the tests the diff touches, not the whole
+      # suite. The full suite below runs whenever the PR is not a draft.
+      - name: Targeted pytest (touched files, draft)
+        if: ${{ github.event.pull_request.draft == true }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE"
+          python3 scripts/targeted_pytest.py --base "$BASE" --workdir backend
+
       - name: Run pytest suite
+        if: ${{ github.event.pull_request.draft == false }}
         # -rs names every skipped test and its reason. A skip is invisible in
         # the default summary, so a platform-guarded test that quietly stops
         # running on the Linux runner would read as coverage it is not
@@ -191,6 +208,7 @@ jobs:
       # is ENV=test only; this step is the keyed-path fixture — stub keys,
       # no paid calls, same RoleRunner entry points production uses.
       - name: Factory keyed-path fixtures (U2)
+        if: ${{ github.event.pull_request.draft == false }}
         env:
           FACTORY_CODER_ENABLED: "1"
           KEYED_PATH_CI: "1"
@@ -401,6 +419,7 @@ jobs:
   # bare --ignore-vuln (see scripts/dep_audit.py and the test twin).
   backend-dep-audit:
     name: Backend dependency audit (pip-audit)
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -432,6 +451,7 @@ jobs:
   # Required (no continue-on-error / allow_failure). Workflow fails if red.
   windows-cp1252-parity:
     name: Windows cp1252 encoding parity (F13/F26)
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:
@@ -493,6 +513,7 @@ jobs:
 
   frontend:
     name: Frontend (build + lint)
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -553,6 +574,7 @@ jobs:
   # wrapper refuses a bare `npm audit --ignore`.
   frontend-dep-audit:
     name: Frontend dependency audit (npm audit)
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -576,6 +598,7 @@ jobs:
 
   frontend-e2e:
     name: Frontend Playwright (mocked)
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -602,6 +625,7 @@ jobs:
 
   docker:
     name: Production Docker build
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
