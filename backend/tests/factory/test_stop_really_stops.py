@@ -32,7 +32,10 @@ from app.factory.build.codewhale_worker import (
     set_slot_counter,
 )
 from app.factory.build.coder_session_status import (
+    CONTROL_RUN,
+    CONTROL_STOP,
     OwnerStopped,
+    _reader_action,
     check_owner,
     current_owner_control,
     owner_control_scope,
@@ -144,6 +147,17 @@ def test_check_owner_raises_only_on_stop(pressed, stopped):
 
 def _broken() -> str:
     raise OSError("control unreadable")
+
+
+@pytest.mark.parametrize("reader, answer", [(lambda: "  STOP ", CONTROL_STOP), (lambda: "Pause", "pause")])
+def test_reader_action_normalises_what_the_reader_answers(reader, answer):
+    assert _reader_action(reader) == answer
+
+
+@pytest.mark.parametrize("reader, answer", [(_broken, CONTROL_RUN), (lambda: None, "")])
+def test_reader_action_never_answers_stop_when_the_reader_cannot(reader, answer):
+    # an unreadable control (raises) answers run; an empty answer is "" -- never stop
+    assert _reader_action(reader) == answer
 
 
 @pytest.mark.parametrize("reader", [None, _broken])
