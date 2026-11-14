@@ -69,6 +69,8 @@ DEFAULT_ATTEMPT_WALL_S = 2400.0
 #: Sub-minute values stay honoured for tests.
 LEGACY_TIMEOUT_BAND_MIN_S = 60.0
 LEGACY_TIMEOUT_BAND_MAX_S = 180.0
+#: How often a model call in flight reads the owner's Stop (F-U1).
+OWNER_POLL_S = 0.25
 #: One _llm_code_call may try primary + same-endpoint fallback +
 #: cross-provider. Plus a small grace so status polling does not race the
 #: last attempt. Used for test-scale walls only.
@@ -320,6 +322,18 @@ def post_with_deadline(
         float(timeout) if timeout is not None else call_timeout_s(),
         deadline_mono,
     )
+    from app.factory.build.coder_session_status import (
+        CONTROL_STOP,
+        OwnerStopped,
+        check_owner,
+        current_owner_control,
+        owner_action,
+    )
+
+    # F-U1: no model call starts while the owner has paused or stopped the
+    # build this thread runs (a no-op where no control is installed).
+    control = current_owner_control()
+    check_owner(control)
     poster = post or httpx.post
     box: Dict[str, Any] = {}
     client_holder: Dict[str, Any] = {}
@@ -384,7 +398,22 @@ def post_with_deadline(
     # happened: the worker held the caller until the socket died.
     # Never close() after the deadline on this thread either — that is
     # how live 1085s>480s happened.
-    if not done.wait(timeout_s):
+    # Wait in short slices so a Stop pressed mid-call cancels the call (off
+    # the caller, like the deadline) instead of waiting for its answer.
+    finished = False
+    wait_until = time.monotonic() + timeout_s
+    while True:
+        left = max(0.0, wait_until - time.monotonic())
+        slice_s = min(left, OWNER_POLL_S) if control is not None else left
+        if done.wait(slice_s):
+            finished = True
+            break
+        if slice_s >= left:
+            break
+        if owner_action(control) == CONTROL_STOP:
+            _cancel_off_caller()
+            raise OwnerStopped("owner stopped the build during a model call")
+    if not finished:
         logger.warning(
             "coder LLM watchdog fired after %.1fs; aborting off-caller "
             "(Client.close must not run on this thread) url=%s",

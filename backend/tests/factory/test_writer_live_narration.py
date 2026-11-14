@@ -191,6 +191,9 @@ class _HungProc:
         time.sleep(min(timeout or 0.1, 0.1))
         raise subprocess.TimeoutExpired("codewhale", timeout)
 
+    def poll(self):
+        return self.returncode
+
     def kill(self):
         self.returncode = 9
 

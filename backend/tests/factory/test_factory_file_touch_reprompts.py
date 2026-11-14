@@ -126,6 +126,6 @@ def test_the_run_loop_counts_reprompts_apart_from_rework():
 
     from app.factory.build.runner import RoleRunner
 
-    src = inspect.getsource(RoleRunner.run)
+    src = inspect.getsource(RoleRunner._run_controlled)
     assert "factory_file_reprompts=factory_file_reprompts" in src
     assert "factory_file_reprompts += 1" in src

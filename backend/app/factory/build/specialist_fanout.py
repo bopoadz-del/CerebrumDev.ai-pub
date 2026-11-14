@@ -37,6 +37,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Sequence
 
+from app.factory.build.coder_session_status import OwnerStopped, current_owner_control
+
 #: Operator switch. Off by default: the single-writer pass is unchanged until
 #: an operator turns the fan-out on (``1``/``true``/``yes``/``on``).
 FANOUT_ENV = "FACTORY_WRITER_SPECIALIST_FANOUT"
@@ -274,6 +276,14 @@ class SpecialistFanout:
         started = time.monotonic()
         try:
             receipt = self.launch(name, prompt, checkout, progress)
+        except OwnerStopped:
+            # F-U1: the session's tree is already killed; the build thread
+            # reads the same stop and ends the build.
+            self.results[name] = {
+                "status": "stopped",
+                "wall_s": round(time.monotonic() - started, 1),
+            }
+            return
         except Exception as exc:  # noqa: BLE001 -- one hat's failure is recorded, not fatal
             self.results[name] = {
                 "status": "error",
@@ -416,10 +426,16 @@ def start_for_writer(
     def child_scope() -> Any:
         return specialist_child_slot(tenant_store, wait_left=slot_wait_left)
 
+    # F-U1: the specialists run on their own threads; they read the same
+    # owner control as the writer that started them.
+    control = current_owner_control()
+
     def launch(name: str, prompt: str, checkout: Path, progress: Any) -> Any:
         extra: Dict[str, Any] = {}
         if turn_wall_s is not None:
             extra["turn_wall_s"] = turn_wall_s
+        if control is not None:
+            extra["control"] = control
         return run_worker_job_with_stall_retry(
             prompt,
             checkout,

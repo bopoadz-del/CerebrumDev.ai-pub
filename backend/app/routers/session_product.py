@@ -778,8 +778,12 @@ def set_coder_control(
 ) -> Dict[str, Any]:
     """Owner Pause / Stop / Resume for the live coder session.
 
-    Writes ``docs/coder_control.json`` in the product workspace. The
-    dispatcher polls it; this is not a role write.
+    Writes ``docs/coder_control.json`` in the product workspace, with who
+    pressed it. The running build reads it before every phase and model
+    call, and the writer CLI's wait reads it every tick: Stop kills the CLI
+    tree and ends the build as STOPPED_BY_OWNER; Pause freezes it. This is
+    the one stop route for the console and for a cancelled pilot alike;
+    not a role write.
     """
     from app.factory.build.coder_session_status import write_control
 
@@ -790,7 +794,7 @@ def set_coder_control(
     out = Path(gen["output_dir"])
     if not out.is_dir():
         raise HTTPException(status_code=404, detail="generated product not found on disk")
-    control = write_control(out, body.action)
+    control = write_control(out, body.action, by=principal.account_id or principal.kind)
     return {"ok": True, "control": control}
 
 
