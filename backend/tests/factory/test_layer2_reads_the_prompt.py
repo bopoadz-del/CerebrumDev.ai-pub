@@ -98,7 +98,7 @@ def test_a_repeated_id_answers_once_only(bp):
     assert [v["evidence"] for v in out["verdicts"]] == ["first"] * len(out["verdicts"])
     assert all(v["verdict"] == "FAIL" for v in out["verdicts"])
     qs = l2.layer2_questions(bp)
-    tail = [q for q in qs if not q["capability"]]
+    tail = [q for q in qs if not q["about"]]
     assert out["open_fails"] == [q["text"] for q in tail[1:]]
 
 

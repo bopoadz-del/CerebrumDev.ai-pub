@@ -228,6 +228,7 @@ def compose(blueprint_path: Path, root: Path, store: Path) -> Composed:
         path.write_text(COMPUTES, encoding="utf-8")
     (root / "app" / "models.py").write_text(writer_models_source(capability_ids), encoding="utf-8")
     _write_writer_persistence(root)
+    _write_writer_screens(root, runner.blueprint.ui_modules, capability_ids)
     after = _snapshot(root)
     _record(layers, before, after, WRITER)
     return Composed(Path(blueprint_path), root, Path(store), layers, capability_ids)
@@ -249,6 +250,39 @@ def writer_models_source(capability_ids: Sequence[str]) -> str:
         )
         registry.append(f"{name!r}: {cls}")
     return "\n".join(parts) + "\nMODELS = {" + ", ".join(registry) + "}\n"
+
+
+def writer_screen_source(capability_ids: Sequence[str]) -> str:
+    """One declared screen of the invented writer layer: it reads each
+    capability's route (the one name ``authority.capability_route`` gives)
+    and shows what the kernel returned -- nothing baked in."""
+    from app.factory.build.authority import capability_route
+
+    routes = ", ".join(repr(capability_route(cid)) for cid in capability_ids)
+    return (
+        "import { useEffect, useState } from 'react';\n\n"
+        f"const ROUTES: string[] = [{routes}];\n\n"
+        "export default function Screen() {\n"
+        "  const [rows, setRows] = useState<Record<string, unknown>>({});\n"
+        "  useEffect(() => {\n"
+        "    ROUTES.forEach((route) =>\n"
+        "      fetch(route).then((r) => r.json()).then((body) => setRows((old) => ({ ...old, [route]: body }))),\n"
+        "    );\n"
+        "  }, []);\n"
+        "  return <pre>{JSON.stringify(rows, null, 2)}</pre>;\n"
+        "}\n"
+    )
+
+
+def _write_writer_screens(root: Path, modules: Sequence[str], capability_ids: Sequence[str]) -> None:
+    """Every declared screen at the path the ui_surface gate requires of a
+    writer (``frontend/src/modules/<module>.tsx``)."""
+    from app.factory.build.ui_surface import _safe
+
+    for module in modules:
+        path = root / "frontend" / "src" / "modules" / f"{_safe(module)}.tsx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(writer_screen_source(capability_ids), encoding="utf-8")
 
 
 def _write_writer_persistence(root: Path) -> None:

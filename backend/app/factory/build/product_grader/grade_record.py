@@ -70,6 +70,13 @@ def open_layer2(layer2: Mapping[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
+def unasked(layer2: Mapping[str, Any]) -> List[str]:
+    """FG-6: the Layer-2 questions the grader was not asked because their
+    files were not in view. Not the writer's FAIL -- the Factory's render
+    owes them -- and never a pass: each one blocks certification."""
+    return [str(q) for q in layer2.get("unasked") or []]
+
+
 def open_fails(layer2: Mapping[str, Any]) -> List[str]:
     """The questions of :func:`open_layer2`."""
     return [row["question"] for row in open_layer2(layer2)]
@@ -167,7 +174,10 @@ def build_grade(
         "layer1": {"ok": l1, "functions": dict(functions), "ui": dict(ui)},
         "layer2": l2,
         "next_tasks": [layer2_task(row) for row in rows] + _hardwiring_tasks(hardwiring),
-        "certified": l1 and l2.get("ran") is True and bool(l2["verdicts"]) and not rows and hardwiring_ok(hardwiring),
+        "certified": (
+            l1 and l2.get("ran") is True and bool(l2["verdicts"]) and not rows
+            and not unasked(l2) and hardwiring_ok(hardwiring)
+        ),
     }
     if hardwiring is not None:
         grade["hardwiring"] = dict(hardwiring)
@@ -222,6 +232,9 @@ def _schema_errors(grade: Any) -> List[str]:
         of = l2.get("open_fails")
         if not isinstance(of, list) or not all(isinstance(q, str) for q in of):
             errs.append("layer2.open_fails is not a list of strings")
+        ua = l2.get("unasked", [])
+        if not isinstance(ua, list) or not all(isinstance(q, str) for q in ua):
+            errs.append("layer2.unasked is not a list of strings")
     return errs
 
 
@@ -251,6 +264,9 @@ def certification_refusal(root: Path | str) -> Optional[str]:
     fails = open_fails(l2)
     if fails:
         return f"product grade has {len(fails)} open Layer-2 FAIL(s): handover blocked"
+    left = unasked(l2)
+    if left:
+        return f"product grade Layer 2 left {len(left)} question(s) unasked: handover blocked"
     hardwiring = grade.get("hardwiring")
     if not hardwiring_ok(hardwiring):
         found = len(hardwiring.get("findings") or [])

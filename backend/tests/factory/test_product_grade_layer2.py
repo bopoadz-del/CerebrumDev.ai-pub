@@ -47,7 +47,7 @@ def test_run_layer2_sends_exactly_the_built_messages_once_per_group(bp):  # G25
 
     l2.run_layer2(INPUTS[0], bp, complete)
     qs = l2.layer2_questions(bp)
-    groups = [[q] for q in qs if q["capability"]] + [[q for q in qs if not q["capability"]]]
+    groups = [[q] for q in qs if q["about"]] + [[q for q in qs if not q["about"]]]
     assert calls == [l2.layer2_messages(INPUTS[0], g) for g in groups]
 
 
