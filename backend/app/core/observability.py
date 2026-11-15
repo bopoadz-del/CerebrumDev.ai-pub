@@ -38,12 +38,20 @@ def init_sentry() -> None:
         logger.warning("SENTRY_DSN set but sentry-sdk not installed — skipping")
         return
 
+    from app.core.event_scrub import scrub_event
+
     try:
         sentry_sdk.init(
             dsn=dsn,
             environment=os.getenv("ENV", "development"),
             release=os.getenv("RENDER_GIT_COMMIT") or None,
             send_default_pii=False,
+            # SEC-1: bodies and frame locals never attach; every event and
+            # transaction is scrubbed before it leaves (app.core.event_scrub).
+            max_request_body_size="never",
+            include_local_variables=False,
+            before_send=scrub_event,
+            before_send_transaction=scrub_event,
             traces_sample_rate=_rate("SENTRY_TRACES_SAMPLE_RATE", 0.1),
             integrations=[FastApiIntegration(), LoggingIntegration()],
         )
