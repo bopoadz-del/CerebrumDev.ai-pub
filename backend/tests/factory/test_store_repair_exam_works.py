@@ -218,15 +218,25 @@ def test_variants_of_a_failing_input_come_from_the_contract(call, want):
     assert sre._variants(call, _CONTRACT) == want
 
 
-def test_variants_never_repeat_the_failing_input():
-    contract = {"inputs": [{"name": "k", "required": True, "options": ["a"]}]}
-    assert sre._variants({"k": "a"}, contract) == []
+@pytest.mark.parametrize(
+    "contract, call",
+    [
+        ({"inputs": [{"name": "k", "required": True, "options": ["a"]}]}, {"k": "a"}),
+        ({"inputs": [{"name": "k", "required": True}]}, {"k": 5}),
+    ],
+)
+def test_variants_never_repeat_the_failing_input(contract, call):
+    assert sre._variants(call, contract) == []
 
 
-def test_each_runtime_defect_carries_its_variants_into_the_sealed_half():
-    exam = sre.generate_exam("vorpal", _CONTRACT, _runtime_defect())
+@pytest.mark.parametrize("failing_input, count", [({"payload": {"q": 1}}, 3), (7, 4)])
+def test_each_runtime_defect_carries_its_variants_into_the_sealed_half(failing_input, count):
+    defect = StoreDefect("vorpal", "vendor/blocks/vorpal/block.py", "crash", failing_input)
+    exam = sre.generate_exam("vorpal", _CONTRACT, [defect])
     defect_cases = [c for c in exam.sealed if c.source == "defect"]
-    assert [c.case_id for c in defect_cases] == ["defect:0"] + [f"defect:0:variant:{k}" for k in range(3)]
+    assert [c.case_id for c in defect_cases] == ["defect:0"] + [
+        f"defect:0:variant:{k}" for k in range(count)
+    ]
     assert {c.expect for c in defect_cases} == {sre.ACCEPTED}
     assert {c.kind for c in defect_cases} == {"crash"}
     assert {c.check for c in defect_cases} == {sre.RUNTIME}
@@ -332,18 +342,25 @@ def test_a_block_answering_a_declared_acceptance_status_fails_the_base_case():
     assert "contract:base" in {f.case_id for f in run.failures}
 
 
-def test_an_acceptance_entry_that_declares_an_input_is_a_sealed_refusal_case():
+@pytest.mark.parametrize(
+    "declared, call",
+    [
+        ({"limit": -5}, {"payload": {}, "limit": -5}),
+        ({"payload": {"z": 0}}, {"payload": {"z": 0}}),
+    ],
+)
+def test_an_acceptance_entry_that_declares_an_input_is_a_sealed_refusal_case(declared, call):
     contract = {
         **_CONTRACT,
         "acceptance": [
-            {"id": "x", "check": "c", "status": "refused"},
-            {"id": "y", "check": "c", "status": "refused", "input": {"limit": -5}},
+            {"id": "x", "check": "c", "status": "refused", "input": "not a mapping"},
+            {"id": "y", "check": "c", "status": "refused", "input": declared},
         ],
     }
     exam = sre.generate_exam("vorpal", contract, [])
     (case,) = [c for c in exam.sealed if c.source == "acceptance"]
     assert (case.case_id, case.check, case.expect) == ("acceptance:1", sre.RUNTIME, sre.REFUSED)
-    assert case.inputs == {"payload": {}, "limit": -5}
+    assert case.inputs == call
     assert sre.self_test(exam, contract).ok
     run = sre.run_exam(exam, sre.contract_reference(contract), list)
     assert [f.case_id for f in run.failures] == ["acceptance:1"]
@@ -367,30 +384,54 @@ def test_exported_symbols_are_the_public_top_level_names(source, names):
     assert sre._exported(source) == names
 
 
-def test_the_block_surface_lists_files_and_symbols_and_skips_caches(tmp_path):
-    (tmp_path / "pkg" / "__pycache__").mkdir(parents=True)
+@pytest.mark.parametrize("cache", ["pkg/__pycache__", "__pycache__"])
+def test_the_block_surface_lists_files_and_symbols_and_skips_caches(cache, tmp_path):
+    (tmp_path / cache).mkdir(parents=True)
+    (tmp_path / "pkg").mkdir(exist_ok=True)
     (tmp_path / "block.py").write_text("def run():\n    pass\n", encoding="utf-8")
     (tmp_path / "pkg" / "util.py").write_text("K = 1\n", encoding="utf-8")
-    (tmp_path / "pkg" / "__pycache__" / "util.cpython-311.pyc").write_bytes(b"\x00")
-    (tmp_path / "block.json").write_text("{\"run\": 1}", encoding="utf-8")
-    assert sre.block_surface(tmp_path) == {"block.json": [], "block.py": ["run"], "pkg/util.py": ["K"]}
-
-
-def test_survive_cases_cover_the_surface_and_every_static_defect_file():
-    surface = {"b.py": ["run", "run", "A"], "block.json": []}
-    defects = [
-        StoreDefect("v", "vendor/blocks/v/core/x.py", "forbidden_literal"),
-        StoreDefect("v", "vendor/blocks/v/b.py", "forbidden_literal"),
-        StoreDefect("v", "vendor/blocks/v/c.py", "crash", {"payload": {}}),
-    ]
-    exam = sre.generate_exam("v", _CONTRACT, defects, surface)
-    survive = {c.case_id: c.inputs for c in exam.sealed if c.check == sre.SURVIVE}
-    assert survive == {
-        "survive:b.py": {"file": "b.py", "symbols": ["A", "run"]},
-        "survive:block.json": {"file": "block.json", "symbols": []},
-        "survive:core/x.py": {"file": "core/x.py", "symbols": []},
+    (tmp_path / cache / "util.cpython-311.pyc").write_bytes(b"\x00")
+    (tmp_path / "block.json").write_text('{"run": 1}', encoding="utf-8")
+    assert sre.block_surface(tmp_path) == {
+        "block.json": [],
+        "block.py": ["run"],
+        "pkg/util.py": ["K"],
     }
+
+
+_STATIC_AND_RUNTIME = [
+    StoreDefect("v", "vendor/blocks/v/core/x.py", "forbidden_literal"),
+    StoreDefect("v", "vendor/blocks/v/b.py", "forbidden_literal"),
+    StoreDefect("v", "vendor/blocks/v/c.py", "crash", {"payload": {}}),
+]
+
+
+@pytest.mark.parametrize(
+    "surface, want",
+    [
+        (
+            {"b.py": ["run", "run", "A"], "block.json": []},
+            {
+                "survive:b.py": {"file": "b.py", "symbols": ["A", "run"]},
+                "survive:block.json": {"file": "block.json", "symbols": []},
+                "survive:core/x.py": {"file": "core/x.py", "symbols": []},
+            },
+        ),
+        (
+            None,
+            {
+                "survive:b.py": {"file": "b.py", "symbols": []},
+                "survive:core/x.py": {"file": "core/x.py", "symbols": []},
+            },
+        ),
+    ],
+)
+def test_survive_cases_cover_the_surface_and_every_static_defect_file(surface, want):
+    exam = sre.generate_exam("v", _CONTRACT, _STATIC_AND_RUNTIME, surface)
+    survive = {c.case_id: c.inputs for c in exam.sealed if c.check == sre.SURVIVE}
+    assert survive == want
     assert {c.source for c in exam.sealed if c.check == sre.SURVIVE} == {"regression"}
+    assert {c.expect for c in exam.sealed if c.check == sre.SURVIVE} == {sre.ACCEPTED}
 
 
 @pytest.mark.parametrize(
@@ -410,13 +451,27 @@ def test_a_surviving_file_keeps_every_exported_symbol(staged, failure):
     assert run.passed is (failure is None)
 
 
-def test_without_a_staged_surface_no_file_survives():
-    exam = sre.generate_exam("v", {"inputs": []}, [], {"b.py": []})
+@pytest.mark.parametrize(
+    "surface, failures",
+    [
+        ({"b.py": []}, ["file removed: b.py"]),
+        ({"a.py": ["X"], "b.py": []}, ["file removed: a.py", "file removed: b.py"]),
+    ],
+)
+def test_without_a_staged_surface_no_file_survives(surface, failures):
+    exam = sre.generate_exam("v", {"inputs": []}, [], surface)
     run = sre.run_exam(exam, sre.contract_reference({"inputs": []}), list)
-    assert [f.failure for f in run.failures] == ["file removed: b.py"]
+    assert [f.failure for f in run.failures] == failures
 
 
-def test_the_exam_id_binds_the_surface():
-    one = sre.generate_exam("v", _CONTRACT, [], {"b.py": ["run"]})
-    two = sre.generate_exam("v", _CONTRACT, [], {"b.py": ["run", "A"]})
-    assert one.exam_id != two.exam_id
+@pytest.mark.parametrize(
+    "one, two",
+    [
+        ({"b.py": ["run"]}, {"b.py": ["run", "A"]}),
+        ({"b.py": ["run"]}, {"c.py": ["run"]}),
+    ],
+)
+def test_the_exam_id_binds_the_surface(one, two):
+    first = sre.generate_exam("v", _CONTRACT, [], one)
+    assert first.exam_id != sre.generate_exam("v", _CONTRACT, [], two).exam_id
+    assert first.exam_id == sre.generate_exam("v", _CONTRACT, [], dict(one)).exam_id
