@@ -317,6 +317,29 @@ def block_cannot_run(exc, offline):
     return None
 
 
+def loader_refused(exc):
+    """FG-7c, run inside the probe process when the handle cannot be
+    imported: ``{block id: why}`` for each block the product's own loader
+    could not load when it refused to start, or ``{}`` when the import failed
+    for any other reason. The Factory-rendered loader loads every locked
+    block when it is imported and refuses to start if one cannot load; its
+    refusal carries them typed (``unloadable``: ``{block id: exception}``),
+    read here along the cause chain -- never from the refusal's words. Such
+    a handle never reached its own code, so it is not judgeable."""
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        named = getattr(cur, "unloadable", None)
+        if isinstance(named, dict) and named:
+            return {
+                str(bid): CANNOT_LOAD + ": " + type(err).__name__ + ": " + str(err)[:200]
+                for bid, err in named.items()
+            }
+        cur = cur.__cause__ or cur.__context__
+    return {}
+
+
 def watch_blocks(dispatch, handle_module, offline, refusals, cannot):
     """FG-7c, run inside the probe process before the handle is judged.
 
@@ -479,12 +502,15 @@ def why(exc):
     kind = "exited" if isinstance(exc, SystemExit) else "raised"
     return f"handle {kind}: {type(exc).__name__}: {exc}"[:300]
 """ + "\n".join(render_payload_helpers()) + "\n" + _PILOT_RULE + _probe_source(
-    block_cannot_run, watch_blocks
+    block_cannot_run, loader_refused, watch_blocks
 ) + _HARNESS + r"""
 try:
     _handle_module = importlib.import_module(spec["module"])
     original = _handle_module.handle
 except BaseException as exc:
+    # FG-7c: the product's own loader refused to start because a locked
+    # block cannot load here -- recorded, so the handle is not judged.
+    _BLOCKS_CANNOT_RUN.update(loader_refused(exc))
     emit({"two_input": False, "mutants": {m: "not_run" for m in spec["mutants"]},
           "error": "import failed: " + why(exc)})
     sys.exit(0)

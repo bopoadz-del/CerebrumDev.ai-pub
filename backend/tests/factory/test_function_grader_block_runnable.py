@@ -326,3 +326,115 @@ def test_not_judgeable_detail_names_each_block_and_why(cannot):
     detail = fg.not_judgeable_detail(cannot)
     assert detail.startswith(fg.NOT_JUDGEABLE + ": ")
     assert detail.endswith("; ".join(f"{k}: {v}" for k, v in sorted(cannot.items())))
+
+
+# --- the product's own loader refuses to start (it loads every locked block) ---
+
+
+def _refusing_workspace(tmp_path: Path, block_loads: bool, handle_imports: str) -> Path:
+    """A workspace carrying the Factory's own rendered loader and a lock: the
+    loader loads every locked block when it is imported and refuses to start
+    if one cannot load."""
+    import json
+
+    from app.factory.build.roles_handlers import _render_dispatch
+
+    ws = _workspace(tmp_path, None)
+    (ws / "app" / "dispatch.py").write_text(_render_dispatch({}), encoding="utf-8")
+    vendored = ws / "vendor" / "blocks" / BLOCK
+    vendored.mkdir(parents=True)
+    head = "" if block_loads else "import grader_probe_absent_package\n"
+    (vendored / "block.py").write_text(head + COMPUTES, encoding="utf-8")
+    (ws / "blocks.lock.json").write_text(
+        json.dumps({"blocks": {BLOCK: {"path": f"vendor/blocks/{BLOCK}"}}}), encoding="utf-8"
+    )
+    for cid in IDS:
+        (ws / "app" / "actions" / f"{cid}.py").write_text(handle_imports + HANDLE, encoding="utf-8")
+    return ws
+
+
+@pytest.mark.parametrize("block_loads", [True, False])
+def test_a_handle_the_loader_refuses_to_import_is_not_judgeable(tmp_path, block_loads):
+    # The handle's own import is clean; whether it can be imported at all is
+    # decided by the loader's start-up check of the locked block.
+    ws = _refusing_workspace(tmp_path, block_loads, "")
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=ws)
+    if block_loads:
+        assert grade.ungraded == [] and len(grade.functions) == len(IDS), grade.to_dict()
+        assert not any(f.detail.startswith("import failed") for f in grade.functions)
+    else:
+        _not_judgeable(grade, fg.CANNOT_LOAD)
+        assert all("ModuleNotFoundError" in u.blocks_cannot_run[BLOCK] for u in grade.ungraded)
+
+
+@pytest.mark.parametrize("own_import", ["import json\n", "import grader_probe_absent_handle_package\n"])
+def test_a_handle_that_fails_its_own_import_is_still_judged(tmp_path, own_import):
+    # The block loads, so the loader starts; a handle whose OWN import fails
+    # is the writer's, and is judged.
+    ws = _refusing_workspace(tmp_path, True, own_import)
+    grade = fg.grade_functions(_bp(), capability_ids=IDS, workspace=ws)
+    assert grade.ungraded == [] and len(grade.functions) == len(IDS), grade.to_dict()
+    failed_import = [f for f in grade.functions if f.detail.startswith("import failed")]
+    if own_import == "import json\n":
+        assert failed_import == []
+    else:
+        assert [f.capability_id for f in failed_import] == IDS
+        assert grade.failing[: len(IDS)] == IDS
+
+
+class _Refusal(RuntimeError):
+    pass
+
+
+def _refusal(unloadable):
+    exc = _Refusal("refusing to start")
+    exc.unloadable = unloadable
+    return exc
+
+
+def _context_chained(inner):
+    try:
+        try:
+            raise inner
+        except BaseException:
+            raise ImportError("while importing the handle")
+    except ImportError as outer:
+        return outer
+
+
+@pytest.mark.parametrize(
+    "exc, blocks",
+    [
+        (_refusal({BLOCK: ModuleNotFoundError("No module named 'absent'")}), [BLOCK]),
+        (_chained(_refusal({"b": OSError("x"), "a": KeyError("y")})), ["b", "a"]),
+        (_context_chained(_refusal({BLOCK: SyntaxError("bad")})), [BLOCK]),
+        (_refusal({}), []),
+        (_refusal(["not", "a", "map"]), []),
+        (ImportError("No module named 'absent'"), []),
+        (_chained(ValueError("bad amount")), []),
+    ],
+)
+def test_loader_refused_reads_the_blocks_by_type(exc, blocks):
+    named = fg.loader_refused(exc)
+    assert list(named) == blocks
+    for bid in blocks:
+        assert named[bid].startswith(fg.CANNOT_LOAD + ": ")
+
+
+@pytest.mark.parametrize(
+    "err, why",
+    [
+        (ModuleNotFoundError("No module named 'absent'"), "ModuleNotFoundError: No module named 'absent'"),
+        (SyntaxError("bad"), "SyntaxError: bad"),
+    ],
+)
+def test_loader_refused_names_each_blocks_own_exception(err, why):
+    assert fg.loader_refused(_refusal({BLOCK: err})) == {BLOCK: fg.CANNOT_LOAD + ": " + why}
+
+
+@pytest.mark.parametrize("length", [1, 2])
+def test_loader_refused_ends_on_a_cause_cycle(length):
+    chain = [ValueError(str(i)) for i in range(length)]
+    for i, exc in enumerate(chain):
+        exc.__cause__ = chain[(i + 1) % length]
+    assert fg.loader_refused(chain[0]) == {}
