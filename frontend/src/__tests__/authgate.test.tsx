@@ -79,18 +79,19 @@ describe('AuthGate', () => {
     )
   })
 
-  it('shows Remember me on login only and prefills both saved fields', () => {
+  it('shows Remember me on login only and prefills the email, never a password', () => {
     localStorage.setItem('cerebrum.factory.email', 'saved@factory.dev')
+    localStorage.setItem('cerebrum.factory.remember', '1')
     localStorage.setItem('cerebrum.factory.password', 'supersecret1')
     render(<AuthGate onAuthed={() => {}} />)
     expect(screen.getByPlaceholderText('you@company.com')).toHaveValue('saved@factory.dev')
-    expect(screen.getByPlaceholderText('password (8+ characters)')).toHaveValue('supersecret1')
+    expect(screen.getByPlaceholderText('password (8+ characters)')).toHaveValue('')
     expect(screen.getByRole('checkbox', { name: 'Remember me' })).toBeChecked()
     fireEvent.click(screen.getByRole('button', { name: 'Create an account' }))
     expect(screen.queryByRole('checkbox', { name: 'Remember me' })).not.toBeInTheDocument()
   })
 
-  it('persists email and password after a remembered login', async () => {
+  it('remembers the email, not the password, after a remembered login', async () => {
     const onAuthed = vi.fn()
     render(<AuthGate onAuthed={onAuthed} />)
     fireEvent.change(screen.getByPlaceholderText('you@company.com'), {
@@ -103,20 +104,19 @@ describe('AuthGate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enter the factory' }))
     await waitFor(() => expect(onAuthed).toHaveBeenCalled())
     expect(localStorage.getItem('cerebrum.factory.email')).toBe('saved@factory.dev')
-    expect(localStorage.getItem('cerebrum.factory.password')).toBe('supersecret1')
+    expect(localStorage.getItem('cerebrum.factory.remember')).toBe('1')
+    expect(localStorage.getItem('cerebrum.factory.password')).toBeNull()
+    expect(screen.getByPlaceholderText('password (8+ characters)')).toHaveValue('')
   })
 
-  it('clears saved email and password when Remember me is unchecked', async () => {
+  it('forgets the saved email when Remember me is unchecked', async () => {
     localStorage.setItem('cerebrum.factory.email', 'saved@factory.dev')
-    localStorage.setItem('cerebrum.factory.password', 'supersecret1')
+    localStorage.setItem('cerebrum.factory.remember', '1')
     const onAuthed = vi.fn()
     render(<AuthGate onAuthed={onAuthed} />)
     fireEvent.click(screen.getByRole('checkbox', { name: 'Remember me' }))
     expect(localStorage.getItem('cerebrum.factory.email')).toBeNull()
-    expect(localStorage.getItem('cerebrum.factory.password')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Enter the factory' }))
-    await waitFor(() => expect(onAuthed).toHaveBeenCalled())
-    expect(localStorage.getItem('cerebrum.factory.password')).toBeNull()
+    expect(localStorage.getItem('cerebrum.factory.remember')).toBeNull()
   })
 
   it('SMTP register enters the app so boot can show verify-email (not a dead Factory)', async () => {

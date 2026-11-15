@@ -11,8 +11,12 @@ const API_BASE =
 
 const STORAGE_PREFIX = 'cerebrum.factory.'
 const EMAIL_KEY = STORAGE_PREFIX + 'email'
-/** Owner-requested convenience remember-me. Client-only; never cookies or logs. */
-const PASSWORD_KEY = STORAGE_PREFIX + 'password'
+/**
+ * Remember-me keeps only the email for the next visit. A password is never
+ * written to browser storage: the browser's own password manager offers it
+ * through the field's autocomplete hint (see secretFields.ts).
+ */
+const REMEMBER_KEY = STORAGE_PREFIX + 'remember'
 const LEGACY_TOKEN_KEY = 'cerebrum.factory.token'
 
 export class ApiError extends Error {
@@ -88,8 +92,9 @@ const RETRY_DELAYS_MS = import.meta.env.MODE === 'test' ? [0, 0] : [200, 600]
 export function getEmail(): string | null {
   return localStorage.getItem(EMAIL_KEY)
 }
-export function getRememberedPassword(): string | null {
-  return localStorage.getItem(PASSWORD_KEY)
+/** True when the user asked this browser to keep their email after sign-out. */
+export function isLoginRemembered(): boolean {
+  return localStorage.getItem(REMEMBER_KEY) === '1' && Boolean(getEmail())
 }
 export function getLoginToken(): string | null {
   const raw = localStorage.getItem(LEGACY_TOKEN_KEY)
@@ -131,22 +136,19 @@ export function setSession(email: string, loginToken?: string): void {
     }
   }
 }
-/** Save email+password after a remembered login. Password stays in localStorage only. */
-export function rememberLogin(email: string, password: string): void {
+/** Keep the email (never the password) for the next visit. */
+export function rememberLogin(email: string): void {
   localStorage.setItem(EMAIL_KEY, email)
-  localStorage.setItem(PASSWORD_KEY, password)
+  localStorage.setItem(REMEMBER_KEY, '1')
 }
-/** Forget saved login fields. Does not touch the HttpOnly session cookie. */
+/** Forget the remembered email. Does not touch the HttpOnly session cookie. */
 export function forgetRememberedLogin(): void {
   localStorage.removeItem(EMAIL_KEY)
-  localStorage.removeItem(PASSWORD_KEY)
-}
-export function clearRememberedPassword(): void {
-  localStorage.removeItem(PASSWORD_KEY)
+  localStorage.removeItem(REMEMBER_KEY)
 }
 export function clearSession(): void {
   localStorage.removeItem(LEGACY_TOKEN_KEY)
-  if (!localStorage.getItem(PASSWORD_KEY)) {
+  if (localStorage.getItem(REMEMBER_KEY) !== '1') {
     localStorage.removeItem(EMAIL_KEY)
   }
 }

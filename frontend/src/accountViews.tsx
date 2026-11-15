@@ -5,9 +5,7 @@ import {
   billing,
   downloadProductPackage,
   getEmail,
-  getRememberedPassword,
   product,
-  rememberLogin,
   subscriptionDisplay,
   watchBuildStatus,
   type AccountInfo,
@@ -37,6 +35,7 @@ import { FactoryCodeCliStatus, useFactoryCodeCliHonesty } from './factoryReadine
 import { LevelGradeStrip } from './levelGradeView'
 import { LoadingSkeleton } from './LoadingSkeleton'
 import { platformCardTitle } from './productDisplay'
+import { secretFieldProps } from './secretFields'
 
 export { humanizeProductId, platformCardTitle } from './productDisplay'
 
@@ -527,16 +526,10 @@ function verifiedLabel(me: AccountInfo | null): string {
 
 // Owner-only ops: switch the coding model when it stops responding, and
 // reboot the service. Gated by the master key the owner enters here; the key
-// is kept only in this browser (localStorage), never sent anywhere but the
-// admin endpoints. Hidden entirely until a key is entered.
+// lives only in this panel's memory for the visit (never in browser storage)
+// and is sent nowhere but the admin endpoints. Hidden until a key is entered.
 function AdminOps() {
-  const [key, setKey] = useState<string>(() => {
-    try {
-      return localStorage.getItem('cerebrum_admin_key') || ''
-    } catch {
-      return ''
-    }
-  })
+  const [key, setKey] = useState('')
   const [open, setOpen] = useState(false)
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState('')
@@ -550,16 +543,6 @@ function AdminOps() {
     last_run?: { at?: string; archived?: number; errors?: number; live_build_branches?: number } | null
     detail?: string
   } | null>(null)
-
-  function saveKey(k: string) {
-    setKey(k)
-    try {
-      if (k) localStorage.setItem('cerebrum_admin_key', k)
-      else localStorage.removeItem('cerebrum_admin_key')
-    } catch {
-      /* private window — fine */
-    }
-  }
 
   async function adminFetch(path: string, init?: RequestInit) {
     const res = await fetch(path, {
@@ -644,11 +627,10 @@ function AdminOps() {
       <p className="dim">Owner only. Enter your admin key to switch the coding model or reboot.</p>
       <div className="admin-key-row">
         <input
-          type="password"
+          {...secretFieldProps('one-time')}
           placeholder="admin key"
-          autoComplete="off"
           value={key}
-          onChange={(e) => saveKey(e.target.value)}
+          onChange={(e) => setKey(e.target.value)}
         />
         <button type="button" disabled={!key || busy} onClick={() => void load()}>
           {busy ? 'Working…' : open ? 'Refresh' : 'Unlock'}
@@ -799,9 +781,6 @@ export function Account({
     try {
       const res = await auth.changePassword(currentPassword, newPassword)
       setNote(res.message ?? 'Password updated. Other sessions were signed out.')
-      if (accountEmail && getRememberedPassword()) {
-        rememberLogin(accountEmail, newPassword)
-      }
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
@@ -875,27 +854,24 @@ export function Account({
         <form className="change-password-form" onSubmit={changePassword}>
           <h3>Change password</h3>
           <input
-            type="password"
+            {...secretFieldProps('current')}
             required
-            autoComplete="current-password"
             placeholder="current password"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
           />
           <input
-            type="password"
+            {...secretFieldProps('new')}
             required
             minLength={8}
-            autoComplete="new-password"
             placeholder="new password (8+ characters)"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
           />
           <input
-            type="password"
+            {...secretFieldProps('new')}
             required
             minLength={8}
-            autoComplete="new-password"
             placeholder="confirm new password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}

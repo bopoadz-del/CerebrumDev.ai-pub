@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { scrubEvent } from './eventScrub'
+import { purgeStoredSecrets } from './secretFields'
 import './index.css'
 import './verifyGate.css'
 
@@ -41,6 +42,10 @@ if (import.meta.env.VITE_SENTRY_DSN) {
       // Never let observability block the app.
     })
 }
+
+// SEC-2: no typed secret survives in browser storage, including one an
+// older build stored before this rule existed.
+purgeStoredSecrets()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
