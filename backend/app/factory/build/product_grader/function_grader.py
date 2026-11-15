@@ -86,6 +86,19 @@ BLOCK_UNAVAILABLE = "block_unavailable: two inputs gave one honest-error envelop
 #: recorded for information. One that fails the rule carries TESTER's
 #: failure string instead.
 ONE_INPUT = "one_input"
+#: FG-7c: the detail of a capability whose declared block cannot run in the
+#: probe environment at all (it does not load, a package it imports is not
+#: installed there, or it reaches for the network the probe refuses). Such a
+#: handle is not judgeable: whatever it answered, its block never ran, so the
+#: answer says nothing about the writer's handler. The capability is
+#: recorded as ungraded -- a gap the Factory owes -- never a function FAIL
+#: billed to the writer, and it never counts toward certification.
+NOT_JUDGEABLE = "not judgeable: its declared block cannot run in the probe environment"
+#: Why a block cannot run, as the probe states it (typed causes, never a
+#: block's own words).
+CANNOT_LOAD = "it could not be loaded here"
+NOT_INSTALLED = "a package it imports is not installed here"
+NEEDS_NETWORK = "it reached for the network, which the probe refuses"
 
 
 @dataclass(frozen=True)
@@ -112,6 +125,9 @@ class FunctionResult:
     probe: Dict[str, Any] = field(default_factory=dict)
     #: One input only (no field can vary), and TESTER's pilot rule passed it.
     one_input_passed: bool = False
+    #: FG-7c: ``{declared block id: why it cannot run}`` in the probe
+    #: environment. Non-empty means the handle is not judgeable here.
+    blocks_cannot_run: Dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -150,7 +166,11 @@ class FunctionGrade:
     @property
     def failing(self) -> List[str]:
         names = [f.capability_id for f in self.functions if not f.ok]
-        if len(self.functions) < self.min_functions:
+        # FG-7c: a capability the grader could not judge was written; the gap
+        # is the Factory's (it is ungraded, and ``ok`` stays False), so it is
+        # not billed again as a writer's "too few" row.
+        present = len(self.functions) + len(self.ungraded)
+        if present < self.min_functions:
             names.append(
                 f"too few gradeable functions: {len(self.functions)} < {self.min_functions}"
             )
@@ -279,6 +299,90 @@ def derive_functions(
     ]
 
 
+def block_cannot_run(exc, offline):
+    """FG-7c, run inside the probe process: why a block's own exception says
+    the block cannot run in the probe environment at all, or None when it is
+    the block's own answer (a refusal, a bad value). Read from the exception's
+    type along its cause chain -- a package that is not installed, or the
+    probe's own network refusal (``offline``) -- never from its words."""
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, offline):
+            return NEEDS_NETWORK
+        if isinstance(cur, ImportError):
+            return NOT_INSTALLED + ": " + type(cur).__name__ + ": " + str(cur)[:200]
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def watch_blocks(dispatch, handle_module, offline, refusals, cannot):
+    """FG-7c, run inside the probe process before the handle is judged.
+
+    Routes the product's own block loader (``dispatch.load_block``) through a
+    watch that records, in ``cannot``, every block that cannot run here: one
+    that does not load, and one whose ``run`` fails for a reason
+    :func:`block_cannot_run` names or reaches for the network while it runs
+    (``refusals[0]`` counts the probe's refused connections). Then loads each
+    block the handle declares (its ``BLOCK_IDS``) once, so a declared block
+    that cannot even load is known before any answer is read. A product with
+    no loader is left as it is."""
+    real_load = getattr(dispatch, "load_block", None)
+    if not callable(real_load):
+        return cannot
+
+    def watched(bid, run):
+        def call(*args, **kwargs):
+            before = refusals[0]
+            try:
+                return run(*args, **kwargs)
+            except BaseException as exc:
+                why = block_cannot_run(exc, offline)
+                if why:
+                    cannot.setdefault(bid, why)
+                raise
+            finally:
+                if refusals[0] != before:
+                    cannot.setdefault(bid, NEEDS_NETWORK)
+
+        call.grader_watched = True
+        return call
+
+    def load(block_id):
+        bid = str(block_id)
+        try:
+            module = real_load(block_id)
+        except BaseException as exc:
+            cannot.setdefault(bid, CANNOT_LOAD + ": " + type(exc).__name__ + ": " + str(exc)[:200])
+            raise
+        run = getattr(module, "run", None)
+        if callable(run) and not getattr(run, "grader_watched", False):
+            module.run = watched(bid, run)
+        return module
+
+    dispatch.load_block = load
+    if getattr(handle_module, "load_block", None) is real_load:
+        handle_module.load_block = load
+    for bid in getattr(handle_module, "BLOCK_IDS", None) or ():
+        try:
+            load(bid)
+        except BaseException:
+            continue
+    return cannot
+
+
+def _probe_source(*functions: Any) -> str:
+    """The probe-side functions rendered from their own source, with the
+    constants they read: one definition, which the mutation gate can see."""
+    import inspect
+    import textwrap
+
+    lines = [f"{name} = {globals()[name]!r}" for name in ("CANNOT_LOAD", "NOT_INSTALLED", "NEEDS_NETWORK")]
+    lines += [textwrap.dedent(inspect.getsource(fn)) for fn in functions]
+    return "\n".join(lines) + "\n"
+
+
 #: F-G1: the grader probes a handle in the SAME environment the WRITER gate
 #: (writer_behaviour's probe) and the stamped test harness give it -- the
 #: workspace's vendored blocks on the path, a scratch store, the gate's
@@ -299,7 +403,8 @@ def _offline_connect(self, address):
     if isinstance(host, (bytes, bytearray)):
         host = host.decode("utf-8", "replace")
     if str(host) not in _LOCAL_HOSTS:
-        raise OSError(f"grader: outbound connection to {host!r} refused (no network)")
+        _REFUSALS[0] += 1
+        raise ProbeOffline(f"grader: outbound connection to {host!r} refused (no network)")
     return _real_connect(self, address)
 socket.socket.connect = _offline_connect
 try:
@@ -357,22 +462,37 @@ def corrected_input(handle, payload, capability_id):
 _RUNNER = _DEPLOY_TIME_SNIPPET + r"""
 import importlib, json, sys
 spec = json.loads(sys.stdin.read())
+_REFUSALS = [0]
+_BLOCKS_CANNOT_RUN = {}
+class ProbeOffline(OSError):
+    # The probe's own network refusal, typed so a block's failure can be
+    # read by its cause, never by its words.
+    pass
 def emit(out):
     # The result goes to a file named by the parent with a per-run nonce --
     # never stdout, which the product's own code can print to.
     out["nonce"] = spec["nonce"]
+    out["blocks_cannot_run"] = dict(_BLOCKS_CANNOT_RUN)
     with open(spec["out"], "w", encoding="utf-8") as fh:
         json.dump(out, fh)
 def why(exc):
     kind = "exited" if isinstance(exc, SystemExit) else "raised"
     return f"handle {kind}: {type(exc).__name__}: {exc}"[:300]
-""" + "\n".join(render_payload_helpers()) + "\n" + _PILOT_RULE + _HARNESS + r"""
+""" + "\n".join(render_payload_helpers()) + "\n" + _PILOT_RULE + _probe_source(
+    block_cannot_run, watch_blocks
+) + _HARNESS + r"""
 try:
-    original = importlib.import_module(spec["module"]).handle
+    _handle_module = importlib.import_module(spec["module"])
+    original = _handle_module.handle
 except BaseException as exc:
     emit({"two_input": False, "mutants": {m: "not_run" for m in spec["mutants"]},
           "error": "import failed: " + why(exc)})
     sys.exit(0)
+try:
+    _dispatch = importlib.import_module("app.dispatch")
+except BaseException:
+    _dispatch = None
+watch_blocks(_dispatch, _handle_module, ProbeOffline, _REFUSALS, _BLOCKS_CANNOT_RUN)
 def canon(r):
     return json.dumps(r, sort_keys=True, default=str)
 def leaves(obj, path=""):
@@ -537,6 +657,12 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
         return FunctionResult(fn.capability_id, False, [], list(MUTANTS),
                               f"handle exited the grader (rc={proc.returncode}): {tail[0]}"[:300],
                               probe=_probe(fn, []))
+    cannot = {str(k): str(v) for k, v in (data.get("blocks_cannot_run") or {}).items()}
+    if cannot:
+        # FG-7c: a declared block that cannot run here makes the handle not
+        # judgeable, whatever it answered -- recorded, never judged.
+        return FunctionResult(fn.capability_id, False, [], [], not_judgeable_detail(cannot),
+                              blocks_cannot_run=cannot)
     killed = [m for m, v in data["mutants"].items() if v == "killed"]
     survived = [m for m, v in data["mutants"].items() if v != "killed"]
     if "one_input" in data:
@@ -557,6 +683,12 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
     if not result.ok:
         result.probe = _probe(fn, data.get("answers") or [], data)
     return result
+
+
+def not_judgeable_detail(cannot: Mapping[str, str]) -> str:
+    """The quoted detail of a not-judgeable capability: each declared block
+    that cannot run in the probe environment, and why."""
+    return f"{NOT_JUDGEABLE}: " + "; ".join(f"{bid}: {why}" for bid, why in sorted(cannot.items()))
 
 
 def _read_result(path: Path, nonce: str) -> Dict[str, Any] | None:
@@ -665,7 +797,15 @@ def grade_functions(
     ``state_specs`` and ``route_bodies`` are the build state TESTER reads."""
     ws = Path(workspace)
     fns = derive_functions(capability_ids, ws, state_specs=state_specs, route_bodies=route_bodies)
-    grade = FunctionGrade([run_function(f, ws, python=python) for f in fns], min_functions=min_functions)
+    results = [run_function(f, ws, python=python) for f in fns]
+    # FG-7c: a capability whose declared block cannot run in the probe
+    # environment is not judgeable -- ungraded (the Factory owes it), never a
+    # FAIL handed to the writer, never counted toward the floor.
+    grade = FunctionGrade(
+        [r for r in results if not r.blocks_cannot_run],
+        min_functions=min_functions,
+        ungraded=[r for r in results if r.blocks_cannot_run],
+    )
     # F-8d: when a grader root is given, also build the writer-blind vault
     # (seeded inputs + kernel-computed expected) and record it on the grade so
     # grade_record carries the seed + set into grade.json under layer1.functions.
