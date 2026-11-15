@@ -154,6 +154,15 @@ def test_generated_exam_passes_the_reference_and_fails_every_mutant(contract):
     assert sorted(checked.caught) == sorted(sre.mutants_of(contract))
 
 
+@pytest.mark.parametrize("options", [["a", "b"], [None, "a"], [0, 1], ["", "undeclared:"]])
+def test_the_undeclared_case_uses_a_value_no_declared_option_equals(options):
+    contract = {"inputs": [{"name": "k", "required": True, "options": options}]}
+    exam = sre.generate_exam("b", contract, [])
+    case = next(c for c in exam.sealed if c.case_id == "contract:undeclared:k")
+    assert case.inputs["k"] not in options
+    assert sre.self_test(exam, contract).ok
+
+
 @pytest.mark.parametrize(
     "keep, missed",
     [
