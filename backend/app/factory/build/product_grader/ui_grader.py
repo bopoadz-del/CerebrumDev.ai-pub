@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from app.factory.build.authority import capability_route
+
 RUN_TIMEOUT_S = 600
 
 #: The PATH a UI run sees. One value, read by the grade and by the toolchain
@@ -81,12 +83,12 @@ def ui_plan(blueprint: Mapping[str, Any]) -> List[UiStep]:
         UiStep("attach:xlsx", "attach_xlsx", "fixture.xlsx"),
         UiStep("parsed:status", "parsed", "fixture.pdf"),
         UiStep("answer:cited", "cited_answer", first),
-        UiStep(f"honest_error:/v1/{first}", "honest_error", f"/v1/{first}"),
+        UiStep(f"honest_error:{capability_route(first)}", "honest_error", capability_route(first)),
     ]
     for mod in blueprint.get("ui_modules") or []:
         steps.append(UiStep(f"screen:{_slug(mod)}", "screen", f"/#/{_slug(mod)}"))
     for cid in caps:
-        steps.append(UiStep(f"route:/v1/{cid}", "route", f"/v1/{cid}"))
+        steps.append(UiStep(f"route:{capability_route(cid)}", "route", capability_route(cid)))
     return steps
 
 

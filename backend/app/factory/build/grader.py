@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
+from app.factory.build.authority import capability_route
 from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
 
 logger = logging.getLogger("cerebrumdev.factory.grader")
@@ -736,7 +737,7 @@ def _named_capability(text: str, capability_ids: List[str]) -> str:
     ``/<id>`` (a route target) or quotes ``'<id>'`` (a Layer-2 question) --
     else ``-``. Only ids from the blueprint are ever returned."""
     for cid in capability_ids:
-        if text == cid or text.endswith("/" + cid) or f"'{cid}'" in text:
+        if text == cid or text.endswith(("/" + cid, capability_route(cid))) or f"'{cid}'" in text:
             return cid
     return "-"
 
