@@ -1,13 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import {
   auth,
-  clearRememberedPassword,
   forgetRememberedLogin,
   getEmail,
-  getRememberedPassword,
+  isLoginRemembered,
   rememberLogin,
   setSession,
 } from './api/factory'
+import { secretFieldProps } from './secretFields'
 
 /* ---------------------------------- Auth ---------------------------------- */
 
@@ -176,10 +176,11 @@ export function AuthGate({
     typeof window === 'undefined' ? 'login' : authModeFromPath(window.location.pathname),
   )
   const [email, setEmail] = useState(() => getEmail() ?? '')
-  const [password, setPassword] = useState(() => getRememberedPassword() ?? '')
-  const [rememberMe, setRememberMe] = useState(
-    () => Boolean(getEmail() && getRememberedPassword()),
-  )
+  // The password lives only in this form while it is being typed; it is
+  // never read from or written to browser storage, and it is cleared as soon
+  // as the request that needed it has been answered.
+  const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(() => isLoginRemembered())
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -235,6 +236,7 @@ export function AuthGate({
     try {
       if (mode === 'register') {
         const res = await auth.register(email, password)
+        setPassword('')
         setSession(email, res.login_token)
         const v = res.verification
         onAuthed(
@@ -244,11 +246,12 @@ export function AuthGate({
         )
       } else if (mode === 'login') {
         const res = await auth.login(email, password)
+        setPassword('')
         setSession(email, res.login_token)
         if (rememberMe) {
-          rememberLogin(email, password)
+          rememberLogin(email)
         } else {
-          clearRememberedPassword()
+          forgetRememberedLogin()
         }
         onAuthed()
       } else if (mode === 'forgot') {
@@ -266,7 +269,6 @@ export function AuthGate({
         setNotice(res.message ?? 'Password updated — sign in again.')
         setPassword('')
         setToken('')
-        clearRememberedPassword()
         setMode('login')
         persistAuthPath('login')
       } else if (mode === 'verify') {
@@ -316,7 +318,7 @@ export function AuthGate({
         )}
         {(mode === 'login' || mode === 'register' || mode === 'reset') && (
           <input
-            type="password"
+            {...secretFieldProps(mode === 'login' ? 'current' : 'new')}
             required
             minLength={8}
             placeholder={mode === 'reset' ? 'new password (8+ characters)' : 'password (8+ characters)'}

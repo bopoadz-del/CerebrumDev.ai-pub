@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  clearRememberedPassword,
   clearSession,
   factoryAccessPaused,
   forgetRememberedLogin,
   getEmail,
-  getRememberedPassword,
+  isLoginRemembered,
   ApiError,
   isTransientBootError,
   isTransientNetworkError,
@@ -40,30 +39,27 @@ describe('factory auth storage', () => {
     expect(getEmail()).toBeNull()
   })
 
-  it('rememberLogin stores email and password under cerebrum.factory.*', () => {
-    rememberLogin('owner@factory.dev', 'supersecret1')
+  it('rememberLogin keeps only the email under cerebrum.factory.*', () => {
+    rememberLogin('owner@factory.dev')
     expect(getEmail()).toBe('owner@factory.dev')
-    expect(getRememberedPassword()).toBe('supersecret1')
+    expect(isLoginRemembered()).toBe(true)
     expect(localStorage.getItem('cerebrum.factory.email')).toBe('owner@factory.dev')
-    expect(localStorage.getItem('cerebrum.factory.password')).toBe('supersecret1')
-    expect(document.cookie).not.toContain('supersecret1')
+    expect(localStorage.getItem('cerebrum.factory.password')).toBeNull()
   })
 
-  it('forgetRememberedLogin and clearRememberedPassword drop saved fields', () => {
-    rememberLogin('owner@factory.dev', 'supersecret1')
-    clearRememberedPassword()
-    expect(getRememberedPassword()).toBeNull()
-    expect(getEmail()).toBe('owner@factory.dev')
+  it('forgetRememberedLogin drops the remembered email', () => {
+    rememberLogin('owner@factory.dev')
     forgetRememberedLogin()
     expect(getEmail()).toBeNull()
-    expect(getRememberedPassword()).toBeNull()
+    expect(isLoginRemembered()).toBe(false)
   })
 
-  it('clearSession keeps remembered email+password for the next visit', () => {
-    rememberLogin('owner@factory.dev', 'supersecret1')
+  it('clearSession keeps a remembered email for the next visit', () => {
+    rememberLogin('owner@factory.dev')
+    setSession('owner@factory.dev', 'cdt_x')
     clearSession()
     expect(getEmail()).toBe('owner@factory.dev')
-    expect(getRememberedPassword()).toBe('supersecret1')
+    expect(localStorage.getItem('cerebrum.factory.token')).toBeNull()
   })
 
   it('sends credentials: include and Authorization Bearer when token present', async () => {
