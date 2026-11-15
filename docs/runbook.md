@@ -4,8 +4,10 @@ One-page operations guide for CerebrumDev.ai factory and Automotive Safety Intel
 
 ## Deploy (factory)
 
-`render.yaml` is **not a live Blueprint**. The Render dashboard for
-`cerebrumdev-backend` / `cerebrumdev-frontend` is the source of truth.
+The backend deploys to AWS ECS (us-west-2, cluster `cerebrum`, service
+`cerebrumdev-backend`) through `.github/workflows/deploy-aws.yml` on every push
+to `master`; the ECS service and its task definition are the source of truth.
+`render.yaml` is **not a live Blueprint** (the Render account is suspended).
 Do not sync this file as a Blueprint; it would change production security
 (email-verify, accounts DB wiring, and historically a frontend master key).
 
@@ -15,14 +17,14 @@ Frontend security headers are stamped by `frontend/serve.mjs` (values in
 block. The live service must be a Node web service with
 `startCommand: node serve.mjs` — not dashboard Custom Headers.
 
-1. Set secrets in the **Render dashboard** (never commit, never bake into Vite):
+1. Set secrets in the ECS service configuration (task definition) (never commit, never bake into Vite):
    - `CEREBRUM_DEV_API_KEY` — master/admin key, backend only
    - `CEREBRUM_API_KEY` — must match Cerebrum-Blocks store key
    - `CURSOR_API_KEY` (or `CURSOR_AGENT_API_KEY` / `FACTORY_CURSOR_API_KEY`) — Factory coding (Cursor BA)
    - `CEREBRUM_CHAT_LLM_API_KEY` / `BASE_URL` / `MODEL` — HTTP Floor chat (`LLM_PROVIDER=cursor` is BA naming only)
    - `OPENROUTER_API_KEY` — optional factory coder fallback leg (not required for Floor chat)
    - `CEREBRUM_LLM_API_KEY` — optional leftover shared HTTP key (do not re-add `KIMI_*` / `DEEPSEEK_*`)
-   - `REDIS_URL` — Internal URL from Key Value `cerebrumdev-redis`
+   - `REDIS_URL` — URL of the Redis instance the ECS service uses
    - `SMOKE_GATE_TOKEN` — production smoke verified-principal gate
    - `SENTRY_DSN` / frontend `VITE_SENTRY_DSN` — optional
    - `DATA_ENCRYPTION_KEY` — required in production when Google Drive is configured
@@ -51,7 +53,7 @@ Smoke:
 
 ## Rollback
 
-- **Render:** Redeploy previous successful deploy from the Render dashboard (Manual Deploy → select prior image/commit).
+- **ECS:** Re-run `deploy-aws.yml` (workflow dispatch) on the prior good commit, or point the `cerebrumdev-backend` service at the previous task-definition revision; images are tagged by commit sha in ECR.
 - **Pilot pack activation:** `POST /v1/admin/automotive-core/rollback`
 - **Compose:** `git checkout <prior-sha>` in the deploy repo and recreate containers.
 
@@ -66,9 +68,9 @@ Smoke:
 
 ## Disk / backup (`/app/storage`)
 
-Render disk is ephemeral across service deletion but persists across deploys while attached.
+Storage persistence across deploys depends on the volume attached to the ECS task; check the task definition before relying on it.
 
-- Snapshot: copy `/app/storage` via one-off job or `render disk` backup before destructive changes.
+- Snapshot: copy `/app/storage` via a one-off task (or `POST /v1/ops/backup`) before destructive changes.
 - Restore: stop service, restore files to mount path, restart.
 - Pilot Postgres: use managed `pg_dump` before pack rebuilds.
 
@@ -79,8 +81,7 @@ bootstrap snapshot on first boot when no archive exists, plus an immediate
 retry when `last_backup.json` records a failure) snapshots the accounts
 database plus `uploads/`, `sessions/` and `chroma/` into `$BACKUP_DIR`
 (default `$STORAGE_PATH/backups`), keeping 14 archives. It is deliberately not
-a Render cron job: cron jobs cannot mount the persistent disk, so only the
-service that owns the disk can back it up. Status surfaces non-gating at
+a separate scheduled job: only the service that owns the storage can back it up. Status surfaces non-gating at
 `/ready` under `details.last_backup`.
 
 If `/ready` is stuck on a stale fail after a dump-path fix, trigger one run
@@ -139,7 +140,7 @@ SQLite file. `cerebrum-builds` is **not** the accounts store — never migrate
 accounts there.
 
 ```bash
-# 1. sync the blueprint so cerebrumdev-accounts is provisioned
+# 1. provision the accounts Postgres database and set ACCOUNTS_DATABASE_URL on the service
 # 2. create the schema in the new database
 ACCOUNTS_DATABASE_URL=<url> python -m alembic upgrade head
 # 3. copy the data and check it landed
@@ -192,16 +193,16 @@ the real address, and never wipe smoke rows. Missing `session_owners` keys
 are advisory (sessions may live outside the dump) and do not fail the
 request.
 
-Do **not** change Render env to perform this restore. Keep
+Do **not** change the service environment to perform this restore. Keep
 `ACCOUNTS_DATABASE_URL` set.
 
 ## Health and alerting
 
 - `/ready` is the platform health check. It probes real dependencies and returns
-  **503** when they are broken, so Render can act on it.
+  **503** when they are broken, so the ECS/load-balancer health check can act on it.
 - `/health` is informational and always 200 — never point a health check at it.
 - A failed migration now stops the boot instead of leaving a service running on
-  the wrong schema. Render shows a failed deploy and keeps the previous version.
+  the wrong schema. ECS reports a failed rollout and keeps the previous task revision.
 
 **Gap:** `notifyOnFail: default` is deploy-failure email only. Nothing pages
 anyone for an OOM, a hang, or a full disk. Add an external uptime check against
@@ -236,7 +237,7 @@ Also:
 
 Factory coding uses Cursor BA (`CURSOR_API_KEY` /
 `CURSOR_AGENT_API_KEY` / `FACTORY_CURSOR_API_KEY`). HTTP Floor chat /
-architect use OpenRouter (`OPENROUTER_API_KEY`). There is no Kimi/DeepSeek
+architect use the `CEREBRUM_CHAT_LLM_*` settings (`OPENROUTER_API_KEY` is only an optional coder fallback). There is no Kimi/DeepSeek
 pin in `render.yaml`.
 
 1. Check `/ready` and backend logs; confirm the Cursor / OpenRouter keys

@@ -35,11 +35,10 @@ corpus-blind questions hit a relevant KB entry at 0.25 hit@5
 - Billing enforcement is opt-in (`BILLING_ENFORCEMENT`); until Stripe env
   keys are set, checkout returns `503 stripe_not_configured` (honest, but
   no revenue path).
-- Generation runs synchronously inside the HTTP request. It is bounded — the
+- The factory runner runs on a background thread and the build ledger is the job record; clients poll `/product/build-status` (see `backend/app/factory/build_jobs.py`). Generation is bounded — the
   coder loop stops at `FACTORY_CODER_BUDGET_S` (default 300 s, remaining
   capabilities ship honest stubs) and every LLM route is burst-throttled per
-  account (`LLM_RATE_LIMIT_MAX`/`_WINDOW_S`) — but a background job queue
-  with status polling is the real multi-user answer and remains roadmap.
+  account (`LLM_RATE_LIMIT_MAX`/`_WINDOW_S`) — and a shared multi-user job queue beyond the single-process thread remains roadmap.
 
 ## Grounding coverage
 
@@ -52,9 +51,8 @@ corpus-blind questions hit a relevant KB entry at 0.25 hit@5
 
 ## Workbench
 
-- The Kimi workbench requires an external CLI; `/health` reports evaluated
-  capability (`kimi_workbench_enabled` is flag AND a CLI that answers).
-  No deployment today ships the CLI, so the honest value is `false`.
+- The Kimi workbench requires an external CLI; its evaluated
+  capability, `kimi_workbench_enabled()` (`backend/app/workbench/flags.py`) is flag AND a CLI that answers. `/health` does not currently report it. No deployment today ships the CLI, so the honest value is `false`.
 - `KIMI_MOCK` is a mock and is reported as `llm_mock`, never as a
   configured LLM.
 
