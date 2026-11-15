@@ -39,6 +39,17 @@ def _vendored_block(composed_tree):
     pytest.fail("the composed tree vendors no loadable block")
 
 
+def _with_factory_loader(composed_tree):
+    """The loader every Factory-rendered product carries, written by the
+    Factory's own renderer the way the handlers role writes it in a live
+    build (the replay composes no handlers role, so its tree has none)."""
+    from app.factory.build.roles_handlers import _render_dispatch
+
+    rel = "app/dispatch.py"
+    (composed_tree.root / rel).write_text(_render_dispatch(), encoding="utf-8")
+    composed_tree.layers[rel] = gr.RUNNER
+
+
 def _block_backed(bid):
     # It reaches its block through the product's own loader and never runs
     # it, so the case does not depend on what a Store block does at run time
@@ -61,6 +72,7 @@ def _block_backed(bid):
 def test_a_fail_closed_block_backed_handler_is_judged_only_when_its_block_runs(tree, monkeypatch, block_runs):  # noqa: F811
     cid = tree.capability_ids[0]
     bid, entry = _vendored_block(tree)
+    _with_factory_loader(tree)
     tree.write_writer_file(gr.handler_rel(cid), _block_backed(bid))
     if not block_runs:
         path = tree.root / entry

@@ -232,9 +232,15 @@ def test_watch_loads_every_declared_block_before_judging(load_error):
     assert dispatch.load_block is not real and handle.load_block is dispatch.load_block
     if load_error is None:
         assert cannot == {}
+        assert dispatch.load_block(BLOCK) is _module
     else:
         assert list(cannot) == [BLOCK] and cannot[BLOCK].startswith(fg.CANNOT_LOAD)
         assert "ModuleNotFoundError" in cannot[BLOCK]
+        # The handle still sees the loader's own exception, so its fail-closed
+        # answer names the real cause.
+        with pytest.raises(type(load_error)) as raised:
+            dispatch.load_block(BLOCK)
+        assert raised.value is load_error
 
 
 @pytest.mark.parametrize("declared", [(BLOCK,), ()])
