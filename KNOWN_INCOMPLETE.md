@@ -5,20 +5,12 @@ shipping `backend/app/` tree. Every entry below is either a `Protocol`
 interface declaration (structural typing — a `...` body is correct; the real
 implementation lives in the same module) or a benign, guarded fallback. There
 are **no** unimplemented functions on a user/demo path; the Phase 2 ingestion
-scaffold stubs below sit behind 501 routes and land in Phase 2 §2/§3.
+scaffold stubs below sit behind 501 routes and land in Phase 2 §2 (the §3 overlay functions are implemented).
 
 Format: `- <path> :: <name>  — <reason>`
 
 ## Protocol interface declarations (`...` is correct; impl is real)
-The estate dual-RAG layer IS implemented — `RagIndexStore` (JSONL persistence)
-and `HashEmbedder` / FastEmbed provide the real bodies. These entries are the
-`Protocol` method signatures used for structural typing.
-- backend/app/factory/kits/private_estate_operations/rag/store.py :: read_manifest  — RagIndexStoreProtocol declaration; impl at RagIndexStore.read_manifest.
-- backend/app/factory/kits/private_estate_operations/rag/store.py :: read_records  — RagIndexStoreProtocol declaration; impl at RagIndexStore.read_records.
-- backend/app/factory/kits/private_estate_operations/rag/store.py :: write_index  — RagIndexStoreProtocol declaration; impl at RagIndexStore.write_index.
-- backend/app/factory/kits/private_estate_operations/rag/store.py :: upsert_document  — RagIndexStoreProtocol declaration; impl at RagIndexStore.upsert_document.
-- backend/app/factory/kits/private_estate_operations/rag/store.py :: stats  — RagIndexStoreProtocol declaration; impl at RagIndexStore.stats.
-- backend/app/factory/kits/private_estate_operations/rag/embeddings.py :: embed  — Embedder Protocol declaration; impl at HashEmbedder.embed (+ FastEmbed provider).
+These entries are `Protocol` method signatures used for structural typing; the real bodies live in the implementing classes.
 - backend/app/factory/build/gates.py :: __call__  — Gate Protocol declaration (structural typing for a phase check); the real bodies are the module-level gate functions gate_gaps_enumerated / gate_blocks_import_offline / gate_workspace_compiles / gate_suite_green / gate_store_ops_authorised, wired in the GATES mapping.
 
 ## Benign guarded fallback
@@ -29,8 +21,6 @@ and `HashEmbedder` / FastEmbed provide the real bodies. These entries are the
 - backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: oauth_callback  — Phase 2 §2 scaffold; 501-gated.
 - backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: list_files  — Phase 2 §2 scaffold; 501-gated.
 - backend/app/cerebrum_product_kernel/ingestion/drive_connector.py :: sync_file  — Phase 2 §2 scaffold; 501-gated.
-- backend/app/cerebrum_product_kernel/ingestion/formula_intake.py :: submit_overlay  — Phase 2 §3 scaffold; 501-gated.
-- backend/app/cerebrum_product_kernel/ingestion/formula_intake.py :: list_overlays  — Phase 2 §3 scaffold; 501-gated.
 ## Deliberate no-op by policy
 - backend/alembic/versions/0001_baseline.py :: downgrade  — the baseline migration's reverse would be `DROP TABLE` on every accounts table; destroying user/account data is never an acceptable automated rollback. Schema rollback below the baseline is a manual, operator-decided act (restore from backup).
 - backend/app/factory/build/roles_handlers.py :: _coder_route_body  — U12/U5: returning None keeps capability HTTP on kernel execute_action; an LLM-authored body would displace the kernel. The public import remains ``app.factory.build.roles``.
@@ -44,7 +34,7 @@ Not hollow functions. These are known-incomplete *systems*, listed so nobody
 reads a green suite as "finished". `scripts/audit_stubs.py` ignores this
 section (it only parses `- ` lines containing `::`).
 
-### 1. Role runner — BUILT; cutover and the LLM writer are NOT
+### 1. Role runner — BUILT; cutover DONE 2026-08-17 (see 1b)
 `app/factory/build/runner.py` binds the three kernels and drives a real
 build: phase order via `assert_phase_order`, a lane-restricted `RoleWorkspace`
 per role, the phase's gate after each role, the WRITER↔TESTER rework loop, a
@@ -331,10 +321,10 @@ can no longer mask an interrupted pass, and `interrupted_role()` names it.
 Covered by `tests/factory/test_interrupted_phase.py`, including an assertion
 that every table `routes.py` references is one `store.py` actually creates.
 
-### 2. CEREBRUM_LLM_API_KEY missing on the Render backend — BLOCKS PRODUCTION
+### 2. CEREBRUM_LLM_API_KEY on the production backend — verify before relying on it
 **Owner: Owner. Dashboard secret. Not fixable in code — do not work around it.**
 
-The Render service `cerebrumdev-backend` (`srv-d9ta2pad0e5s738lllpg`) has no
+This entry was written when the backend ran on Render (now suspended); the backend runs on AWS ECS (`cerebrumdev-backend`, see `.github/workflows/deploy-aws.yml`). The secret's current state on ECS has not been re-verified here. If no LLM key is set there, the service has no
 LLM key set. Factory drafting there falls back to keyword mode and the coder
 cannot run at all, so a production factory run cannot produce any
 agent-written capability — every artifact would silently take the template
@@ -346,16 +336,6 @@ variants, or `ANTHROPIC_API_KEY`). `LLM_PROVIDER` alone is not evidence —
 that was a lie this register used to warn about. Verify a live factory run
 with the `coder_failures` field of a build, or `POST /v1/sessions/{id}/product/draft`
 and check `drafting_mode`.
-
-### 3. Steward blocks dual-register against the factory's own mirror
-`estate_registry` and `portfolio_rollup` do not exist in the real
-Cerebrum-Blocks repo (109 blocks, neither present).
-`dual_registry.load_blocks_registry` merges `app/factory/vendor_blocks_mirror`
-into the registry unconditionally, so those two satisfy the dual-registration
-gate against a copy the factory ships to itself. Pointing `blocks_root` at a
-real Store checkout changes nothing. Pinned by
-`test_steward_blocks_come_from_the_mirror_not_the_store`, which is designed to
-go red when they land upstream — that is the cue to drop them from the mirror.
 
 ### 4. Generation is not byte-reproducible when the coder runs — RESOLVED for resume
 Same blueprint, two builds, different tree hash — because an LLM does not emit

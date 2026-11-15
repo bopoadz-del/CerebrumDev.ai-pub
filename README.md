@@ -240,11 +240,9 @@ coder is idle. The guarantee the suite actually enforces
 **Blocks resolution.** Tests never hardcode a Store path. `real_blocks_root()`
 resolves `CEREBRUM_BLOCKS_ROOT` / `CEREBRUM_BLOCKS_PATH`, then a sibling
 `../Cerebrum-Blocks` checkout, and only counts a candidate that actually
-contains `block_registry/`. With no checkout the factory's
-`vendor_blocks_mirror` supplies blocks — note that
-`dual_registry.load_blocks_registry` merges that mirror in *unconditionally*,
-so some blocks resolve from the mirror even when a real Store is present (see
-`KNOWN_INCOMPLETE.md`).
+contains `block_registry/`. The factory's
+`vendor_blocks_mirror` directory has been removed; `dual_registry.load_blocks_registry`
+merges it only `if mirror.exists()`, so blocks resolve from the Store only.
 
 **Store pin (`blocks.lock.json`).** Factory builds resolve consumed store
 blocks through the repo-root lockfile. An unlocked or hash-mismatched block
