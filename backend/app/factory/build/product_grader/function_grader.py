@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -50,7 +51,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.factory.build.authority import capability_module
 from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
-from app.factory.build.image_sufficiency import GATE_RUN_ENV
+from app.factory.build.image_sufficiency import _OS_STARTUP_VARS, GATE_RUN_ENV
 from app.factory.build.payload_helpers import render_payload_helpers
 from app.factory.build.rejection_contract import (
     ERROR_KEY,
@@ -490,6 +491,23 @@ def harness_process_env(workspace: Path | str) -> Dict[str, str]:
     return {"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"}
 
 
+def probe_env(
+    workspace: Path | str, storage: Path | str, source: Optional[Mapping[str, str]] = None
+) -> Dict[str, str]:
+    """FG-7: the ONE environment every grader process runs the product in --
+    the function probes, the two-dataset probes and the grading boot (which
+    adds only its port). Built from an allowlist: from the Factory's process
+    only what an interpreter needs from the OS to start (the image probe's
+    own list), then the test context, the gate's run token and a scratch
+    store. Never the Factory's keys or settings."""
+    values = os.environ if source is None else source
+    env = {k: values[k] for k in _OS_STARTUP_VARS if k in values}
+    env.update(harness_process_env(workspace))
+    env.update(GATE_RUN_ENV)
+    env["STORAGE_PATH"] = str(storage)
+    return env
+
+
 def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.executable) -> FunctionResult:
     nonce = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="f8a-") as tmp:
@@ -508,7 +526,7 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
                 text=True,
                 cwd=str(workspace),
                 timeout=RUN_TIMEOUT_S,
-                env=harness_process_env(workspace),
+                env=probe_env(workspace, storage),
             )
         except subprocess.TimeoutExpired:
             return FunctionResult(fn.capability_id, False, [], list(MUTANTS), "timeout",

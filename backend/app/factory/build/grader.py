@@ -349,20 +349,15 @@ def boot_plan(workspace: Path | str, port: int) -> Dict[str, Any]:
 def boot_env(
     workspace: Path | str, storage: Path, port: int, source: Optional[Mapping[str, str]] = None
 ) -> Dict[str, str]:
-    """The booted product's environment, built from an allowlist: the
-    function harness's test context, the gate's run token, a scratch store
-    and the port. From the Factory's process it keeps only what an
+    """The booted product's environment: the one probe environment
+    (function_grader.probe_env, the same the function and two-dataset
+    probes run in) plus the port. From the Factory's process it keeps only what an
     interpreter needs from the OS to start -- never its keys or settings.
     DATABASE_URL is left unset, so the product's db contract reads its own
     default (a database under STORAGE_PATH)."""
-    from app.factory.build.image_sufficiency import _OS_STARTUP_VARS, GATE_RUN_ENV
-    from app.factory.build.product_grader.function_grader import harness_process_env
+    from app.factory.build.product_grader.function_grader import probe_env
 
-    values = os.environ if source is None else source
-    env = {k: values[k] for k in _OS_STARTUP_VARS if k in values}
-    env.update(harness_process_env(workspace))
-    env.update(GATE_RUN_ENV)
-    env["STORAGE_PATH"] = str(storage)
+    env = probe_env(workspace, storage, source)
     env["PORT"] = str(port)
     return env
 

@@ -85,6 +85,9 @@ def env(request, monkeypatch):
     if request.param == "bare":
         assert fg._HARNESS in fg._RUNNER
         monkeypatch.setattr(fg, "_RUNNER", fg._RUNNER.replace(fg._HARNESS, ""))
+        # FG-7: the probe process env now carries the harness settings too;
+        # "bare" restores the pre-F-G1 process env so both sources are absent.
+        monkeypatch.setattr(fg, "probe_env", lambda workspace, storage, source=None: fg.harness_process_env(workspace))
     return request.param
 
 
