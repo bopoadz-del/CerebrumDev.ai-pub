@@ -1781,9 +1781,13 @@ def _run(
     _clear_quota_marker(output_dir)
 
 
-def _record_platform(ledger: Any, platform_id: Optional[str], *, resumed_failed: bool) -> None:
-    """Record the platform's branch of record once, and -- on a Floor resume
-    of a failed run -- the rework-budget reset the runner rule counts from."""
+def _record_platform(ledger: Any, platform_id: Optional[str]) -> None:
+    """Record the platform's branch of record once.
+
+    A Floor resume of a failed run records no rework-budget reset: a resume
+    continues the same build with the rounds it had left (REWORK_BUDGET as
+    the owner set it). Only Start over -- a fresh workspace and ledger --
+    begins with the full budget."""
     from app.factory.build.ledger import (
         PLATFORM_BRANCH_KEY,
         PLATFORM_ID_KEY,
@@ -1806,10 +1810,6 @@ def _record_platform(ledger: Any, platform_id: Optional[str], *, resumed_failed:
                     PLATFORM_BRANCH_KEY: branch_of_record(platform_id),
                 },
             )
-    if resumed_failed:
-        from app.factory.build.rule_decision import reset_rework_budget
-
-        reset_rework_budget(ledger, reason="the platform was resumed from the Floor")
 
 
 def start_runner_build(
@@ -1880,7 +1880,6 @@ def start_runner_build(
     ledger = BuildLedger(_ledger_path(out))
     fresh_workspace = False
     fresh_reason = ""
-    resumed_failed = False
     had_ledger = ledger.exists()
     if ledger.exists():
         status = build_status(out)
@@ -1944,7 +1943,6 @@ def start_runner_build(
                 out,
             )
         if status.get("state") == "failed" and not start_over:
-            resumed_failed = True
             if intake_changed and ledger.inputs_hash() not in (None, inputs_hash):
                 # Continue with new answers: the intake (locale, level,
                 # vertical) is part of the frozen blueprint, so the inputs
@@ -2010,7 +2008,7 @@ def start_runner_build(
 
             ledger.append(EventKind.NOTE, detail=fresh_reason, payload={"fresh": True})
 
-    _record_platform(ledger, platform_id, resumed_failed=resumed_failed)
+    _record_platform(ledger, platform_id)
 
     if attach_branch:
         from app.factory.build.authority import BuildRole

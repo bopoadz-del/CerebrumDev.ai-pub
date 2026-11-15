@@ -1406,8 +1406,8 @@ def resume_failed_platform(
     """Continue / Build again / Rebuild with new intake on a FAILED platform.
 
     One platform = one branch, forever: the failed run is RESUMED in its own
-    workspace at its first non-green phase, with the rework budget reset
-    (start_runner_build records the reset; the runner rule counts from it).
+    workspace at its first non-green phase, with the rework budget it had
+    left (a resume never resets it; only Start over begins a fresh budget).
     It is never replaced by a fresh workspace -- that is Start over only. A
     workspace this host no longer holds is re-entered from the platform's
     branch of record (restored from its archive tag if it was archived).

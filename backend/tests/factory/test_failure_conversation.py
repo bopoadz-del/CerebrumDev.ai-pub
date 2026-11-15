@@ -260,7 +260,7 @@ def test_continue_with_unchanged_answers_resumes_the_same_branch_at_the_failing_
     events = list(BuildLedger(out / "build_ledger.jsonl").events())
     assert not any((e.payload or {}).get(INPUTS_REBASED_KEY) for e in events)  # same inputs
     assert ran and ran[0] == "TESTER"  # the failing phase, not COLLECTOR
-    assert any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)
+    assert not any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)  # budget kept
     assert state.product_design.intake_reopened is False
     _ = A  # the typed action is the only door (see the chat tests above)
 
@@ -289,7 +289,7 @@ def test_continue_with_changed_answers_rebases_the_same_branch(tmp_path, monkeyp
     assert fresh == [] and seen[0]["output_dir"] == out  # same workspace
     assert not (out.parent / f"{out.name}__run2").exists()
     assert ran and ran[0] == "COLLECTOR"  # new inputs: every phase anew
-    assert any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)
+    assert not any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)  # budget kept
 
 
 def test_a_rebase_is_the_only_way_a_resume_takes_new_inputs(tmp_path):
