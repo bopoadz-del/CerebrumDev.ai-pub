@@ -1132,7 +1132,52 @@ class RoleRunner:
         )
         if verdict.ok:
             return None
+        if self._store_repair_settles(verdict):
+            return None
         return verdict
+
+    #: K-2 (R4): the writer's repair of a defective Store block,
+    #: ``repairer(block_id, defects) -> store_repair.RepairResult``. None (the
+    #: default until K-3 supplies the block exam) keeps today's path: a
+    #: verdict owed only by vendored blocks ends the run naming the Factory.
+    store_repairer: Optional[Callable[..., Any]] = None
+
+    def _store_repair_settles(self, verdict: Any) -> bool:
+        """R4 + R5: a NOT_CERTIFIED verdict whose every open item is a Store
+        defect is settled by repair, each block within its own allowance
+        (NOTE events, never REWORK). A failed repair marks only the block's
+        capabilities not delivered; the grade record lists the defects in
+        its own section, and the run goes on. False leaves the verdict to
+        the existing paths."""
+        if self.store_repairer is None:
+            return False
+        from app.factory.build import store_repair
+        from app.factory.build.product_grader import grade_writer
+
+        repairs = store_repair.settle(
+            verdict,
+            plan_capabilities=list(getattr(self.plan, "capabilities", None) or []),
+            events=self.ledger.events() if self.ledger.exists() else [],
+            repairer=self.store_repairer,
+        )
+        if repairs is None:
+            return False
+        for repair in repairs:
+            spent = store_repair.repairs_spent(self.ledger.events(), repair.block_id)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.WRITER,
+                detail=(
+                    f"STORE DEFECT {repair.block_id}: "
+                    + ("repaired" if repair.repaired else repair.reason)
+                    + (f" -- not delivered: {', '.join(repair.not_delivered)}" if repair.not_delivered else "")
+                ),
+                payload=repair.note(spent + 1),
+            )
+        grade_writer.write_grade_json(
+            self.workspace, store_repair.grade_with_section(verdict.grade, repairs)
+        )
+        return True
 
     def _last_rework_failures(self) -> list:
         """Failure names that triggered the most recent rework round."""
