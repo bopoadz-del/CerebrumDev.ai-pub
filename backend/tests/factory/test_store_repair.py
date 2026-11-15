@@ -163,6 +163,39 @@ def test_settle_leaves_a_verdict_with_an_owed_item_no_finding_explains(extra):
     assert settle(verdict, plan_capabilities=[], events=[], repairer=_passes) is None
 
 
+@pytest.mark.parametrize(
+    "owner_lists",
+    [
+        {"writer_items": ("function grade FAIL: alpha",)},
+        {"writer_items": ("ui grade FAIL: beta", "function grade FAIL: gamma")},
+        {"ungraded": ("function ungraded: alpha: no route",)},
+        {"ungraded": ("layer2 ungraded: delta",)},
+    ],
+)
+def test_the_owner_lists_alone_keep_a_verdict_from_repair(owner_lists):
+    """The owner lists decide, not the quoted list: a verdict whose writer or
+    ungraded list is open is never a Store repair, even when ``items`` quotes
+    only the Store defects."""
+    from dataclasses import replace
+
+    from app.factory.build.store_repair import settle
+
+    base = _store_verdict(_finding("zorblat"))
+    verdict = replace(base, **owner_lists)
+    assert verdict.items == verdict.factory_owed
+    called: list = []
+
+    def repairer(block_id, defects):
+        called.append(block_id)
+        return _passes(block_id, defects)
+
+    assert settle(verdict, plan_capabilities=[], events=[], repairer=repairer) is None
+    assert called == []
+    # the same quoted list with both owner lists empty IS repaired
+    assert settle(base, plan_capabilities=[], events=[], repairer=repairer) is not None
+    assert called == ["zorblat"]
+
+
 @pytest.mark.parametrize("block", ["zorblat", "plinket"])
 def test_a_passed_repair_delivers_every_capability(block):
     from app.factory.build.store_repair import settle
