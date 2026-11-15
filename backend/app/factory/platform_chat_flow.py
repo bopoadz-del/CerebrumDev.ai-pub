@@ -1472,7 +1472,7 @@ def resume_failed_platform(
     target = failed.get("check") or "the failing check"
     summary = (
         f"Resuming {bp.product_id} on its own branch at {failed.get('gate') or 'the failing phase'} "
-        f"with a fresh rework budget — the writer is sent {target}. "
+        f"with the rework budget it had left — the writer is sent {target}. "
         "Phases that already passed are not rerun."
     )
     return {
@@ -1628,7 +1628,7 @@ def continue_with_intake(state: Any, output_root: Optional[Path] = None) -> Dict
         "ok": True,
         "summary": (
             "Change any answer on the intake line, then press Confirm. The build "
-            "resumes on this platform's own branch with a fresh rework budget; "
+            "resumes on this platform's own branch with the rework budget it had left; "
             "nothing runs until you confirm."
         ),
         "intake": intake_state(pd),

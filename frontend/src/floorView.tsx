@@ -1458,7 +1458,7 @@ export function Floor({
                 type="button"
                 className="ghost"
                 data-testid="floor-continue-with-intake"
-                title="Reopen the intake (country, currency, build level, vertical). Confirm resumes this platform's own branch with a fresh rework budget."
+                title="Reopen the intake (country, currency, build level, vertical). Confirm resumes this platform's own branch with the rework budget it had left."
                 disabled={busy || accessPaused}
                 onClick={() => void sendTyped({ action: 'continue_with_intake' })}
               >
@@ -1484,7 +1484,7 @@ export function Floor({
                     type="button"
                     className="ghost"
                     data-testid="floor-start-over-continue"
-                    title="Resume this platform at its failing stage with a fresh rework budget. Nothing is rebuilt from scratch."
+                    title="Resume this platform at its failing stage with the rework budget it had left. Nothing is rebuilt from scratch."
                     disabled={busy || accessPaused}
                     onClick={() => {
                       setConfirmStartOver(false)

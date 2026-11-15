@@ -108,7 +108,7 @@ def test_next_fresh_output_skips_a_failed_ledger(tmp_path):
 
 def test_start_or_resume_coder_after_terminal_resumes_the_same_workspace(tmp_path, monkeypatch):
     # Owner rule (2026-10-05): one platform = one branch. Continue on a FAILED
-    # run resumes it in place (fresh rework budget); only Start over is fresh.
+    # run resumes it in place (the rework budget it had left); only Start over is fresh.
     state = _failed_lettings_state(tmp_path)
     prior = Path(state.product_design.generation["output_dir"])
     captured = {}
