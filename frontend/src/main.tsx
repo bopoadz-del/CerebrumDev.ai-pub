@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { scrubEvent } from './eventScrub'
 import './index.css'
 import './verifyGate.css'
 
@@ -29,6 +30,10 @@ if (import.meta.env.VITE_SENTRY_DSN) {
           urlQueryParams: false,
           stackFrameVariables: false,
         },
+        // SEC-1: every event and transaction is scrubbed before it leaves
+        // the browser (credentials, e-mails, bodies, frame locals).
+        beforeSend: scrubEvent,
+        beforeSendTransaction: scrubEvent,
         tracesSampleRate: 0.1,
       })
     })
