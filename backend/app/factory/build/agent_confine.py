@@ -71,6 +71,26 @@ _PROCESS_KEYS = frozenset({
     "TZ",
 })
 
+# Resolver/proxy config the writer child must inherit, or its DNS lookup
+# fails deterministically (EAI_AGAIN) while the CLONER -- which runs outside
+# confinement with the full environment -- resolves fine. These are not
+# secrets: proxy targets, the no-proxy list, and glibc resolver options
+# (RES_OPTIONS/LOCALDOMAIN/HOSTALIASES). Upper- and lower-case proxy vars are
+# both listed because libraries disagree on which they read.
+_RESOLVER_KEYS = frozenset({
+    "ALL_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "RES_OPTIONS",
+    "LOCALDOMAIN",
+    "HOSTALIASES",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+})
+
 _WRITER_KEYS = frozenset({
     "CODEWHALE_API_KEY",
     "CODWHALE_HOME",
@@ -121,7 +141,7 @@ _DENIED = frozenset({
     "STRIPE_WEBHOOK_SECRET",
 })
 
-_SYSTEM_RX_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl")
+_SYSTEM_RX_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/etc/ssl")
 _SYSTEM_RX_FILES = (
     "/dev/null",
     "/dev/urandom",
@@ -267,11 +287,11 @@ def scoped_child_env(
     provider_key: Optional[str] = None,
 ) -> dict[str, str]:
     """Allowlisted child environment. ``parent`` is not copied wholesale."""
-    allowed = set(_PROCESS_KEYS) | set(_WRITER_KEYS)
+    allowed = set(_PROCESS_KEYS) | set(_WRITER_KEYS) | set(_RESOLVER_KEYS)
     if provider_key and provider_key not in _DENIED:
         allowed.add(provider_key)
     env: dict[str, str] = {}
-    for key in _PROCESS_KEYS:
+    for key in _PROCESS_KEYS | _RESOLVER_KEYS:
         value = parent.get(key)
         if value:
             env[key] = value

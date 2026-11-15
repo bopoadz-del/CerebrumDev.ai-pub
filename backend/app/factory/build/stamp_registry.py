@@ -50,6 +50,10 @@ class Stamp:
     #: destination. Such a stamp must read through the workspace (staging
     #: first, then the destination), never a raw staging path.
     staged_writer: bool = False
+    #: GAP stamps only: ``(relpath, text)`` the stamp writes where the product
+    #: has none. A gap file whose bytes still equal this render is the
+    #: Factory's (factory_receipt); one the writer wrote or changed is not.
+    render: Optional[Callable[[], Any]] = None
 
 
 class _Workspace:
@@ -127,6 +131,24 @@ def _refresh(root: Path) -> Any:
     return refresh_factory_files(root, "platform")
 
 
+def _deploy_scaffold(root: Any) -> Any:
+    """The Dockerfile and .dockerignore, rendered whole by the Factory.
+
+    The image is built from these two files alone of the writer's surface:
+    the Dockerfile's final-stage COPY lines and .dockerignore decide what the
+    image carries. They are mechanical deploy scaffold -- ``COPY . .`` and a
+    fixed ignore list -- so the Factory owns them outright and the writer
+    never authors them (owner rule). A writer-authored Dockerfile that left
+    ``vendor/`` out of the image is how a locked block went missing at run
+    time (pilot 43021713865, both passes)."""
+    from app.factory.build.roles_handlers import _render_dockerfile, _render_dockerignore
+
+    ws = _as_workspace(root)
+    ws.write_text("Dockerfile", _render_dockerfile())
+    ws.write_text(".dockerignore", _render_dockerignore())
+    return ["Dockerfile", ".dockerignore"]
+
+
 def _platform_gap(root: Any) -> Any:
     from app.factory.build.data_lifecycle import backfill_platform_substrate
 
@@ -176,13 +198,13 @@ def stamps() -> Tuple[Stamp, ...]:
     from app.factory.build.data_lifecycle import platform_substrate
     from app.factory.build.dependency_pins import CONSTRAINTS_REL
     from app.factory.build.deploy import FACTORY_OWNED_DEPLOY_MODULES, deploy_substrate
-    from app.factory.build.domain_acceptance import DOMAIN_GAP_RELS, domain_owned_paths
+    from app.factory.build.domain_acceptance import DOMAIN_GAP_RELS, domain_gap_files, domain_owned_paths
     from app.factory.build.kernel_publish import JOBS_REL
     from app.factory.build.money_contract import DECLARED_LOCALE_REL, MONEY_SETTINGS_REL
     from app.factory.build.placeholder_connectors import CONTRACT_TEST
     from app.factory.build.product_suites import PRODUCT_SUITES
     from app.factory.build.roles_constants import CONFTEST_REL
-    from app.factory.build.store_acceptance import ACCEPTANCE_SCRIPT_REL, GITHUB_CI_REL
+    from app.factory.build.store_acceptance import ACCEPTANCE_SCRIPT_REL, GITHUB_CI_REL, UI_INDEX_REL
     from app.factory.build.writer_behaviour import SELF_CHECK_REL
 
     def rel(p: Any) -> str:
@@ -192,13 +214,14 @@ def stamps() -> Tuple[Stamp, ...]:
     return (
         Stamp("kernel roster", SHARED, (rel(JOBS_REL),), _roster, staged_writer=True),
         Stamp("deploy modules", OWNED, deploy_owned, _deploy_modules, staged_writer=True),
-        Stamp("acceptance harness", OWNED, (rel(ACCEPTANCE_SCRIPT_REL),), _acceptance, staged_writer=True),
+        Stamp("deploy scaffold (Dockerfile, .dockerignore)", OWNED, ("Dockerfile", ".dockerignore"), _deploy_scaffold, staged_writer=True),
+        Stamp("acceptance harness", OWNED, (rel(ACCEPTANCE_SCRIPT_REL), rel(UI_INDEX_REL)), _acceptance, staged_writer=True),
         Stamp("writer self-check", OWNED, (rel(SELF_CHECK_REL),), _self_check, staged_writer=True),
         Stamp(
             "re-entry refresh (Factory files)",
             OWNED,
             ("scripts/release_gate.py", rel(ACCEPTANCE_SCRIPT_REL), rel(SELF_CHECK_REL), rel(GITHUB_CI_REL),
-             CONSTRAINTS_REL),
+             CONSTRAINTS_REL, rel(UI_INDEX_REL)),
             _refresh,
         ),
         Stamp("re-entry refresh (requirements)", SHARED, ("requirements.txt",), _refresh),
@@ -220,15 +243,17 @@ def stamps() -> Tuple[Stamp, ...]:
         # construction substrate conflict). Re-rendered with the suite's specs.
         Stamp("domain acceptance driver + product kernel", OWNED, domain_owned_paths(), _domain_owned,
               staged_writer=True),
-        Stamp("domain substrate (gaps)", GAP, DOMAIN_GAP_RELS, _domain_gap, staged_writer=True),
+        Stamp("domain substrate (gaps)", GAP, DOMAIN_GAP_RELS, _domain_gap, staged_writer=True,
+              render=domain_gap_files),
         Stamp("platform substrate (gaps)", GAP, tuple(rel(p) for p, _t in platform_substrate()), _platform_gap,
-              staged_writer=True),
+              staged_writer=True, render=platform_substrate),
         Stamp(
             "deploy substrate (gaps)",
             GAP,
             tuple(rel(p) for p, _t in deploy_substrate() if rel(p) not in deploy_owned),
             _deploy_gap,
             staged_writer=True,
+            render=deploy_substrate,
         ),
     )
 
@@ -241,6 +266,21 @@ def owned_paths() -> Tuple[str, ...]:
             for p in stamp.paths:
                 seen.setdefault(p, None)
     return tuple(seen)
+
+
+def gap_renders() -> Tuple[Tuple[str, str], ...]:
+    """``(relpath, text)`` of every file a GAP stamp writes where the product
+    has none, restricted to that stamp's own paths."""
+    out: dict = {}
+    for stamp in stamps():
+        if stamp.kind != GAP or stamp.render is None:
+            continue
+        wanted = set(stamp.paths)
+        for p, text in stamp.render():
+            key = str(p).replace("\\", "/")
+            if key in wanted:
+                out.setdefault(key, str(text))
+    return tuple(out.items())
 
 
 def shared_paths() -> Tuple[str, ...]:

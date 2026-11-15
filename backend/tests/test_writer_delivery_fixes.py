@@ -103,7 +103,8 @@ def test_worker_argv_puts_provider_before_exec_and_key_in_env(tmp_path):
         "deepseek",
         "exec",
         "--auto",
-        "--json",
+        "--output-format",
+        "stream-json",
     ]
     # Reversed with evidence: `--api-key <value>` used to sit between --provider
     # and exec, putting the key on the process cmdline (G2 bar 7). ORDERS

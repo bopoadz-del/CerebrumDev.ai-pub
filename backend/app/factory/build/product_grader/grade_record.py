@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 # The one writer of grade.json is F-8c-0's (#79); no copy lives here.
 from app.factory.build.product_grader.grade_writer import write_grade_json  # noqa: F401
@@ -37,14 +37,65 @@ def is_pass(verdict: Any) -> bool:
     return verdict.get("verdict") == PASS and isinstance(evidence, str) and bool(evidence.strip())
 
 
-def open_fails(layer2: Mapping[str, Any]) -> List[str]:
-    """Every recorded open FAIL plus every recorded verdict that is not a PASS."""
-    out = [str(q) for q in layer2.get("open_fails") or []]
-    for v in layer2.get("verdicts") or []:
-        q = str(v.get("question") if isinstance(v, Mapping) else v)
-        if not is_pass(v) and q not in out:
-            out.append(q)
+def normalise_verdicts(verdicts: Any) -> List[Dict[str, str]]:
+    """FG-5: the one place a Layer-2 verdict is shaped before it is recorded.
+    Question and verdict become strings; evidence that is not a string is
+    recorded as none, so the verdict cannot pass on it and the record stays
+    readable with that question open."""
+    out: List[Dict[str, str]] = []
+    for v in verdicts or []:
+        if not isinstance(v, Mapping):
+            # Not a verdict: kept, open, with nothing to pass on.
+            v = {"question": v}
+        ev = v.get("evidence")
+        out.append({
+            "question": str(v.get("question") or ""),
+            "verdict": str(v.get("verdict") or ""),
+            "evidence": ev if isinstance(ev, str) else "",
+        })
     return out
+
+
+def open_layer2(layer2: Mapping[str, Any]) -> List[Dict[str, str]]:
+    """FG-5: THE derivation of what is open in Layer 2, read by the tier, the
+    writer's work list, the reason classes, the record and the Store gate.
+    Every recorded verdict that is not a PASS (with the grader's verdict and
+    quoted evidence), then every recorded open question not already listed."""
+    out = [v for v in normalise_verdicts(layer2.get("verdicts")) if not is_pass(v)]
+    seen = {v["question"] for v in out}
+    for q in layer2.get("open_fails") or []:
+        if str(q) not in seen:
+            seen.add(str(q))
+            out.append({"question": str(q), "verdict": "", "evidence": ""})
+    return out
+
+
+def unasked(layer2: Mapping[str, Any]) -> List[str]:
+    """FG-6: the Layer-2 questions the grader was not asked because their
+    files were not in view. Not the writer's FAIL -- the Factory's render
+    owes them -- and never a pass: each one blocks certification."""
+    return [str(q) for q in layer2.get("unasked") or []]
+
+
+def open_fails(layer2: Mapping[str, Any]) -> List[str]:
+    """The questions of :func:`open_layer2`."""
+    return [row["question"] for row in open_layer2(layer2)]
+
+
+def layer2_task(row: Mapping[str, str]) -> str:
+    """The writer's work item for one open Layer-2 question; an answered
+    question carries the grader's verdict and its quoted evidence."""
+    task = f"re-run writer on: {row['question']}"
+    if row.get("verdict"):
+        task += f" -- grader {row['verdict']}: \"{row.get('evidence') or ''}\""
+    return task
+
+
+def hardwiring_ok(hardwiring: Optional[Mapping[str, Any]]) -> bool:
+    """FG-5: the one hardwiring rule, read by the record's certified flag and
+    the Store gate alike. No section is no finding; a section that did not
+    run or is not clean blocks."""
+    return hardwiring is None or (hardwiring.get("ran") is True and hardwiring.get("clean") is True)
 
 
 def layer1_ok(functions: Mapping[str, Any], ui: Mapping[str, Any]) -> bool:
@@ -54,24 +105,43 @@ def layer1_ok(functions: Mapping[str, Any], ui: Mapping[str, Any]) -> bool:
 def hardwiring_section(
     function_verdicts: Mapping[str, str],
     forbidden_hits: Mapping[str, Any],
-    prompt_leaks: Any,
+    prompt_leaks: Mapping[str, Any],
+    origin: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """F-8e grade section. ``function_verdicts``: {capability_id: verdict} from
     the two-dataset check; ``forbidden_hits``: {relpath: [literals]} baked into
-    the product source; ``prompt_leaks``: literals shared by the writer prompt
-    and the source. A FAIL verdict (anything but the two-dataset OK / BOTH_ABSENT),
-    a baked literal, or a prompt leak is a finding. ``clean`` == no findings."""
+    the product source; ``prompt_leaks``: {relpath: [clauses]} of the supplied
+    brief the writer was given and copied into that file (FG-4). A FAIL verdict (anything but the two-dataset OK / BOTH_ABSENT),
+    a baked literal, or a prompt leak is a finding. ``clean`` == no findings.
+
+    ``origin`` (FG-1) answers who wrote a file (factory_receipt.file_origin):
+    each baked-literal and prompt-leak finding then carries its ``owner`` and ``owner_reason``.
+    The bar is unchanged -- a Factory-owned finding still makes the section
+    unclean; ownership only decides who the finding is billed to."""
     from app.factory.build.product_grader.two_dataset import BOTH_ABSENT, OK
 
     findings: List[Dict[str, Any]] = []
     for cid, verdict in sorted(function_verdicts.items()):
         if verdict not in (OK, BOTH_ABSENT):
             findings.append({"kind": "function", "capability": str(cid), "verdict": str(verdict)})
-    for path, lits in sorted(forbidden_hits.items()):
-        findings.append({"kind": "forbidden_literal", "file": str(path), "literals": [str(x) for x in lits]})
-    if prompt_leaks:
-        findings.append({"kind": "prompt_leak", "literals": [str(x) for x in prompt_leaks]})
+    for kind, rows in (("forbidden_literal", forbidden_hits), ("prompt_leak", prompt_leaks)):
+        for path, lits in sorted(rows.items()):
+            row: Dict[str, Any] = {"kind": kind, "file": str(path), "literals": [str(x) for x in lits]}
+            if origin is not None:
+                who = origin(str(path))
+                row["owner"] = str(who.owner)
+                row["owner_reason"] = str(who.reason)
+            findings.append(row)
     return {"ran": True, "clean": not findings, "findings": findings}
+
+
+def finding_is_writers(finding: Mapping[str, Any]) -> bool:
+    """A hardwiring finding is billed to the writer unless its recorded owner
+    is someone else (a finding with no owner field predates FG-1 and keeps
+    its old billing)."""
+    from app.factory.build.factory_receipt import WRITER
+
+    return str(finding.get("owner") or WRITER) == WRITER
 
 
 def _hardwiring_tasks(hardwiring: Optional[Mapping[str, Any]]) -> List[str]:
@@ -79,12 +149,14 @@ def _hardwiring_tasks(hardwiring: Optional[Mapping[str, Any]]) -> List[str]:
         return []
     out: List[str] = []
     for f in hardwiring.get("findings") or []:
+        if not finding_is_writers(f):
+            continue
         if f.get("kind") == "function":
             out.append(f"de-hardwire {f.get('capability')}: {f.get('verdict')}")
         elif f.get("kind") == "forbidden_literal":
             out.append(f"remove baked literals from {f.get('file')}: {f.get('literals')}")
         elif f.get("kind") == "prompt_leak":
-            out.append(f"stop leaking the prompt into the source: {f.get('literals')}")
+            out.append(f"stop copying the brief into {f.get('file')}: {f.get('literals')}")
     return out
 
 
@@ -93,15 +165,19 @@ def build_grade(
     hardwiring: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     l1 = layer1_ok(functions, ui)
-    fails = open_fails(layer2)
-    hw_ok = hardwiring is None or (hardwiring.get("ran") is True and hardwiring.get("clean") is True)
+    l2 = dict(layer2, verdicts=normalise_verdicts(layer2.get("verdicts")))
+    rows = open_layer2(l2)
+    l2["open_fails"] = [row["question"] for row in rows]
     grade: Dict[str, Any] = {
         "schema": SCHEMA,
         "product_id": product_id,
         "layer1": {"ok": l1, "functions": dict(functions), "ui": dict(ui)},
-        "layer2": dict(layer2, open_fails=fails),
-        "next_tasks": [f"re-run writer on: {q}" for q in fails] + _hardwiring_tasks(hardwiring),
-        "certified": l1 and layer2.get("ran") is True and bool(layer2.get("verdicts")) and not fails and hw_ok,
+        "layer2": l2,
+        "next_tasks": [layer2_task(row) for row in rows] + _hardwiring_tasks(hardwiring),
+        "certified": (
+            l1 and l2.get("ran") is True and bool(l2["verdicts"]) and not rows
+            and not unasked(l2) and hardwiring_ok(hardwiring)
+        ),
     }
     if hardwiring is not None:
         grade["hardwiring"] = dict(hardwiring)
@@ -156,6 +232,9 @@ def _schema_errors(grade: Any) -> List[str]:
         of = l2.get("open_fails")
         if not isinstance(of, list) or not all(isinstance(q, str) for q in of):
             errs.append("layer2.open_fails is not a list of strings")
+        ua = l2.get("unasked", [])
+        if not isinstance(ua, list) or not all(isinstance(q, str) for q in ua):
+            errs.append("layer2.unasked is not a list of strings")
     return errs
 
 
@@ -185,4 +264,11 @@ def certification_refusal(root: Path | str) -> Optional[str]:
     fails = open_fails(l2)
     if fails:
         return f"product grade has {len(fails)} open Layer-2 FAIL(s): handover blocked"
+    left = unasked(l2)
+    if left:
+        return f"product grade Layer 2 left {len(left)} question(s) unasked: handover blocked"
+    hardwiring = grade.get("hardwiring")
+    if not hardwiring_ok(hardwiring):
+        found = len(hardwiring.get("findings") or [])
+        return f"product grade hardwiring scan not clean ({found} finding(s)): build not certified"
     return None

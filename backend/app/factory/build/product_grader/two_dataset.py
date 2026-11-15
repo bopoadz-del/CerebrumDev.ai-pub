@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from app.factory.build.authority import capability_module
 from app.factory.build.product_grader import vault
+from app.factory.build.product_grader.function_grader import probe_env
 
 #: Verdicts. OK is the only pass; the three FAILs are the ORDERS_0320Z names.
 OK = "ok"
@@ -103,9 +105,9 @@ def verdict(out_a: Any, out_b: Any, expected_a: Any, expected_b: Any) -> str:
 
 _RUN_TIMEOUT_S = 60
 
-#: Runs the product's handle for dataset A and B in a fresh subprocess (cwd +
-#: PYTHONPATH = the product workspace, exactly as function_grader.run_function
-#: runs the writer's code) and writes the two results to a nonce file -- never
+#: Runs the product's handle for dataset A and B in a fresh subprocess, cwd =
+#: the product workspace, in the one probe environment
+#: (function_grader.probe_env, the same the function probes and the boot use) and writes the two results to a nonce file -- never
 #: stdout, which the product can print to.
 _RUNNER = r'''
 import importlib, json, sys
@@ -155,6 +157,8 @@ def run_function_pair(
         # (the product's cwd), so the product cannot write to it -- that
         # isolation, not a nonce, is what keeps the result the grader's own.
         out_path = Path(tmp) / "r.json"
+        storage = Path(tmp) / "store"
+        storage.mkdir()
         spec = json.dumps({
             "module": module, "inputs_a": dict(inputs_a), "inputs_b": dict(inputs_b),
             "out": str(out_path),
@@ -163,7 +167,7 @@ def run_function_pair(
             subprocess.run(
                 [python, "-c", _RUNNER], input=spec, capture_output=True, text=True,
                 cwd=str(workspace), timeout=_RUN_TIMEOUT_S,
-                env={"PYTHONPATH": str(workspace), "PATH": "/usr/bin:/bin", "ENV": "test"},
+                env=probe_env(workspace, storage),
             )
             data = json.loads(out_path.read_text("utf-8"))
         except (subprocess.TimeoutExpired, OSError, ValueError):
@@ -177,7 +181,7 @@ def run_two_dataset(pairs: List[DatasetPair], workspace: Any, *, python: str = s
     checks: List[FunctionCheck] = []
     for pair in pairs:
         out_a, out_b = run_function_pair(
-            f"app.actions.{pair.capability_id}", pair.inputs_a, pair.inputs_b, workspace, python=python
+            capability_module(pair.capability_id), pair.inputs_a, pair.inputs_b, workspace, python=python
         )
         checks.append(FunctionCheck(pair.capability_id, verdict(out_a, out_b, pair.expected_a, pair.expected_b), out_a, out_b))
     return checks

@@ -1,0 +1,15 @@
+{
+  "about": "FG-3 Layer-2 cassette, keyed on question id. Each answer is a recorded grader reply; a question id absent here is a question the grader did not answer, never a pass. Positional ids (q1..qN) are the layer2 module's own; nothing here names a capability or a product.",
+  "answers": {
+    "q1": {"verdict": "PASS", "evidence": "recorded: the handler computes its result from the declared inputs"},
+    "q2": {"verdict": "PASS", "evidence": "recorded: the handler computes its result from the declared inputs"},
+    "q3": {"verdict": "PASS", "evidence": "recorded: the handler computes its result from the declared inputs"},
+    "q4": {"verdict": "PASS", "evidence": "recorded: the handler computes its result from the declared inputs"},
+    "q5": {"verdict": "PASS", "evidence": "recorded: the handler computes its result from the declared inputs"},
+    "q6": {"verdict": "PASS", "evidence": "recorded: the screen renders its declared capability"},
+    "q7": {"verdict": "PASS", "evidence": "recorded: every number shown comes from a kernel computation"},
+    "q8": {"verdict": "PASS", "evidence": "recorded: every number shown comes from a kernel computation"},
+    "q9": {"verdict": "PASS", "evidence": "recorded: every number shown comes from a kernel computation"},
+    "q10": {"verdict": "PASS", "evidence": "recorded: every number shown comes from a kernel computation"}
+  }
+}

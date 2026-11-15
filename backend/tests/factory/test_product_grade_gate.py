@@ -51,7 +51,7 @@ def test_is_pass(verdict, ok):
 def test_build_grade_and_gate_refuse_non_pass_verdicts(tmp_path, bad):
     g = _write(tmp_path, l2=_l2(_v(), dict(bad, question="q2")))
     assert g["certified"] is False and g["layer2"]["open_fails"] == ["q2"]
-    assert g["next_tasks"] == ["re-run writer on: q2"]
+    assert g["next_tasks"] == [f're-run writer on: q2 -- grader {bad["verdict"]}: "{bad["evidence"]}"']
     assert gr.certification_refusal(tmp_path) == "product grade has 1 open Layer-2 FAIL(s): handover blocked"
 
 

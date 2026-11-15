@@ -11,8 +11,14 @@ Builds gate (``grade_record.certification_refusal``).
 from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import Any, Callable, Dict, List, Mapping, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from app.factory.build.authority import capability_name
+from app.factory.build.ui_surface import _safe as screen_module_name
+
+logger = logging.getLogger(__name__)
 
 #: The ONLY inputs Layer 2 may see, in this order.
 LAYER2_INPUTS = ("compiled_brief", "rendered_product", "layer1")
@@ -20,9 +26,10 @@ LAYER2_INPUTS = ("compiled_brief", "rendered_product", "layer1")
 GRADER_SYSTEM_PROMPT = (
     "You are the GRADER of a generated software product, not its writer. "
     "You see only the compiled brief, the rendered product and the "
-    "deterministic Layer-1 results. For each question, answer JSON "
-    '{"question": str, "verdict": "PASS"|"FAIL", "evidence": str} where '
-    "evidence QUOTES the product. Return ONLY a JSON list."
+    "deterministic Layer-1 results. For each question answer JSON "
+    '{"id": str, "verdict": "PASS"|"FAIL", "evidence": str} where id is the '
+    "question's id copied exactly and evidence QUOTES the product. "
+    "Return ONLY a JSON list."
 )
 EVIDENCE_MAX = 500
 
@@ -42,56 +49,145 @@ class ContextLeak(ValueError):
     """Layer 2 was offered something other than its three inputs."""
 
 
-def layer2_messages(inputs: Mapping[str, Any], questions: Sequence[str]) -> List[Dict[str, str]]:
+def layer2_messages(inputs: Mapping[str, Any], questions: Sequence[Mapping[str, str]]) -> List[Dict[str, str]]:
     """Exactly two messages: the grader system prompt, then one user message
-    whose JSON body has exactly the three inputs plus the questions."""
+    whose JSON body has exactly the three inputs plus the questions, each
+    sent as ``{"id", "text"}`` so the answer is matched by id."""
     extra = sorted(k for k in inputs if k not in LAYER2_INPUTS)
     if extra:
         raise ContextLeak(f"layer 2 refuses non-grader inputs: {extra}")
     if not questions:
         raise ValueError("layer 2 needs at least one question")
     body: Dict[str, Any] = {k: inputs.get(k) for k in LAYER2_INPUTS}
-    body["questions"] = [str(q) for q in questions]
+    body["questions"] = [{"id": q["id"], "text": q["text"]} for q in questions]
     return [
         {"role": "system", "content": GRADER_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(body, default=str, sort_keys=True)},
     ]
 
 
-def layer2_questions(blueprint: Mapping[str, Any]) -> List[str]:
-    """One per declared capability, one per declared screen, and always the
-    grounding question."""
-    qs = [
-        f"Does the product deliver capability '{c.get('id')}' as the brief asked: {c.get('description')}?"
-        for c in blueprint.get("capabilities") or []
-    ]
-    qs += [f"Does screen '{m}' render the capability it is declared for?" for m in blueprint.get("ui_modules") or []]
-    qs.append("Is every number the product shows grounded in a kernel computation or a cited source?")
-    return qs
+def layer2_questions(blueprint: Mapping[str, Any]) -> List[Dict[str, str]]:
+    """One per declared capability (asking the requirements lines the writer
+    was given, else its description), one per declared screen, and always
+    the grounding question. Each is a record with a positional id.
+
+    FG-6: ``about`` is the name the question's files carry -- the
+    capability's module name, the screen's module file name (the one the
+    ui_surface gate requires) -- so its call leads with
+    them and is asked only when they are in view. The grounding question is
+    about the writer's files as a whole and carries none."""
+    out: List[Dict[str, str]] = []
+    for c in blueprint.get("capabilities") or []:
+        reqs = [str(r).strip() for r in (c.get("requirements") or []) if str(r).strip()]
+        ask = str(c.get("description") or "")
+        if reqs:
+            ask = f"{ask} Requirements: " + " | ".join(reqs)
+        out.append({
+            "capability": str(c.get("id") or ""),
+            "about": capability_name(c.get("id")) if c.get("id") else "",
+            "text": f"Does the product deliver capability '{c.get('id')}' as the brief asked: {ask}?",
+        })
+    for m in blueprint.get("ui_modules") or []:
+        out.append({
+            "capability": "",
+            "about": screen_module_name(m),
+            "text": f"Does screen '{m}' render the capability it is declared for?",
+        })
+    out.append({
+        "capability": "",
+        "about": "",
+        "text": "Is every number the product shows grounded in a kernel computation or a cited source?",
+    })
+    for n, q in enumerate(out, 1):
+        q["id"] = f"q{n}"
+    return out
+
+
+def _collect(
+    raw_list: Sequence[Any], questions: Sequence[Mapping[str, str]]
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Match answers to questions by id only. The recorded question is our
+    text, never the grader's echo; an unknown or repeated id is not an
+    answer. Returns (verdicts, the texts of the questions left open)."""
+    by_id = {q["id"]: q for q in questions}
+    clean: List[Dict[str, Any]] = []
+    seen: set = set()
+    for v in raw_list:
+        if not isinstance(v, Mapping):
+            continue
+        qid = str(v.get("id") or "").strip()
+        if qid not in by_id or qid in seen:
+            continue
+        seen.add(qid)
+        ev = v.get("evidence")
+        clean.append({
+            "question": by_id[qid]["text"],
+            "verdict": v.get("verdict"),
+            "evidence": ev[:EVIDENCE_MAX] if isinstance(ev, str) else ev,
+        })
+    return clean, [q["text"] for q in questions if q["id"] not in seen]
+
+
+def unanswerable(view: Any, about: str) -> bool:
+    """FG-6: a question about ``about`` is not answerable from ``view`` when
+    the view carries the files it shows (``grader.RenderedProduct.files``)
+    and none of them has that name in its path or its text. The grader
+    cannot judge what it was not shown, so the question is not asked. A
+    view that does not say what it shows (a fixed render) and a question
+    about nothing in particular are always asked."""
+    files = getattr(view, "files", None)
+    if not about or files is None:
+        return False
+    return not any(about in rel or about in text for rel, text in files.items())
 
 
 def run_layer2(
     inputs: Mapping[str, Any],
     blueprint: Mapping[str, Any],
     complete: Callable[[List[Dict[str, str]]], str],
+    render: Optional[Callable[[Sequence[str]], str]] = None,
 ) -> Dict[str, Any]:
-    """``complete`` is one fresh llm call. No answer = ran False with an open
-    FAIL; every question the grader did not answer is an open FAIL."""
+    """``complete`` is one fresh llm call. One call per question that is
+    about named files -- a capability, a screen -- with those files
+    rendered first (and whole) when ``render`` is given, then one call for
+    the rest. A call that does not answer opens only its own questions;
+    every question the grader did not answer by id is an open FAIL.
+    ``ran`` is False only when every call failed. The grounding question
+    is about no named file, so it is always asked.
+
+    FG-6: a question whose files are not in its view is not asked
+    (:func:`unanswerable`). It is recorded under ``unasked``: the Factory's
+    render did not show it, so it is not the writer's FAIL, and it still
+    blocks certification (``grade_record``)."""
     questions = layer2_questions(blueprint)
-    messages = layer2_messages(inputs, questions)  # ContextLeak propagates
-    raw = ""
-    try:
-        raw = complete(messages)
-        verdicts = json.loads(_strip_fences(raw))
-    except Exception as exc:  # noqa: BLE001 -- no verdict is an open FAIL, recorded
-        prefix = (raw or "").strip()[:200]
-        return {"ran": False, "verdicts": [], "open_fails": [f"layer 2 did not answer: {type(exc).__name__}: {prefix}"]}
-    if not isinstance(verdicts, list):
-        return {"ran": False, "verdicts": [], "open_fails": ["layer 2 did not answer: not a JSON list"]}
-    clean = [
-        {"question": str(v.get("question") or ""), "verdict": v.get("verdict"),
-         "evidence": v.get("evidence")[:EVIDENCE_MAX] if isinstance(v.get("evidence"), str) else v.get("evidence")}
-        for v in verdicts if isinstance(v, Mapping)
-    ]
-    answered = {v["question"] for v in clean}
-    return {"ran": True, "verdicts": clean, "open_fails": [q for q in questions if q not in answered]}
+    groups = [[q] for q in questions if q["about"]]
+    tail = [q for q in questions if not q["about"]]
+    if tail:
+        groups.append(tail)
+    for group in groups:
+        layer2_messages(inputs, group)  # ContextLeak propagates before any call
+    verdicts: List[Dict[str, Any]] = []
+    open_fails: List[str] = []
+    unasked: List[str] = []
+    answered_calls = 0
+    for group in groups:
+        about = group[0]["about"]
+        view = dict(inputs)
+        if render is not None and about:
+            view["rendered_product"] = render([about])
+        if unanswerable(view.get("rendered_product"), about):
+            unasked += [f"layer 2 not asked (no rendered file is about '{about}'): {q['text']}" for q in group]
+            continue
+        try:
+            parsed = json.loads(_strip_fences(complete(layer2_messages(view, group))))
+            if not isinstance(parsed, list):
+                raise ValueError("not a JSON list")
+        except Exception as exc:  # noqa: BLE001 -- recorded as an open FAIL per question
+            logger.warning("layer 2 call did not answer: %s", type(exc).__name__)
+            open_fails += [f"layer 2 did not answer: {type(exc).__name__}: {q['text']}" for q in group]
+            continue
+        answered_calls += 1
+        got, missing = _collect(parsed, group)
+        verdicts += got
+        open_fails += missing
+    return {"ran": answered_calls > 0, "verdicts": verdicts, "open_fails": open_fails, "unasked": unasked}

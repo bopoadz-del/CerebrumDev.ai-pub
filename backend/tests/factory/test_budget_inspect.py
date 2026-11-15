@@ -31,6 +31,37 @@ def _ledger(tmp_path: Path) -> BuildLedger:
     return ledger
 
 
+@pytest.mark.parametrize(
+    "sources, agent, grounded",
+    [
+        ({"site_visits": "codewhale writer"}, ["site_visits"], []),
+        (
+            {"a": "coder CLI (deepseek)", "b": "factory persist", "c": "coder LLM (kimi)"},
+            ["a", "c"],
+            None,
+        ),
+    ],
+)
+def test_inspect_reads_authorship_from_provenance_on_disk(tmp_path, sources, agent, grounded):
+    import json
+
+    from app.factory.build.authorship import is_factory_grounded_source
+
+    ledger = _ledger(tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "docs").mkdir(parents=True)
+    (ws / "docs" / "build_provenance.json").write_text(
+        json.dumps({"artifact_sources": sources}), encoding="utf-8"
+    )
+    if grounded is None:
+        grounded = sorted(k for k, v in sources.items() if is_factory_grounded_source(v))
+
+    snap = inspect_build(ledger, ws)
+
+    assert sorted(snap["caps_written"]) == sorted(agent + grounded)
+    assert snap["agent_written"] == len(agent) + len(grounded)
+
+
 def test_inspect_reads_caps_timeouts_stubs_and_contract_misses(tmp_path):
     ledger = _ledger(tmp_path)
     ledger.append(
@@ -307,7 +338,14 @@ def _wall_is_inspect_or_granted(runner) -> float:
     return grants[0]["wall_before_s"]
 
 
-def test_runner_ramps_to_45m_only_when_inspect_sees_agent_work(tmp_path):
+@pytest.mark.parametrize("max_rework", [1, 2])
+def test_runner_enforces_the_plan_wall_even_when_inspect_sees_agent_work(tmp_path, max_rework):
+    """Agent work at the wall still does not earn the old 30->45 ramp: the
+    inspect's proposal is refused against the per-pass plan wall (one pass),
+    and the refused ramp is ledgered. The plan wall is now per-pass
+    (2026-11-11), so the zero-output writer's rework round gets its own wall
+    and the real failure (writer_no_output, twice) surfaces instead of the
+    run dying at the wall."""
     now = {"t": 0.0}
 
     def clock():
@@ -345,12 +383,14 @@ def test_runner_ramps_to_45m_only_when_inspect_sees_agent_work(tmp_path):
         tmp_path / "build",
         roles=roles,
         budget=BuildBudget(
-            max_rework=1, wall_clock_s=STAGE_1_S, phase_wall_clock_s=5400
+            max_rework=max_rework, wall_clock_s=STAGE_1_S, phase_wall_clock_s=5400
         ),
         clock=clock,
         auto_pilot=True,
     )
     outcome = runner.run()
+    assert outcome.ok is False
+    assert outcome.outcome.value == "FAILED_GATE"
     inspects = [
         e
         for e in runner.ledger.events()
@@ -360,14 +400,18 @@ def test_runner_ramps_to_45m_only_when_inspect_sees_agent_work(tmp_path):
     decisions = [e.payload.get("decision") for e in inspects]
     assert "continue_stage_2" in decisions
     assert CEILING_S not in decisions
-    # The inspect's own bump is the staged one -- 30 -> 45 min, never the
-    # ceiling. (The replaced WRITER may fail its gate; a REWORK the rule
-    # grants then brings its own wall, ledgered as a wall_grant -- that is
-    # not the inspect, so it is checked apart.)
-    bumps = [e.payload.get("next_wall_s") for e in inspects if e.payload.get("next_wall_s")]
-    assert bumps == [STAGE_2_S]
-    assert _wall_is_inspect_or_granted(runner) == STAGE_2_S
-    # Replaced WRITER may fail later gates; the contract is the staged ramp.
+    # The inspect's proposal stays a proposal: the per-pass plan budget
+    # (one pass) refuses the 30->45 ramp. The only wall growth is the rework
+    # grant re-arming a second pass (2 * STAGE_1_S), never the inspect's
+    # STAGE_2_S ramp.
+    terminal = runner.ledger.terminal_event()
+    assert terminal is not None
+    decision = (terminal.payload or {}).get("decision") or {}
+    # The rework round gets its own pass wall, so the writer's real failure
+    # (zero output, twice) surfaces -- never masked by the wall.
+    assert decision.get("reason") == "SAME_FAILURE_TWICE: writer_contract:writer_no_output"
+    # The plan wall is per-pass: the rework grant re-armed it (two passes).
+    assert runner.budget.wall_clock_s == 2 * STAGE_1_S
     assert runner.ledger.pilot_ready() is False
     assert outcome.outcome is not None
 
@@ -540,7 +584,13 @@ def test_zero_harvest_after_cli_finish_hard_stops_not_unused_inflight(tmp_path, 
     assert "in-flight" not in decided["reason"]
 
 
-def test_runner_inflight_cli_stage_1_extends_wall_not_unused(tmp_path):
+@pytest.mark.parametrize("max_rework", [1, 2])
+def test_runner_inflight_cli_stage_1_fails_the_plan_wall(tmp_path, max_rework):
+    """An in-flight CLI at the wall still does not earn a 30->45 bump: the
+    inspect's proposal is refused against the per-pass plan wall. The plan
+    wall is now per-pass (2026-11-11), so the hanging CLI's rework round gets
+    its own wall and the real failure (writer_no_output, twice) surfaces
+    instead of a wall-clock stop, after the inspect gathered the evidence."""
     now = {"t": 0.0}
 
     def clock():
@@ -579,35 +629,32 @@ def test_runner_inflight_cli_stage_1_extends_wall_not_unused(tmp_path):
         tmp_path / "build",
         roles=roles,
         budget=BuildBudget(
-            max_rework=1, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
+            max_rework=max_rework, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
         ),
         clock=clock,
         auto_pilot=True,
     )
     outcome = runner.run()
+    assert outcome.ok is False
+    assert outcome.outcome.value == "FAILED_GATE"
     inspects = [
         e
         for e in runner.ledger.events()
         if (e.payload or {}).get("budget_inspect")
     ]
-    assert inspects, "stage-1 inspect must run while CLI is in-flight"
+    assert inspects, "the wall inspect must run -- its snapshot is the evidence"
     snap = inspects[0].payload
     assert snap["decision"] == "continue_stage_2"
-    assert snap.get("next_wall_s") == STAGE_2_S
-    assert "hard-stop" not in str(snap.get("reason") or "")
     assert "not FACTORY_CODE_CLI_UNUSED" in str(snap.get("reason") or "")
-    assert _wall_is_inspect_or_granted(runner) == STAGE_2_S
-    extends = [
-        e
-        for e in runner.ledger.events()
-        if (e.payload or {}).get("cli_wall_extended")
-    ]
-    assert extends, "Floor watchdog NOTE must follow the 30→45 bump"
-    assert extends[0].payload.get("model_call") is True
-    assert extends[0].payload.get("deadline_s")
-    # WRITER returned; later gates may fail. Do not SUCCESS a thin pilot.
+    terminal = runner.ledger.terminal_event()
+    assert terminal is not None
+    decision = (terminal.payload or {}).get("decision") or {}
+    # The inspect's 30->45 proposal stays a proposal: the per-pass plan
+    # budget refuses it. The only wall growth is the rework grant re-arming
+    # a second pass (2 * STAGE_1_S).
+    assert decision.get("reason") == "SAME_FAILURE_TWICE: writer_contract:writer_no_output"
+    assert runner.budget.wall_clock_s == 2 * STAGE_1_S
     assert runner.ledger.pilot_ready() is False
-    assert outcome.ok is False
 
 
 def test_cli_live_deadline_grows_with_inspect_bump_not_slash():

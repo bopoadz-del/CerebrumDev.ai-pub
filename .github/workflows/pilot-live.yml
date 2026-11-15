@@ -9,12 +9,9 @@ name: Pilot (live)
 # skip-pass. Uploads the two synthetic fixtures before the build, then drives the
 # five stages with per-stage PASS/FAIL checks.
 #
-# Fires on every successful deploy-aws, and on manual dispatch.
+# Fires on manual dispatch only (F-U0): a deploy never starts a pilot.
 
 on:
-  workflow_run:
-    workflows: [deploy-aws]
-    types: [completed]
   workflow_dispatch:
     inputs:
       base:
@@ -37,14 +34,15 @@ env:
 jobs:
   pilot:
     name: Pilot build on live
-    # Only after a SUCCESSFUL deploy, or a manual dispatch.
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the pilot's sha gate can accept the expected
+          # deploy sha OR a descendant of it (git merge-base --is-ancestor),
+          # not just an exact/prefix match.
+          fetch-depth: 0
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -127,6 +125,7 @@ jobs:
           SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
           SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
           SMOKE_READY_WAIT_S: "1200"
+          SMOKE_BUILD_WAIT_S: "10800"
           SMOKE_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: >-
           python3 scripts/pilot_runner.py
@@ -137,4 +136,11 @@ jobs:
         with:
           name: pilot-result
           path: PILOT_RESULT.md
+          if-no-files-found: ignore
+      - name: Upload PILOT_TIMELINE
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-timeline
+          path: PILOT_TIMELINE.jsonl
           if-no-files-found: ignore

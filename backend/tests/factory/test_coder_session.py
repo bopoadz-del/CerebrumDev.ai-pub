@@ -1743,3 +1743,59 @@ def test_mutation_coder_session_never_writes_raw_ledger_jsonl():
     ).read_text(encoding="utf-8")
     assert "build_ledger.jsonl" not in src
     assert "ctx.note(" in src
+
+
+class _BriefWs:
+    def __init__(self, root: Path) -> None:
+        self.workspace = root
+
+    def write_text(self, rel, text) -> None:
+        path = self.workspace / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+class _BriefCtx:
+    def __init__(self, root: Path, words: str) -> None:
+        self.workspace = _BriefWs(root)
+        self.state = {"brief": words}
+        self.notes = []
+
+    def note(self, detail, **kw) -> None:
+        self.notes.append(detail)
+
+
+@pytest.mark.parametrize("words, contract, prior_control", [
+    ("Track wing renewals for the east annex.", "TARGET: renewals\nDO: track", None),
+    ("Log pump readings each shift.", "TARGET: readings\nDO: log\n", CONTROL_STOP),
+])
+def test_write_brief_artifacts_records_the_dispatch_and_keeps_an_owner_control(
+    words, contract, prior_control, tmp_path
+):
+    """FG-4: the brief file is what the coder is handed on this path, so the
+    dispatch record carries the user's words and that same text; an owner's
+    control already on disk is kept, a missing one starts as run."""
+    from types import SimpleNamespace
+
+    from app.factory.build.coder_session import (
+        BRIEF_REL,
+        CONTROL_REL,
+        CONTROL_RUN,
+        LOG_REL,
+        write_brief_artifacts,
+    )
+    from app.factory.build.writer_prompt import dispatched_writer_inputs
+
+    if prior_control is not None:
+        (tmp_path / CONTROL_REL).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / CONTROL_REL).write_text(json.dumps({"action": prior_control}) + "\n", encoding="utf-8")
+    ctx = _BriefCtx(tmp_path, words)
+    write_brief_artifacts(ctx, SimpleNamespace(text=contract, narrative=""))
+
+    assert (tmp_path / BRIEF_REL).read_text(encoding="utf-8") == contract.rstrip("\n") + "\n"
+    told = dispatched_writer_inputs(ctx.state)
+    assert told == {"supplied": words, "brief": contract, "prompt": contract}
+    control = json.loads((tmp_path / CONTROL_REL).read_text(encoding="utf-8"))
+    assert control["action"] == (prior_control or CONTROL_RUN)
+    assert (tmp_path / LOG_REL).read_text(encoding="utf-8") == ""
+    assert ctx.notes

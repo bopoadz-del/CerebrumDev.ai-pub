@@ -11,7 +11,6 @@ the fixtures are invented.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -20,12 +19,11 @@ import pytest
 # tests by the module's dotted token) associates this file with every
 # function in grader.py.
 import app.factory.build.grader as grader
-from app.factory.build.product_grader import grade_record, layer2
+from app.factory.build.product_grader import grade_record
+from tests.factory.grader_contract import COMPUTES, write_models
 
-READS_INPUT = (
-    "def handle(payload):\n"
-    "    return {'ok': True, 'echo': sorted(payload.items())}\n"
-)
+# A handle that computes from the contract grader_contract declares.
+READS_INPUT = COMPUTES
 CONSTANT = "def handle(payload):\n    return {'ok': True}\n"
 
 IDS = ["intake_form", "invoice_total", "visit_log", "tenant_notice"]
@@ -38,6 +36,7 @@ def _workspace(tmp_path: Path, bodies: dict, extra: dict = None) -> Path:
     (actions / "__init__.py").write_text("")
     for cid, body in bodies.items():
         (actions / f"{cid}.py").write_text(body)
+    write_models(tmp_path, list(bodies))
     for rel, text in (extra or {}).items():
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,14 +52,14 @@ def _bp(ids, ui_modules=()):
 
 
 def _passing_l2(blueprint):
-    """A Layer-2 completion that PASSes every generated question, quoting
-    evidence -- built from the blueprint, never hand-answered."""
+    """A Layer-2 completion that PASSes every question it is sent, by id,
+    quoting evidence -- read from the call, never hand-answered."""
 
     def complete(messages):
-        questions = layer2.layer2_questions(blueprint)
+        questions = json.loads(messages[-1]["content"])["questions"]
         return json.dumps(
             [
-                {"question": q, "verdict": "PASS", "evidence": "the product delivers this (quoted)"}
+                {"id": q["id"], "verdict": "PASS", "evidence": "the product delivers this (quoted)"}
                 for q in questions
             ]
         )
@@ -120,24 +119,45 @@ def test_derive_forbidden_takes_brief_shapes_not_prose():
     forbidden = grader.derive_forbidden({}, brief, "")
     assert "Acme Trading Co" in forbidden
     assert "Nimbus" in forbidden
-    assert "240" in forbidden
+    # FG-4: a bare number is the two-dataset check's, and a capitalised
+    # word is not an identity -- neither is a brief literal.
+    assert "240" not in forbidden
+    assert "The" not in forbidden and "Plain" not in forbidden
     assert "prose" not in forbidden
     assert "lowercase" not in forbidden
 
 
 def test_derive_forbidden_reads_structured_blueprint_values():
     bp = {"client": "Blue Harbor Estates", "vertical": "property"}
-    forbidden = grader.derive_forbidden(bp, "some brief", "")
+    forbidden = grader.derive_forbidden(bp, "some brief for blue harbor estates", "")
     assert "Blue Harbor Estates" in forbidden
-    assert "property" in forbidden
+    # The vertical is the product's own (Factory-assigned) identity.
+    assert "property" not in forbidden
+    # A client value the user never said is not brief data.
+    assert "Blue Harbor Estates" not in grader.derive_forbidden(bp, "some brief", "")
+
+
+@pytest.mark.parametrize("identity", ["north_wing_b", "acct_7731"])
+def test_derive_forbidden_takes_identity_tokens_but_not_contract_or_factory_text(identity):
+    brief = f"Bill everything to {identity} via the intake_form flow."
+    bp = {"capabilities": [{"id": "intake_form", "input_schema": {"unit_ref": {}}}]}
+    assert identity in grader.derive_forbidden(bp, brief, "")
+    # A contract-required id or schema key is never a brief literal ...
+    assert "intake_form" not in grader.derive_forbidden(bp, brief, "")
+    assert "unit_ref" not in grader.derive_forbidden(bp, brief + " Key unit_ref.", "")
+    # ... and one the Factory's own prompt text carries is vocabulary.
+    assert identity not in grader.derive_forbidden(bp, brief, f"the Factory says {identity}")
 
 
 def test_derive_forbidden_takes_document_references_and_file_shapes():
-    brief = "See document:handover_notes.docx and the rates_sheet.xlsx values."
+    brief = "See document:handover_notes.docx, document:Lease and the rates_sheet.xlsx or plan.pdf values."
     forbidden = grader.derive_forbidden({}, brief, "")
     assert "handover_notes.docx" in forbidden
     assert "handover_notes" in forbidden
     assert "rates_sheet.xlsx" in forbidden
+    assert "Lease" in forbidden and "plan.pdf" in forbidden
+    # A one-word stem is vocabulary: only the full document name counts.
+    assert "plan" not in forbidden
 
 
 def test_render_product_includes_app_and_frontend_only_bounded():
@@ -158,7 +178,7 @@ def test_render_product_includes_app_and_frontend_only_bounded():
 # --- independence (The_Level #6) ---------------------------------------------
 
 
-@pytest.mark.parametrize("content", ['[{"question": "q", "verdict": "PASS", "evidence": "e"}]', "[]"])
+@pytest.mark.parametrize("content", ['[{"id": "q1", "verdict": "PASS", "evidence": "e"}]', "[]"])
 def test_grader_complete_returns_the_models_raw_content(monkeypatch, content):
     """Layer 2's completion posts to the dedicated grader endpoint and
     returns the model's raw content text."""
@@ -325,7 +345,7 @@ def test_as_mapping_accepts_a_mapping_and_a_model_object(blueprint):
     "blueprint",
     [
         {"client": "Alpha Co"},
-        {"vertical": "beta", "product_id": "p-1"},
+        {"project": "Beta Wing", "vertical": "beta", "product_id": "p-1"},
         _ModelBlueprint({"client": "Gamma Co"}),
     ],
 )
@@ -333,7 +353,8 @@ def test_structured_literals_reads_the_schema_fields(blueprint):
     if isinstance(blueprint, _ModelBlueprint):
         expected = {"Gamma Co"}
     else:
-        expected = {v for v in blueprint.values() if isinstance(v, str) and v.strip()}
+        # The product's own identity (vertical, product id) is not client data.
+        expected = {v for k, v in blueprint.items() if k in ("client", "project")}
     assert grader._structured_literals(blueprint) == expected
 
 
@@ -357,12 +378,12 @@ def test_layer2_layer1_view_reports_the_combined_ok(functions, ui):
 
 
 @pytest.mark.parametrize("root_name", ["build-one", "build-two"])
-def test_boot_env_puts_the_product_workspace_first_on_pythonpath(tmp_path, monkeypatch, root_name):
+def test_boot_env_imports_only_the_product_workspace(tmp_path, monkeypatch, root_name):
     root = tmp_path / root_name
     root.mkdir()
     monkeypatch.setenv("PYTHONPATH", "elsewhere")
-    env = grader._boot_env(tmp_path / "scratch", root)
-    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(root)
+    env = grader.boot_env(root, tmp_path / "scratch", 8123)
+    assert env["PYTHONPATH"] == str(root)
     assert str(tmp_path / "scratch") == env["STORAGE_PATH"]
 
 
@@ -392,15 +413,15 @@ def test_boot_product_failure_paths_are_named_not_raised(tmp_path, workspace_kin
         (root / "app" / "__init__.py").write_text("")
     else:
         root = tmp_path / "does-not-exist"
-    proc, reason = grader.boot_product(root)
-    assert proc is None
-    assert reason
+    boot, reason = grader.boot_product(root, ready_timeout_s=30)
+    assert boot is None
     if workspace_kind == "no_app_main":
-        # The early-exit reason is a short named phrase (7 words); the
-        # timeout reason (what a dropped early-exit check would produce)
-        # is longer (8 words). The shape check, not the words, is the
-        # contract.
-        assert len(reason.split()) < 8
+        # The product's own import error ends the boot: its exit code and
+        # its output tail are the finding, not a timeout.
+        assert reason.startswith("product boot exited with code ")
+        assert "app.main" in reason.split("output tail:", 1)[1]
+    else:
+        assert reason.startswith("product boot did not start: ")
 
 
 # --- the grader itself --------------------------------------------------------
@@ -422,15 +443,13 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
     block's effect is observable, so dropping it fails this test."""
     import app.factory.build.product_grader as pg
 
-    class _Proc:
-        def poll(self):
-            return None
-
-        def terminate(self):
-            return None
-
-    monkeypatch.setattr(grader, "boot_product", lambda root: (_Proc(), boot_url))
     recorded: dict = {}
+
+    class _Boot:
+        def stop(self):
+            recorded["stopped"] = True
+
+    monkeypatch.setattr(grader, "boot_product", lambda root: (_Boot(), boot_url))
 
     class _Ui:
         @property
@@ -468,6 +487,7 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
     ui, ran, not_run = grader._grade_ui(bp, ws, ws.parent / "g", None)
     assert ran is True
     assert recorded["base_url"] == boot_url
+    assert recorded["stopped"] is True
     assert ui.ok is True
 
 
@@ -476,6 +496,7 @@ def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grad
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
     verdict = grader.run_grader(
+        plan_capabilities=IDS,
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
@@ -493,7 +514,7 @@ def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grad
 def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path, green_ui, product_id):
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
-    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id=product_id)
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id=product_id)
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert any("may not grade the writer's tree" in item for item in verdict.items)
@@ -503,14 +524,43 @@ def test_self_grading_verdict_is_not_certified_with_the_refusal_quoted(tmp_path,
     assert grade_record.certification_refusal(ws) is not None
 
 
+#: A handle for a capability with no declared field: it answers TESTER's
+#: one input ({}) ok, or refuses it.
+ONE_INPUT_OK = "def handle(payload):\n    return {'ok': True, 'count': len(payload) + 1}\n"
+ONE_INPUT_REFUSES = "def handle(payload):\n    return {'ok': False, 'error': 'nothing declared'}\n"
+
+
+@pytest.mark.parametrize("gap,body,certified", [
+    ("invoice_total", ONE_INPUT_OK, True),
+    ("visit_log", ONE_INPUT_OK, True),
+    ("invoice_total", ONE_INPUT_REFUSES, False),
+    ("visit_log", ONE_INPUT_REFUSES, False),
+])
+def test_capability_without_a_declared_contract_is_judged_by_testers_one_input_rule(
+    tmp_path, independent_grader, green_ui, gap, body, certified
+):
+    ws = _workspace(tmp_path, {i: (body if i == gap else READS_INPUT) for i in IDS})
+    write_models(ws, IDS, declared=[i for i in IDS if i != gap])
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    assert verdict.tier == (grader.CERTIFIED if certified else grader.NOT_CERTIFIED)
+    assert verdict.ungraded == ()
+    assert (f"function grade FAIL: {gap}" in verdict.items) is (not certified)
+    assert not any(r["class"] in ("ungraded", "stub_handler") for r in verdict.reasons)
+    record = json.loads((ws / "grade.json").read_text("utf-8"))
+    (fn,) = [f for f in record["layer1"]["functions"]["functions"] if f["capability_id"] == gap]
+    assert fn["detail"] == ("one_input" if certified else f"{gap} rejected a payload built from its own schema: nothing declared")
+
+
 @pytest.mark.parametrize("bad_cid", ["invoice_total", "visit_log"])
 def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, independent_grader, green_ui, bad_cid):
     ws = _workspace(tmp_path, {i: (CONSTANT if i == bad_cid else READS_INPUT) for i in IDS})
     bp = _bp(IDS)
-    verdict = grader.run_grader(blueprint=bp, workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert f"function grade FAIL: {bad_cid}" in verdict.items
+    # option (b): the verdict carries the failing capability's reason class
+    assert {"capability": bad_cid, "class": "stub_handler", "layer": "function"} in verdict.reasons
 
 
 @pytest.mark.parametrize("crash_message", ["grader exploded", "grader blew up"])
@@ -522,7 +572,7 @@ def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path
 
     monkeypatch.setattr(fg, "grade_functions", boom)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
-    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
     assert any(crash_message in item for item in verdict.items)
@@ -534,7 +584,7 @@ def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path
 def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_grader, green_ui, monkeypatch, bad_answer):
     monkeypatch.setattr(grader, "_grader_complete", lambda messages: bad_answer)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
-    verdict = grader.run_grader(blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
     assert any("Layer 2 did not run" in item for item in verdict.items)
@@ -550,6 +600,7 @@ def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, in
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
+        plan_capabilities=IDS,
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
@@ -563,14 +614,17 @@ def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, in
 @pytest.mark.parametrize("token", ["Nimbus", "Zephyr"])
 def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independent_grader, green_ui, token):
     brief = f"The project is code-named {token} for its portal."
-    prompt = f"Build the portal for the {token} project."
+    # The writer was given the brief (it is in the dispatched prompt) and
+    # copied one of its clauses into a value.
+    prompt = f"Build the portal.\n{brief}"
     ws = _workspace(
         tmp_path,
         {i: READS_INPUT for i in IDS},
-        extra={"app/settings.py": f'PROJECT = "{token}"\n'},
+        extra={"app/settings.py": f'PROJECT = "The project is code-named {token} for its portal"\n'},
     )
     bp = _bp(IDS)
     verdict = grader.run_grader(
+        plan_capabilities=IDS,
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
@@ -578,7 +632,7 @@ def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independen
         prompt_text=prompt,
     )
     assert verdict.tier == grader.NOT_CERTIFIED
-    assert any("stop leaking the prompt into the source" in item for item in verdict.items)
+    assert any("remove copied brief from app/settings.py" in item for item in verdict.items)
 
 
 # --- the runner wiring -------------------------------------------------------
@@ -603,14 +657,24 @@ def _red_product(workspace: Path, constant: tuple = ("analytics_surface", "dashb
         (actions / f"{cid}.py").write_text(body)
 
 
+def _fake_pass(ctx):
+    """A role that passes instantly; as a writer it records what it was told
+    (FG-4), as every real writer path does."""
+    from app.factory.build.roles import RoleResult
+    from app.factory.build.writer_prompt import record_writer_dispatch
+
+    record_writer_dispatch(ctx.state, supplied="", brief="invented brief", prompt="invented prompt")
+    return RoleResult(ok=True, detail="fake pass")
+
+
 def _fake_pass_harness(monkeypatch):
     """Every phase role passes instantly and every phase gate is green, so
     the run reaches the grader step and nothing else decides."""
     from app.factory.build import runner as runner_mod
     from app.factory.build.gates import GateResult
-    from app.factory.build.roles import ROLE_IMPLEMENTATIONS, RoleResult
+    from app.factory.build.roles import ROLE_IMPLEMENTATIONS
 
-    roles = {role: (lambda ctx: RoleResult(ok=True, detail="fake pass")) for role in ROLE_IMPLEMENTATIONS}
+    roles = {role: _fake_pass for role in ROLE_IMPLEMENTATIONS}
     monkeypatch.setattr(runner_mod, "gate_for", lambda role: (lambda ctx: GateResult(ok=True, gate="fake_gate")))
     return roles
 
@@ -623,14 +687,16 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
     from app.factory.build import grader as grader_mod
     from app.factory.build.authority import BuildRole
     from app.factory.build.ledger import EventKind
-    from app.factory.build.roles import RoleResult
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
 
     def not_certified(**kwargs):
         return grader_mod.GraderVerdict(
-            tier=grader_mod.NOT_CERTIFIED, items=(f"function grade FAIL: {capability}",)
+            tier=grader_mod.NOT_CERTIFIED,
+            items=(f"function grade FAIL: {capability}",),
+            reasons=({"capability": capability, "class": "stub_handler", "layer": "function"},),
+            writer_items=(f"function grade FAIL: {capability}",),
         )
 
     monkeypatch.setattr(grader_mod, "run_grader", not_certified)
@@ -639,24 +705,75 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
 
     def recording_writer(ctx):
         captured.append(tuple(ctx.work_list))
-        return RoleResult(ok=True, detail="fake pass")
+        return _fake_pass(ctx)
 
     roles[BuildRole.WRITER] = recording_writer
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
     outcome = runner.run()
     assert not outcome.ok
-    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 2 round(s)")
+    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 1 round(s)")
     assert f"function grade FAIL: {capability}" in outcome.detail
     # the run started its ledger: the first event is RUN_STARTED (pins
     # run()'s first if for CI-M -- start_run writes exactly that event)
     events = list(runner.ledger.events())
     assert events and events[0].kind is EventKind.RUN_STARTED
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
-    assert len(reworks) == 2
+    assert len(reworks) == 1
     assert all((r.payload or {}).get("gate") == grader_mod.GRADER_GATE for r in reworks)
     assert all((r.payload or {}).get("source") == "GRADER" for r in reworks)
     # the writer received the quoted items as its work list
     assert any(f"function grade FAIL: {capability}" in item for wl in captured for item in wl)
+    # option (b): every grader NOTE carries the verdict's reason classes as they are
+    notes = [
+        e for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and (e.payload or {}).get("grader_tier") == grader_mod.NOT_CERTIFIED
+    ]
+    assert notes
+    assert all(
+        (n.payload or {}).get("grader_reasons")
+        == [{"capability": capability, "class": "stub_handler", "layer": "function"}]
+        for n in notes
+    )
+
+
+@pytest.mark.parametrize("owed_file", ["zorblat/stamped_mod.py", "plinket/vendored_mod.py"])
+def test_runner_spends_no_writer_round_on_rows_the_factory_owes(smoke_blueprint, tmp_path, monkeypatch, owed_file):
+    """FG-1: a NOT_CERTIFIED verdict whose rows are all Factory-owed (or
+    run-level) ends the run naming the Factory: no REWORK, the writer is
+    not dispatched again, and the tier is never CERTIFIED."""
+    from app.factory.build import grader as grader_mod
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.ledger import EventKind
+    from app.factory.build.runner import RoleRunner
+
+    monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
+    owed = f"FACTORY owes baked literals in {owed_file} (in a file the Factory rendered): ['Qux']"
+
+    def factory_owed(**kwargs):
+        return grader_mod.GraderVerdict(
+            tier=grader_mod.NOT_CERTIFIED, items=(owed,), factory_owed=(owed,)
+        )
+
+    monkeypatch.setattr(grader_mod, "run_grader", factory_owed)
+    captured: list = []
+    roles = _fake_pass_harness(monkeypatch)
+
+    def recording_writer(ctx):
+        captured.append(tuple(ctx.work_list))
+        return _fake_pass(ctx)
+
+    roles[BuildRole.WRITER] = recording_writer
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    outcome = runner.run()
+    assert not outcome.ok
+    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED -- FACTORY_FAULT (no writer round)")
+    assert owed_file in outcome.detail
+    assert [e for e in runner.ledger.events() if e.kind is EventKind.REWORK] == []
+    assert len(captured) == 1  # the writer's first pass only; nothing handed back
+    assert not any(owed_file in item for wl in captured for item in wl)
+    notes = [e for e in runner.ledger.events() if (e.payload or {}).get("writer_dispatched") is False]
+    assert notes and all((n.payload or {}).get("owner") == "FACTORY" for n in notes)
+    assert all((n.payload or {}).get("factory_owed") == [owed] for n in notes)
 
 
 def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path, monkeypatch):

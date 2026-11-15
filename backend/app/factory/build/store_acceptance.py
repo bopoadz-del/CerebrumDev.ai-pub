@@ -2530,7 +2530,7 @@ def stamp_acceptance_artifacts(
 
 
 def stamp_acceptance_harness(workspace: Any, *, blueprint: Any = None) -> None:
-    """Stamp scripts/acceptance.py BEFORE the writer starts.
+    """Stamp scripts/acceptance.py and the discovery console BEFORE the writer.
 
     The CodeWhale writer ran first and found no harness, so it wrote its own
     (live 665da6da: "scripts/acceptance.py: 15 measured checks, k/k") and
@@ -2538,9 +2538,24 @@ def stamp_acceptance_harness(workspace: Any, *, blueprint: Any = None) -> None:
     only afterwards, and the Store gate failed three checks the writer had
     never measured. The same table entry the gate's stamp writes, so the
     writer's ``--self-check`` run scores the same N checks the gate will.
+    The console the ``ui_end_to_end`` gate probes (``app/static/index.html``)
+    is stamped here too, by construction, so the writer customises on top and
+    never authors the shell.
     """
     rel = ACCEPTANCE_SCRIPT_REL
     workspace.write_text(rel, factory_renders("platform", (), blueprint)[rel])
+    stamp_ui_index(workspace, product_name=getattr(blueprint, "product_name", "platform"))
+
+
+def stamp_ui_index(workspace: Any, *, product_name: str = "platform") -> None:
+    """Stamp the Factory's discovery console BEFORE the writer starts.
+
+    ``ui_end_to_end`` probes ``app/static/index.html``, so it must be the
+    Factory's shell by construction -- a page that reads ``/v1/capabilities``
+    at load and builds a route per declared capability -- never something the
+    writer happens to author. The writer customises on top (``frontend/``).
+    """
+    workspace.write_text(UI_INDEX_REL, render_ui_index(product_name))
 
 
 def stamp_acceptance_into_path(

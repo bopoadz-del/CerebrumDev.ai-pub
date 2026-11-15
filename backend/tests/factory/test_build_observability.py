@@ -64,7 +64,10 @@ def test_a_build_records_intra_phase_progress(tmp_path, stub_coder):
     runner = RoleRunner(load_blueprint(SMOKE), out)
     assert runner.run().ok
 
-    notes = [e for e in runner.ledger.events() if e.kind is EventKind.NOTE]
+    notes = [
+        e for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and (e.payload or {}).get("stage")
+    ]
     assert notes, "the build reported no intra-phase progress at all"
 
     stages = {(n.payload or {}).get("stage") for n in notes}

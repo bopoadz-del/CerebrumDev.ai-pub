@@ -103,8 +103,8 @@ def test_floor_budget_stays_a_code_phase_without_auto_pilot(monkeypatch):
     monkeypatch.delenv("FACTORY_BUILD_MAX_REWORK", raising=False)
     monkeypatch.delenv("FACTORY_PHASE_WALL_CLOCK_S", raising=False)
     assert _wall_clock_s() == 1800.0
-    # Owner rule: 2 rework rounds per gate, at every cycle.
-    assert _max_rework() == REWORK_BUDGET == 2
+    # Owner rule (1330Z): 1 rework round per gate, at every cycle.
+    assert _max_rework() == REWORK_BUDGET == 1
     assert _phase_wall_clock_s() == 1500.0
 
 
@@ -262,7 +262,7 @@ def test_floor_run_stays_code_only_without_auto_pilot(monkeypatch, tmp_path):
     _run(load_blueprint(SMOKE), out, None, "code")
     assert captured["auto_pilot"] is False
     assert captured["budget"].wall_clock_s == 1800.0
-    assert captured["budget"].max_rework == REWORK_BUDGET == 2
+    assert captured["budget"].max_rework == REWORK_BUDGET == 1
     assert captured["budget"].phase_wall_clock_s == 1500.0
 
 

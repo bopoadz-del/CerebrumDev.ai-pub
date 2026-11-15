@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from app.factory.build.codewhale_worker import WorkerError
+from app.factory.build.codewhale_worker import (
+    WorkerError,
+    _dns_probe,
+    _fmt_dns_probe,
+    _parse_writer_receipt,
+)
 from app.factory.build.roles_handlers import (
     _run_writer_via_codewhale_worker,
     writer_uses_codewhale,
@@ -381,3 +388,354 @@ def test_slot_wait_bound_is_the_run_ceiling(tmp_path):
     assert left() == pytest.approx(0.0)
     ctx.deadline_box = {}
     assert _writer_slot_wait_left(ctx)() is None
+
+
+# -- Writer network retry (Advisor 13:12Z) ------------------------------------
+
+
+def _fake_worker_with_receipts(receipts, calls):
+    """A run_worker_job fake that returns the given receipts in order."""
+
+    def fake(
+        prompt,
+        dest,
+        tenant_store=None,
+        session_id="",
+        product_id="",
+        progress=None,
+        timeout_s=None,
+        live_time_left=None,
+        slot_wait_left=None,
+        on_slot_wait=None,
+    ):
+        calls.append(dict(dest=dest))
+        return receipts[min(len(calls) - 1, len(receipts) - 1)]
+
+    return fake
+
+
+def _network_failure_receipt(error: str):
+    """A returned (not raised) receipt for the DNS/model_error abort."""
+    return _receipt(
+        [],
+        status="failed",
+        termination_reason="model_error",
+        error_category="network",
+        error=error,
+    )
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_writer_retries_a_transient_network_failure_then_continues(
+    tmp_path, monkeypatch, failures
+):
+    """A network/model_error receipt is RETRIED, not aborted; once a pass
+    completes the phase continues. Two inputs: 1 and 2 transient failures."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    receipts = [
+        _network_failure_receipt(f"dns error: Try again (attempt {i})")
+        for i in range(failures)
+    ] + [_receipt([{"tool": "write", "path": "app/actions/cap.py"}])]
+
+    calls = []
+    monkeypatch.setattr(
+        "app.factory.build.codewhale_worker.run_worker_job",
+        _fake_worker_with_receipts(receipts, calls),
+    )
+    ctx = _ctx(tmp_path)
+    _plant_authored_handler(tmp_path / "build")
+    notes = []
+    ctx.note = lambda text, **kw: notes.append(dict(kw, text=str(text)))
+
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok, result.detail
+    assert len(calls) == failures + 1, "one retry per transient failure"
+    retries = [n for n in notes if n.get("stage") == "writer-retry"]
+    assert [r["network_retry"] for r in retries] == list(range(1, failures + 1))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "dns error: failed to lookup address information: Try again",
+        "client error (Connect): dns error: lookup failed (EAI_AGAIN)",
+    ],
+)
+def test_writer_aborts_after_three_network_failures(tmp_path, monkeypatch, error):
+    """Three network/model_error failures exhaust the retry budget and fall
+    through to today's writer_no_output abort. Two distinct error inputs."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    receipts = [_network_failure_receipt(error) for _ in range(10)]
+    calls = []
+    monkeypatch.setattr(
+        "app.factory.build.codewhale_worker.run_worker_job",
+        _fake_worker_with_receipts(receipts, calls),
+    )
+    ctx = _ctx(tmp_path)
+    notes = []
+    ctx.note = lambda text, **kw: notes.append(dict(kw, text=str(text)))
+
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok is False
+    assert result.reason == "writer_no_output"
+    # 1 initial attempt + 3 retries, then the loop stops (no 5th call).
+    assert len(calls) == 4
+    retries = [n for n in notes if n.get("stage") == "writer-retry"]
+    assert [r["network_retry"] for r in retries] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "category,reason",
+    [
+        ("model", "model_error"),
+        ("network", "timeout"),
+    ],
+)
+def test_writer_does_not_retry_a_non_network_failure(
+    tmp_path, monkeypatch, category, reason
+):
+    """Only error_category=network AND termination_reason=model_error is
+    retryable; any other failure aborts once with no retry NOTE. Two inputs."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    receipts = [
+        _receipt(
+            [],
+            status="failed",
+            termination_reason=reason,
+            error_category=category,
+            error="some error",
+        )
+    ]
+    calls = []
+    monkeypatch.setattr(
+        "app.factory.build.codewhale_worker.run_worker_job",
+        _fake_worker_with_receipts(receipts, calls),
+    )
+    ctx = _ctx(tmp_path)
+    notes = []
+    ctx.note = lambda text, **kw: notes.append(dict(kw, text=str(text)))
+
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok is False
+    assert result.reason == "writer_no_output"
+    assert len(calls) == 1, "no retry for a non-network failure"
+    assert [n for n in notes if n.get("stage") == "writer-retry"] == []
+
+
+def _network_receipt_line(error: str) -> str:
+    """A receipt the CLI prints on a DNS failure before exiting 75."""
+    return json.dumps(
+        {
+            "status": "failed",
+            "termination_reason": "model_error",
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "output": "",
+            "tools": [],
+            "error": f"error sending request for url (https://api.deepseek.com/v1/chat/completions): client error (Connect): {error}",
+            "error_category": "network",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "dns error: failed to lookup address information: Try again",
+        "dns error: failed to lookup address information: Temporary failure in name resolution",
+    ],
+)
+def test_parse_writer_receipt_returns_receipt_on_nonzero_exit(error):
+    """A DNS/model failure exits the CLI 75 while STILL printing its receipt.
+    The receipt must be returned (not raised as exit 75) so the caller's
+    retry loop sees error_category=network. Two inputs (two error strings)."""
+    receipt = _parse_writer_receipt([_network_receipt_line(error)], 75)
+    assert receipt.status == "failed"
+    assert receipt.error_category == "network"
+    assert receipt.termination_reason == "model_error"
+
+
+@pytest.mark.parametrize(
+    "stdout_lines",
+    [
+        ["a plain stderr-style line", "no receipt json here"],
+        [],
+    ],
+)
+def test_parse_writer_receipt_raises_exit_on_nonzero_without_receipt(stdout_lines):
+    """With no parseable receipt, a non-zero exit still raises exit N (the
+    pre-fix behaviour is preserved). Two inputs (garbage lines, no lines)."""
+    with pytest.raises(WorkerError, match="exit 75"):
+        _parse_writer_receipt(stdout_lines, 75)
+
+
+def test_parse_writer_receipt_raises_non_json_on_zero_exit():
+    """A clean exit with no receipt JSON is still a named failure."""
+    with pytest.raises(WorkerError, match="non-JSON summary"):
+        _parse_writer_receipt(["no receipt"], 0)
+
+
+@pytest.mark.parametrize(
+    "status,model,tool_count",
+    [
+        ("completed", "deepseek-v4-pro", 0),
+        ("completed", "deepseek-v4-pro", 2),
+    ],
+)
+def test_parse_writer_receipt_returns_success_receipt_on_zero_exit(
+    status, model, tool_count
+):
+    """Regression: a zero exit with a normal receipt still parses. Two inputs."""
+    tools = [{"name": f"t{i}"} for i in range(tool_count)]
+    receipt = _parse_writer_receipt(
+        [json.dumps({"status": status, "termination_reason": "resolved",
+                     "provider": "deepseek", "model": model, "output": "ok",
+                     "tools": tools, "error": None, "error_category": None})],
+        0,
+    )
+    assert receipt.status == status
+    assert receipt.model == model
+    assert len(receipt.tools) == tool_count
+    assert receipt.error_category is None
+
+
+class _FakeCompleted:
+    returncode = 0
+    stderr = ""
+
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+
+
+@pytest.mark.parametrize(
+    "stdout_json,key",
+    [
+        (
+            '{"api.deepseek.com": {"resolved": ["1.2.3.4"], "elapsed_ms": 2.1}, '
+            '"api.github.com": {"resolved": ["5.6.7.8"], "elapsed_ms": 1.9}}',
+            "resolved",
+        ),
+        (
+            '{"api.deepseek.com": {"error": "gaierror: [Errno -3] Try again", '
+            '"elapsed_ms": 8000.0}}',
+            "error",
+        ),
+    ],
+)
+def test_dns_probe_parses_resolved_and_error(tmp_path, monkeypatch, stdout_json, key):
+    """The DNS probe (Advisor 14:42Z step a) reports either a resolved host or
+    the getaddrinfo error text, each with elapsed_ms. Two inputs."""
+    import subprocess
+
+    monkeypatch.setattr(
+        "app.factory.build.agent_confine.confinement_popen_kwargs",
+        lambda cwd, exe: {},
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _FakeCompleted(stdout_json),
+    )
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    host = next(h for h in result if not h.startswith("_"))
+    assert key in result[host]
+    assert "elapsed_ms" in result[host]
+
+
+@pytest.mark.parametrize(
+    "value,needle",
+    [
+        ({"resolved": ["1.2.3.4", "5.6.7.8"], "elapsed_ms": 2.1}, "resolved 1.2.3.4,5.6.7.8"),
+        ({"error": "gaierror: Try again", "elapsed_ms": 8000.0}, "error gaierror: Try again"),
+        ("a plain string", "a plain string"),
+    ],
+)
+def test_fmt_dns_probe_resolved_error_and_scalar(value, needle):
+    """Each probe result shape formats differently (kills constant_return)."""
+    assert needle in _fmt_dns_probe(value)
+
+
+def test_dns_probe_records_a_generic_spawn_failure(monkeypatch, tmp_path):
+    """Any unexpected subprocess failure is recorded as _probe_error, never
+    raised (kills the drop_rule mutant on the except Exception branch)."""
+    import subprocess
+
+    monkeypatch.setattr(
+        "app.factory.build.agent_confine.confinement_popen_kwargs",
+        lambda cwd, exe: {},
+    )
+
+    def _boom(*a, **k):
+        raise TypeError("no context manager")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    assert "_probe_error" in result
+    assert "TypeError" in result["_probe_error"]
+
+
+def _fake_run_raiser(exc):
+    def _raise(*a, **k):
+        raise exc
+
+    return _raise
+
+
+class _NonZeroProc:
+    returncode = 75
+    stdout = ""
+    stderr = "exit 75 tail"
+
+
+class _NonJsonProc:
+    returncode = 0
+    stdout = "not json at all"
+    stderr = ""
+
+
+@pytest.mark.parametrize(
+    "patch,needle",
+    [
+        # Confinement unavailable (no Landlock) -> recorded, never raised.
+        ("confinement", "confinement unavailable"),
+        # subprocess timeout -> recorded.
+        ("timeout", "timeout"),
+        # OSError on spawn -> recorded.
+        ("oserror", "spawn failed"),
+        # non-zero exit with no parseable receipt -> recorded.
+        ("nonzero", "exit 75"),
+        # zero exit, non-JSON stdout -> recorded.
+        ("nonjson", "non-JSON"),
+    ],
+)
+def test_dns_probe_records_every_failure_shape(monkeypatch, tmp_path, patch, needle):
+    """Each failure branch of _dns_probe returns a typed _probe_error instead of
+    raising (kills drop_rule mutants on every branch)."""
+    import subprocess
+
+    from app.factory.build.agent_confine import ConfinementUnavailable
+
+    if patch == "confinement":
+        monkeypatch.setattr(
+            "app.factory.build.agent_confine.confinement_popen_kwargs",
+            lambda cwd, exe: (_ for _ in ()).throw(ConfinementUnavailable("no landlock")),
+        )
+    else:
+        monkeypatch.setattr(
+            "app.factory.build.agent_confine.confinement_popen_kwargs",
+            lambda cwd, exe: {},
+        )
+    if patch == "timeout":
+        monkeypatch.setattr(
+            subprocess, "run", _fake_run_raiser(subprocess.TimeoutExpired("x", 1))
+        )
+    elif patch == "oserror":
+        monkeypatch.setattr(subprocess, "run", _fake_run_raiser(OSError("spawn")))
+    elif patch == "nonzero":
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NonZeroProc())
+    elif patch == "nonjson":
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NonJsonProc())
+
+    result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
+    assert "_probe_error" in result
+    assert needle in result["_probe_error"]

@@ -7,7 +7,8 @@ self-verified against it; the Factory stamped the 22-check harness only after
 the writer; the Store gate then failed three product checks the writer never
 measured and ended the run with no writer round. Owner rule: every gate's
 failure is classified from data (advisory / regenerate test / rework / stop);
-2 rework rounds PER GATE, a 6-round ceiling per build; the same check failing
+1 rework round PER GATE (ORDERS_08NOV_1330Z cap 1), a 6-round ceiling per
+build; the same check failing
 the same way twice stops at once, at any gate; a stop reads
 FAILED(<gate>, <check>, <finding>) and is never resumed into a fresh workspace.
 """

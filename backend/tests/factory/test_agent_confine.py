@@ -286,3 +286,22 @@ def test_rights_for_char_device_gets_dev_and_others_rx(monkeypatch, stat_result,
 
     monkeypatch.setattr(os, "stat", fake_stat)
     assert agent_confine._rights_for("/fake/path") == expected
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("HTTPS_PROXY", "http://proxy.internal:3128"),
+        ("http_proxy", "http://proxy.internal:3128"),
+        ("NO_PROXY", ".internal,localhost"),
+        ("RES_OPTIONS", "attempts:2 timeout:1"),
+    ],
+)
+def test_scoped_env_passes_resolver_and_proxy_through(key, value):
+    """The writer child must inherit resolver/proxy config or its DNS lookup
+    fails deterministically while the CLONER (full env) resolves fine.
+    Secrets are still dropped. Two inputs (proxy/resolver keys)."""
+    parent = {key: value, "PATH": "/usr/bin", "SMOKE_GATE_TOKEN": "dummy-secret"}
+    env = scoped_child_env(parent, {}, home="/srv/x", tmp="/srv/x")
+    assert env[key] == value
+    assert "SMOKE_GATE_TOKEN" not in env

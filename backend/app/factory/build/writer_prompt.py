@@ -16,6 +16,14 @@ from app.factory.build.acceptance_floor import (
 )
 
 #: Version log.
+#: v17 -- SOURCE OF RECORD + REQUIREMENTS COVERAGE. The grader returned
+#:   NOT_CERTIFIED on contract_and_boq_source_of_record and
+#:   claim_review_and_dispute_resolution: the writer only ever received
+#:   one-line capability descriptions, never the customer's per-capability
+#:   requirements (clause/BOQ/traceability asks), and the prompt had no
+#:   source-of-record contract for immutable document ingestion. Capability
+#:   specs now carry requirements (architect-filled), the brief renders them
+#:   verbatim, and this prompt states both contracts.
 #: v14 -- THE LOAD RULE, STATED. The WRITER gate refuses a locked block that
 #:   loads from anywhere but its locked path (image_sufficiency._misloaded);
 #:   the prompt never said so. Two cycle-9 writers loaded every block from a
@@ -112,7 +120,15 @@ from app.factory.build.acceptance_floor import (
 #:   when neither the kernel nor the Store covers it. The DEPTH rule now states
 #:   the ruling, and FORMULA SOURCES lists the kernel definition_index() and
 #:   the Store coverage index for the vertical (formula_resolution), in order.
-PROMPT_VERSION = "writer_worker_prompt.v15"
+#: v16 -- REWORK FINDINGS CARRIED. A rework round seeded the staging tree from
+#:   the committed product (incremental rework), but the re-rendered prompt
+#:   never carried the previous pass's findings, so the agent had no "keep
+#:   what works, fix only these" to act on and re-authored the whole product
+#:   blind (pilot 42916369342: four NOT_CERTIFIED function grades became a
+#:   full INFRA/BACKEND/DEVOPS/FRONTEND/SECURITY rebuild). REWORK FINDINGS
+#:   now renders the work list (grader / gate findings) when one is set, and
+#:   states the checkout is not a blank slate.
+PROMPT_VERSION = "writer_worker_prompt.v17"
 
 _TEMPLATE = """You are the WRITER role of the CerebrumDev factory, manufacturing a
 governed platform. Work headless in this checkout. Produce real, runnable
@@ -128,7 +144,7 @@ PRODUCT
 
 BRIEF
 {brief}
-
+{rework_findings}
 TENANCY
 - One tenant per request, always. All corpus access goes through the
   tenant store resolved from the authenticated principal — never a
@@ -164,7 +180,7 @@ missing file is a missing gate, so write it all under this checkout root:
 - app/store.py and alembic/versions/0001_baseline.py (see PERSISTENCE)
 - tests/ — your own pytest files, runnable from the checkout root (never
   one of the Factory's files listed under FACTORY-OWNED FILES)
-- frontend/src/App.tsx, Dockerfile, README.md, requirements.txt
+- frontend/src/App.tsx, README.md, requirements.txt
 
 {locked_blocks}{build_context}FACTORY-OWNED FILES -- the Factory renders these into the product before or
 after your pass. Never create, edit or delete one: a pass that touches one
@@ -204,6 +220,26 @@ and the suite calls store.save("<capability>", ...), store.get("<capability>",
 called anything else is a KeyError in the suite, not a style choice; if you
 want a friendlier label, make it a column.
 
+SOURCE OF RECORD (capabilities that ingest external documents -- a contract,
+a BOQ, or any customer source of truth):
+- Ingested documents are immutable. Store each ingested document as a
+  content-addressed record -- the hash of its raw bytes is its id -- and
+  never edit a stored document in place.
+- Extract the clauses, lines or items the capability's REQUIREMENTS name,
+  each carrying its provenance (source document id + the clause/line
+  reference it came from), so every derived value traces back to its source.
+- Never overwrite an ingested record: a corrected document is a NEW version
+  with a new content address; the old version stays.
+- Every answer or record derived from an ingested source carries the
+  authority label of the layer it came from, so an operator can see where it
+  was sourced.
+- A clause/line id the REQUIREMENTS name must exist as a record and be
+  traceable end to end: a record is retrievable by its source document id +
+  its clause/line id, and every derived answer carries that record id. The
+  grader checks exactly that.
+- What you cannot parse (scans, unusual encodings) is a named blocker in
+  your report, never a stub that stores the filename and pretends.
+
 MONEY (country, currency, tax):
 - Country, currency and every tax rate (VAT, sales tax, withholding) come
   from the BRIEF. When the brief names them, use exactly those.
@@ -239,8 +275,8 @@ UI (a pilot is deployed and tested, so what it serves must work):
   carries the operator contract, so a screen built beside it rather than on it
   is not the platform's UI -- build the craft on top of the block, not around
   it.
-- The platform serves ONE UI. You ship frontend/ and the Dockerfile; either
-  the image builds the frontend and serves it, or you do not ship a frontend
+- The platform serves ONE UI. You ship frontend/; either the Factory's
+  Dockerfile builds the frontend and serves it, or you do not ship a frontend
   at all. A UI nothing builds is decoration, and the gate refuses it.
 - What it serves reaches the platform: at least two capabilities driven from
   the UI, not one. Every route the UI calls must answer -- the gate boots the
@@ -257,8 +293,12 @@ UI (a pilot is deployed and tested, so what it serves must work):
 {acceptance_floor}
 
 {formula_sources}DEPTH (the gates are the bar, and you can reach them yourself):
-- Run them before you yield. The code-phase suite is
-  ``python -m pytest -m "not pilot" -q`` from this checkout root. Fix what it
+- Run the self-check before you yield: ``python scripts/factory_checks.py``
+  from this checkout root. It runs the WRITER gate's own probe (F1/F11/schema)
+  and the targeted tests for the files YOU changed -- nothing else. Do NOT run
+  the code-phase suite (``python -m pytest -m "not pilot" -q``) or TESTER's
+  product suites: those are the gates' own checks and they run after your
+  pass; re-running them here is what times you out. Fix what the self-check
   reports and run it again. Then exercise each capability the way the harness
   will: POST a record, GET it back, confirm it persisted for the caller's
   tenant. A failure you find is a failure you fix; a failure you leave costs a
@@ -297,6 +337,15 @@ UI (a pilot is deployed and tested, so what it serves must work):
   -- ship the ingest/query surface, never seed documents.
 - You have the wall. Use it: a shallow pass that ends early is sent back.
 
+REQUIREMENTS COVERAGE (read the BRIEF capability by capability):
+- Each capability's REQUIREMENTS are the customer's own asks for THAT
+  capability, rendered verbatim under its capability line in the BRIEF.
+  Satisfy every one of them in code and assert it with a test of yours —
+  one test per requirement, each constructing its own input.
+- Your final report lists, per capability, each requirement and the
+  file + test that satisfies it. A requirement with no code and no test is
+  unfinished work -- do not yield with one outstanding.
+
 SPECIALISTS (five of them, and you have agents — use them):
 A platform is not one job, and a single undifferentiated pass reliably ships
 a backend with no deployment story and no threat model. Delegate each of the
@@ -309,14 +358,17 @@ previous agent left. Name the specialist in your progress log
   message, not at 3am inside a request.
 - BACKEND: capabilities, persistence, tenancy, the domain decisions the
   brief asked for. This is the pass DEPTH above is written about.
-- FRONTEND: the one console at app/static/index.html, driving at least two
-  capabilities against the real routes, showing the authority label on every
-  answer. A page that lists routes it never calls is a facade.
+- FRONTEND: the console shell at app/static/index.html is the Factory's and
+  is already present when you start -- it reads /v1/capabilities at load and
+  builds a route per declared capability, so it drives whatever the product
+  ships. Do not author or edit it (it is a Factory-owned file). Customise ON
+  TOP: your frontend/ modules add the operator surfaces this brief asks for,
+  built on the shipped console and the block ui_schema, not beside them.
 - DEVOPS: a DevOps team receives this and must deploy it without you. The
-  Dockerfile builds every asset the app serves, the healthcheck answers
-  before traffic, migrations run on boot, and README says how to run it and
-  what to set. Build the image yourself and start it before you believe any
-  of that.
+  Dockerfile is Factory-rendered and already builds every asset the app
+  serves; the healthcheck answers before traffic, migrations run on boot, and
+  README says how to run it and what to set. Build the image yourself and
+  start it before you believe any of that.
 - SECURITY: go back over what the other four passes wrote and attack it.
   Authz on every route that touches tenant data, not just authn. No secret
   in the image, the logs, or an error body. Every external input validated
@@ -367,6 +419,53 @@ Everything below is the original brief, unchanged.
 """
 
 
+#: Where the SPECIALISTS block starts and where the section after it starts:
+#: the block is ONE text, rendered whole into a single writer's prompt or cut
+#: out of it when the Factory runs the specialists itself (F-S2c).
+SPECIALISTS_HEAD = "SPECIALISTS (five of them"
+_AFTER_SPECIALISTS = "PROGRESS LOG (the operator watches"
+#: The writer session's own hat when the Factory dispatches the others.
+WRITER_SPECIALIST = "BACKEND"
+
+
+def specialist_scopes() -> Dict[str, str]:
+    """``{NAME: scope text}`` for each ``- NAME:`` hat in the SPECIALISTS
+    block, read from the template itself -- one source for the single-writer
+    prompt and for each Factory-dispatched specialist session."""
+    start = _TEMPLATE.index(SPECIALISTS_HEAD)
+    block = _TEMPLATE[start : _TEMPLATE.index(_AFTER_SPECIALISTS, start)]
+    scopes: Dict[str, List[str]] = {}
+    current: Optional[str] = None
+    for line in block.splitlines():
+        head, sep, rest = line[2:].partition(":")
+        if line.startswith("- ") and sep and head.isupper() and head.isalpha():
+            current = head
+            scopes[current] = [rest.strip()]
+        elif current is not None and line.startswith("  "):
+            scopes[current].append(line.strip())
+        else:
+            current = None
+    return {name: " ".join(lines) for name, lines in scopes.items()}
+
+
+def _fanout_scope_section(dispatched: Sequence[str]) -> str:
+    """What replaces the SPECIALISTS block when the Factory runs the other
+    hats as their own sessions: this session's own hat, and who does the rest."""
+    others = ", ".join(dispatched)
+    return (
+        f"YOUR SCOPE: {WRITER_SPECIALIST} (the Factory runs {others} as their "
+        "own sessions -- do not do their work, and do not start agents for it):\n"
+        f"{specialist_scopes()[WRITER_SPECIALIST]}\n\n"
+    )
+
+
+def _cut_specialists_block(body: str, dispatched: Sequence[str]) -> str:
+    """``body`` with its SPECIALISTS block replaced by the fan-out scope."""
+    start = body.index(SPECIALISTS_HEAD)
+    end = body.index(_AFTER_SPECIALISTS, start)
+    return body[:start] + _fanout_scope_section(dispatched) + body[end:]
+
+
 def _factory_owned_lines() -> str:
     """The declared list (factory_owned.factory_owned_paths), one per line."""
     from app.factory.build.factory_owned import factory_owned_paths
@@ -395,10 +494,9 @@ def _build_context_section(runtime_paths: Sequence[str]) -> str:
         "loads the paths below at runtime. They are already in the product tree,",
         "sealed -- never create, edit or delete them -- and they are",
         "not in this checkout: their absence here is not absence from the build.",
-        "The Dockerfile's final stage must COPY each directory below into the image",
-        "under its WORKDIR (COPY . . does, or one COPY line per directory), and",
-        ".dockerignore must not exclude it. The writer gate lays the image out from",
-        "the merged tree and refuses one that cannot load them.",
+        "The Factory renders the Dockerfile (COPY . .) and .dockerignore so the",
+        "image carries them; you never author either one. The writer gate lays",
+        "the image out from the merged tree and refuses one that cannot load them.",
     ]
     for root in sorted(roots):
         lines.append(f"- {root}/")
@@ -433,6 +531,27 @@ def _locked_blocks_section(locked_blocks: Mapping[str, Sequence[str]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _rework_findings_section(findings: Sequence[str]) -> str:
+    """The previous pass's findings, carried into a rework round.
+
+    The incremental-rework seed already left the committed product in the
+    staging tree, so a rework is a patch-in-place pass -- but the agent only
+    knows that if the prompt names what failed. No findings, no section
+    (a first pass has none)."""
+    rows = [str(f).strip() for f in findings or () if str(f).strip()]
+    if not rows:
+        return ""
+    lines = [
+        "REWORK FINDINGS -- a previous pass of yours was graded and these findings",
+        "were returned. This checkout already carries that pass's work; it is NOT",
+        "a blank slate. Do not rebuild the platform from scratch. Keep every",
+        "file and capability not named below exactly as it is, and fix only",
+        "what these name:",
+    ]
+    lines.extend(f"- {row}" for row in rows)
+    return "\n".join(lines) + "\n"
+
+
 def render_writer_prompt(
     blueprint: Any,
     *,
@@ -445,8 +564,14 @@ def render_writer_prompt(
     kernel_index: Sequence[Mapping[str, Any]] = (),
     store_index: Sequence[Mapping[str, Any]] = (),
     store_sha: Optional[str] = None,
+    findings: Sequence[str] = (),
+    dispatched_specialists: Sequence[str] = (),
 ) -> str:
     """Fill the template from the brief. Deterministic by construction.
+
+    ``dispatched_specialists`` (F-S2c): the hats the Factory runs as their
+    own sessions. When non-empty the SPECIALISTS block is dropped and this
+    session is told its own scope instead.
 
     ``specialist_workers`` is how many specialist agents the writer may run
     at once. It is a property of the BOX, so the caller reads it from the
@@ -466,6 +591,10 @@ def render_writer_prompt(
     (kernel definition_index(), formula_resolution.store_coverage_index(),
     store_pin) and rendered as FORMULA SOURCES in resolution order.
 
+    ``findings`` are the work list a rework round was handed (grader / gate
+    findings); when non-empty they render as REWORK FINDINGS telling the
+    agent to patch in place and fix only those. A first pass passes none.
+
     Brief/summary text is inserted verbatim: str.format interprets braces
     only in the template, never in values, so user/model content passes
     through untouched.
@@ -480,6 +609,7 @@ def render_writer_prompt(
         vertical=vertical,
         summary=summary,
         brief=(brief or "").strip(),
+        rework_findings=_rework_findings_section(findings),
         specialist_workers=max(1, int(specialist_workers or 1)),
         factory_owned=_factory_owned_lines(),
         build_context=_build_context_section(runtime_paths),
@@ -491,6 +621,35 @@ def render_writer_prompt(
         # K-F7: what already exists, in the order the ruling resolves it.
         formula_sources=render_resolution_section(kernel_index, store_index, store_sha),
     )
+    if dispatched_specialists:
+        body = _cut_specialists_block(body, dispatched_specialists)
     if resume:
         body = _RESUME_PREFACE + body
     return f"<!-- {version} -->\n" + body
+
+
+#: The build-state key holding what the writer was actually told, recorded at
+#: dispatch on every writer path (FG-4). The grader reads it through
+#: :func:`dispatched_writer_inputs` and nothing else.
+DISPATCH_STATE_KEY = "writer_dispatch"
+
+
+class DispatchRecordMissing(LookupError):
+    """No writer dispatch was recorded for this build: an error about the run."""
+
+
+def record_writer_dispatch(state: Dict[str, Any], *, supplied: str, brief: str, prompt: str) -> None:
+    """Record, at dispatch, the user-supplied brief, the brief section the
+    writer was handed and the full prompt it was given."""
+    state[DISPATCH_STATE_KEY] = {"supplied": str(supplied or ""), "brief": str(brief or ""), "prompt": str(prompt or "")}
+
+
+def dispatched_writer_inputs(state: Mapping[str, Any]) -> Dict[str, str]:
+    """The recorded dispatch. A missing or empty record raises
+    :class:`DispatchRecordMissing` -- never a reconstructed fallback."""
+    record = state.get(DISPATCH_STATE_KEY)
+    if not isinstance(record, Mapping) or not str(record.get("prompt") or "").strip():
+        raise DispatchRecordMissing(
+            "no writer dispatch was recorded for this build: the grader cannot read what the writer was told"
+        )
+    return {key: str(record.get(key) or "") for key in ("supplied", "brief", "prompt")}

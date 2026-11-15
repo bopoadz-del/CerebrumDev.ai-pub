@@ -168,6 +168,7 @@ Return ONLY a JSON object with this shape:
     {
       "id": "<snake_case capability id>",
       "description": "<what this capability does>",
+      "requirements": ["<the customer's own asks for THIS capability, one verbatim clause/line each>"],
       "block_ids": ["<ids from the AVAILABLE BLOCKS list only>"],
       "strategy_hint": "REUSE",
       "connectors": ["<external systems this capability calls that no AVAILABLE BLOCK supplies>"]
@@ -181,6 +182,10 @@ Rules:
   they called the work and who it is for -- and keep it plain. Never invent a
   brand, a product line, or a word the user did not use.
 - 3 to 8 capabilities, ordered by importance.
+- requirements carries the customer's own asks for that ONE capability,
+  verbatim where the brief gave them (a clause list, a BOQ line set, a
+  traceability demand). Use [] when the brief says nothing specific for it.
+  Never summarize away a requirement the customer named.
 - block_ids may ONLY contain ids from the AVAILABLE BLOCKS list. Never invent ids.
 - If no available block fits a capability, use "block_ids": [] and
   "strategy_hint": "GENERATE".
@@ -355,6 +360,52 @@ def _snake_slug(text: str, default: str = "product") -> str:
     return slug or default
 
 
+def _deterministic_closure(
+    vertical: str, brief: str, dual_ids: Any
+) -> frozenset:
+    """The block closure a draft may vendor for one vertical + brief.
+
+    The model can propose blocks; this is the set it is ALLOWED to keep. It
+    is a pure function of the pinned Store + typed vertical + brief: the
+    vertical's serving kit blocks, every block the Store declares governance,
+    and any dual-registered block the brief names by id. No Store reachable ->
+    only the brief-named blocks survive, so the model never invents domain
+    depth when the pin cannot say what it holds.
+    """
+    from app.factory.store_kits import kit_closure
+
+    dual = set(dual_ids or ())
+    allowed = set(kit_closure(vertical))
+    text = (brief or "").lower()
+    for bid in dual:
+        if bid in text or bid.replace("_", " ") in text:
+            allowed.add(bid)
+    return frozenset(allowed & dual)
+
+
+def _sanitize_requirements(value: Any) -> List[str]:
+    """Keep only the customer's real clause-level asks, bounded.
+
+    The architect LLM may return junk shapes (nested dicts, blanks, whole
+    briefs). Fail-safe content handling: drop non-strings, trim, cap each
+    item and the count. Requirements are a passthrough — this function never
+    invents or rewrites them.
+    """
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text:
+            continue
+        out.append(text[:400])
+        if len(out) >= 12:
+            break
+    return out
+
+
 def _blueprint_from_llm_payload(
     data: Dict[str, Any],
     brief: str,
@@ -370,6 +421,10 @@ def _blueprint_from_llm_payload(
         raise ValueError("LLM draft is not a JSON object")
 
     dual = set(dual_ids)
+    from app.factory.store_kits import chosen_vertical
+
+    vertical = chosen_vertical(vertical_hint)
+    allowed = _deterministic_closure(vertical, brief, dual)
     raw_caps = data.get("capabilities")
     if not isinstance(raw_caps, list) or not raw_caps:
         raise ValueError("LLM draft has no capabilities")
@@ -381,8 +436,14 @@ def _blueprint_from_llm_payload(
         cap_id = _slug(str(item.get("id", "")), default="")
         if not cap_id:
             continue
+        # The model may propose blocks, but the closure it may vendor is the
+        # deterministic one for this vertical + brief (kit blocks + governance
+        # + blocks the brief names). Identical pin + vertical -> identical
+        # closure, so the build never inherits the model's free pick.
         block_ids = [
-            b for b in item.get("block_ids", []) if isinstance(b, str) and b in dual
+            b
+            for b in item.get("block_ids", [])
+            if isinstance(b, str) and b in dual and b in allowed
         ]
         # A connector a block supplies is that block, not a placeholder.
         connectors = [
@@ -397,17 +458,47 @@ def _blueprint_from_llm_payload(
                 or f"Capability {cap_id}",
                 "block_ids": block_ids,
                 "strategy_hint": "REUSE" if block_ids else "GENERATE",
+                "requirements": _sanitize_requirements(item.get("requirements")),
                 "connectors": connectors,
             }
         )
     if not caps:
         raise ValueError("LLM draft produced no usable capabilities")
 
+    # The closure is the source of record, not a filter on the model's pick:
+    # the model chooses WHERE a closure block goes, it cannot drop one. Every
+    # closure block no capability bound is bound anyway, the way the no-LLM
+    # draft binds a block: its own REUSE capability (or the capability that
+    # already carries its id). An empty closure adds nothing, so the draft
+    # stays an honest pure-GENERATE plan.
+    bound = {b for cap in caps for b in cap["block_ids"]}
+    for bid in sorted(allowed - bound):
+        same = next((c for c in caps if c["id"] == bid), None)
+        if same is not None:
+            same["block_ids"].append(bid)
+            same["strategy_hint"] = "REUSE"
+            continue
+        caps.append(
+            {
+                "id": bid,
+                "description": f"{bid.replace('_', ' ').title()} capability (reused from the block store)",
+                "block_ids": [bid],
+                "strategy_hint": "REUSE",
+                "connectors": [],
+            }
+        )
+
+    # An empty kit closure while the pinned registry holds blocks has two
+    # causes the draft cannot tell apart; say so instead of drafting silently.
+    from app.factory.store_kits import kit_closure
+
+    drafting_note = None
+    if dual and not kit_closure(vertical):
+        drafting_note = "closure empty: Store unreachable or vertical has no kit"
+        logger.warning("architect draft: %s (vertical=%s)", drafting_note, vertical)
+
     # The vertical is the USER's choice (the Floor's typed field), never the
     # model's reading of the brief: a "vertical" key in the payload is ignored.
-    from app.factory.store_kits import chosen_vertical
-
-    vertical = chosen_vertical(vertical_hint)
     product_name = str(data.get("product_name", "")).strip()[:120] or vertical.replace(
         "_", " "
     ).title()
@@ -428,6 +519,7 @@ def _blueprint_from_llm_payload(
         "connectors": list(dict.fromkeys(c for cap in caps for c in cap["connectors"])),
         "edge_profile": "standard",
         "human_authority": True,
+        "drafting_note": drafting_note,
     }
     return ProductBlueprint.model_validate(raw)
 

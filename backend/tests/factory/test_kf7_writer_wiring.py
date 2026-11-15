@@ -109,6 +109,7 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
         blueprint = _BP("v")
         workspace = _WS() if elsewhere else None
         state = {}
+        deadline_box = None  # RoleContext field; no runner bound in this stub
 
         def note(self, msg, **kw):
             notes.append(msg)

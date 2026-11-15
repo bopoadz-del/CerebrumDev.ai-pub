@@ -92,12 +92,14 @@ def test_touching_factory_files_spends_no_rework_budget(tmp_path):
         _product_finding("quillfeather_second", "app/zorblat.py:9: the second real finding"),
     ])
     kinds = [d.kind for d in decisions]
-    assert kinds == ["REPROMPT", "REPROMPT", "REWORK", "REWORK"], [(d.kind, d.detail) for d in decisions]
+    # Rework cap 1 (1330Z): the two factory-file touches still spend no
+    # rework (REPROMPT); the first real finding gets the ONE rework; the
+    # second stops the run.
+    assert kinds == ["REPROMPT", "REPROMPT", "REWORK", "STOP"], [(d.kind, d.detail) for d in decisions]
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
     assert not [e for e in reworks if TOUCHED in (e.detail or "")]
-    # Both real findings were heard, each in its own rework round.
     assert any("the first real finding" in e.detail for e in reworks)
-    assert any("the second real finding" in e.detail for e in reworks)
+    assert any("the second real finding" in d.detail for d in decisions if d.kind == "STOP")
 
 
 def test_the_reprompt_names_the_touched_files(tmp_path):

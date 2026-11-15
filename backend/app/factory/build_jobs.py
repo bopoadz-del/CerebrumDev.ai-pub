@@ -1647,13 +1647,36 @@ def _run(
     )
     max_rework = _max_rework(cycle, auto_pilot=auto)
     try:
+        # The plan is computed ONCE here and handed in: the plan-time budget
+        # class (0605Z owner ruling) comes from the planner's no-Store-block
+        # share, and the runner must build against the SAME plan whose class
+        # chose the wall.
+        from app.factory.planner import CapabilityPlanner, assert_generatable
+
+        # Same resolution the runner does for a falsy root, BEFORE planning:
+        # the planner's class computation must see the same Store the build
+        # will clone from.
+        if not blocks_root:
+            from app.factory.blocks_source import resolve_blocks_root
+
+            blocks_root = resolve_blocks_root()
+        plan = assert_generatable(CapabilityPlanner(blocks_root).plan(blueprint))
+        wall = _wall_clock_s(cycle, auto_pilot=auto)
+        if not os.getenv(BUILD_WALL_CLOCK_ENV):
+            # No operator-pinned wall: the plan class picks it (30 min small,
+            # 40 min new-platform). One config, no literals here.
+            from app.factory.build.budget_inspect import NEW_PLATFORM_WALL_S
+
+            if str(getattr(plan, "budget_class", "small") or "small") == "new_platform":
+                wall = NEW_PLATFORM_WALL_S
         runner = RoleRunner(
             blueprint,
             output_dir,
             blocks_root=blocks_root,
+            plan=plan,
             budget=BuildBudget(
                 max_rework=max_rework,
-                wall_clock_s=_wall_clock_s(cycle, auto_pilot=auto),
+                wall_clock_s=wall,
                 phase_wall_clock_s=_phase_wall_clock_s(
                     cycle, auto_pilot=auto
                 ),
@@ -1758,9 +1781,13 @@ def _run(
     _clear_quota_marker(output_dir)
 
 
-def _record_platform(ledger: Any, platform_id: Optional[str], *, resumed_failed: bool) -> None:
-    """Record the platform's branch of record once, and -- on a Floor resume
-    of a failed run -- the rework-budget reset the runner rule counts from."""
+def _record_platform(ledger: Any, platform_id: Optional[str]) -> None:
+    """Record the platform's branch of record once.
+
+    A Floor resume of a failed run records no rework-budget reset: a resume
+    continues the same build with the rounds it had left (REWORK_BUDGET as
+    the owner set it). Only Start over -- a fresh workspace and ledger --
+    begins with the full budget."""
     from app.factory.build.ledger import (
         PLATFORM_BRANCH_KEY,
         PLATFORM_ID_KEY,
@@ -1783,10 +1810,6 @@ def _record_platform(ledger: Any, platform_id: Optional[str], *, resumed_failed:
                     PLATFORM_BRANCH_KEY: branch_of_record(platform_id),
                 },
             )
-    if resumed_failed:
-        from app.factory.build.rule_decision import reset_rework_budget
-
-        reset_rework_budget(ledger, reason="the platform was resumed from the Floor")
 
 
 def start_runner_build(
@@ -1857,7 +1880,6 @@ def start_runner_build(
     ledger = BuildLedger(_ledger_path(out))
     fresh_workspace = False
     fresh_reason = ""
-    resumed_failed = False
     had_ledger = ledger.exists()
     if ledger.exists():
         status = build_status(out)
@@ -1921,7 +1943,6 @@ def start_runner_build(
                 out,
             )
         if status.get("state") == "failed" and not start_over:
-            resumed_failed = True
             if intake_changed and ledger.inputs_hash() not in (None, inputs_hash):
                 # Continue with new answers: the intake (locale, level,
                 # vertical) is part of the frozen blueprint, so the inputs
@@ -1987,7 +2008,7 @@ def start_runner_build(
 
             ledger.append(EventKind.NOTE, detail=fresh_reason, payload={"fresh": True})
 
-    _record_platform(ledger, platform_id, resumed_failed=resumed_failed)
+    _record_platform(ledger, platform_id)
 
     if attach_branch:
         from app.factory.build.authority import BuildRole
@@ -2012,6 +2033,11 @@ def start_runner_build(
         )
 
     _write_quota_marker(out, quota_account_id)
+    # F-U1a: a build starts running. A Stop left by an earlier build of this
+    # workspace belongs to that build, never to this one.
+    from app.factory.build.coder_session_status import CONTROL_RUN, write_control
+
+    write_control(out, CONTROL_RUN)
 
     # Phase 1 tenant isolation: bind the store handle from the
     # authenticated identity BEFORE the thread starts. An unauthenticated

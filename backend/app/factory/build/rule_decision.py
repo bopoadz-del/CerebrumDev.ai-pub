@@ -52,9 +52,10 @@ def stop_status(rec: Dict[str, Any]) -> str:
 
 
 def reset_rework_budget(ledger: Any, *, reason: str) -> None:
-    """THE entry point a resume calls to give every gate its full budget back.
+    """Give every gate its full budget back (one NOTE in the ledger).
 
-    Appends one NOTE; the runner counts rework rounds (per gate and for the
+    A Floor resume does NOT call this: a resume continues the same build with
+    the rounds it had left. Appends one NOTE; the runner counts rework rounds (per gate and for the
     ceiling) only after the last reset. Same-failure-twice history resets
     with it: a resumed build is judged on what fails from here.
     """

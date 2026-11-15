@@ -13,20 +13,23 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
+
+import pytest
 
 from app.factory.build.authority import BuildRole
 from app.factory.build.declared_specs import merge_declared_specs, specs_from_product_models
 from app.factory.build.product_suites import (
     DOMAIN_SUITE,
-    PRODUCT_SUITES,
     ROUTES_SUITE,
     SMOKE_SUITE,
 )
 from app.factory.build.roles import RoleContext, run_tester
 from app.factory.build.workspace import RoleWorkspace
-from app.factory.build.writer_behaviour import render_self_check
+from app.factory.build.writer_behaviour import (
+    render_self_check,
+    select_targeted_tests,
+)
 
 CAP = "kiln_board"
 NEEDED = "kiln_ref"
@@ -107,10 +110,21 @@ def _ctx(root: Path, state_specs: dict) -> RoleContext:
 STALE = {CAP: {"entity": CAP, "fields": [{"name": "reference", "type": "str"}]}}
 
 
-def _self_check_ns() -> dict:
+def _self_check_ns(stamp: Path | None = None) -> dict:
     ns: dict = {"__name__": "factory_checks"}
+    if stamp is not None:
+        ns["__file__"] = str(stamp)
     exec(compile(render_self_check(), "factory_checks.py", "exec"), ns)
     return ns
+
+
+def _stamp(root: Path, mtime: float) -> dict:
+    """Write the self-check and pin its mtime so the pass-start marker is fixed."""
+    stamp = root / "scripts" / "factory_checks.py"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(render_self_check(), encoding="utf-8")
+    os.utime(stamp, (mtime, mtime))
+    return _self_check_ns(stamp)
 
 
 def _env() -> dict:
@@ -153,37 +167,101 @@ def test_tester_samples_the_field_the_product_declares_not_the_stale_spec(tmp_pa
         assert (root / rel).is_file(), rel
 
 
-def test_self_check_runs_the_suites_on_disk_and_names_the_failing_test(tmp_path):
-    ns = _self_check_ns()
-    assert ns["SUITES"] == PRODUCT_SUITES
+@pytest.mark.parametrize("declares_needed", [False, True])
+def test_self_check_re_runs_nothing_when_no_file_changed(tmp_path, declares_needed):
     root = tmp_path / "build"
-    # First writer pass: nothing stamped yet -> nothing to report, no crash.
     root.mkdir()
-    assert ns["run_suites"](str(root), _env()) == []
+    ns = _stamp(root, mtime=1_000)
 
-    # The writer's handler requires NEEDED but the model never declared it:
-    # TESTER's suite (rendered from the model) sends no NEEDED -> red, and the
-    # self-check names the failing product-gate test before TESTER judges.
+    # First writer pass: no app files yet -> nothing to report, no crash.
+    assert ns["run_targeted_tests"](str(root), _env()) == []
+
+    # After TESTER stamps its suites, the stamp is newer than every app file:
+    # nothing changed -> the writer re-runs nothing (the gate owns the suites).
+    _product(root, declares_needed=declares_needed)
+    assert run_tester(_ctx(root, STALE)).ok
+    ns2 = _stamp(root, mtime=2_000_000_000)
+    assert ns2["run_targeted_tests"](str(root), _env()) == []
+
+
+@pytest.mark.parametrize(
+    "unrelated", ["tests/test_unrelated.py", "tests/test_other.py"]
+)
+def test_self_check_runs_only_the_tests_referencing_the_changed_file(
+    tmp_path, monkeypatch, unrelated
+):
+    root = tmp_path / "build"
     _product(root, declares_needed=False)
     assert run_tester(_ctx(root, STALE)).ok
-    ns["SUITES"] = (SMOKE_SUITE,)
-    failures = ns["run_suites"](str(root), _env())
-    assert any("test_every_capability_executes_end_to_end" in f for f in failures), failures
 
-    # The writer declares the field in its model; TESTER re-stamps from the
-    # model; the same self-check is now clean and TESTER's suite passes.
-    _product(root, declares_needed=True)
-    assert run_tester(_ctx(root, STALE)).ok
-    assert ns["run_suites"](str(root), _env()) == []
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         "-m", "pilot or not pilot", SMOKE_SUITE],
-        cwd=root, capture_output=True, text=True, env=_env(), timeout=600,
+    # An unrelated test file the selection must NOT run.
+    _write(root, unrelated, "def test_unrelated():\n    assert True\n")
+
+    # Pin the stamp as the pass-start marker (newer than everything seeded).
+    ns = _stamp(root, mtime=2_000_000_000)
+
+    # The writer touches the handler; nothing else moves. Pin its mtime after
+    # the stamp so it is the one app file this pass changed.
+    handler = root / "app" / "actions" / f"{CAP}.py"
+    handler.write_text(handler.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
+    os.utime(handler, (3_000_000_000, 3_000_000_000))
+
+    seen = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: seen.append(argv)
+        or type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
-    assert proc.returncode == 0, proc.stdout[-2000:]
+
+    assert ns["run_targeted_tests"](str(root), _env()) == []
+    assert len(seen) == 1, "exactly one pytest invocation for the changed file"
+    argv = seen[0]
+    # The smoke suite references the capability the writer touched.
+    assert SMOKE_SUITE in argv
+    # The unrelated test file (and the rest of the suite) is not re-run.
+    assert unrelated not in argv
 
 
-def test_tester_rework_item_carries_the_recheck_command_and_failing_tests():
+@pytest.mark.parametrize(
+    "changed_sources,test_files,expected",
+    [
+        (
+            ["app/actions/kiln_board.py"],
+            [
+                ("tests/test_smoke.py", "from app.actions import kiln_board\n"),
+                ("tests/test_unrelated.py", "def test_health():\n    assert True\n"),
+            ],
+            ["tests/test_smoke.py"],
+        ),
+        (
+            ["app/actions/kiln_board.py"],
+            [
+                ("tests/test_unrelated.py", "def test_health():\n    assert True\n"),
+                ("tests/test_other.py", "def test_other():\n    assert 1 + 1 == 2\n"),
+            ],
+            [],
+        ),
+        (
+            # A changed ``__init__.py`` resolves to its package tokens, not
+            # the module name ``__init__`` (the strip branch is load-bearing).
+            ["app/actions/__init__.py"],
+            [
+                ("tests/test_smoke.py", "from app.actions import kiln_board\n"),
+                ("tests/test_unrelated.py", "def test_health():\n    assert True\n"),
+            ],
+            ["tests/test_smoke.py"],
+        ),
+    ],
+)
+def test_select_targeted_tests_picks_only_files_referencing_the_changed_source(
+    changed_sources, test_files, expected
+):
+    assert select_targeted_tests(changed_sources, test_files) == expected
+
+
+@pytest.mark.parametrize("failing_suite", [SMOKE_SUITE, ROUTES_SUITE])
+def test_tester_rework_item_names_the_self_check_not_the_failing_suite(failing_suite):
     from app.factory.build.runner import _tester_recheck_item
     from app.factory.build.writer_behaviour import SELF_CHECK_COMMAND
 
@@ -191,13 +269,13 @@ def test_tester_rework_item_carries_the_recheck_command_and_failing_tests():
         gate = "product_green"
         reason = "suite_red"
         findings = (
-            f"FAILED {SMOKE_SUITE}::test_every_capability_executes_end_to_end - "
+            f"FAILED {failing_suite}::test_every_capability_executes_end_to_end - "
             f"AssertionError: {CAP} rejected a payload built from its own schema: "
             f"{NEEDED} is required",
         )
         payload = {
             "failing_tests": [
-                {"nodeid": f"{SMOKE_SUITE}::test_every_capability_executes_end_to_end",
+                {"nodeid": f"{failing_suite}::test_every_capability_executes_end_to_end",
                  "outcome": "failure"}
             ]
         }
@@ -205,6 +283,9 @@ def test_tester_rework_item_carries_the_recheck_command_and_failing_tests():
     item = _tester_recheck_item(_Verdict())
     assert SELF_CHECK_COMMAND in item
     assert "FIELDS" in item
+    # F2: the re-check points at the self-check (targeted tests), never at a
+    # full `pytest -m "pilot or not pilot" <nodes>` re-run of the gate's suites.
+    assert "pilot or not pilot" not in item
     # Typed: a recheck item, never counted among the findings.
     from app.factory.build.product_suites import finding_items, recheck_items
 

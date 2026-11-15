@@ -11,7 +11,7 @@
 
 **Effective date:** `[[NEEDS INPUT: date of publication]]`
 **Provider:** `[[NEEDS INPUT: registered legal entity name, company number, registered address]]`
-**Contact:** `[[NEEDS INPUT: support/legal email address]]`
+**Contact:** support@cerebrum-dev.com
 
 ---
 
@@ -67,10 +67,9 @@ claim no ownership of either.
 
 You grant us a limited licence to process Your Content solely to operate the
 Service and produce Your Output — including transmitting it to the third-party
-model providers listed in the Privacy Policy. `[[NEEDS INPUT: confirm you do
-NOT want a broader licence, e.g. to use customer content to improve the
-Service. The current draft says you do not. If you ever want to train on
-customer content you must say so here explicitly and offer an opt-out.]]`
+model providers listed in the Privacy Policy. This licence is limited to
+operating the Service and producing Your Output. We do not train models on
+customer content and claim no broader right to use Your Content.
 
 You are responsible for ensuring you have the right to submit Your Content and
 that doing so does not infringe anyone else's rights or applicable law.
