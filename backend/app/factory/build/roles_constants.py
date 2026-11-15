@@ -723,15 +723,21 @@ def verify_locked_blocks() -> None:
     else:
         ids = [str(b.get("id") or "") for b in blocks or [] if isinstance(b, dict)]
     failed = []
+    unloadable = {}
     for block_id in [i for i in ids if i]:
         try:
             load_block(block_id)
         except Exception as exc:  # noqa: BLE001 -- every failure is named below
             failed.append("%s (%s: %s)" % (block_id, type(exc).__name__, exc))
+            unloadable[block_id] = exc
     if failed:
-        raise BlockNotVendored(
+        refusal = BlockNotVendored(
             "locked block(s) cannot be loaded; refusing to start: " + "; ".join(failed)
         )
+        # Typed, for whoever must tell a block that cannot load here from a
+        # caller's own failure: {locked block id: the exception it raised}.
+        refusal.unloadable = unloadable
+        raise refusal
 
 
 verify_locked_blocks()
