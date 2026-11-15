@@ -262,6 +262,7 @@ def inspect_build(
         "cli_blocker": flight["cli_blocker"],
         "cli_steps_since_inspect": flight["cli_steps_since_inspect"],
         "cli_files_grown_since_inspect": flight["cli_files_grown_since_inspect"],
+        "cli_files_on_disk": flight["cli_files_on_disk"],
         # Capability counts (ledger). File counts come from provenance
         # authorship — sess_d10dfc28 inspect said templated=0 while the
         # Floor later showed 29 templated *files*. Different counters.
@@ -440,6 +441,53 @@ def coder_stall_reason(snapshot: Mapping[str, Any], stage: str) -> str:
     )
 
 
+def phase_bounded_wall(
+    *, plan_wall_s: float, plan_wall_passes: int, phase_wall_s: float
+) -> Optional[float]:
+    """The wall a producing CLI may hold: max(plan wall x passes, phase
+    budget), never above ``CEILING_S``. The same bound ``_extend_wall``
+    applies to a progress-evidenced grant, so proposer and enforcer agree.
+    None when the runner has no budget to bound it."""
+    try:
+        plan = float(plan_wall_s or 0.0) * max(1, int(plan_wall_passes or 1))
+        phase = float(phase_wall_s or 0.0)
+    except (TypeError, ValueError):
+        return None
+    bound = max(plan, phase)
+    if bound <= 0:
+        return None
+    return min(bound, CEILING_S)
+
+
+def _progress_evidenced_grant(
+    snapshot: Mapping[str, Any],
+    *,
+    decision: str,
+    current_wall_s: float,
+    proposed_wall_s: Optional[float],
+    plan_wall_s: float,
+    plan_wall_passes: int,
+    phase_wall_s: float,
+) -> Optional[float]:
+    """The phase-bounded wall for an in-flight CLI with progress evidence,
+    or None. Never overrides a pilot-ready close or a stalled leg, and never
+    proposes a wall at or below what is already held or proposed."""
+    if decision in ("already_pilot_ready", "coder_stalled"):
+        return None
+    if not snapshot.get("cli_in_flight") or not cli_progress_evidenced(snapshot):
+        return None
+    bound = phase_bounded_wall(
+        plan_wall_s=plan_wall_s,
+        plan_wall_passes=plan_wall_passes,
+        phase_wall_s=phase_wall_s,
+    )
+    if bound is None:
+        return None
+    if bound <= max(float(current_wall_s or 0.0), float(proposed_wall_s or 0.0)):
+        return None
+    return bound
+
+
 def inspect_decision(
     *,
     elapsed_s: float,
@@ -449,8 +497,16 @@ def inspect_decision(
     state: Optional[Mapping[str, Any]] = None,
     workspace: Any = None,
     lead_s: float = 0.0,
+    plan_wall_s: float = 0.0,
+    plan_wall_passes: int = 1,
+    phase_wall_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Attach a continue/stop decision to an inspect snapshot.
+
+    ``plan_wall_s`` / ``plan_wall_passes`` / ``phase_wall_s``: the runner's
+    budget, so an in-flight CLI that shows progress since the last inspect is
+    granted the phase-bounded wall (``phase_bounded_wall``) at this inspect
+    (owner ruling F-W2b). Without progress evidence they change nothing.
 
     ``lead_s``: how far ahead of a stage mark the runner inspected because a
     coding-agent call is live (runner._maybe_stage_inspect). The in-flight
@@ -501,7 +557,7 @@ def inspect_decision(
             decision = "continue_stage_2"
             reason = (
                 f"inspect {stage}: FACTORY_CODE_CLI in-flight "
-                f"({watchdog_bit}, written={snapshot.get('agent_written')}, "
+                f"({watchdog_bit}, written={written_label(snapshot)}, "
                 f"stub_rate={snapshot.get('stub_rate')}) — bump wall "
                 f"{current_wall_s:g}s → {new_wall:g}s; not "
                 "FACTORY_CODE_CLI_UNUSED"
@@ -515,7 +571,7 @@ def inspect_decision(
             decision = "continue_ceiling"
             reason = (
                 f"inspect {stage}: FACTORY_CODE_CLI in-flight and progressing "
-                f"({watchdog_bit}, written={snapshot.get('agent_written')}, "
+                f"({watchdog_bit}, written={written_label(snapshot)}, "
                 f"phase={snapshot.get('phase_done')}/"
                 f"{snapshot.get('phase_total')}) — one inspect-gated bump "
                 f"{current_wall_s:g}s → {new_wall:g}s; not "
@@ -594,6 +650,29 @@ def inspect_decision(
                 f"contract_misses={len(snapshot.get('contract_misses') or [])}, "
                 f"pilot_ready=false ({'; '.join(snapshot.get('pilot_ready_blockers') or ['unknown'])})"
             )
+    granted = _progress_evidenced_grant(
+        snapshot,
+        decision=decision,
+        current_wall_s=current_wall_s,
+        proposed_wall_s=new_wall,
+        plan_wall_s=plan_wall_s,
+        plan_wall_passes=plan_wall_passes,
+        phase_wall_s=phase_wall_s,
+    )
+    if granted is not None:
+        # Owner ruling F-W2b: an in-flight CLI that is producing gets its
+        # wall at the inspect. "wait" with no wall is not a decision -- the
+        # runner only extends the live deadline when the inspect names one.
+        new_wall = granted
+        decision = "continue_progress_evidenced"
+        reason = (
+            f"inspect {stage}: FACTORY_CODE_CLI in-flight and producing "
+            f"(written={written_label(snapshot)}, steps_since_inspect="
+            f"{snapshot.get('cli_steps_since_inspect')}, files_grown="
+            f"{snapshot.get('cli_files_grown_since_inspect')}) — "
+            f"phase-bounded wall {current_wall_s:g}s → {new_wall:g}s; "
+            "not FACTORY_CODE_CLI_UNUSED"
+        )
     if str(stage) == "pilot_open" and decision == "hard_stop":
         # _grant_pilot_budget treats this inspect as informational.
         # sess_d10dfc28 logged hard-stop here (written=7, timeouts=7
@@ -787,6 +866,13 @@ def _cli_progress_since_inspect(events: Sequence[Any]) -> Dict[str, int]:
         except (TypeError, ValueError):
             return None
 
+    files_on_disk: Optional[int] = None
+    for event in events:
+        payload = getattr(event, "payload", None) or {}
+        if is_coding_agent_source(payload.get("source")):
+            seen = _int(payload.get(FILES_ON_DISK))
+            if seen is not None:
+                files_on_disk = seen
     files_before: Optional[int] = None
     for event in events[:start]:
         payload = getattr(event, "payload", None) or {}
@@ -808,7 +894,46 @@ def _cli_progress_since_inspect(events: Sequence[Any]) -> Dict[str, int]:
     grown = 0
     if files_after is not None:
         grown = max(0, files_after - (files_before or 0))
-    return {"cli_steps_since_inspect": steps, "cli_files_grown_since_inspect": grown}
+    return {
+        "cli_steps_since_inspect": steps,
+        "cli_files_grown_since_inspect": grown,
+        # The Floor's file count: the latest ``files_on_disk`` the worker
+        # reported (``count_authored_files``), the same record its heartbeat
+        # line prints. None when the agent has reported no count yet.
+        "cli_files_on_disk": files_on_disk,
+    }
+
+
+def cli_progress_evidenced(snapshot: Mapping[str, Any]) -> bool:
+    """The coding agent showed progress since the last inspect.
+
+    Steps reported or files on disk rising -- the typed progress record the
+    Floor prints, never narration text. A grant backed by this is evidence
+    beating plan (owner ruling F-W2): the per-pass plan wall does not clamp
+    it. Without it, the plan wall does.
+    """
+    try:
+        steps = int(snapshot.get("cli_steps_since_inspect") or 0)
+        grown = int(snapshot.get("cli_files_grown_since_inspect") or 0)
+    except (TypeError, ValueError):
+        return False
+    return steps > 0 or grown > 0
+
+
+def written_label(snapshot: Mapping[str, Any]) -> str:
+    """What the inspect line prints as ``written``.
+
+    One truth with the Floor: while a coding agent has reported a file count,
+    ``written`` IS that count (the worker's ``files_on_disk``), with the
+    ledger's capability count beside it. A CodeWhale writer harvests at exit,
+    so the capability count alone read 0 against 101 files on the Floor (live
+    2026-11-12, 72ebc93).
+    """
+    files = snapshot.get("cli_files_on_disk")
+    caps = snapshot.get("agent_written")
+    if files is None:
+        return f"{caps}"
+    return f"{files} file(s) on disk, caps={caps}"
 
 
 def _provenance(workspace: Any) -> Dict[str, Any]:

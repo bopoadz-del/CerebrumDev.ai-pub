@@ -97,6 +97,25 @@ export function getLoginToken(): string | null {
 }
 
 /**
+ * The operator-set support/legal contact, read from the public ``/version``
+ * endpoint (which serves the backend ``SUPPORT_EMAIL`` constant). Never
+ * hardcoded in the UI: it resolves at run time and falls back to null when
+ * the endpoint is unreachable.
+ */
+export async function getSupportEmail(): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_BASE}/version`)
+    if (!res.ok) return null
+    const data = (await res.json()) as { support_email?: unknown }
+    return typeof data.support_email === 'string' && data.support_email.trim()
+      ? data.support_email.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Persist display email and optional ``cdt_`` login token.
  * Cookie (SameSite=None; Secure) is primary; storing the token lets fetch
  * send ``Authorization: Bearer`` when the cookie is absent. Pass the token
@@ -526,6 +545,7 @@ export interface UploadAllowed {
   accept: string
   max_files: number
   max_file_bytes: number
+  entitled: boolean
 }
 
 export interface UploadStatus {

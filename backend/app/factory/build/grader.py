@@ -20,9 +20,11 @@ Verdicts, not rework. The grader issues a tier:
 * ERROR          -- the grader itself could not run (an outage is a
                     verdict about the run, never about the tree).
 
-The grader never feeds a rework loop and never shares a budget with the
-TESTER: the runner proceeds on CERTIFIED and ends the run with the quoted
-verdict otherwise.
+The grader never shares a budget with the TESTER: the runner proceeds on
+CERTIFIED; NOT_CERTIFIED with writer-owned items hands them back to the
+WRITER for the grader's own REWORK_BUDGET rounds; anything else ends the run
+with the quoted verdict, recorded as the WRITER phase's terminal verdict so a
+resume re-enters WRITER, never TESTER.
 
 grade.json + GRADE.md land in the workspace whatever the outcome, so the
 build carries its grade and the N3 certification gate reads a real record.
@@ -42,14 +44,19 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
+
+from app.factory.build.authority import capability_route
+from app.factory.build.deploy_time_settings import SNIPPET as _DEPLOY_TIME_SNIPPET
 
 logger = logging.getLogger("cerebrumdev.factory.grader")
 
@@ -83,9 +90,11 @@ _TOTAL_CHARS = 60_000
 #: How long the grader waits for a booted product to answer /health.
 _BOOT_READY_TIMEOUT_S = 60.0
 
-#: Structured brief fields whose VALUES are domain data (client, project,
-#: vertical, product names). The field NAMES are schema, not domain literals.
-_STRUCTURED_FIELDS = ("client", "project", "vertical", "name", "product_id")
+#: Structured fields whose VALUES the user supplies about themselves (who the
+#: client is, which project). The field NAMES are schema, not domain literals.
+#: The product's own identity (id, name, vertical) is not among them: the
+#: Factory assigns or defaults it and stamps it into the tree (FG-4).
+_STRUCTURED_FIELDS = ("client", "project")
 
 #: Directory names that never belong in the rendered product (grader and
 #: environment scaffolding, not product source).
@@ -122,9 +131,9 @@ def _as_mapping(blueprint: Any) -> Dict[str, Any]:
 
 
 def _structured_literals(blueprint: Mapping[str, Any]) -> set:
-    """The blueprint's own structured domain values (client, project,
-    vertical, product name): data the brief dictated, read off the schema
-    fields -- nothing hand-listed."""
+    """The blueprint's structured client/project values, read off the schema
+    fields -- nothing hand-listed. They count as brief data only where the
+    user's own words say them (``derive_forbidden``)."""
     out = set()
     if not isinstance(blueprint, Mapping):
         blueprint = dict(getattr(blueprint, "__dict__", {}) or {})
@@ -173,53 +182,122 @@ def _tokens(text: str) -> List[str]:
     return [t.strip(".,;:()[]{}\"'`") for t in (text or "").split()]
 
 
+def _said(value: str, text: str) -> bool:
+    """``value`` occurs in ``text`` as whole tokens, case-insensitively: the
+    user's own words say it."""
+    pattern = r"(?<![A-Za-z0-9_])" + re.escape(value) + r"(?![A-Za-z0-9_])"
+    return re.search(pattern, text or "", flags=re.IGNORECASE) is not None
+
+
+def _contract_ids(blueprint: Mapping[str, Any]) -> set:
+    """Identifiers the product contract REQUIRES the writer to use: the
+    product's own identity, every capability id and every declared
+    input name. They are never brief literals, whoever first said them."""
+    out = {str(blueprint.get(k) or "") for k in ("product_id", "product_name", "vertical", "name")}
+    for cap in blueprint.get("capabilities") or []:
+        if isinstance(cap, Mapping):
+            out.add(str(cap.get("id") or ""))
+            # The declared ActionSpec input names (the shape the vault reads).
+            out.update(str(k) for k in (cap.get("input_schema") or {}))
+    return {v for v in out if v}
+
+
 def derive_forbidden(
     blueprint: Mapping[str, Any],
     brief_text: str,
-    prompt_text: str,
+    factory_text: str,
 ) -> FrozenSet[str]:
-    """The hardwiring scan's forbidden set, DERIVED: structured blueprint
-    values, document references, quoted spans, amounts, proper-noun-shaped
-    tokens and file-shaped tokens from the brief. Generic lowercase prose
-    and stop-word-shaped noise never enter it. The prompt text is carried
-    for the prompt-leak diff, not for vocabulary mining."""
-    out: set = _structured_literals(blueprint)
+    """The hardwiring scan's forbidden set, by PROVENANCE (FG-4): what the
+    user's intake and documents supplied as identities and values.
+
+    ``brief_text`` is the user-supplied brief recorded at dispatch. A
+    literal enters only from it: the client/project values it says, its
+    document references, its quoted spans, and its multi-word identity
+    tokens (``product_literals.is_identity_token``, the rule brief hygiene
+    applies: a single word or a display name is vocabulary). Never capitalisation, never a bare number
+    (value hardwiring is the two-dataset check's), never a value the
+    Factory defaulted. A literal the Factory's own part of the dispatched
+    prompt (``factory_text``) also carries is platform vocabulary, and an
+    identifier the contract requires is never a brief literal."""
+    from app.factory.build.product_literals import is_identity_token
+
     text = brief_text or ""
+    out: set = {v for v in _structured_literals(blueprint) if _said(v, text)}
     for token in _tokens(text):
         # A folded-upload marker carries the file name after the protocol
         # token; the equality on the marker half is a contract check on the
         # platform's own schema, never a scan for domain vocabulary.
         marker, sep, rest = token.partition(":")
-        if sep and marker == "document" and rest:
+        if sep and marker == "document" and rest.strip():
             name = rest.strip()
-            if name:
-                out.add(name)
-                stem = Path(name).stem
-                if stem:
-                    out.add(stem)
+        elif Path(token).suffix.lower() in _DOC_EXTENSIONS:
+            name = token
+        else:
+            if is_identity_token(token):
+                out.add(token)
             continue
-        suffix = Path(token).suffix.lower()
-        if suffix and suffix in _DOC_EXTENSIONS:
-            out.add(token)
-            stem = Path(token).stem
-            if stem:
-                out.add(stem)
+        out.add(name)
+        if is_identity_token(Path(name).stem):
+            out.add(Path(name).stem)
     out.update(re.findall(r'"([^"]{3,60})"', text))
-    out.update(re.findall(r"\b\d+(?:\.\d+)?\b", text))
-    out.update(re.findall(r"\b[A-Z][a-z]{2,}(?:[A-Z][a-z]+)*\b", text))
-    # The prompt itself is not a source of forbidden literals: the leak
-    # check compares the prompt against the product separately.
-    return frozenset(sorted(v for v in out if len(v) <= 80))
+    contract = _contract_ids(blueprint)
+    return frozenset(
+        sorted(v for v in out if len(v) <= 80 and v not in contract and not _said(v, factory_text))
+    )
 
 
-def render_product(workspace: Path | str) -> str:
+def _factory_part(prompt_text: str, *spans: str) -> str:
+    """The Factory's own text in the dispatched prompt: the prompt with the
+    brief it carried cut out."""
+    out = prompt_text or ""
+    for span in spans:
+        if span and span.strip():
+            out = out.replace(span, "\n")
+    return out
+
+
+class RenderedProduct(str):
+    """FG-6: the render Layer 2 is shown, as text, with the files it shows
+    (relative path -> the text rendered for it) as a typed field, so what is
+    in view is read from structure, never parsed back out of the text."""
+
+    files: Dict[str, str]
+
+    def __new__(cls, text: str, files: Mapping[str, str]) -> "RenderedProduct":
+        obj = super().__new__(cls, text)
+        obj.files = dict(files)
+        return obj
+
+
+def render_product(workspace: Path | str, first: Sequence[str] = ()) -> RenderedProduct:
     """A bounded, deterministic render of the product source for Layer 2:
     sorted relative paths, per-file and total caps, scaffold directories
-    excluded. Ordering and caps are structural -- no file is named."""
+    excluded. Ordering and caps are structural -- no file is named.
+
+    ``first`` are path stems (the capability under grade): files whose
+    relative path contains one are rendered before the rest and are exempt
+    from the per-file cap; the total cap still holds.
+
+    FG-6: the budget goes by ownership. After the lead, the writer's own
+    files (``runner.rework_seed_paths``, the one derivation of them) are
+    rendered before the Factory's and vendored files, so the files Layer 2
+    grades the writer on are never crowded out by files the writer did
+    not write."""
+    from app.factory.build.runner import rework_seed_paths
+
     root = Path(workspace)
+    stems = [s for s in first if s]
+    files = sorted(root.rglob("*"))
+    lead = [p for p in files if any(s in p.relative_to(root).as_posix() for s in stems)]
+    lead_set = set(lead)
+    writers = set(rework_seed_paths(root))
+    rest = [p for p in files if p not in lead_set]
+    own = [p for p in rest if p.relative_to(root).as_posix() in writers]
+    own_set = set(own)
     blocks: List[str] = []
+    shown: Dict[str, str] = {}
     budget = _TOTAL_CHARS
-    for py in sorted(root.rglob("*")):
+    for py in [*lead, *own, *(p for p in rest if p not in own_set)]:
         # Non-files (directories) reach read_text and raise OSError, which
         # the except skips -- one exclusion path, no redundant guard.
         rel_parts = py.relative_to(root).parts
@@ -235,14 +313,15 @@ def render_product(workspace: Path | str) -> str:
         except OSError:
             continue
         rel = py.relative_to(root).as_posix()
-        if len(text) > _FILE_CHARS:
+        if py not in lead_set and len(text) > _FILE_CHARS:
             text = text[:_FILE_CHARS] + "\n# ... truncated by the grader\n"
         block = f"## file: {rel}\n{text}\n"
         if len(block) > budget:
             continue
         budget -= len(block)
         blocks.append(block)
-    return "\n".join(blocks)
+        shown[rel] = text
+    return RenderedProduct("\n".join(blocks), shown)
 
 
 def _free_port() -> int:
@@ -252,57 +331,247 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _boot_env(scratch: Path, root: Path) -> Dict[str, str]:
-    """Scratch environment for the booted product: its own storage and
-    database under a fresh temp dir, never the runner's live state -- and the
-    PRODUCT workspace first on PYTHONPATH, so the booted process imports the
-    product's app, never the factory backend this grader runs inside."""
-    env = dict(os.environ)
-    env["STORAGE_PATH"] = str(scratch)
-    env["DATABASE_URL"] = f"sqlite:///{scratch / 'gate.db'}"
-    env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+#: FG-2: the grading boot, defined once. It boots the product the way it is
+#: deployed (the declared entrypoint's steps, then its server), in the
+#: test-context environment the function harness runs in (never a copy of
+#: the Factory's own process), in a fresh scratch directory per boot, and it
+#: is always stopped. A boot that fails keeps its status and output tail, so
+#: the finding says why.
+_BOOT_STOP_GRACE_S = 5.0
+_BOOT_POLL_S = 0.5
+_BOOT_TAIL_CHARS = 800
+_HEALTH_BODY_BYTES = 16_384
+
+#: One interpreter per boot: deploy-time settings stood in exactly as the
+#: function harness does (deploy_time_settings, one source), then the
+#: declared pre-serve steps in order -- the first that fails ends the boot
+#: with its own code, as ``set -eu`` does in the entrypoint -- then the
+#: server. ``sys.argv[1]`` is the JSON boot plan.
+_BOOT_LAUNCHER = _DEPLOY_TIME_SNIPPET + r"""
+import json, os, runpy, subprocess, sys
+_plan = json.loads(sys.argv[1])
+_stand_in_for_deploy_time_settings(os.getcwd())
+for _step in _plan["pre"]:
+    _rc = subprocess.call([sys.executable, *_step])
+    if _rc:
+        sys.stderr.write("boot step %r exited %s\n" % (" ".join(_step), _rc))
+        sys.exit(_rc)
+sys.argv = ["uvicorn", *_plan["serve"]]
+runpy.run_module("uvicorn", run_name="__main__")
+"""
+
+
+def boot_plan(workspace: Path | str, port: int) -> Dict[str, Any]:
+    """What the grading boot runs, read from the deploy entrypoint contract
+    (data_lifecycle, one source): its pre-serve steps when the product
+    declares that entrypoint, then its served app on a private port."""
+    from app.factory.build import data_lifecycle
+
+    declared = (Path(workspace) / data_lifecycle.ENTRYPOINT_PATH).is_file()
+    return {
+        "pre": [list(step) for step in data_lifecycle.PRE_SERVE_STEPS] if declared else [],
+        "serve": [data_lifecycle.SERVE_TARGET, "--host", "127.0.0.1", "--port", str(port)],
+    }
+
+
+def boot_env(
+    workspace: Path | str, storage: Path, port: int, source: Optional[Mapping[str, str]] = None
+) -> Dict[str, str]:
+    """The booted product's environment: the one probe environment
+    (function_grader.probe_env, the same the function and two-dataset
+    probes run in) plus the port. From the Factory's process it keeps only what an
+    interpreter needs from the OS to start -- never its keys or settings.
+    DATABASE_URL is left unset, so the product's db contract reads its own
+    default (a database under STORAGE_PATH)."""
+    from app.factory.build.product_grader.function_grader import probe_env
+
+    env = probe_env(workspace, storage, source)
+    env["PORT"] = str(port)
     return env
 
 
-def boot_product(workspace: Path | str) -> Tuple[Optional[subprocess.Popen], Optional[str]]:
-    """Boot the product on a private port with a scratch STORAGE_PATH, the
-    same shape the writer's own self-check uses, and wait for /health.
-    Returns (process, base_url) or (None, reason). The caller stops the
-    process; a product that will not boot is a real finding, recorded
-    honestly by the caller -- never a skipped grade."""
-    root = Path(workspace)
-    port = _free_port()
-    scratch = root.parent / (root.name + ".grader-boot")
-    scratch.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--host", "127.0.0.1"],
-            cwd=str(root),
-            env=_boot_env(scratch, root),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        return None, f"product boot did not start: {type(exc).__name__}"
-    base_url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + _BOOT_READY_TIMEOUT_S
-    try:
-        import urllib.request
+def _signal_boot(proc: subprocess.Popen, *, kill: bool) -> None:
+    """Signal the boot's whole process group on POSIX (a pre-serve step is
+    a child of the launcher), the process itself elsewhere."""
+    if os.name == "posix":
+        import signal
 
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                return None, f"product boot exited early with code {proc.returncode}"
+        try:
+            os.killpg(proc.pid, signal.SIGKILL if kill else signal.SIGTERM)
+        except OSError:
+            pass
+    elif proc.poll() is None:
+        (proc.kill if kill else proc.terminate)()
+
+
+class GradingBoot:
+    """One grading boot: the process, its fresh scratch directory and its
+    captured output. ``stop`` ends all three and is safe to repeat."""
+
+    def __init__(self, proc: subprocess.Popen, scratch: Path, log: Any, log_path: Path) -> None:
+        self.proc = proc
+        self.scratch = scratch
+        self._log = log
+        self._log_path = log_path
+        self.stopped = False
+
+    def poll(self) -> Optional[int]:
+        return self.proc.poll()
+
+    def output_tail(self, chars: int = _BOOT_TAIL_CHARS) -> str:
+        """The last ``chars`` of the boot's own output, on one line."""
+        try:
+            self._log.flush()
+            data = self._log_path.read_bytes()
+        except (OSError, ValueError):
+            return ""
+        text = data.decode("utf-8", "replace").strip()
+        return " | ".join(line.strip() for line in text[-chars:].splitlines() if line.strip())
+
+    def stop(self) -> None:
+        if self.stopped:
+            return
+        self.stopped = True
+        try:
+            if self.proc.poll() is None:
+                _signal_boot(self.proc, kill=False)
+                try:
+                    self.proc.wait(timeout=_BOOT_STOP_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    _signal_boot(self.proc, kill=True)
+                    self.proc.wait(timeout=_BOOT_STOP_GRACE_S)
+            # A pre-serve step outliving its launcher dies with the group.
+            _signal_boot(self.proc, kill=True)
+        finally:
             try:
-                with urllib.request.urlopen(base_url + "/health", timeout=2.0) as resp:
-                    if resp.status == 200:
-                        return proc, base_url
+                self._log.close()
             except OSError:
                 pass
-            time.sleep(0.5)
-    except Exception as exc:  # noqa: BLE001 -- an unreadable health is "did not boot"
-        return None, f"product boot health check failed: {type(exc).__name__}"
-    proc.terminate()
-    return None, "product boot did not answer /health in time"
+            shutil.rmtree(self.scratch, ignore_errors=True)
+
+
+def _health(base_url: str) -> Tuple[Optional[int], bytes]:
+    """One /health read: (status, body) for any HTTP answer, (None, b"")
+    when nothing answered."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(base_url + "/health", timeout=2.0) as resp:
+            return int(resp.status), resp.read(_HEALTH_BODY_BYTES)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(_HEALTH_BODY_BYTES)
+        except OSError:
+            body = b""
+        return int(exc.code), body
+    except (OSError, http.client.HTTPException):
+        return None, b""
+
+
+def failing_health_checks(body: bytes) -> List[str]:
+    """The checks a /health body reports as not ok, read from its declared
+    shape (``{"checks": [{"name", "ok", "detail"}]}``) -- no check is named
+    here."""
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return []
+    checks = data.get("checks") if isinstance(data, dict) else None
+    out: List[str] = []
+    for check in checks if isinstance(checks, list) else []:
+        if not isinstance(check, dict) or check.get("ok") is True or not check.get("name"):
+            continue
+        detail = str(check.get("detail") or "").strip()
+        out.append(f"{check['name']} ({detail[:120]})" if detail else str(check["name"]))
+    return out
+
+
+def boot_failure_reason(
+    *, exit_code: Optional[int], health_status: Optional[int], health_body: bytes, tail: str, waited_s: float
+) -> str:
+    """Why a grading boot did not come up: the process's exit code (or the
+    wait it outlasted), the last /health status and its failing checks, and
+    the boot's own output tail."""
+    head = (
+        f"product boot exited with code {exit_code}"
+        if exit_code is not None
+        else f"product boot did not answer /health 200 within {waited_s:g}s"
+    )
+    parts = [head, "last /health: " + (str(health_status) if health_status is not None else "no answer")]
+    failing = failing_health_checks(health_body)
+    if failing:
+        parts.append("failing checks: " + ", ".join(failing))
+    parts.append("output tail: " + (tail or "(no output)"))
+    return "; ".join(parts)
+
+
+def _await_health(boot: GradingBoot, base_url: str, timeout_s: float) -> Optional[str]:
+    """None once /health answers 200; otherwise the failure reason."""
+    deadline = time.monotonic() + timeout_s
+    status: Optional[int] = None
+    body = b""
+    while True:
+        code = boot.poll()
+        if code is not None:
+            return boot_failure_reason(
+                exit_code=code, health_status=status, health_body=body, tail=boot.output_tail(), waited_s=timeout_s
+            )
+        got, got_body = _health(base_url)
+        if got == 200:
+            return None
+        if got is not None:
+            status, body = got, got_body
+        if time.monotonic() >= deadline:
+            return boot_failure_reason(
+                exit_code=None, health_status=status, health_body=body, tail=boot.output_tail(), waited_s=timeout_s
+            )
+        time.sleep(_BOOT_POLL_S)
+
+
+def boot_product(
+    workspace: Path | str,
+    *,
+    ready_timeout_s: float = _BOOT_READY_TIMEOUT_S,
+    source_env: Optional[Mapping[str, str]] = None,
+) -> Tuple[Optional[GradingBoot], str]:
+    """Boot the product for grading and wait for /health 200. Returns
+    (boot, base_url), and the caller stops the boot; or (None, reason), with
+    the boot already stopped and its scratch removed. A product that will
+    not boot is a real finding, recorded honestly by the caller -- never a
+    skipped grade."""
+    root = Path(workspace)
+    port = _free_port()
+    scratch = Path(tempfile.mkdtemp(prefix="grader-boot-"))
+    storage = scratch / "store"
+    storage.mkdir()
+    log_path = scratch / "boot.log"
+    log = open(log_path, "wb")  # noqa: SIM115 -- GradingBoot.stop closes it
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _BOOT_LAUNCHER, json.dumps(boot_plan(root, port))],
+            cwd=str(root),
+            env=boot_env(root, storage, port, source_env),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=os.name == "posix",
+        )
+    except OSError as exc:
+        log.close()
+        shutil.rmtree(scratch, ignore_errors=True)
+        return None, f"product boot did not start: {type(exc).__name__}"
+    boot = GradingBoot(proc, scratch, log, log_path)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        reason = _await_health(boot, base_url, ready_timeout_s)
+    except BaseException:
+        boot.stop()
+        raise
+    if reason is None:
+        return boot, base_url
+    boot.stop()
+    return None, reason
 
 
 # --- independence (The_Level #6: the grader is never the thing it grades) ---
@@ -467,6 +736,105 @@ class _UiNotRun:
         return {"ok": self.ok, "ran": self.ran, "failing": self.failing, "steps": list(self.steps)}
 
 
+#: The fixed reason-class enum a NOT_CERTIFIED round carries per failing
+#: item (option (b), Advisor 13:24Z). Every class is derived from what the
+#: grade record already holds -- no new check runs to produce one.
+REASON_CLASSES: FrozenSet[str] = frozenset({
+    "missing_route",      # no gradeable handle, or a route step that does not answer
+    "stub_handler",       # one result for two valid inputs, or an answer no single declared field moves
+    "handler_error",      # the handle raised, exited, timed out or did not import
+    "wrong_envelope",     # the honest-error step did not get an honest error back
+    "wrong_computation",  # outputs differ but do not match the kernel's
+    "hardwired_value",    # an input-specific branch, a baked literal or a prompt leak
+    "failed_ui_step",     # any other UI step that did not pass
+    "layer2_fail",        # a Layer-2 question left open
+    "ungraded",           # a layer that did not run (the report says what it did not check)
+})
+
+#: UI step kind -> reason class; every other failing kind is failed_ui_step.
+_UI_KIND_CLASS: Mapping[str, str] = {"route": "missing_route", "honest_error": "wrong_envelope"}
+
+
+def _named_capability(text: str, capability_ids: List[str]) -> str:
+    """The capability id a recorded item names -- the item IS the id, ends in
+    ``/<id>`` (a route target) or quotes ``'<id>'`` (a Layer-2 question) --
+    else ``-``. Only ids from the blueprint are ever returned."""
+    for cid in capability_ids:
+        if text == cid or text.endswith(("/" + cid, capability_route(cid))) or f"'{cid}'" in text:
+            return cid
+    return "-"
+
+
+def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[Dict[str, str]]:
+    """Per failing item of a grade record: ``{capability, class, layer}``.
+
+    ``class`` is from REASON_CLASSES; ``capability`` is a blueprint capability
+    id or ``-``; ``layer`` names the grade layer. Read only from the record
+    (no new check), and never product text or the writer's prose -- the
+    pilot's public timeline relays these as they are.
+    """
+    from app.factory.build.product_grader.function_grader import ONE_RESULT
+    from app.factory.build.product_grader.two_dataset import (
+        HARDWIRED_CONSTANT,
+        WRONG_COMPUTATION,
+    )
+
+    cids = [str(c) for c in capability_ids]
+    out: List[Dict[str, str]] = []
+
+    def add(text: str, cls: str, layer: str) -> None:
+        out.append({"capability": _named_capability(text, cids), "class": cls, "layer": layer})
+
+    layer1 = grade.get("layer1") or {}
+    graded = set()
+    for fn in (layer1.get("functions") or {}).get("functions") or []:
+        cid = str(fn.get("capability_id") or "")
+        graded.add(cid)
+        if fn.get("ok") is True:
+            continue
+        if fn.get("two_input_passed") is True or fn.get("detail") == ONE_RESULT:
+            add(cid, "stub_handler", "function")
+        else:
+            add(cid, "handler_error", "function")
+    # A function the grade did not run: the Factory owes it, so it is
+    # ungraded, never a stub or an error.
+    for fn in (layer1.get("functions") or {}).get("ungraded") or []:
+        cid = str(fn.get("capability_id") or "")
+        graded.add(cid)
+        add(cid, "ungraded", "function")
+    for cid in cids:
+        if cid not in graded:
+            add(cid, "missing_route", "function")
+
+    ui = layer1.get("ui") or {}
+    if ui.get("ran") is not True:
+        add("", "ungraded", "ui")
+    for step in ui.get("steps") or []:
+        if not step.get("passed"):
+            add(str(step.get("target") or ""), _UI_KIND_CLASS.get(str(step.get("kind")), "failed_ui_step"), "ui")
+
+    for finding in (grade.get("hardwiring") or {}).get("findings") or []:
+        verdict = finding.get("verdict")
+        cls = (
+            "stub_handler" if verdict == HARDWIRED_CONSTANT
+            else "wrong_computation" if verdict == WRONG_COMPUTATION
+            else "hardwired_value"
+        )
+        add(str(finding.get("capability") or ""), cls, "hardwiring")
+
+    from app.factory.build.product_grader.grade_record import open_fails, unasked
+
+    layer2 = grade.get("layer2") or {}
+    if layer2.get("ran") is not True:
+        add("", "ungraded", "layer2")
+    else:
+        for question in open_fails(layer2):
+            add(question, "layer2_fail", "layer2")
+        for question in unasked(layer2):
+            add(question, "ungraded", "layer2")
+    return out
+
+
 @dataclass(frozen=True)
 class GraderVerdict:
     """The grader's verdict. ``tier`` is CERTIFIED / NOT_CERTIFIED / ERROR;
@@ -477,6 +845,16 @@ class GraderVerdict:
     items: Tuple[str, ...] = ()
     ungraded: Tuple[str, ...] = ()
     grade: Optional[Mapping[str, Any]] = None
+    #: NOT_CERTIFIED only: the reason class per failing item (reason_classes).
+    reasons: Tuple[Mapping[str, str], ...] = ()
+    #: FG-1, owner by construction. ``writer_items``: the failing items the
+    #: writer authored and can repair -- the ONLY rows a writer round is
+    #: spent on. ``factory_owed``: findings in files the Factory wrote
+    #: (stamped or vendored), recorded and never billed to the writer.
+    #: ``items`` stays the full quoted list; run-level gaps (``ungraded``,
+    #: a refusal) are in neither owner list.
+    writer_items: Tuple[str, ...] = ()
+    factory_owed: Tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -491,33 +869,34 @@ def _grade_ui(
 ) -> Tuple[Any, bool, str]:
     """The UI layer, honestly: it runs when the product boots and the
     playwright toolchain exists; otherwise it is recorded as NOT RUN -- a
-    quoted gap, never a fabricated green."""
+    quoted gap, never a fabricated green. A boot this layer starts is
+    stopped on every exit path."""
     ui_not_run = ""
-    boot_proc: Optional[subprocess.Popen] = None
-    if base_url is None:
+    boot: Optional[GradingBoot] = None
+    try:
+        if base_url is None:
+            try:
+                boot, booted = boot_product(root)
+            except Exception as exc:  # noqa: BLE001 -- recorded below, not raised
+                boot = None
+                booted = ""
+                ui_not_run = f"UI run did not happen: boot failed: {type(exc).__name__}"
+            # boot_product returns (boot, url) on success and (None, reason)
+            # on failure -- only a live boot's url is a base_url.
+            if boot is None:
+                if not ui_not_run:
+                    ui_not_run = f"UI run did not happen: {booted or 'product did not boot'}"
+                base_url = None
+            else:
+                base_url = booted
         try:
-            boot_proc, booted = boot_product(root)
-        except Exception as exc:  # noqa: BLE001 -- recorded below, not raised
-            boot_proc = None
-            booted = None
-            ui_not_run = f"UI run did not happen: boot failed: {type(exc).__name__}"
-        # boot_product returns (process, url) on success and (None, reason)
-        # on failure -- only a live process's url is a base_url.
-        if boot_proc is None:
-            if not ui_not_run:
-                ui_not_run = booted or "UI run did not happen: product did not boot"
-            base_url = None
-        else:
-            base_url = booted
-    try:
-        from app.factory.build.product_grader import ui_grader
-    except Exception as exc:  # noqa: BLE001 -- a missing optional dependency
-        ui_grader = None
-        ui_not_run = ui_not_run or f"UI run did not happen: {type(exc).__name__}: {exc}"
-    if ui_grader is None:
-        ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
-        return ui, False, ui_not_run
-    try:
+            from app.factory.build.product_grader import ui_grader
+        except Exception as exc:  # noqa: BLE001 -- a missing optional dependency
+            ui_grader = None
+            ui_not_run = ui_not_run or f"UI run did not happen: {type(exc).__name__}: {exc}"
+        if ui_grader is None:
+            ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
+            return ui, False, ui_not_run
         if base_url:
             ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url)
         else:
@@ -526,8 +905,8 @@ def _grade_ui(
             )
         ui_ran = bool(ui.ran)
     finally:
-        if boot_proc is not None and boot_proc.poll() is None:
-            boot_proc.terminate()
+        if boot is not None:
+            boot.stop()
     if not ui_ran and not ui_not_run:
         ui_not_run = "; ".join(str(e) for e in ui.errors) or "UI run did not happen"
     return ui, ui_ran, ui_not_run
@@ -538,8 +917,12 @@ def run_grader(
     blueprint: Mapping[str, Any],
     workspace: Path | str,
     product_id: str,
+    plan_capabilities: Sequence[str],
+    state_specs: Optional[Mapping[str, Any]] = None,
+    route_bodies: Optional[Mapping[str, Any]] = None,
     compiled_brief: Any = None,
     prompt_text: str = "",
+    supplied_text: Optional[str] = None,
     store_root: Any = None,
     base_url: Optional[str] = None,
     python: str = sys.executable,
@@ -547,7 +930,11 @@ def run_grader(
 ) -> GraderVerdict:
     """Grade the writer's tree and write the record into it. Returns the
     verdict; raises nothing (an outage is an ERROR verdict, never an
-    exception the runner must guess about)."""
+    exception the runner must guess about).
+
+    ``plan_capabilities`` is the plan's capability list TESTER iterates;
+    ``state_specs`` / ``route_bodies`` are the build state TESTER reads its
+    spec from -- the function grade samples exactly what TESTER samples."""
     root = Path(workspace)
     blueprint = _as_mapping(blueprint)
     gradroot = Path(grader_root) if grader_root else root.parent / (root.name + ".grader")
@@ -575,7 +962,14 @@ def run_grader(
     outage: Optional[str] = None
     try:
         functions = fg.grade_functions(
-            blueprint, root, python=python, grader_root=gradroot, store_root=store_root
+            blueprint,
+            root,
+            capability_ids=plan_capabilities,
+            state_specs=state_specs,
+            route_bodies=route_bodies,
+            python=python,
+            grader_root=gradroot,
+            store_root=store_root,
         )
     except Exception as exc:  # noqa: BLE001 -- an outage is named, never silent
         outage = f"function grade could not run: {type(exc).__name__}: {exc}"
@@ -596,17 +990,31 @@ def run_grader(
         pairs = two_dataset.build_datasets(cids, resolve, schemas, seed_a, seed_a + 1)
         checks = two_dataset.run_two_dataset(pairs, root, python=python)
         verdicts = {check.capability_id: check.verdict for check in checks}
-        forbidden = derive_forbidden(blueprint, brief, prompt_text)
+        supplied = brief if supplied_text is None else supplied_text
+        factory_text = _factory_part(prompt_text, brief, supplied)
+        forbidden = derive_forbidden(blueprint, supplied, factory_text)
         hits = scan_generated.forbidden_hits(root, forbidden)
-        leaks = scan_generated.prompt_leak(prompt_text, rendered, forbidden) if prompt_text else []
-        hardwiring = grade_record.hardwiring_section(verdicts, hits, leaks)
+        leaks = scan_generated.prompt_leak(root, supplied, factory_text, prompt_text)
+        # FG-1: who wrote each file is read from the provenance the Factory
+        # records (the stamp registry and the build's own CLONER lock), the
+        # same file_origin the Store gate bills its audit rows by.
+        from app.factory.build.factory_receipt import file_receipt
+
+        hardwiring = grade_record.hardwiring_section(
+            verdicts, hits, leaks, origin=file_receipt(root).file_origin
+        )
 
     # --- Layer 1 UI -------------------------------------------------------
     ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url)
+    # A function the grade did not run is a gap the Factory owes: quoted as
+    # ungraded, not a FAIL.
+    ungraded: List[str] = [
+        f"function ungraded: {f.capability_id}: {f.detail}"
+        for f in (functions.ungraded if functions is not None else [])
+    ]
 
     # --- Layer 2, under an independent grader identity --------------------
     l2: Mapping[str, Any]
-    ungraded: List[str] = []
     if ui_not_run:
         ungraded.append(ui_not_run)
     refusal = independence_refusal(writer_identity(), grader_llm_config())
@@ -629,7 +1037,12 @@ def run_grader(
         ui_dict = ui.to_dict()
         layer1_view = _layer2_layer1_view(fn_dict, ui_dict)
         l2_inputs = {"compiled_brief": brief, "rendered_product": rendered, "layer1": layer1_view}
-        l2 = layer2.run_layer2(l2_inputs, blueprint, _grader_complete)
+        l2 = layer2.run_layer2(
+            l2_inputs, blueprint, _grader_complete, render=lambda stems: render_product(root, first=stems)
+        )
+        # FG-6: a question the grader was not shown the files for is the
+        # Factory's gap, quoted as ungraded -- never the writer's FAIL.
+        ungraded.extend(grade_record.unasked(l2))
 
     # --- the record --------------------------------------------------------
     if functions is not None:
@@ -661,8 +1074,10 @@ def run_grader(
     if outage:
         return GraderVerdict(tier=ERROR, items=(outage,), ungraded=tuple(ungraded), grade=grade)
 
-    # Deterministic reds, computed once and quoted whatever the tier.
+    # Deterministic reds, computed once and quoted whatever the tier. Every
+    # red is the writer's except a finding in a file the Factory wrote.
     items: List[str] = []
+    factory_owed: List[str] = []
     fn_failing = list(functions.failing)
     if not functions.ok:
         for name in fn_failing:
@@ -672,27 +1087,39 @@ def run_grader(
         for name in ui_failing:
             items.append(f"UI step FAIL: {name}")
     if not refusal:
-        for question in l2.get("open_fails") or []:
-            items.append(f"re-run writer on: {question}")
+        # FG-5: what is open in Layer 2 is read from the record's one
+        # derivation -- an answered FAIL is open and reaches the writer with
+        # the grader's quoted evidence, so the tier cannot disagree with it.
+        for row in grade_record.open_layer2(grade["layer2"]):
+            items.append(grade_record.layer2_task(row))
     for finding in (hardwiring or {}).get("findings") or []:
         kind = finding.get("kind") if isinstance(finding, Mapping) else ""
         if kind == "function":
             cid = str(finding.get("capability") or "")
             items.append(f"de-hardwire {cid}: {finding.get('verdict')}")
-        elif kind == "forbidden_literal":
+        elif kind in ("forbidden_literal", "prompt_leak"):
             rel = str(finding.get("file") or "")
-            items.append(f"remove baked literals from {rel}: {finding.get('literals')}")
-        elif kind == "prompt_leak":
-            items.append(f"stop leaking the prompt into the source: {finding.get('literals')}")
+            what = "baked literals" if kind == "forbidden_literal" else "copied brief"
+            if grade_record.finding_is_writers(finding):
+                items.append(f"remove {what} from {rel}: {finding.get('literals')}")
+            else:
+                factory_owed.append(
+                    f"FACTORY owes {what} in {rel} "
+                    f"({finding.get('owner_reason')}): {finding.get('literals')}"
+                )
 
     # A refused layer is a quoted NOT_CERTIFIED gap -- the report says what
     # it did not check, and no tier is issued over the gap.
+    reasons = tuple(reason_classes(grade, cids))
     if refusal:
         return GraderVerdict(
             tier=NOT_CERTIFIED,
-            items=(refusal,) + tuple(items),
+            items=(refusal,) + tuple(items) + tuple(factory_owed),
             ungraded=tuple(ungraded),
             grade=grade,
+            reasons=reasons,
+            writer_items=tuple(items),
+            factory_owed=tuple(factory_owed),
         )
 
     # A Layer 2 that never answered is an outage -- a verdict about the run
@@ -707,11 +1134,14 @@ def run_grader(
 
     # A refused or unrun layer blocks certification: the report says what it
     # did not check, and no tier is issued over the gap.
-    if ungraded or items:
+    if ungraded or items or factory_owed:
         return GraderVerdict(
             tier=NOT_CERTIFIED,
-            items=tuple(items) + tuple(ungraded),
+            items=tuple(items) + tuple(factory_owed) + tuple(ungraded),
             ungraded=tuple(ungraded),
             grade=grade,
+            reasons=reasons,
+            writer_items=tuple(items),
+            factory_owed=tuple(factory_owed),
         )
     return GraderVerdict(tier=CERTIFIED, grade=grade)

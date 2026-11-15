@@ -29,6 +29,7 @@ is the documented revert.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -43,6 +44,13 @@ from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequ
 logger = logging.getLogger("cerebrumdev.factory.runner")
 
 from app.factory.build.failure_kinds import failure_kind
+from app.factory.build.coder_session_status import (
+    OwnerStopped,
+    check_owner,
+    owner_control_scope,
+    read_control,
+    read_control_record,
+)
 from app.factory.build.authority import (
     BUILD_PHASES,
     SEALED_AFTER_CLONER,
@@ -177,6 +185,46 @@ def _failure_keys(verdict: Any, exclude: Sequence[str] = ()) -> List[str]:
 REWORK_TARGET = BuildRole.WRITER
 
 
+def rework_seed_paths(root: Path, sealed: Sequence[str] = SEALED_AFTER_CLONER) -> List[str]:
+    """F-R1: the committed product files a WRITER rework round is seeded with.
+
+    Derived from the committed tree itself: every file that ships
+    (``builds_push.is_exported`` -- so no data/, caches, bytecode, ledger or
+    Factory-internal record), minus the Factory-owned paths and the Store
+    gate, minus vendor (the globs sealed after CLONER, CLONER's lock and
+    every path that lock vendored). Top-level writer files (alembic/,
+    alembic.ini, requirements*.txt, ...) are seeded like nested ones -- the
+    old app/docs/tests/scripts list dropped them and the writer re-made
+    them. Sorted POSIX paths."""
+    from app.factory.build.authority import FACTORY_RESIDUE, _matches_lane
+    from app.factory.build.builds_push import is_exported, is_gate_owned
+    from app.factory.build.factory_owned import factory_owned_paths
+    from app.factory.build.factory_receipt import _vendored_paths
+    from app.factory.build.image_sufficiency import LOCKFILE
+
+    root = Path(root)
+    owned = set(factory_owned_paths())
+    vendored = tuple(v.rstrip("/") for v in (*_vendored_paths(root), LOCKFILE) if v)
+    out: List[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root)
+        posix = rel.as_posix()
+        if not is_exported(rel):
+            continue  # a build artifact or Factory-internal record
+        if posix in owned or is_gate_owned(posix):
+            continue
+        if rel.name in FACTORY_RESIDUE or posix in FACTORY_RESIDUE:
+            continue
+        if any(_matches_lane(rel, glob) for glob in sealed):
+            continue
+        if any(posix == v or posix.startswith(v + "/") for v in vendored):
+            continue
+        out.append(posix)
+    return sorted(out)
+
+
 def runner_enabled() -> bool:
     """The runner is opt-in. The template path stays the default until cutover."""
     return os.getenv(RUNNER_FLAG_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -272,30 +320,20 @@ def _writer_gate_items(verdict: Any) -> tuple:
 
 
 def _tester_recheck_item(verdict: Any) -> str:
-    """The TESTER rework round's re-check: the failing product-gate tests by
-    node id, and the self-check that runs the same suites TESTER stamped.
-    Every finding row already names the capability and field it refused."""
-    from app.factory.build import failure_owner
+    """The TESTER rework round's re-check: run the self-check, which re-runs
+    only the targeted tests for the files this pass changes. The failing
+    product-gate suites are TESTER's own check, not the writer's to re-run
+    (F2). Every finding row already names the capability and field it refused."""
     from app.factory.build.brief_gates import PRODUCT_GATE_CHECK
     from app.factory.build.product_suites import RECHECK_TAG
     from app.factory.build.writer_behaviour import SELF_CHECK_COMMAND
 
-    nodes = [
-        str(name).rsplit(" [", 1)[0]
-        for name in failure_owner.failure_names(verdict)
-        if "::" in str(name)
-    ]
-    rerun = (
-        " and `python -m pytest -m \"pilot or not pilot\" "
-        + " ".join(nodes)
-        + "`"
-        if nodes
-        else ""
-    )
     return (
         f"{RECHECK_TAG} [{PRODUCT_GATE_CHECK}] the suites that failed are on disk (Factory-"
         f"owned; TESTER re-stamps them from your app/models.py): run "
-        f"`{SELF_CHECK_COMMAND}`{rerun} before declaring done. A payload "
+        f"`{SELF_CHECK_COMMAND}` before declaring done -- it re-runs only the "
+        "targeted tests for the files you changed, never the full suites the "
+        "gates own. A payload "
         "\"built from its own schema\" uses the model's FIELDS -- declare in "
         "that capability's model every field its handler or route requires"
     )
@@ -490,6 +528,13 @@ class Outcome(str, Enum):
     FAILED_TIME_BUDGET = "FAILED_TIME_BUDGET"
     FAILED_ROLE_ERROR = "FAILED_ROLE_ERROR"
     FAILED_AUTHORITY = "FAILED_AUTHORITY"
+    #: F-U1a: the owner pressed Stop. A final state of its own, never a
+    #: failure of the product or of a gate.
+    STOPPED_BY_OWNER = "STOPPED_BY_OWNER"
+
+
+#: The decision reason a stopped build's terminal event carries.
+STOPPED_BY_OWNER_REASON = "stopped_by_owner"
 
 
 def _collect_all_enabled() -> bool:
@@ -564,6 +609,27 @@ class BuildOutcome:
         }
 
 
+
+def _under_owner_control(run: Callable[["RoleRunner"], "BuildOutcome"]) -> Callable[["RoleRunner"], "BuildOutcome"]:
+    """Run the build under the owner's Stop (F-U1a).
+
+    The owner's control file for the build's workspace is installed as this
+    thread's control, so every stage reads it before a model call and the
+    writer CLI's wait reads it on every tick. A Stop raised anywhere below
+    ends the run here, as one named final state.
+    """
+
+    @functools.wraps(run)
+    def controlled(self: "RoleRunner") -> "BuildOutcome":
+        with owner_control_scope(functools.partial(read_control, self.workspace)):
+            try:
+                return run(self)
+            except OwnerStopped as stop:
+                stopped = stop
+        return self._finish_stopped(stopped)
+
+    return controlled
+
 class RoleRunner:
     """Drives one build of *blueprint* into *workspace*."""
 
@@ -629,10 +695,18 @@ class RoleRunner:
             self.budget = BuildBudget(wall_clock_s=wall)
         else:
             self.budget = budget
-        #: The plan-time wall, taken ONCE. Strict enforcement (0605Z) clamps
-        #: every later extension to it: the inspect ramp and the rework
-        #: grants can propose more, but the wall never grows past this.
+        #: The plan-time wall, taken ONCE, PER WRITER PASS (owner ruling
+        #: 2026-11-11): it bounds ONE writer pass, not the whole build. The
+        #: inspect ramp still clamps to it, but a granted rework round
+        #: re-arms it for its own pass (``_plan_wall_passes`` below); the
+        #: phase budget and the hard ceiling still bound the total,
+        #: unchanged.
         self._plan_wall_s: float = float(self.budget.wall_clock_s or 0.0)
+        #: How many writer passes this plan wall has been granted for. Starts
+        #: at one (the first pass); every granted rework round re-arms the
+        #: per-pass allowance, so the plan wall's total grows by one pass
+        #: while the phase budget / ceiling still cap the whole run.
+        self._plan_wall_passes: int = 1
         # Roles are injectable so a test can drive a misbehaving role; gates
         # are NOT -- see the module docstring.
         self.roles = dict(roles or ROLE_IMPLEMENTATIONS)
@@ -864,32 +938,18 @@ class RoleRunner:
         return self._writer_committed_before()
 
     def _seed_rework_staging(self, staging: Path) -> int:
-        """Copy the committed product's writer-authored areas into the fresh
-        staging tree so a rework round patches in place. Only the dirs the
-        WRITER authors are seeded (app/docs/tests/scripts); vendor, the
-        ledger and build artifacts are not. Factory-owned paths are then
-        removed from the seed so prestamp re-renders them fresh and the
-        writer-touched-factory-file guard compares against a clean stamp.
+        """Copy the committed product's writer-authored files into the fresh
+        staging tree so a rework round patches in place. The set is derived
+        from the committed tree (``rework_seed_paths``), never a dir list:
+        every file except vendor, Factory-owned paths and build artifacts.
+        Factory-owned paths stay out so prestamp re-renders them fresh and
+        the writer-touched-factory-file guard compares against a clean stamp.
         Returns the count of seeded files kept."""
-        from app.factory.build import factory_owned
-
         dest = self.workspace
-        seed_dirs = ("app", "docs", "tests", "scripts")
-        for top in seed_dirs:
-            base = dest / top
-            if not base.is_dir():
-                continue
-            for src in base.rglob("*"):
-                if not src.is_file():
-                    continue
-                rel = src.relative_to(dest).as_posix()
-                out = staging / rel
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_bytes(src.read_bytes())
-        for rel in factory_owned.factory_owned_paths():
-            p = staging / rel
-            if p.is_file():
-                p.unlink()
+        for rel in rework_seed_paths(dest):
+            out = staging / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes((dest / rel).read_bytes())
         return sum(1 for p in staging.rglob("*") if p.is_file())
 
     def _writer_can_resume(self, staging: Path) -> bool:
@@ -939,6 +999,63 @@ class RoleRunner:
     def _rework_rounds_this_cycle(self) -> int:
         return sum(1 for e in self._cycle_events() if e.kind is EventKind.REWORK)
 
+    def _grader_stop(self, grade_verdict: Any, reason: str) -> None:
+        """FG-8: a grader verdict that ends the run is the WRITER phase's own
+        terminal verdict. The writer's gate passed before the grader read its
+        tree; without this event that GATE_PASSED stays WRITER's last verdict,
+        so a resume counts WRITER complete and re-enters at TESTER on the very
+        tree the grader refused. Recorded as WRITER's GATE_FAILED, a resume
+        re-enters WRITER and is seeded from the run's RUN_FAILED findings."""
+        from app.factory.build.grader import GRADER_GATE
+
+        self.ledger.append(
+            EventKind.GATE_FAILED,
+            role=BuildRole.WRITER,
+            detail=f"GRADER: {grade_verdict.tier}",
+            payload={
+                "gate": GRADER_GATE,
+                "reason": reason,
+                "grader_tier": grade_verdict.tier,
+                "findings": list(grade_verdict.items),
+            },
+        )
+
+    def _grader_factory_fault(self, grade_verdict: Any, rework_used: int) -> Optional[BuildOutcome]:
+        """FG-1: end the run when a NOT_CERTIFIED verdict holds no writer-owned
+        row. The Factory is named as the owner (the TESTER's FACTORY_FAULT
+        shape), the writer is not dispatched, and the tier is never CERTIFIED.
+        Returns None when the writer has rows to repair."""
+        if grade_verdict.writer_items:
+            return None
+        from app.factory.build import failure_owner
+        from app.factory.build.grader import GRADER_GATE, NOT_CERTIFIED
+
+        owed = list(grade_verdict.factory_owed) + list(grade_verdict.ungraded)
+        if not owed:
+            owed = list(grade_verdict.items)
+        self.ledger.append(
+            EventKind.NOTE,
+            role=BuildRole.WRITER,
+            detail=f"GRADER: {NOT_CERTIFIED} -- FACTORY_FAULT: " + ("; ".join(owed)[:400] or "-"),
+            payload={
+                "grader_gate": GRADER_GATE,
+                "owner": failure_owner.FACTORY,
+                "grader_tier": NOT_CERTIFIED,
+                "factory_owed": list(grade_verdict.factory_owed),
+                "grader_ungraded": list(grade_verdict.ungraded),
+                "writer_dispatched": False,
+            },
+        )
+        self._grader_stop(grade_verdict, "grader_factory_fault")
+        return self._finish(
+            Outcome.FAILED_GATE,
+            f"GRADER: {NOT_CERTIFIED} -- FACTORY_FAULT (no writer round): "
+            + ("; ".join(owed)[:400] or "-"),
+            phase=BuildRole.WRITER,
+            rework=rework_used,
+            findings=list(grade_verdict.items),
+        )
+
     def _writer_grader(self) -> Optional[Any]:
         """The GRADER: the writer's tree is graded BEFORE the TESTER judges
         it. Returns None when the grader is disabled or the verdict is
@@ -958,12 +1075,22 @@ class RoleRunner:
 
         if not grader_enabled():
             return None
-        from app.factory.build.writer_brief import writer_system_brief
+        from app.factory.build.grader import ERROR, GraderVerdict
+        from app.factory.build.writer_prompt import DispatchRecordMissing, dispatched_writer_inputs
 
-        compiled = self.state.get("compiled_brief")
-        prompt = writer_system_brief() + "\n\n" + json.dumps(
-            compiled or {}, sort_keys=True, default=str
-        )
+        # FG-4: the grader derives from what the writer was actually told,
+        # recorded at dispatch; no record is an error about the run, never a
+        # prompt rebuilt here.
+        try:
+            told = dispatched_writer_inputs(self.state)
+        except DispatchRecordMissing as exc:
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.WRITER,
+                detail=f"GRADER: {ERROR}: {exc}",
+                payload={"grader_gate": GRADER_GATE, "grader_tier": ERROR, "grader_items": [str(exc)]},
+            )
+            return GraderVerdict(tier=ERROR, items=(str(exc),))
         product_id = (
             str(getattr(self.blueprint, "product_id", "") or "")
             or str(self.state.get("product_id") or "")
@@ -975,8 +1102,12 @@ class RoleRunner:
                 blueprint=self.blueprint,
                 workspace=self.workspace,
                 product_id=product_id,
-                compiled_brief=compiled,
-                prompt_text=prompt,
+                plan_capabilities=[c.capability_id for c in self.plan.capabilities],
+                state_specs=self.state.get("model_specs"),
+                route_bodies=self.state.get("route_bodies"),
+                compiled_brief=told["brief"],
+                prompt_text=told["prompt"],
+                supplied_text=told["supplied"],
                 store_root=self.store_root,
             )
         except Exception as exc:  # noqa: BLE001 -- named, never silent
@@ -986,8 +1117,6 @@ class RoleRunner:
                 detail=f"grader crashed: {type(exc).__name__}: {exc}",
                 payload={"grader_gate": GRADER_GATE, "grader_crash": True},
             )
-            from app.factory.build.grader import ERROR, GraderVerdict
-
             return GraderVerdict(tier=ERROR, items=(f"grader crashed: {type(exc).__name__}: {exc}",))
         self.ledger.append(
             EventKind.NOTE,
@@ -998,6 +1127,7 @@ class RoleRunner:
                 "grader_tier": verdict.tier,
                 "grader_items": list(verdict.items),
                 "grader_ungraded": list(verdict.ungraded),
+                "grader_reasons": [dict(r) for r in verdict.reasons],
             },
         )
         if verdict.ok:
@@ -1842,6 +1972,11 @@ class RoleRunner:
         rerun = list(dict.fromkeys(rerun))
         elapsed = max(0.0, float(self.clock()) - float(self._run_started))
         requested = elapsed + allowance_each * len(rerun)
+        # A granted rework round re-arms the per-pass plan wall: the re-run
+        # pass gets its own plan wall (owner ruling 2026-11-11), while the
+        # phase budget (allowance_each) and the ceiling still bound the
+        # total. ``_extend_wall`` reads ``_plan_wall_passes`` for the clamp.
+        self._plan_wall_passes += 1
         before = float(self.budget.wall_clock_s or 0.0)
         if requested > before or (
             self._deadline is not None
@@ -2109,7 +2244,9 @@ class RoleRunner:
             detail=detail,
             payload=payload,
         )
-        if kind is EventKind.RUN_FAILED:
+        if kind is EventKind.RUN_FAILED and outcome is not Outcome.STOPPED_BY_OWNER:
+            # A stopped build makes no further model call, not even to
+            # narrate itself: the owner said why it ended.
             self._attach_failure_narrative(phase)
         if (
             outcome is Outcome.SUCCESS
@@ -2186,6 +2323,22 @@ class RoleRunner:
             ),
             payload=bar.to_json(),
         )
+
+    def _note_drafting_note(self) -> None:
+        """Carry the architect's drafting note into the public timeline.
+
+        The draft happens on the Floor, before any build exists; a note it
+        carried (a fallback draft, an empty kit closure) is otherwise visible
+        only in the chat turn that drafted it.
+        """
+        note = str(getattr(self.blueprint, "drafting_note", "") or "").strip()
+        if note:
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.COLLECTOR,
+                detail=f"architect: {note}",
+                payload={"drafting_note": note},
+            )
 
     def _note_plan_budget(self) -> None:
         """State the plan-time budget before any phase runs (1330Z).
@@ -2284,12 +2437,63 @@ class RoleRunner:
             state=self.state,
             workspace=self.workspace,
             lead_s=lead_s,
+            plan_wall_s=float(getattr(self, "_plan_wall_s", 0.0) or 0.0),
+            plan_wall_passes=int(getattr(self, "_plan_wall_passes", 1) or 1),
+            phase_wall_s=float(self.budget.phase_wall_clock_s or 0.0),
         )
         self._emit_inspect(decided, reason=reason)
         return decided
 
-    def _extend_wall(self, new_wall: float) -> None:
+    def _grantable_wall_s(self) -> float:
+        """The largest wall ``_extend_wall`` can apply to the open pass.
+
+        With a plan wall: the progress-evidenced bound (max of plan wall x
+        passes and the phase budget, ``phase_bounded_wall``); without one the
+        grant is unclamped by plan. Either way never above the hard ceiling.
+        0.0 when nothing bounds it.
+        """
+        from app.factory.build.budget_inspect import phase_bounded_wall
+
+        plan_wall = float(getattr(self, "_plan_wall_s", 0.0) or 0.0)
+        ceiling = float(self.budget.hard_ceiling_s or 0.0)
+        if plan_wall > 0:
+            bound = phase_bounded_wall(
+                plan_wall_s=plan_wall,
+                plan_wall_passes=int(getattr(self, "_plan_wall_passes", 1) or 1),
+                phase_wall_s=float(self.budget.phase_wall_clock_s or 0.0),
+            )
+            bound = float(bound or 0.0)
+        else:
+            bound = ceiling
+        if ceiling > 0 and bound > 0:
+            bound = min(bound, ceiling)
+        return max(bound, float(self.budget.wall_clock_s or 0.0))
+
+    def _grantable_wall_left(self) -> Optional[float]:
+        """Seconds from now to the end of ``_grantable_wall_s``; None before
+        the run starts or when nothing bounds the wall."""
+        if self._run_started is None:
+            return None
+        bound = self._grantable_wall_s()
+        if bound <= 0:
+            return None
+        return float(self._run_started) + bound - float(self.clock())
+
+    def _extend_wall(
+        self, new_wall: float, *, progress_evidenced: bool = False
+    ) -> float:
         """Lengthen the build wall and the live role deadline. Never shrink.
+
+        Returns the wall it actually APPLIED (the old wall when nothing
+        moved), so a caller never reports a wall that did not happen.
+
+        ``progress_evidenced`` (owner ruling F-W2, 2026-11-12): a grant for a
+        coding-agent CLI that shows progress since the last inspect (files on
+        disk / steps reported, rising -- the counter the Floor prints) is
+        evidence beating plan. It is bounded by the phase budget and the
+        hard ceiling only, not by the per-pass plan wall. A grant WITHOUT
+        progress evidence stays clamped to the plan wall: a plan must not
+        keep a dead CLI alive.
 
         Clamped to ``budget.hard_ceiling_s`` HERE rather than at each caller:
         this is the only writer of the deadline, and two of its callers pass
@@ -2306,11 +2510,21 @@ class RoleRunner:
         new_wall = self.budget.capped(requested)
         plan_wall = float(getattr(self, "_plan_wall_s", 0.0) or 0.0)
         if plan_wall > 0:
-            # Strict plan-time budget (0605Z): the plan wall is final for
-            # its class. Every extension -- the inspect ramp, a rework grant,
-            # the pilot tail -- is capped here, so no caller can grow the
-            # wall past the plan budget it was given.
-            new_wall = min(new_wall, plan_wall)
+            # Per-pass plan budget (2026-11-11): the plan wall bounds ONE
+            # writer pass; each granted rework round re-arms it (one more
+            # pass). The phase budget and the hard ceiling still bound the
+            # total -- the ceiling via ``capped`` above and the phase budget
+            # via the caller's requested wall -- so no caller can grow the
+            # wall past ``plan_wall * passes``.
+            passes = int(getattr(self, "_plan_wall_passes", 1) or 1)
+            bound = plan_wall * passes
+            if progress_evidenced:
+                # Evidence beats plan: the phase budget bounds this grant
+                # (never below the plan bound); ``capped`` above already
+                # applied the ceiling. An unbounded phase leaves the ceiling.
+                phase_cap = float(self.budget.phase_wall_clock_s or 0.0)
+                bound = max(bound, phase_cap) if phase_cap > 0 else new_wall
+            new_wall = min(new_wall, bound)
         target = None
         if self._run_started is not None and new_wall > 0:
             target = float(self._run_started) + float(new_wall)
@@ -2352,7 +2566,7 @@ class RoleRunner:
                     requested,
                     float(self.budget.hard_ceiling_s),
                 )
-            return
+            return old_wall
 
         extra = ""
         if requested > new_wall:
@@ -2366,6 +2580,7 @@ class RoleRunner:
             extra,
         )
         self._record_lifted_model_call_deadline()
+        return new_wall
 
     def _record_lifted_model_call_deadline(self) -> None:
         """Write the lifted deadline onto the open coding-agent model call.
@@ -2509,16 +2724,70 @@ class RoleRunner:
         )
         new_wall = decided.get("next_wall_s")
         if new_wall:
-            self._extend_wall(float(new_wall))
+            from app.factory.build.budget_inspect import cli_progress_evidenced
+
+            before = float(self.budget.wall_clock_s or 0.0)
+            applied = self._extend_wall(
+                float(new_wall),
+                progress_evidenced=bool(
+                    decided.get("cli_in_flight") and cli_progress_evidenced(decided)
+                ),
+            )
             if decided.get("cli_in_flight"):
-                self._emit_cli_watchdog_extend(decided)
+                self._emit_cli_watchdog_extend(
+                    decided, applied_wall_s=applied, before_wall_s=before
+                )
+            else:
+                # F-W2c: every stage-inspect grant books the wall it APPLIED
+                # under the one ledger key, CLI in flight or not.
+                self._emit_wall_applied(
+                    decided, applied_wall_s=applied, before_wall_s=before
+                )
         elif decided.get("decision") == "hard_stop":
             self._stage_halt = decided
             self.state["stage_halt"] = decided
         return decided
 
-    def _emit_cli_watchdog_extend(self, decided: Mapping[str, Any]) -> None:
-        """Keep Floor Last:/watchdog aligned with the bumped CLI wall."""
+    def _emit_wall_applied(
+        self,
+        decided: Mapping[str, Any],
+        *,
+        applied_wall_s: float,
+        before_wall_s: float,
+    ) -> None:
+        """The stage-inspect grant's applied wall, under ``wall_applied_s``
+        -- the same key the in-flight CLI NOTE carries -- so the ledger has
+        one key for "the wall that actually happened"."""
+        applied = float(applied_wall_s)
+        payload: Dict[str, Any] = {
+            "stage": "budget",
+            "source": "factory",
+            "wall_requested_s": float(decided.get("next_wall_s") or 0.0),
+            "wall_applied_s": applied,
+        }
+        if applied <= float(before_wall_s) + 1e-9:
+            payload["wall_denied"] = True
+        self.ledger.append(
+            EventKind.NOTE,
+            detail=f"stage inspect grant: wall_applied_s={applied:g}",
+            payload=payload,
+        )
+        logger.info("factory stage inspect grant: wall_applied_s=%.0f", applied)
+
+    def _emit_cli_watchdog_extend(
+        self,
+        decided: Mapping[str, Any],
+        *,
+        applied_wall_s: float,
+        before_wall_s: float,
+    ) -> None:
+        """Keep Floor Last:/watchdog aligned with the wall ACTUALLY applied.
+
+        The ledger never prints a wall that did not happen: it reports the
+        value ``_extend_wall`` applied, or that the plan wall denied the
+        grant (live 2026-11-12, 72ebc93: "staged wall extended to 2700s"
+        while the clamp kept 1800s and the writer died at 1800s).
+        """
         from app.factory.build.coder_session import cli_watchdog_remaining_s
 
         boxed = self._deadline_box.get("at")
@@ -2533,23 +2802,34 @@ class RoleRunner:
         deadline_s = cli_watchdog_remaining_s(
             leftover_s=left, elapsed_s=elapsed
         )
+        applied = float(applied_wall_s)
+        moved = applied > float(before_wall_s) + 1e-9
         payload: Dict[str, Any] = {
             "stage": "dispatch",
             "source": "coder CLI",
             "model_call": True,
+            # Marks this NOTE as the SAME open call, not a new one
+            # (``_cli_flight``); ``wall_denied`` says whether it moved.
             "cli_wall_extended": True,
+            "wall_requested_s": float(decided.get("next_wall_s") or 0.0),
+            "wall_applied_s": applied,
         }
         if deadline_s is not None:
             payload["deadline_s"] = round(deadline_s, 1)
-        self.ledger.append(
-            EventKind.NOTE,
-            detail=(
+        if moved:
+            detail = (
                 "FACTORY_CODE_CLI still in-flight — staged wall extended "
-                f"to {decided.get('next_wall_s'):g}s; model call still "
-                "inside watchdog"
-            ),
-            payload=payload,
-        )
+                f"to {applied:g}s; model call still inside watchdog "
+                f"(wall_applied_s={applied:g})"
+            )
+        else:
+            payload["wall_denied"] = True
+            detail = (
+                "FACTORY_CODE_CLI still in-flight — staged wall extension "
+                f"denied by plan wall (applied {applied:g}s) "
+                f"(wall_applied_s={applied:g})"
+            )
+        self.ledger.append(EventKind.NOTE, detail=detail, payload=payload)
 
     def _grant_pilot_budget(self) -> None:
         """Keep rework room for the pilot cycle. Do not jump the wall to 2h.
@@ -2640,6 +2920,36 @@ class RoleRunner:
 
     # -- the run ---------------------------------------------------------
 
+    def _finish_stopped(self, stop: OwnerStopped) -> BuildOutcome:
+        """End the run as stopped by the owner: who, when, and where."""
+        record = read_control_record(self.workspace)
+        # The phase in flight: the last one started and not yet ended (None
+        # when the stop landed between phases).
+        role: Optional[BuildRole] = None
+        for event in self.ledger.events():
+            if event.kind is EventKind.PHASE_STARTED and event.role:
+                role = event.role
+            elif event.kind in TERMINAL_KINDS and event.role is role:
+                role = None
+        if role is not None:
+            self.ledger.append(
+                EventKind.PHASE_ABORTED,
+                role=role,
+                detail=f"stopped by the owner: {stop}",
+                payload={"reason": STOPPED_BY_OWNER_REASON},
+            )
+        return self._finish(
+            Outcome.STOPPED_BY_OWNER,
+            f"stopped by the owner during {role.value if role else 'the build'}",
+            phase=role,
+            decision={
+                "reason": STOPPED_BY_OWNER_REASON,
+                "by": record.get("by"),
+                "at": record.get("updated_at"),
+            },
+        )
+
+    @_under_owner_control
     def run(self) -> BuildOutcome:
         started = self.clock()
         deadline = self.budget.deadline_from(started)
@@ -2652,6 +2962,10 @@ class RoleRunner:
         # only"). None when the run has no ceiling.
         ceiling = float(self.budget.hard_ceiling_s or 0.0)
         self._deadline_box["ceiling_at"] = (started + ceiling) if ceiling > 0 else None
+        # Ruling F-W2c: the largest wall this run may still grant the open
+        # pass, read live by the writer dispatch so the coding-agent CLI's own
+        # per-turn budget is never below a wall ``_extend_wall`` can apply.
+        self._deadline_box["grant_bound_left"] = self._grantable_wall_left
         inputs_hash = self.inputs_hash
         self.state["inputs_hash"] = inputs_hash
 
@@ -2780,6 +3094,7 @@ class RoleRunner:
         # PLAN_BUDGET note never hides it (see the note at the top of run()).
         self._note_build_level()
         self._note_plan_budget()
+        self._note_drafting_note()
 
         index = 0
         while True:
@@ -2789,6 +3104,8 @@ class RoleRunner:
                     index += 1
                     continue
 
+                # F-U1a: a Stop ends the build here, before the next phase.
+                check_owner()
                 self._maybe_stage_inspect()
                 deadline = self._deadline
                 if self._stage_halt:
@@ -2942,7 +3259,7 @@ class RoleRunner:
                 # judges it. CERTIFIED (or a disabled grader) falls through
                 # to the ok path unchanged; NOT_CERTIFIED hands the quoted
                 # items back to the WRITER for repair in this build (the
-                # grader's OWN two rounds -- never the TESTER's budget, never
+                # grader's OWN REWORK_BUDGET rounds -- never the TESTER's budget, never
                 # its work list); a third failure, or an ERROR verdict, ends
                 # the run with the quoted items.
                 if verdict.ok and role is BuildRole.WRITER:
@@ -2951,6 +3268,7 @@ class RoleRunner:
                         from app.factory.build.grader import ERROR, GRADER_GATE, NOT_CERTIFIED
 
                         if grade_verdict.tier == ERROR:
+                            self._grader_stop(grade_verdict, "grader_error")
                             return self._finish(
                                 Outcome.FAILED_GATE,
                                 "GRADER: ERROR: "
@@ -2959,7 +3277,15 @@ class RoleRunner:
                                 rework=rework_used,
                                 findings=list(grade_verdict.items),
                             )
-                        # NOT_CERTIFIED: the writer's handback, two rounds.
+                        # FG-1: a NOT_CERTIFIED verdict with nothing the
+                        # writer authored to repair spends no writer round:
+                        # what remains is owed by the Factory (a stamped or
+                        # vendored file) or is a run-level gap, so the run
+                        # ends naming the Factory -- never billed to the writer.
+                        owed = self._grader_factory_fault(grade_verdict, rework_used)
+                        if owed is not None:
+                            return owed
+                        # NOT_CERTIFIED: the writer's handback, REWORK_BUDGET rounds.
                         grader_events = [
                             e for e in self._reworks()
                             if (e.payload or {}).get("gate") == GRADER_GATE
@@ -2968,7 +3294,7 @@ class RoleRunner:
                         previous = set()
                         for event in grader_events:
                             previous.update((event.payload or {}).get("failure_names") or [])
-                        items = tuple(grade_verdict.items)
+                        items = tuple(grade_verdict.writer_items)
                         if rounds >= REWORK_BUDGET:
                             repeated = sorted(set(items) & previous)
                             stop_reason = (
@@ -2976,13 +3302,14 @@ class RoleRunner:
                                 if repeated
                                 else f"grader rework budget of {REWORK_BUDGET} rounds spent"
                             )
+                            self._grader_stop(grade_verdict, "grader_not_certified")
                             return self._finish(
                                 Outcome.FAILED_GATE,
                                 f"GRADER: {NOT_CERTIFIED} after {rounds} round(s) "
                                 f"-- {stop_reason}: " + ("; ".join(items)[:400] or "-"),
                                 phase=role,
                                 rework=rework_used,
-                                findings=list(items),
+                                findings=list(grade_verdict.items),
                             )
                         self._grant_rework_wall(
                             BuildRole.WRITER, build_round=self._rework_rounds_this_build() + 1

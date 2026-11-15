@@ -348,6 +348,11 @@ def ensure_verified_account(email: str, password: str) -> Dict[str, Any]:
     account = get_account(account_id)
     if account is None:
         raise RuntimeError("ensure_verified_account lost the account it just wrote")
+    # The smoke principal is the pilot's PAID-customer stand-in (Journey B uploads
+    # documents), so it is entitled — not a time-limited trial that can lapse and
+    # turn the deploy gate red. This is the same seam the Stripe webhook and ops use.
+    set_subscription(account_id, "active")
+    account = get_account(account_id)
     return account
 
 

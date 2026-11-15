@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 #: ``_declared_specs(MODELS)``: the spec per capability, read off the live
 #: models. Runs inside the PRODUCT -- in :data:`SPECS_DUMP` here, and rendered
@@ -131,3 +131,70 @@ def merge_declared_specs(
             out["entity"] = product["entity"]
         merged[cap] = out
     return merged
+
+
+def tester_specs(
+    capability_ids: Iterable[str],
+    state_specs: Optional[Dict[str, Any]],
+    models_root: Optional[Path],
+    read: Callable[[Path], Optional[str]],
+    route_bodies: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """The spec per capability that TESTER samples -- ONE function, two readers
+    (TESTER's ``run_tester`` and the product grader's ``derive_functions``).
+
+    1. the state spec (``model_specs``), copied;
+    2. merged under the product's declared models (:func:`merge_declared_specs`):
+       the product's FIELDS decide which fields exist, the state spec keeps
+       the vocabulary, bounds and envelope it mined onto them;
+    3. the late align: per plan capability, the on-disk handler and its route
+       (``route_bodies`` first, else extracted from ``app/routes.py``) are
+       mined onto the declared fields, then the record envelope is ensured;
+    4. ``entity`` defaults to the capability id.
+
+    ``read(rel)`` is the file's text, or None when it does not exist. Nothing
+    here reads a capability, field or value by name.
+    """
+    from app.factory.build.block_inputs import (
+        align_spec_to_handler_source,
+        extract_capability_route_source,
+    )
+    from app.factory.build.block_obligations import ensure_record_envelope
+
+    specs: Dict[str, Any] = {
+        cid: dict(spec) if isinstance(spec, dict) else spec
+        for cid, spec in dict(state_specs or {}).items()
+    }
+    if models_root is not None:
+        specs = merge_declared_specs(specs, specs_from_product_models(models_root))
+    previous_routes = dict(route_bodies or {})
+    routes_text = read(Path("app") / "routes.py") or ""
+    for cid in capability_ids:
+        handler = read(Path("app") / "actions" / f"{cid.replace('-', '_')}.py")
+        parts: List[str] = [] if handler is None else [handler]
+        route_src = previous_routes.get(cid) or extract_capability_route_source(
+            routes_text, cid
+        )
+        if route_src:
+            parts.append(route_src)
+        if not parts:
+            existing = specs.get(cid)
+            if isinstance(existing, dict) and existing:
+                specs[cid], _env = ensure_record_envelope(existing)
+            continue
+        specs[cid], _changed = align_spec_to_handler_source(specs.get(cid) or {}, "\n".join(parts))
+        specs[cid], _env = ensure_record_envelope(specs[cid])
+    for cid, spec in list(specs.items()):
+        if isinstance(spec, dict) and not spec.get("entity"):
+            spec["entity"] = cid.replace("-", "_")
+    return specs
+
+
+def read_under(root: Path) -> Callable[[Path], Optional[str]]:
+    """``read(rel)`` for :func:`tester_specs` over a directory."""
+
+    def read(rel: Path) -> Optional[str]:
+        path = Path(root) / rel
+        return path.read_text("utf-8", "replace") if path.is_file() else None
+
+    return read

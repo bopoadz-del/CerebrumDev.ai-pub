@@ -154,6 +154,26 @@ def test_prompt_version_is_the_product():
     assert text.startswith(f"<!-- {PROMPT_VERSION} -->")
 
 
+def test_rework_findings_render_into_the_prompt():
+    """A rework round's work list reaches the prompt as REWORK FINDINGS, so
+    the agent patches in place instead of re-authoring the product (v16)."""
+    text = render_writer_prompt(
+        _Blueprint(),
+        brief="x",
+        findings=["function grade FAIL: cap_a"],
+    )
+    assert "REWORK FINDINGS" in text
+    assert "function grade FAIL: cap_a" in text
+    assert "Do not rebuild the platform from scratch" in text
+
+
+def test_a_first_pass_renders_no_rework_section():
+    """No findings, no REWORK FINDINGS section -- a first pass is a blank
+    slate by definition."""
+    text = render_writer_prompt(_Blueprint(), brief="x")
+    assert "REWORK FINDINGS" not in text
+
+
 # -- T5.1: headless exec, verified where the CLI exists -----------------------
 
 
@@ -260,8 +280,10 @@ def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_pat
     assert argv[argv.index("--provider") + 1] == "deepseek"
     assert argv[argv.index("exec") + 1 : argv.index("exec") + 3] == [
         "--auto",
-        "--json",
+        "--output-format",
     ]
+    # F-S1: the exec stream (per-round events), not the --json summary.
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--provider" in argv and "deepseek" in argv
     # Reversed with evidence: the key USED to ride on argv (--api-key <value>),
     # which puts a secret on the process cmdline (G2 bar 7). ORDERS 2026-10-27:

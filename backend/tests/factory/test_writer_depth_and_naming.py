@@ -31,8 +31,11 @@ def _writer() -> str:
 
 
 class TestTheWriterIsGivenRoom:
-    def test_it_is_told_it_can_run_the_gates_itself(self):
+    def test_it_is_told_to_run_the_self_check_not_the_full_suite(self):
         text = _writer()
+        # F2: the writer runs the targeted self-check; the full code-phase
+        # suite is named only as what NOT to re-run (the gate owns it).
+        assert "python scripts/factory_checks.py" in text
         assert 'python -m pytest -m "not pilot" -q' in text
         assert "POST a record, GET it back" in text
 

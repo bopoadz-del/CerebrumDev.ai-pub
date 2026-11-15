@@ -50,6 +50,21 @@ def test_the_stale_release_gate_is_replaced(tmp_path):
     assert "build_provenance.json: MISSING" not in gate
 
 
+def test_a_stale_dockerfile_is_replaced_with_the_factory_scaffold(tmp_path):
+    """The Dockerfile/.dockerignore are the Factory's: a tree that carries a
+    writer-authored one gets the Factory's ``COPY . .`` version on re-entry, so
+    the vendored tree the lock pins always reaches the image."""
+    root = _build(tmp_path / "ws")
+    (root / "Dockerfile").write_text("FROM python:3.11\nCOPY app ./app\n", encoding="utf-8")
+    (root / ".dockerignore").write_text("vendor/\n", encoding="utf-8")
+
+    changed = refresh_factory_files(root, "Probe")
+
+    assert "Dockerfile" in changed and ".dockerignore" in changed
+    assert "COPY . ." in (root / "Dockerfile").read_text(encoding="utf-8")
+    assert "vendor/" not in (root / ".dockerignore").read_text(encoding="utf-8")
+
+
 def test_coder_files_are_never_touched(tmp_path):
     root = _build(tmp_path / "ws")
     (root / "app" / "models.py").write_text("MODELS = {'a': 1}\n", encoding="utf-8")

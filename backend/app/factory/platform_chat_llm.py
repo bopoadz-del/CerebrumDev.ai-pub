@@ -131,7 +131,7 @@ good, build it, ship it, yes), OR (2) a coding run is in-flight, stalled, \
 or interrupted (no RUN_FAILED) and the user says continue / resume / keep \
 going, OR (3) the last run FAILED (rework exhausted / TESTER still red) \
 and the user asks to continue or try again — that RESUMES the platform \
-on its own branch at the failing phase with a fresh rework budget (only \
+on its own branch at the failing phase with the rework budget it had left (only \
 the user's Start over control makes a fresh workspace). Do not require a \
 pending unapproved \
 blueprint to resume. If the last run already succeeded AND the product is \

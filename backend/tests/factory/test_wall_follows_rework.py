@@ -197,12 +197,12 @@ def _grants(ledger):
 
 
 @pytest.mark.parametrize("wall", [100.0, 120.0])
-def test_a_rework_grant_never_grows_the_wall_past_the_plan_budget(tmp_path, wall):
-    """Strict plan-time budget (0605Z): the plan wall is final for its class,
-    so the rework grant (requested ~152 s, under the 1000 s ceiling) is
-    clamped to the plan wall. The writer still gets its one rework round, but
-    the wall can no longer grow past the plan budget and the run stops typed
-    as wall-clock exhaustion."""
+def test_a_rework_grant_rearms_the_plan_wall_for_its_own_pass(tmp_path, wall):
+    """Per-pass plan wall (2026-11-11): the plan wall bounds ONE writer pass,
+    not the whole build. The rework grant re-arms it for the re-run pass
+    (requested = elapsed 72 s + phase 80 s = 152 s, under the two-pass plan
+    budget and the 1000 s ceiling), so pass 1 + its rework pass fit and the
+    build completes instead of dying at the first pass's wall."""
     clock = _Clock()
     runner, calls = _runner(
         tmp_path, clock, wall=wall, phase=80.0, ceiling=1000.0, writer_seconds=70.0
@@ -214,10 +214,49 @@ def test_a_rework_grant_never_grows_the_wall_past_the_plan_budget(tmp_path, wall
     assert grants, "the rule granted a rework round"
     grant = grants[0]
     assert grant["phases"] == [BuildRole.WRITER.value]
-    assert grant["wall_s"] == wall  # clamped to the plan wall, never past it
+    assert grant["wall_s"] == 152.0  # its own pass wall: elapsed + one phase budget
     assert grant["capped"] is False
-    assert outcome.outcome is Outcome.FAILED_TIME_BUDGET, outcome.detail
+    assert outcome.ok, outcome.detail
+
+
+@pytest.mark.parametrize("phase", [30.0, 20.0])
+def test_a_rework_pass_past_the_phase_budget_is_refused_with_a_named_event(tmp_path, phase):
+    """The phase budget still bounds the total (2026-11-11): the plan wall is
+    per-pass, but the rework grant grows the wall by ONE phase budget
+    (``allowance_each_s``), never more. A rework pass that outlives that
+    allowance stops typed as time_budget_exceeded."""
+    clock = _Clock()
+    runner, calls = _runner(
+        tmp_path, clock, wall=60.0, phase=phase, ceiling=1000.0, writer_seconds=40.0
+    )
+    outcome = runner.run()
+
+    assert calls["writer"] == 2
+    grant = _grants(runner.ledger)[0]
+    # requested = elapsed (42 s) + ONE phase budget; neither the two-pass plan
+    # budget (60 s * 2 = 120 s) nor the ceiling (1000 s) clamps it here, so
+    # the phase budget is the binding cap on the rework wall. The rework pass
+    # (40 s) outlives it and the run stops typed.
+    assert grant["allowance_each_s"] == phase
+    assert grant["wall_s"] == grant["requested_s"]
+    assert grant["capped"] is False
+    assert outcome.outcome is Outcome.FAILED_TIME_BUDGET
     assert "wall-clock budget" in (outcome.detail or "")
+
+
+@pytest.mark.parametrize("wall", [60.0, 120.0])
+def test_a_rework_grant_without_a_phase_budget_records_nothing(tmp_path, wall):
+    """The early return is a rule too (CI-M ``drop_rule``): with no per-phase
+    wall budget (``phase_wall_clock_s = 0``) a granted rework round records
+    NO wall grant -- there is no allowance to extend. Dropping the guard
+    would still write a grant NOTE for a run that had already started."""
+    clock = _Clock()
+    runner, _calls = _runner(
+        tmp_path, clock, wall=wall, phase=0.0, ceiling=1000.0, writer_seconds=40.0
+    )
+    runner._run_started = clock()
+    runner._grant_rework_wall(BuildRole.WRITER)
+    assert _grants(runner.ledger) == []
 
 
 def test_the_grant_never_hides_the_rework_it_belongs_to(tmp_path):
@@ -238,9 +277,10 @@ def test_the_grant_never_hides_the_rework_it_belongs_to(tmp_path):
 
 
 def test_the_grant_never_passes_the_hard_ceiling(tmp_path):
-    """Same run, ceiling 120 s: the grant is clamped to the plan wall (100 s,
-    still below the 120 s ceiling) and flags the ceiling clamp; a run that
-    outlives it still stops typed as wall-clock exhaustion."""
+    """Same run, ceiling 120 s: the grant is clamped to the ceiling (120 s),
+    which now binds before the two-pass plan budget (200 s), and flags the
+    ceiling clamp; a run that outlives it still stops typed as wall-clock
+    exhaustion."""
     clock = _Clock()
     runner, _calls = _runner(
         tmp_path, clock, wall=100.0, phase=80.0, ceiling=120.0, writer_seconds=70.0
@@ -248,7 +288,7 @@ def test_the_grant_never_passes_the_hard_ceiling(tmp_path):
     outcome = runner.run()
 
     grant = _grants(runner.ledger)[0]
-    assert grant["wall_s"] == 100.0  # plan wall, below the 120 s ceiling
+    assert grant["wall_s"] == 120.0  # the ceiling, below the 200 s two-pass plan budget
     assert grant["capped"] is True   # requested 152 s > 120 s ceiling
     assert outcome.outcome is Outcome.FAILED_TIME_BUDGET
     assert "wall-clock budget" in outcome.detail

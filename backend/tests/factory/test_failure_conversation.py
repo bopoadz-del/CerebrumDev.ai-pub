@@ -257,12 +257,43 @@ def test_continue_with_unchanged_answers_resumes_the_same_branch_at_the_failing_
     reply = platform_chat_flow.confirm_and_continue(state)
     assert fresh == [] and seen[0]["output_dir"] == out
     assert reply.get("resumed") is True
+    for said in (opened["summary"], reply["summary"]):  # a resume never promises a reset
+        assert "fresh rework budget" not in said and "rework budget it had left" in said
     events = list(BuildLedger(out / "build_ledger.jsonl").events())
     assert not any((e.payload or {}).get(INPUTS_REBASED_KEY) for e in events)  # same inputs
     assert ran and ran[0] == "TESTER"  # the failing phase, not COLLECTOR
-    assert any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)
+    assert not any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)  # budget kept
     assert state.product_design.intake_reopened is False
     _ = A  # the typed action is the only door (see the chat tests above)
+
+
+@pytest.mark.parametrize("design", ["no_design", "no_blueprint"])
+def test_a_resume_without_a_blueprint_is_refused_before_anything_runs(tmp_path, monkeypatch, design):
+    from types import SimpleNamespace
+
+    from app.factory import platform_chat_flow
+
+    seen: list = []
+    _resume_hooks(monkeypatch, seen)
+    pd = None if design == "no_design" else SimpleNamespace(blueprint=None)
+    with pytest.raises(ValueError, match="no blueprint drafted"):
+        platform_chat_flow.resume_failed_platform(SimpleNamespace(product_design=pd), output_root=tmp_path)
+    assert seen == []  # the writer was never sent
+
+
+@pytest.mark.parametrize("drafted", [False, True])
+def test_continue_with_new_answers_is_refused_when_no_build_failed(tmp_path, drafted):
+    from app.factory import platform_chat_flow
+    from app.core.session_store import create_session
+
+    sid = f"sess_fg8_not_failed_{int(drafted)}"
+    create_session(sid, "tester")
+    state = get_session(sid)
+    if drafted:
+        state.product_design.blueprint = {"product_id": "unbuilt_platform"}
+    reply = platform_chat_flow.continue_with_intake(state, output_root=tmp_path)
+    assert reply["ok"] is False and "no failed build" in reply["summary"]
+    assert not state.product_design.intake_reopened  # the intake line stays frozen
 
 
 def test_continue_with_changed_answers_rebases_the_same_branch(tmp_path, monkeypatch):
@@ -289,7 +320,7 @@ def test_continue_with_changed_answers_rebases_the_same_branch(tmp_path, monkeyp
     assert fresh == [] and seen[0]["output_dir"] == out  # same workspace
     assert not (out.parent / f"{out.name}__run2").exists()
     assert ran and ran[0] == "COLLECTOR"  # new inputs: every phase anew
-    assert any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)
+    assert not any((e.payload or {}).get(BUDGET_RESET_KEY) for e in events)  # budget kept
 
 
 def test_a_rebase_is_the_only_way_a_resume_takes_new_inputs(tmp_path):

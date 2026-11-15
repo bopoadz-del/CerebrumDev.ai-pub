@@ -20,6 +20,7 @@ type Phase = 'idle' | 'uploading' | 'processing' | 'done' | 'error'
 
 export function FloorUpload({ sessionId, disabled }: Props) {
   const [accept, setAccept] = useState('')
+  const [entitled, setEntitled] = useState<boolean | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
   const [names, setNames] = useState<string[]>([])
@@ -27,11 +28,17 @@ export function FloorUpload({ sessionId, disabled }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
 
   // The accept-set comes from the backend allowlist, not a frontend literal.
+  // Upload is a paid action: `entitled` gates the "+" and, when false, shows
+  // the upgrade message instead of a picker the backend would refuse anyway.
   useEffect(() => {
     let live = true
     product
       .uploadAllowed(sessionId)
-      .then((a) => live && setAccept(a.accept))
+      .then((a) => {
+        if (!live) return
+        setAccept(a.accept)
+        setEntitled(a.entitled)
+      })
       .catch(() => {
         /* leave accept empty — the "+" stays disabled until it resolves */
       })
@@ -81,7 +88,8 @@ export function FloorUpload({ sessionId, disabled }: Props) {
   )
 
   const busy = phase === 'uploading' || phase === 'processing'
-  const canAttach = !disabled && !busy && accept !== ''
+  const canAttach = !disabled && !busy && accept !== '' && entitled === true
+  const showUpgrade = entitled === false
 
   // The transient message is a SIBLING of the "+" control, not its child:
   // inside the composer's flex row the message takes a full-width line of its
@@ -120,6 +128,15 @@ export function FloorUpload({ sessionId, disabled }: Props) {
           }}
         />
       </span>
+      {showUpgrade && (
+        <span
+          className="floor-upload__message floor-upload__message--upgrade"
+          data-testid="floor-upload-upgrade"
+          aria-live="polite"
+        >
+          Document attachments are a paid-tier feature — upgrade to attach files.
+        </span>
+      )}
       {names.length > 0 && (
         <span
           className="floor-upload__chips"

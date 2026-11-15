@@ -121,6 +121,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+      - name: Use the public Ubuntu archive (Azure mirror DNS outage 11 Nov)
+        run: |
+          printf 'http://archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          sudo apt-get update -qq
       - name: Install Playwright (F-8b UI grader tests)
         run: |
           npm install -g @playwright/test@1
@@ -608,6 +613,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install
         run: npm ci
+      - name: Use the public Ubuntu archive (Azure mirror DNS outage 11 Nov)
+        run: |
+          printf 'http://archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          sudo apt-get update -qq
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Mocked factory surfaces
@@ -668,3 +678,16 @@ jobs:
             command -v codewhale
             codewhale --version
           '
+
+      # FG-2(a): the UI grader's own toolchain check, run inside the built
+      # runtime image as the app user -- the same function the grader calls
+      # at grade time, so CI and the live grade cannot disagree.
+      - name: UI grader toolchain runs in the image as the app user
+        run: |
+          docker image inspect cerebrumdev-backend:ci --format 'image size bytes: {{.Size}}'
+          docker run --rm --user 10001 --entrypoint python cerebrumdev-backend:ci -c "
+          from app.factory.build.product_grader.ui_grader import toolchain_check
+          status = toolchain_check()
+          print('ui toolchain:', status.ok, status.detail)
+          raise SystemExit(0 if status.ok else 1)
+          "

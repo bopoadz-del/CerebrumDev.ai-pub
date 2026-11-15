@@ -3,7 +3,7 @@
 1. A failed build is still a product: it exports with FAILED(gate, check,
    finding), k/N, its build level and ``certified: false``; never released.
 2. One platform = one branch: Continue resumes the failed run where it
-   stopped (no COLLECTOR/CLONER/WRITER rerun, rework budget reset); a fresh
+   stopped (no COLLECTOR/CLONER/WRITER rerun, rework budget kept); a fresh
    workspace exists only on Start over, which tags the old head FIRST.
 3. Every passed phase is pushed to ``build/<platform_id>``.
 """
@@ -243,7 +243,7 @@ def test_continue_resumes_the_same_workspace_at_the_failing_phase(tmp_path, monk
     for i, e in enumerate(after):
         if e.kind is EventKind.PHASE_STARTED and e.role is BuildRole.WRITER:
             assert any(p.kind is EventKind.REWORK for p in after[:i]), "WRITER reran without a rework"
-    assert any((e.payload or {}).get(REWORK_BUDGET_RESET) for e in events)
+    assert not any((e.payload or {}).get(REWORK_BUDGET_RESET) for e in events)  # budget kept
     assert any((e.payload or {}).get(PLATFORM_ID_KEY) == state.product_design.platform_id for e in events)
 
 

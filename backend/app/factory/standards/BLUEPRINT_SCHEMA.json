@@ -47,6 +47,10 @@
             "items": { "type": "string" }
           },
           "strategy": { "type": "string" },
+          "requirements": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
           "source_turn": { "type": "integer", "minimum": 0 },
           "source_text": { "type": "string" }
         }

@@ -142,15 +142,27 @@ def test_on_a_one_slot_box_the_smoke_is_served_before_waiting_users():
     later.set()
 
 
-def test_a_wait_past_the_ceiling_stops_with_a_typed_timeout():
+@pytest.mark.parametrize("poll_s", [0.01, 0.05])
+def test_a_wait_past_the_ceiling_stops_with_a_typed_timeout(poll_s):
     counter = InProcessSlotCounter()
     counter.acquire_waiting("tenant", process_cap=4, tenant_cap=1, time_left=FOREVER)
-    with pytest.raises(WorkerError) as exc:
-        counter.acquire_waiting(
-            "tenant", process_cap=4, tenant_cap=1, time_left=lambda: 0.0, poll_s=0.01
-        )
-    assert str(exc.value).startswith(SLOT_WAIT_EXHAUSTED)
-    assert "slots_exhausted" not in str(exc.value)
+    errors = []
+
+    def wait_spent():
+        try:
+            counter.acquire_waiting(
+                "tenant", process_cap=4, tenant_cap=1, time_left=lambda: 0.0, poll_s=poll_s
+            )
+        except WorkerError as exc:
+            errors.append(exc)
+
+    # Bounded: a wait that ignores the spent ceiling fails here, never hangs.
+    t = threading.Thread(target=wait_spent, daemon=True)
+    t.start()
+    t.join(5)
+    assert len(errors) == 1, "a spent ceiling must stop the wait"
+    assert str(errors[0]).startswith(SLOT_WAIT_EXHAUSTED)
+    assert "slots_exhausted" not in str(errors[0])
     assert counter.queue_snapshot()["waiting"] == 0, "a departed waiter leaves the queue"
     counter.release("tenant")
 

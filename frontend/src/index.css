@@ -299,6 +299,8 @@ h3 { margin: 0 0 10px; }
 .nav-label { font-size: 14px; line-height: 1.2; }
 .nav-label-short { display: none; }
 .rail-foot { color: var(--dim); font-size: 11px; display: flex; align-items: center; gap: 6px; }
+.rail-foot-support { color: var(--dim); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-foot-support:hover { color: var(--fg); text-decoration: underline; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 
 /* min-width:0 lets the Floor column shrink below its content's intrinsic width,

@@ -108,7 +108,7 @@ def test_next_fresh_output_skips_a_failed_ledger(tmp_path):
 
 def test_start_or_resume_coder_after_terminal_resumes_the_same_workspace(tmp_path, monkeypatch):
     # Owner rule (2026-10-05): one platform = one branch. Continue on a FAILED
-    # run resumes it in place (fresh rework budget); only Start over is fresh.
+    # run resumes it in place (the rework budget it had left); only Start over is fresh.
     state = _failed_lettings_state(tmp_path)
     prior = Path(state.product_design.generation["output_dir"])
     captured = {}
@@ -204,13 +204,13 @@ def test_start_runner_build_rotates_off_a_failed_ledger_only_on_start_over(tmp_p
         ],
     )
     # Without Start over a failed run is re-entered in place, never replaced,
-    # and the resume resets the rework budget in the ledger.
+    # and the resume keeps the rework budget it had (no reset in the ledger).
     resumed = start_runner_build(bp, dead)
     assert resumed["fresh_workspace"] is False
     assert Path(resumed["output_dir"]) == dead
     from app.factory.build.rule_decision import BUDGET_RESET_KEY as REWORK_BUDGET_RESET
 
-    assert any((e.payload or {}).get(REWORK_BUDGET_RESET) for e in BuildLedger(dead / "build_ledger.jsonl").events())
+    assert not any((e.payload or {}).get(REWORK_BUDGET_RESET) for e in BuildLedger(dead / "build_ledger.jsonl").events())
     ledger.append(EventKind.RUN_FAILED, detail="failed again")
     # Start over -- the only fresh door -- rotates to a new workspace.
     result = start_runner_build(bp, dead, start_over=True)

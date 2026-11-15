@@ -20,6 +20,7 @@ from app.factory.build.failure_kinds import failure_kind, record_failure_kind
 from app.factory.build.authority import (
     KERNEL_ROUTE_NAMES,
     BuildRole,
+    capability_name,
     jobs_manifest,
 )
 from app.factory.build.offline_adapters import (
@@ -31,7 +32,6 @@ from app.factory.build.offline_adapters import (
 )
 from app.factory.build.block_inputs import (
     align_spec_to_handler_source,
-    extract_capability_route_source,
     render_block_inputs_module,
     sample_channel_value,
     sanitize_python_identifier,
@@ -106,6 +106,9 @@ from app.factory.build.rejection_contract import (
     ERROR_KEY,
     LISTED_RECORDS_SRC,
     OK_KEY,
+    PILOT_FAILED_BLOCK,
+    PILOT_NON_DICT,
+    PILOT_REJECTED,
     RECORD_ID_KEY,
     STORED_RECORD_KEY,
     ALLOWED_VALUES_KEY,
@@ -3813,6 +3816,12 @@ def _compiled_writer_brief(ctx: RoleContext) -> str:
         desc = str(getattr(cap, "description", "") or "").strip()
         if cid:
             cap_lines.append(f"- {cid}: {desc}".rstrip())
+            for req in (
+                str(r).strip()
+                for r in (getattr(cap, "requirements", None) or [])
+                if str(r).strip()
+            ):
+                cap_lines.append(f"    requirement: {req}")
     if cap_lines:
         sections.append("CAPABILITIES\n" + "\n".join(cap_lines))
     if not sections:
@@ -3848,6 +3857,37 @@ def _writer_worker_timeout_s(ctx: RoleContext) -> Optional[float]:
     if left is None:
         return None
     return max(float(DEFAULT_WORKER_TIMEOUT_S), float(left) - MODEL_CALL_GRACE_S)
+
+
+def _writer_cli_turn_wall_s(ctx: RoleContext) -> Optional[float]:
+    """The CLI's own per-turn budget for this dispatch (ruling F-W2c).
+
+    The runner's ``deadline_box['grant_bound_left']`` reads the largest wall
+    ``_extend_wall`` may still apply to this pass (phase-bounded, ceiling-
+    capped). The CLI reads its turn budget once at start, so the dispatch
+    carries that bound -- the writer phase can always become progress-
+    evidenced -- never the plan wall. ``None`` when the runner set no bound:
+    the worker then keeps its dispatch wall as the turn budget.
+
+    The two ``None`` causes are told apart in the log: no probe set by the
+    runner, versus a probe that raised (named by exception type).
+    """
+    box = ctx.deadline_box or {}
+    reader = box.get("grant_bound_left")
+    if not callable(reader):
+        logger.info("cli_turn_wall: no grant-bound probe; dispatch wall kept")
+        return None
+    try:
+        left = reader()
+    except Exception as exc:  # noqa: BLE001 -- a broken probe keeps the dispatch wall
+        logger.warning(
+            "cli_turn_wall: grant-bound probe failed (%s); dispatch wall kept",
+            type(exc).__name__,
+        )
+        return None
+    if left is None:
+        return None
+    return float(left)
 
 
 def _writer_slot_wait_left(ctx: RoleContext) -> Callable[[], Optional[float]]:
@@ -3955,23 +3995,48 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         SLOT_WAIT_EXHAUSTED,
         SLOT_WAIT_OPEN,
         WRITER_PROGRESS_FIELDS,
+        WRITER_STALL_FIELDS,
         WorkerError,
         is_narration_line,
-        run_worker_job,
+        run_worker_job_with_stall_retry,
         writer_specialist_cap,
+    )
+    from app.factory.build.specialist_fanout import (
+        dispatched_specialists,
+        fanout_enabled,
+        start_for_writer,
     )
     from app.factory.build.writer_prompt import render_writer_prompt
 
     dest = persist_workspace_root(ctx.workspace)
+    # F-S2c: with the fan-out on, the Factory runs the other hats as their own
+    # sessions and this session's prompt carries its own scope instead of the
+    # SPECIALISTS block.
+    fanout_on = fanout_enabled()
+    brief = _compiled_writer_brief(ctx)
     from app.factory.build.image_sufficiency import locked_entries as image_locked_entries
     from app.factory.build.image_sufficiency import runtime_paths as image_runtime_paths
 
     product_tree = Path(getattr(ctx.workspace, "destination", None) or dest)
     formula_sources = _formula_sources(ctx)
+    # The Factory-owned paths the previous pass wrote and the Factory put back
+    # in place: that pass was kept, so the writer hears of them here, one
+    # REWORK FINDINGS line per path (Advisor 12:15Z).
+    from app.factory.build import factory_owned as _owned
+
+    owned_lines = tuple(_owned.rework_findings(_owned.recorded(Path(dest))))
     prompt = render_writer_prompt(
         ctx.blueprint,
-        brief=_compiled_writer_brief(ctx),
+        brief=brief,
         resume=bool(ctx.state.get("writer_resumed")),
+        # The work list a rework round was handed (grader / gate findings):
+        # rendered as REWORK FINDINGS so the agent patches in place and fixes
+        # only these instead of re-authoring the whole product (v16).
+        findings=tuple(
+            dict.fromkeys(
+                str(item) for item in (*(getattr(ctx, "work_list", ()) or ()), *owned_lines)
+            )
+        ),
         # K-F7 (ORDERS_1900Z): kernel first, then the Store, then labelled
         # improvisation -- the writer sees what already exists.
         **formula_sources,
@@ -3994,7 +4059,21 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         # other copy; two cycle-9 writers did exactly that because the rule
         # was nowhere in the prompt (co-op, craft marketplace).
         locked_blocks=image_locked_entries(product_tree),
+        dispatched_specialists=dispatched_specialists() if fanout_on else (),
     )
+    from app.factory.build.writer_prompt import record_writer_dispatch
+
+    # FG-4: what the writer is told, recorded here for the grader.
+    record_writer_dispatch(ctx.state, supplied=str(ctx.state.get("brief") or ""), brief=brief, prompt=prompt)
+    # The Factory-owned files are read-only for the pass (factory_owned.lock);
+    # their modes come back however the pass ends.
+    owned_modes: Dict[str, int] = {}
+    # F-S2c: the held writer slot and the specialist sessions, when on.
+    from contextlib import ExitStack
+
+    held_slot = ExitStack()
+    fanout: Any = None
+    slot_extra: Dict[str, Any] = {}
     try:
         # The writer narrates itself on the Floor: CLI progress lines
         # become throttled ledger NOTEs (one per ~3s), so build-status
@@ -4030,7 +4109,7 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             # 3 minutes before the 2700s wall cut a 238-file pass).
             progress_fields = {
                 key: info[key]
-                for key in WRITER_PROGRESS_FIELDS
+                for key in (*WRITER_PROGRESS_FIELDS, *WRITER_STALL_FIELDS)
                 if isinstance(info, dict) and info.get(key) is not None
             }
             ctx.note(
@@ -4110,9 +4189,34 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                     source="factory",
                 )
         owned_before = factory_owned.snapshot(Path(dest))
+        # F-W2c: the pass's own new files are told apart from a pass that
+        # wrote nothing, so a turn the CLI ends on its budget is resumable.
+        from app.factory.build.codewhale_worker import agent_file_paths
+
+        files_before = agent_file_paths(Path(dest))
+        # Unwritable for the duration of the pass: a write to one fails in
+        # the writer's own tool instead of costing the pass afterwards.
+        owned_modes = factory_owned.lock(Path(dest))
+        if fanout_on:
+            # The writer slot is HELD for the whole pass; the specialists run
+            # under child slots of it and this session under the held one.
+            fanout, slot_extra["slot_scope"] = start_for_writer(
+                held_slot,
+                dest,
+                brief=brief,
+                note=ctx.note,
+                tenant_store=ctx.state.get("tenant_store"),
+                session_id=str(ctx.state.get("session_id") or ""),
+                product_id=str(getattr(ctx.blueprint, "product_id", "") or ""),
+                timeout_s=_writer_worker_timeout_s(ctx),
+                live_time_left=_writer_worker_live_time_left(ctx),
+                slot_wait_left=_writer_slot_wait_left(ctx),
+                on_slot_wait=note_slot_wait,
+                turn_wall_s=_writer_cli_turn_wall_s(ctx),
+            )
 
         def _launch_writer() -> Any:
-            return run_worker_job(
+            return run_worker_job_with_stall_retry(
                 prompt,
                 dest,
                 tenant_store=ctx.state.get("tenant_store"),
@@ -4133,6 +4237,11 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                 live_time_left=_writer_worker_live_time_left(ctx),
                 slot_wait_left=_writer_slot_wait_left(ctx),
                 on_slot_wait=note_slot_wait,
+                # F-W2c: the CLI's own per-turn budget is the largest wall
+                # the runner may grant this pass, so it never ends a turn the
+                # Factory would have kept alive.
+                turn_wall_s=_writer_cli_turn_wall_s(ctx),
+                **slot_extra,
             )
 
         def _raise_worker_failure(exc: WorkerError) -> None:
@@ -4179,12 +4288,29 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
                 receipt = _launch_writer()
             except WorkerError as exc:
                 _raise_worker_failure(exc)
+        if fanout is not None:
+            # Join INFRA/FRONTEND, merge them back (conflicts recorded, never
+            # overwritten), then DEVOPS and SECURITY on the merged tree --
+            # all before the Factory-owned check below reads the checkout.
+            ctx.state["writer_specialists"] = fanout.finish(relay_progress)
     except WorkerError as exc:
         raise RoleError(
             f"codewhale_worker_failed: {exc}",
             reason="codewhale_worker_failed",
             location="WRITER",
         ) from exc
+    finally:
+        from app.factory.build import factory_owned as _owned_unlock
+
+        if fanout is not None:
+            fanout.cleanup()
+        held_slot.close()
+        _owned_unlock.unlock(Path(dest), owned_modes)
+
+    # F-W2c: what THIS pass put on disk, read the moment the worker returns
+    # -- before the receipt, substrate and converge writes below, which are
+    # the Factory's files, never the writer's.
+    files_written = len(agent_file_paths(Path(dest)) - files_before)
 
     # E2: the session status must reflect the leg that actually ran —
     # write the worker's own receipt where the Floor monitor reads it,
@@ -4207,20 +4333,30 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     # The writer never authors a Factory-owned file (owner rule 2026-10-08;
     # live: the cycle-2 fintech writer invented docs/provenance/provenance.json
     # and the gap-filling converge kept it). Put the Factory's version back
-    # and record the paths: the WRITER gate turns them into rework naming
-    # each one.
+    # IN PLACE and keep the pass (Advisor 12:15Z, pilot 43202035946: rejecting
+    # the pass re-dispatched the whole writer, ~38 min each time). Every path
+    # is recorded; the next prompt names each as a REWORK FINDINGS line. Only
+    # a path that could not be put back rejects the pass at the WRITER gate.
     from app.factory.build import factory_owned
 
     touched = factory_owned.writer_touched(owned_before, factory_owned.snapshot(Path(dest)))
+    still: List[Dict[str, str]] = []
     if touched:
-        factory_owned.restore(Path(dest), owned_before, touched)
+        still = factory_owned.restore_in_place(Path(dest), owned_before, touched)
         ctx.note(
-            "the writer touched Factory-owned files (restored; sent to rework): "
-            + ", ".join(f"{row['path']} ({row['change']})" for row in touched),
+            "the writer touched Factory-owned files (restored in place; the pass continues): "
+            + ", ".join(f"{row['path']} ({row['change']})" for row in touched)
+            + (
+                "; NOT restored: " + ", ".join(row["path"] for row in still)
+                if still
+                else ""
+            ),
             stage="factory-owned",
             source="factory",
+            touched=touched,
+            unrestored=still,
         )
-    factory_owned.record(Path(dest), touched)
+    factory_owned.record(Path(dest), touched, unrestored_rows=still)
 
     # K-F7 (ORDERS_1900Z): every formula the writer authored is graded
     # against the kernel and the Store it was shown; a re-written or
@@ -4422,13 +4558,60 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         if destination is not None and Path(destination) != Path(dest):
             carried_over = agent_written_handler_ids_in_workspace(Path(destination))
     logger.info(
-        "codewhale writer result: status=%s tools=%d authored=%d carried=%d",
+        "codewhale writer result: status=%s tools=%d authored=%d carried=%d "
+        "files_written=%d",
         receipt.status,
         len(receipt.tools),
         len(authored),
         len(carried_over),
+        files_written,
     )
-    if (
+    # F-S1: the session's round timing, measured by the worker from the exec
+    # stream, rides the ledger next to the receipt (rounds=, round_p50_s=,
+    # round_p95_s=, prompt_tokens_last=, specialists=, max_concurrent=).
+    rounds = dict(getattr(receipt, "rounds", None) or {})
+    if rounds:
+        from app.factory.build.codewhale_worker import rounds_summary_line
+
+        ctx.note(
+            "codewhale writer rounds: " + rounds_summary_line(rounds),
+            stage="writer",
+            source="factory",
+            reason="writer_rounds",
+            writer_rounds=rounds,
+        )
+    # F-W2c: a turn that did not complete (the CLI ended it on its own
+    # budget, or was cut) while the pass put files on disk is INTERRUPTED,
+    # not "no output": the files and progress log are committed with the
+    # pass and the build continues -- the gates grade what is there and a
+    # rework pass resumes on it. writer_no_output stays reserved for a pass
+    # that wrote nothing (authored=0 and no files written).
+    interrupted = receipt.status != "completed" and (
+        files_written > 0 or bool(authored)
+    )
+    if interrupted:
+        detail = (
+            "writer_interrupted: "
+            f"status={receipt.status!r} "
+            f"reason={receipt.termination_reason or '-'} "
+            f"files_written={files_written} authored={len(authored)} "
+            f"carried={len(carried_over)} -- files kept, the pass continues"
+        )
+        ctx.state["writer_interrupted"] = {
+            "status": receipt.status,
+            "termination_reason": receipt.termination_reason,
+            "files_written": files_written,
+            "authored": len(authored),
+            "carried": len(carried_over),
+        }
+        ctx.note(
+            detail,
+            stage="writer",
+            source="factory",
+            reason="writer_interrupted",
+            files_written=files_written,
+        )
+    elif (
         receipt.status != "completed"
         or not receipt.tools
         or not (authored or carried_over)
@@ -4444,6 +4627,24 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
             location="WRITER",
             notes={"codewhale_worker": receipt.to_dict()},
         )
+    # F-S2b: the writer's own full-suite runs are refused (F-S2a); the
+    # Factory runs the suite itself, once, now that the writer's session has
+    # ended -- outside the model's wall, on the tree the writer worked in.
+    # The result goes to the ledger; it is telemetry and judges nothing.
+    from app.factory.build.pytest_policy import (
+        factory_suite_after_pass,
+        factory_suite_line,
+    )
+
+    suite_record = factory_suite_after_pass(dest)
+    ctx.state["factory_suite"] = suite_record
+    ctx.note(
+        factory_suite_line(suite_record),
+        stage="writer",
+        source="factory",
+        reason="factory_suite",
+        factory_suite=suite_record,
+    )
     # docs/build_provenance.json is part of WRITER's contract. It is the
     # FACTORY's record and does not ship (builds_push.FACTORY_INTERNAL_PATHS);
     # scripts/release_gate.py used to fail the image build without it, which
@@ -5297,7 +5498,7 @@ def run_writer(
                 body = _templated_route_body(spec)
         body = _ensure_route_persists_payload(body)
         route_bodies[cid] = body
-        name = cid.replace("-", "_")
+        name = capability_name(cid)
         if name in KERNEL_ROUTE_NAMES:
             raise RoleError(
                 f"capability {cid} collides with kernel HTTP route /v1/{name}"
@@ -5988,68 +6189,33 @@ def run_tester(ctx: RoleContext) -> RoleResult:
             )
     caps = [c.capability_id.replace("-", "_") for c in ctx.plan.capabilities]
     vendored = sorted(set(ctx.state.get("vendored_blocks", ())))
-    specs = {
-        cid: dict(spec) if isinstance(spec, dict) else spec
-        for cid, spec in dict(ctx.state.get("model_specs") or {}).items()
-    }
     # The declared schema is the product's own app/models.py, read on EVERY
     # pass -- the same FIELDS/CONSTRAINTS the WRITER gate's probe builds its
     # payload from. Sampling only the captured state spec meant a field the
     # writer declared in a rework round never reached these suites, and the
-    # same test failed again (live sess_1fbea5094c2a4a57).
+    # same test failed again (live sess_1fbea5094c2a4a57). Late align: coder
+    # rework may have rewritten handlers after WRITER's first align, or left
+    # vocab/type on the handler that the spec never declared; the on-disk
+    # handler AND its route are re-mined so _sample_payload matches the body
+    # TESTER is about to exercise (#311 mined the handler only; sess_1fd1d54c's
+    # refuse lived on the route). A mined or state-carried spec can lack
+    # ``entity`` (live sess_620b8581fb224bea run3: KeyError 'entity'). One
+    # function (declared_specs.tester_specs), read by the product grader too.
     from app.factory.build.product_suites import DOMAIN_SUITE, ROUTES_SUITE, SMOKE_SUITE
-    from app.factory.build.declared_specs import (
-        merge_declared_specs,
-        product_root,
-        specs_from_product_models,
-    )
+    from app.factory.build.declared_specs import product_root, tester_specs
 
-    _root = product_root(
-        (getattr(ctx.workspace, "workspace", None), getattr(ctx.workspace, "destination", None))
+    def _read_workspace(rel: Path) -> Optional[str]:
+        return ctx.workspace.read_text(rel) if ctx.workspace.exists(rel) else None
+
+    specs = tester_specs(
+        [cap.capability_id for cap in ctx.plan.capabilities],
+        ctx.state.get("model_specs"),
+        product_root(
+            (getattr(ctx.workspace, "workspace", None), getattr(ctx.workspace, "destination", None))
+        ),
+        _read_workspace,
+        ctx.state.get("route_bodies"),
     )
-    if _root is not None:
-        specs = merge_declared_specs(specs, specs_from_product_models(_root))
-    # Late align: coder rework may have rewritten handlers after WRITER's
-    # first align, or left vocab/type on the handler that the spec never
-    # declared. Re-mine on-disk handlers AND the route (``_constraint_guard``
-    # + coder body) so _sample_payload matches the body TESTER is about
-    # to exercise. #311 mined the handler only; sess_1fd1d54c's refuse
-    # lived on the route.
-    previous_routes = dict(ctx.state.get("route_bodies") or {})
-    routes_text = ""
-    routes_rel = Path("app") / "routes.py"
-    if ctx.workspace.exists(routes_rel):
-        routes_text = ctx.workspace.read_text(routes_rel)
-    for cap in ctx.plan.capabilities:
-        cid = cap.capability_id
-        handler_rel = Path("app") / "actions" / f"{cid.replace('-', '_')}.py"
-        parts: List[str] = []
-        if ctx.workspace.exists(handler_rel):
-            parts.append(ctx.workspace.read_text(handler_rel))
-        route_src = previous_routes.get(cid) or extract_capability_route_source(
-            routes_text, cid
-        )
-        if route_src:
-            parts.append(route_src)
-        if not parts:
-            existing = specs.get(cid)
-            if isinstance(existing, dict) and existing:
-                specs[cid], _env = ensure_record_envelope(existing)
-            continue
-        specs[cid], _changed = align_spec_to_handler_source(
-            specs.get(cid) or {},
-            "\n".join(parts),
-        )
-        specs[cid], _env = ensure_record_envelope(specs[cid])
-    # A mined or state-carried spec can lack ``entity`` (the worker's
-    # handler format does not always carry it). Every suite emitter below
-    # indexes ``spec["entity"]`` (data_lifecycle, domain_acceptance,
-    # deploy) — a missing key there crashed the TESTER thread with
-    # KeyError 'entity' (live sess_620b8581fb224bea run3). Default it to
-    # the capability id, the same fallback the entities map uses.
-    for cid, spec in list(specs.items()):
-        if isinstance(spec, dict) and not spec.get("entity"):
-            spec["entity"] = cid.replace("-", "_")
     _assert_fields_sampleable(specs)
     entities = {
         cap.capability_id.replace("-", "_"): specs.get(cap.capability_id, {}).get(
@@ -6172,11 +6338,11 @@ def run_tester(ctx: RoleContext) -> RoleResult:
             f"    from app.actions import {name}",
             f"    out = {name}.handle({sample!r})",
             "    if not isinstance(out, dict):",
-            f"        failures.append('{name} returned a non-dict: ' + repr(out)[:120])",
+            f"        failures.append('{name}{PILOT_NON_DICT}' + repr(out)[:120])",
             f"        _record_capability_failure({cap.capability_id!r})",
             f"    elif out.get({OK_KEY!r}) is False:",
-            f"        failures.append('{name} rejected a payload built from its own "
-            "schema: ' + str(out.get(" + repr(ERROR_KEY) + ")))",
+            f"        failures.append('{name}{PILOT_REJECTED}' + str(out.get("
+            + repr(ERROR_KEY) + ")))",
             f"        _record_capability_failure({cap.capability_id!r})",
             # A failed block call nested in an ok answer. The statuses are the
             # DECLARED block-result contract: the Factory's own error envelope
@@ -6186,8 +6352,8 @@ def run_tester(ctx: RoleContext) -> RoleResult:
             "    elif '\\\"status\\\": \\\"error\\\"' in "
             "_json.dumps(out, default=str) or "
             "'\\\"status\\\": \\\"failed\\\"' in _json.dumps(out, default=str):",
-            f"        failures.append('{name} reported ok around a failed block "
-            "call: ' + _json.dumps(out, default=str)[:300])",
+            f"        failures.append('{name}{PILOT_FAILED_BLOCK}' + "
+            "_json.dumps(out, default=str)[:300])",
             f"        _record_capability_failure({cap.capability_id!r})",
         ]
     if caps:

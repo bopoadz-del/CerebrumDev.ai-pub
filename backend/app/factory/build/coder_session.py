@@ -2790,6 +2790,10 @@ def write_brief_artifacts(ctx: Any, compiled: Any) -> None:
     # alone when no narrative is attached (FACTORY_BRIEF_NARRATIVE off/shadow).
     text = dispatch_text(compiled) if hasattr(compiled, "text") else str(compiled)
     ctx.workspace.write_text(BRIEF_REL, text if text.endswith("\n") else text + "\n")
+    from app.factory.build.writer_prompt import record_writer_dispatch
+
+    # FG-4: on this path the brief file IS what the coder is handed.
+    record_writer_dispatch(ctx.state, supplied=str(ctx.state.get("brief") or ""), brief=text, prompt=text)
     if not (Path(_workspace_root(ctx)) / CONTROL_REL).is_file():
         ctx.workspace.write_text(
             CONTROL_REL,

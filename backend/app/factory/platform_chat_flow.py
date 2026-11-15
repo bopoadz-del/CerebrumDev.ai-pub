@@ -1406,8 +1406,8 @@ def resume_failed_platform(
     """Continue / Build again / Rebuild with new intake on a FAILED platform.
 
     One platform = one branch, forever: the failed run is RESUMED in its own
-    workspace at its first non-green phase, with the rework budget reset
-    (start_runner_build records the reset; the runner rule counts from it).
+    workspace at its first non-green phase, with the rework budget it had
+    left (a resume never resets it; only Start over begins a fresh budget).
     It is never replaced by a fresh workspace -- that is Start over only. A
     workspace this host no longer holds is re-entered from the platform's
     branch of record (restored from its archive tag if it was archived).
@@ -1472,7 +1472,7 @@ def resume_failed_platform(
     target = failed.get("check") or "the failing check"
     summary = (
         f"Resuming {bp.product_id} on its own branch at {failed.get('gate') or 'the failing phase'} "
-        f"with a fresh rework budget — the writer is sent {target}. "
+        f"with the rework budget it had left — the writer is sent {target}. "
         "Phases that already passed are not rerun."
     )
     return {
@@ -1628,7 +1628,7 @@ def continue_with_intake(state: Any, output_root: Optional[Path] = None) -> Dict
         "ok": True,
         "summary": (
             "Change any answer on the intake line, then press Confirm. The build "
-            "resumes on this platform's own branch with a fresh rework budget; "
+            "resumes on this platform's own branch with the rework budget it had left; "
             "nothing runs until you confirm."
         ),
         "intake": intake_state(pd),
