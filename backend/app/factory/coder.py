@@ -379,7 +379,7 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
     deadline_mono = _attempt_deadline.get()
     if deadline_mono is None:
         deadline_mono = _wall_time.monotonic() + _attempt_wall_s()
-    from app.core.llm_config import get_factory_fallback_leg
+    from app.core.llm_config import HTTP_CALL_PROVIDERS, get_factory_fallback_leg
 
     from .product_architect import get_factory_llm_config
 
@@ -423,13 +423,7 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
         )
 
     provider = cfg.get("provider")
-    if primary_usable and provider not in (
-        "moonshot",
-        "kimi",
-        "claude",
-        "cursor",
-        "openrouter",
-    ):
+    if primary_usable and provider not in HTTP_CALL_PROVIDERS:
         raise CoderError(f"unsupported coder provider: {provider!r}")
 
     #: A leg is a whole endpoint -- provider, base_url, key -- not just a

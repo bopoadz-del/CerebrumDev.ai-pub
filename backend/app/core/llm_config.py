@@ -609,6 +609,11 @@ def normalise_provider(name: str) -> str:
 
 SUPPORTED_PROVIDERS = ("deepseek", "cursor", "kimi", "claude")
 
+#: The one provider table every HTTP model caller dispatches on. It is the
+#: same tuple as SUPPORTED_PROVIDERS, so the config can never resolve a
+#: provider name that the coder then refuses (WK-2).
+HTTP_CALL_PROVIDERS = SUPPORTED_PROVIDERS
+
 
 def _cursor_http_config(*prefixes: str) -> Dict[str, Any]:
     """HTTP talk for ``LLM_PROVIDER=cursor`` uses ``CEREBRUM_CHAT_LLM_*``.
