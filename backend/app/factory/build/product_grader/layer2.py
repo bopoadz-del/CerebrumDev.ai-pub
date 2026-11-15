@@ -16,6 +16,7 @@ import re
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.factory.build.authority import capability_name
+from app.factory.build.ui_surface import _safe as screen_module_name
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,13 @@ def layer2_messages(inputs: Mapping[str, Any], questions: Sequence[Mapping[str, 
 def layer2_questions(blueprint: Mapping[str, Any]) -> List[Dict[str, str]]:
     """One per declared capability (asking the requirements lines the writer
     was given, else its description), one per declared screen, and always
-    the grounding question. Each is a record with a positional id."""
+    the grounding question. Each is a record with a positional id.
+
+    FG-6: ``about`` is the name the question's files carry -- the
+    capability's module name, the screen's module file name (the one the
+    ui_surface gate requires) -- so its call leads with
+    them and is asked only when they are in view. The grounding question is
+    about the writer's files as a whole and carries none."""
     out: List[Dict[str, str]] = []
     for c in blueprint.get("capabilities") or []:
         reqs = [str(r).strip() for r in (c.get("requirements") or []) if str(r).strip()]
@@ -77,11 +84,20 @@ def layer2_questions(blueprint: Mapping[str, Any]) -> List[Dict[str, str]]:
             ask = f"{ask} Requirements: " + " | ".join(reqs)
         out.append({
             "capability": str(c.get("id") or ""),
+            "about": capability_name(c.get("id")) if c.get("id") else "",
             "text": f"Does the product deliver capability '{c.get('id')}' as the brief asked: {ask}?",
         })
     for m in blueprint.get("ui_modules") or []:
-        out.append({"capability": "", "text": f"Does screen '{m}' render the capability it is declared for?"})
-    out.append({"capability": "", "text": "Is every number the product shows grounded in a kernel computation or a cited source?"})
+        out.append({
+            "capability": "",
+            "about": screen_module_name(m),
+            "text": f"Does screen '{m}' render the capability it is declared for?",
+        })
+    out.append({
+        "capability": "",
+        "about": "",
+        "text": "Is every number the product shows grounded in a kernel computation or a cited source?",
+    })
     for n, q in enumerate(out, 1):
         q["id"] = f"q{n}"
     return out
@@ -112,33 +128,56 @@ def _collect(
     return clean, [q["text"] for q in questions if q["id"] not in seen]
 
 
+def unanswerable(view: Any, about: str) -> bool:
+    """FG-6: a question about ``about`` is not answerable from ``view`` when
+    the view carries the files it shows (``grader.RenderedProduct.files``)
+    and none of them has that name in its path or its text. The grader
+    cannot judge what it was not shown, so the question is not asked. A
+    view that does not say what it shows (a fixed render) and a question
+    about nothing in particular are always asked."""
+    files = getattr(view, "files", None)
+    if not about or files is None:
+        return False
+    return not any(about in rel or about in text for rel, text in files.items())
+
+
 def run_layer2(
     inputs: Mapping[str, Any],
     blueprint: Mapping[str, Any],
     complete: Callable[[List[Dict[str, str]]], str],
     render: Optional[Callable[[Sequence[str]], str]] = None,
 ) -> Dict[str, Any]:
-    """``complete`` is one fresh llm call. One call per capability question
-    (with that capability's files rendered first and whole when ``render``
-    is given), then one call for the screen and grounding questions. A call
-    that does not answer opens only its own questions; every question the
-    grader did not answer by id is an open FAIL. ``ran`` is False only when
-    every call failed."""
+    """``complete`` is one fresh llm call. One call per question that is
+    about named files -- a capability, a screen -- with those files
+    rendered first (and whole) when ``render`` is given, then one call for
+    the rest. A call that does not answer opens only its own questions;
+    every question the grader did not answer by id is an open FAIL.
+    ``ran`` is False only when every call failed. The grounding question
+    is about no named file, so it is always asked.
+
+    FG-6: a question whose files are not in its view is not asked
+    (:func:`unanswerable`). It is recorded under ``unasked``: the Factory's
+    render did not show it, so it is not the writer's FAIL, and it still
+    blocks certification (``grade_record``)."""
     questions = layer2_questions(blueprint)
-    groups = [[q] for q in questions if q["capability"]]
-    tail = [q for q in questions if not q["capability"]]
+    groups = [[q] for q in questions if q["about"]]
+    tail = [q for q in questions if not q["about"]]
     if tail:
         groups.append(tail)
     for group in groups:
         layer2_messages(inputs, group)  # ContextLeak propagates before any call
     verdicts: List[Dict[str, Any]] = []
     open_fails: List[str] = []
+    unasked: List[str] = []
     answered_calls = 0
     for group in groups:
-        cid = group[0]["capability"]
+        about = group[0]["about"]
         view = dict(inputs)
-        if render is not None and cid:
-            view["rendered_product"] = render([capability_name(cid)])
+        if render is not None and about:
+            view["rendered_product"] = render([about])
+        if unanswerable(view.get("rendered_product"), about):
+            unasked += [f"layer 2 not asked (no rendered file is about '{about}'): {q['text']}" for q in group]
+            continue
         try:
             parsed = json.loads(_strip_fences(complete(layer2_messages(view, group))))
             if not isinstance(parsed, list):
@@ -151,4 +190,4 @@ def run_layer2(
         got, missing = _collect(parsed, group)
         verdicts += got
         open_fails += missing
-    return {"ran": answered_calls > 0, "verdicts": verdicts, "open_fails": open_fails}
+    return {"ran": answered_calls > 0, "verdicts": verdicts, "open_fails": open_fails, "unasked": unasked}

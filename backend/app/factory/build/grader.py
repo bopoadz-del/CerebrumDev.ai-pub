@@ -254,23 +254,48 @@ def _factory_part(prompt_text: str, *spans: str) -> str:
     return out
 
 
-def render_product(workspace: Path | str, first: Sequence[str] = ()) -> str:
+class RenderedProduct(str):
+    """FG-6: the render Layer 2 is shown, as text, with the files it shows
+    (relative path -> the text rendered for it) as a typed field, so what is
+    in view is read from structure, never parsed back out of the text."""
+
+    files: Dict[str, str]
+
+    def __new__(cls, text: str, files: Mapping[str, str]) -> "RenderedProduct":
+        obj = super().__new__(cls, text)
+        obj.files = dict(files)
+        return obj
+
+
+def render_product(workspace: Path | str, first: Sequence[str] = ()) -> RenderedProduct:
     """A bounded, deterministic render of the product source for Layer 2:
     sorted relative paths, per-file and total caps, scaffold directories
     excluded. Ordering and caps are structural -- no file is named.
 
     ``first`` are path stems (the capability under grade): files whose
     relative path contains one are rendered before the rest and are exempt
-    from the per-file cap; the total cap still holds."""
+    from the per-file cap; the total cap still holds.
+
+    FG-6: the budget goes by ownership. After the lead, the writer's own
+    files (``runner.rework_seed_paths``, the one derivation of them) are
+    rendered before the Factory's and vendored files, so the files Layer 2
+    grades the writer on are never crowded out by files the writer did
+    not write."""
+    from app.factory.build.runner import rework_seed_paths
+
     root = Path(workspace)
     stems = [s for s in first if s]
     files = sorted(root.rglob("*"))
     lead = [p for p in files if any(s in p.relative_to(root).as_posix() for s in stems)]
     lead_set = set(lead)
+    writers = set(rework_seed_paths(root))
     rest = [p for p in files if p not in lead_set]
+    own = [p for p in rest if p.relative_to(root).as_posix() in writers]
+    own_set = set(own)
     blocks: List[str] = []
+    shown: Dict[str, str] = {}
     budget = _TOTAL_CHARS
-    for py in [*lead, *rest]:
+    for py in [*lead, *own, *(p for p in rest if p not in own_set)]:
         # Non-files (directories) reach read_text and raise OSError, which
         # the except skips -- one exclusion path, no redundant guard.
         rel_parts = py.relative_to(root).parts
@@ -293,7 +318,8 @@ def render_product(workspace: Path | str, first: Sequence[str] = ()) -> str:
             continue
         budget -= len(block)
         blocks.append(block)
-    return "\n".join(blocks)
+        shown[rel] = text
+    return RenderedProduct("\n".join(blocks), shown)
 
 
 def _free_port() -> int:
@@ -794,7 +820,7 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
         )
         add(str(finding.get("capability") or ""), cls, "hardwiring")
 
-    from app.factory.build.product_grader.grade_record import open_fails
+    from app.factory.build.product_grader.grade_record import open_fails, unasked
 
     layer2 = grade.get("layer2") or {}
     if layer2.get("ran") is not True:
@@ -802,6 +828,8 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
     else:
         for question in open_fails(layer2):
             add(question, "layer2_fail", "layer2")
+        for question in unasked(layer2):
+            add(question, "ungraded", "layer2")
     return out
 
 
@@ -1010,6 +1038,9 @@ def run_grader(
         l2 = layer2.run_layer2(
             l2_inputs, blueprint, _grader_complete, render=lambda stems: render_product(root, first=stems)
         )
+        # FG-6: a question the grader was not shown the files for is the
+        # Factory's gap, quoted as ungraded -- never the writer's FAIL.
+        ungraded.extend(grade_record.unasked(l2))
 
     # --- the record --------------------------------------------------------
     if functions is not None:
