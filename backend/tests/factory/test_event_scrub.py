@@ -164,11 +164,9 @@ def test_tuples_are_scrubbed_as_lists(payload):
     assert out["extra"]["t"] == list(payload)
 
 
-@pytest.mark.parametrize("dsn", ["https://k@o0.ingest.example/1", "https://k@o0.ingest.example/2"])
-def test_init_wires_the_scrub_hook(monkeypatch, dsn):
-    seen = {}
+def _fake_sentry(monkeypatch, calls):
     fake = types.ModuleType("sentry_sdk")
-    fake.init = lambda **kw: seen.update(kw)
+    fake.init = lambda **kw: calls.append(kw)
     integrations = types.ModuleType("sentry_sdk.integrations")
     fastapi_mod = types.ModuleType("sentry_sdk.integrations.fastapi")
     fastapi_mod.FastApiIntegration = lambda: "fastapi"
@@ -181,12 +179,31 @@ def test_init_wires_the_scrub_hook(monkeypatch, dsn):
         "sentry_sdk.integrations.logging": logging_mod,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
+
+
+@pytest.mark.parametrize("dsn", ["https://k@o0.ingest.example/1", "https://k@o0.ingest.example/2"])
+def test_init_wires_the_scrub_hook(monkeypatch, dsn):
+    calls: list[dict] = []
+    _fake_sentry(monkeypatch, calls)
     monkeypatch.setenv("SENTRY_DSN", dsn)
     monkeypatch.setattr(observability, "_initialized", False)
     observability.init_sentry()
+    assert len(calls) == 1
+    seen = calls[0]
     assert seen["dsn"] == dsn
     assert seen["before_send"] is event_scrub.scrub_event
     assert seen["before_send_transaction"] is event_scrub.scrub_event
     assert seen["max_request_body_size"] == "never"
     assert seen["include_local_variables"] is False
     assert seen["send_default_pii"] is False
+
+
+@pytest.mark.parametrize("repeats", [2, 3])
+def test_init_runs_once_per_process(monkeypatch, repeats):
+    calls: list[dict] = []
+    _fake_sentry(monkeypatch, calls)
+    monkeypatch.setenv("SENTRY_DSN", "https://k@o0.ingest.example/1")
+    monkeypatch.setattr(observability, "_initialized", False)
+    for _ in range(repeats):
+        observability.init_sentry()
+    assert len(calls) == 1
