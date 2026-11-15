@@ -1603,6 +1603,28 @@ def suite_denied_count(denials: Optional[List[Dict[str, Any]]]) -> Optional[int]
     return None if denials is None else len(denials)
 
 
+#: Receipt flag: the policy was armed, yet the writer ran more non-targeted
+#: suites than the policy refused -- the plugin did not engage on every run.
+POLICY_NOT_ENGAGED = "pytest_policy_not_engaged"
+
+
+def policy_not_engaged(
+    suite_runs: Optional[int], suite_denied: Optional[int]
+) -> Optional[bool]:
+    """F-G6: did a non-targeted suite run escape the armed pytest policy?
+
+    ``suite_runs`` is counted from the writer's own tool_use commands and
+    ``suite_denied`` from what the plugin refused. An engaged policy refuses
+    every run the counter sees, so more runs than refusals means the plugin
+    did not engage (wherever the env was lost). The policy is armed exactly
+    when its stamped denial log reads back (``suite_denied`` not None); an
+    unarmed or unread pass is unknown (None), never "engaged".
+    """
+    if suite_runs is None or suite_denied is None:
+        return None
+    return suite_runs > suite_denied
+
+
 #: Seconds between two RSS samples of a running writer child's process tree.
 RSS_SAMPLE_EVERY_S = 5.0
 
@@ -1676,6 +1698,10 @@ def rounds_summary_line(stats: Dict[str, Any]) -> str:
                 for w in walls
             )
         )
+    # F-G6: an armed policy that refused fewer runs than the writer made is
+    # named on the receipt, not left for a reader to subtract.
+    if policy_not_engaged(stats.get("suite_runs"), stats.get("suite_denied")):
+        parts.append(POLICY_NOT_ENGAGED)
     return " ".join(parts)
 
 
