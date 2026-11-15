@@ -1,11 +1,9 @@
-"""FG-3 expected-failure proof that FG-1 does not clear: RED ON MASTER by design.
+"""FG-3: a clean composed tree certifies.
 
-pytest collects ``test_*.py`` only, so this file does not run in the suite.
 A tree composed by the Factory's own code plus an invented writer layer that
-computes every capability from its declared inputs must CERTIFY; on master it
-does not (the word-shape forbidden set, FG-4, and the UI layer, FG-2). The
-PR that clears the last blocker renames this file so it is collected (not
-skipped, not xfail).
+computes every capability from its declared inputs must CERTIFY. This was the
+red-on-master proof for FG-4 (word-shape forbidden set) and FG-2 (UI layer);
+it is collected now that those fixes have landed (not skipped, not xfail).
 """
 
 from __future__ import annotations

@@ -7,9 +7,8 @@ planted in the writer layer is still caught, a UI layer that did not run
 never certifies.
 
 FG-1 enabled the ownership cases (``test_grader_replay_clean_tree.py``).
-The case still RED ON MASTER by design (a clean composed tree is not
-certified) lives in ``red_grader_replay_certifies.py``, which pytest does
-not collect until the fix that turns it green.
+Certification of a clean composed tree is held by
+``test_grader_replay_certifies.py``.
 
 Nothing here names a product, a capability, a block, a stamped file or a
 literal the grader is expected to report: each is read at run time.
@@ -120,7 +119,7 @@ def test_a_ui_layer_that_did_not_run_never_certifies(tree, monkeypatch):
     assert reason in replay.verdict.ungraded
 
 
-@pytest.mark.parametrize("module", ["grader_replay.py", "test_grader_replay_clean_tree.py", "red_grader_replay_certifies.py"])
+@pytest.mark.parametrize("module", ["grader_replay.py", "test_grader_replay_clean_tree.py", "test_grader_replay_certifies.py"])
 def test_the_harness_names_nothing_it_grades(module):
     """The harness reads every capability, block, stamped path and literal
     from the Factory at run time; its source carries none of them."""

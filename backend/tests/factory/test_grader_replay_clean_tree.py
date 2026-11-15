@@ -7,8 +7,8 @@ records which layer wrote each path by digest diff, independently of the
 grader's own provenance read, so the two are checked against each other.
 
 FG-3 kept these cases uncollected as the red-on-master proof; FG-1 enables
-the ownership cases. Certification of a clean tree (FG-4, FG-2) stays in
-``red_grader_replay_certifies.py`` until those fixes land.
+the ownership cases. Certification of a clean tree is held by
+``test_grader_replay_certifies.py``.
 
 Nothing here names a product, capability, block, stamped file or literal:
 every path and literal is read from the composed tree or its grade record.
