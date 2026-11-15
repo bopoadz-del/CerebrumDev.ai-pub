@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 
 from app.factory.build import codewhale_worker as worker_mod
-from app.factory.build.codewhale_worker import rounds_summary_line, suite_denied_count
+from app.factory.build.codewhale_worker import (
+    POLICY_NOT_ENGAGED,
+    policy_not_engaged,
+    rounds_summary_line,
+    suite_denied_count,
+)
 from app.factory.build.pytest_policy import (
     DENIALS_FILE,
     PLUGIN_MODULE,
@@ -252,3 +257,110 @@ def test_unwritable_policy_fails_the_dispatch_named(monkeypatch, tmp_path, writa
         assert isinstance(caught.value, worker_mod.WorkerError)
         assert "worker_policy_unwritable" in str(caught.value)
         assert started == []
+
+
+# --- F-G6 step 2: the receipt names a policy that did not engage -----------
+
+
+@pytest.mark.parametrize(
+    "suite_denied,expected",
+    # armed (the stamped log read back, nothing refused) vs not armed / unread
+    [(0, True), (None, None)],
+)
+def test_not_engaged_needs_an_armed_policy(suite_denied, expected):
+    assert policy_not_engaged(2, suite_denied) is expected
+
+
+@pytest.mark.parametrize(
+    "suite_runs,suite_denied,flagged",
+    [(3, 1, True), (2, 2, False), (0, 0, False), (None, 0, False), (2, None, False)],
+)
+def test_summary_line_names_runs_the_policy_did_not_refuse(
+    suite_runs, suite_denied, flagged
+):
+    stats = {"rounds": 4, "suite_runs": suite_runs, "suite_denied": suite_denied}
+    assert (POLICY_NOT_ENGAGED in rounds_summary_line(stats)) is flagged
+
+
+def _run_job(monkeypatch, checkout: Path, command: str, refusals: int, **kwargs):
+    """One writer job against a fake CLI that runs ``command`` and logs
+    ``refusals`` denials where the policy env says the plugin lives."""
+    from app.factory.build.tenant_bind import TenantStoreBinding
+
+    seen_env: dict = {}
+    meta = {
+        "type": "metadata",
+        "schema": worker_mod.EXEC_STREAM_SCHEMA,
+        "schema_version": 1,
+        "meta": {
+            "receipt_kind": "terminal",
+            "provider": "prov",
+            "model": "mdl",
+            "status": "completed",
+            "termination_reason": "resolved",
+            "error_category": None,
+            "error": None,
+        },
+    }
+    tool = {
+        "type": "tool_use",
+        "schema": worker_mod.EXEC_STREAM_SCHEMA,
+        "schema_version": 1,
+        "name": "bash",
+        "input": {"command": command},
+    }
+    stdout = json.dumps(tool) + "\n" + json.dumps(meta) + "\n"
+
+    class _FakePopen:
+        def __init__(self, argv, **kw):
+            env = kw.get("env") or {}
+            seen_env.update(env)
+            with (Path(env["PYTHONPATH"]) / DENIALS_FILE).open("a", encoding="utf-8") as fh:
+                for _ in range(refusals):
+                    fh.write(json.dumps({"selection": []}) + "\n")
+            self.stdout = io.StringIO(stdout)
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 9
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/nonexistent/codewhale")
+    monkeypatch.setattr(worker_mod, "_dns_probe", lambda *a, **k: {})
+    binding = TenantStoreBinding(
+        tenant_key="key_fg6", store_dir=Path("/tmp/tenant-fg6"), bound_at=0.0
+    )
+    receipt = worker_mod.run_worker_job("build it", checkout, tenant_store=binding, **kwargs)
+    return receipt, seen_env
+
+
+@pytest.mark.parametrize("refusals,flagged", [(0, True), (1, False)])
+def test_receipt_flags_a_suite_run_the_policy_never_refused(
+    monkeypatch, tmp_path, refusals, flagged
+):
+    receipt, _ = _run_job(
+        monkeypatch, tmp_path, 'python -m pytest -m "not pilot" -q', refusals
+    )
+    assert receipt.rounds["suite_runs"] == 1
+    assert receipt.rounds["suite_denied"] == refusals
+    assert (POLICY_NOT_ENGAGED in rounds_summary_line(receipt.rounds)) is flagged
+
+
+@pytest.mark.parametrize("role", ["parent", "specialist"])
+def test_specialist_child_carries_the_parent_policy_env(monkeypatch, tmp_path, role):
+    """A specialist session (run under a slot its writer already holds) gets
+    the policy env exactly as the parent writer does, bound to its own
+    checkout and its own denial log."""
+    from contextlib import nullcontext
+
+    checkout = tmp_path / role
+    kwargs = {"slot_scope": lambda: nullcontext({})} if role == "specialist" else {}
+    receipt, env = _run_job(monkeypatch, checkout, "ls", 0, **kwargs)
+    assert env["PYTEST_ADDOPTS"] == f"-p {PLUGIN_MODULE}"
+    assert env[ROOT_ENV] == str(checkout)
+    assert Path(env["PYTHONPATH"]).name == POLICY_DIR_NAME
+    assert receipt.rounds["suite_denied"] == 0
