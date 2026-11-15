@@ -20,9 +20,11 @@ Verdicts, not rework. The grader issues a tier:
 * ERROR          -- the grader itself could not run (an outage is a
                     verdict about the run, never about the tree).
 
-The grader never feeds a rework loop and never shares a budget with the
-TESTER: the runner proceeds on CERTIFIED and ends the run with the quoted
-verdict otherwise.
+The grader never shares a budget with the TESTER: the runner proceeds on
+CERTIFIED; NOT_CERTIFIED with writer-owned items hands them back to the
+WRITER for the grader's own REWORK_BUDGET rounds; anything else ends the run
+with the quoted verdict, recorded as the WRITER phase's terminal verdict so a
+resume re-enters WRITER, never TESTER.
 
 grade.json + GRADE.md land in the workspace whatever the outcome, so the
 build carries its grade and the N3 certification gate reads a real record.

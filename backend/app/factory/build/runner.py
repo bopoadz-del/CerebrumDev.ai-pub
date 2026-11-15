@@ -999,6 +999,27 @@ class RoleRunner:
     def _rework_rounds_this_cycle(self) -> int:
         return sum(1 for e in self._cycle_events() if e.kind is EventKind.REWORK)
 
+    def _grader_stop(self, grade_verdict: Any, reason: str) -> None:
+        """FG-8: a grader verdict that ends the run is the WRITER phase's own
+        terminal verdict. The writer's gate passed before the grader read its
+        tree; without this event that GATE_PASSED stays WRITER's last verdict,
+        so a resume counts WRITER complete and re-enters at TESTER on the very
+        tree the grader refused. Recorded as WRITER's GATE_FAILED, a resume
+        re-enters WRITER and is seeded from the run's RUN_FAILED findings."""
+        from app.factory.build.grader import GRADER_GATE
+
+        self.ledger.append(
+            EventKind.GATE_FAILED,
+            role=BuildRole.WRITER,
+            detail=f"GRADER: {grade_verdict.tier}",
+            payload={
+                "gate": GRADER_GATE,
+                "reason": reason,
+                "grader_tier": grade_verdict.tier,
+                "findings": list(grade_verdict.items),
+            },
+        )
+
     def _grader_factory_fault(self, grade_verdict: Any, rework_used: int) -> Optional[BuildOutcome]:
         """FG-1: end the run when a NOT_CERTIFIED verdict holds no writer-owned
         row. The Factory is named as the owner (the TESTER's FACTORY_FAULT
@@ -1025,6 +1046,7 @@ class RoleRunner:
                 "writer_dispatched": False,
             },
         )
+        self._grader_stop(grade_verdict, "grader_factory_fault")
         return self._finish(
             Outcome.FAILED_GATE,
             f"GRADER: {NOT_CERTIFIED} -- FACTORY_FAULT (no writer round): "
@@ -3237,7 +3259,7 @@ class RoleRunner:
                 # judges it. CERTIFIED (or a disabled grader) falls through
                 # to the ok path unchanged; NOT_CERTIFIED hands the quoted
                 # items back to the WRITER for repair in this build (the
-                # grader's OWN two rounds -- never the TESTER's budget, never
+                # grader's OWN REWORK_BUDGET rounds -- never the TESTER's budget, never
                 # its work list); a third failure, or an ERROR verdict, ends
                 # the run with the quoted items.
                 if verdict.ok and role is BuildRole.WRITER:
@@ -3246,6 +3268,7 @@ class RoleRunner:
                         from app.factory.build.grader import ERROR, GRADER_GATE, NOT_CERTIFIED
 
                         if grade_verdict.tier == ERROR:
+                            self._grader_stop(grade_verdict, "grader_error")
                             return self._finish(
                                 Outcome.FAILED_GATE,
                                 "GRADER: ERROR: "
@@ -3262,7 +3285,7 @@ class RoleRunner:
                         owed = self._grader_factory_fault(grade_verdict, rework_used)
                         if owed is not None:
                             return owed
-                        # NOT_CERTIFIED: the writer's handback, two rounds.
+                        # NOT_CERTIFIED: the writer's handback, REWORK_BUDGET rounds.
                         grader_events = [
                             e for e in self._reworks()
                             if (e.payload or {}).get("gate") == GRADER_GATE
@@ -3279,6 +3302,7 @@ class RoleRunner:
                                 if repeated
                                 else f"grader rework budget of {REWORK_BUDGET} rounds spent"
                             )
+                            self._grader_stop(grade_verdict, "grader_not_certified")
                             return self._finish(
                                 Outcome.FAILED_GATE,
                                 f"GRADER: {NOT_CERTIFIED} after {rounds} round(s) "
