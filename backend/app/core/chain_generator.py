@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from .feature_mapper import fetch_block_registry
 from .block_taxonomy import BUILTIN_BLOCKS, OPTIONAL_BLOCKS
 from .llm_config import (
+    OPENAI_WIRE_PROVIDERS,
     get_factory_fallback_leg,
     get_llm_config,
     _is_cursor_chat_host,
@@ -227,15 +228,17 @@ async def _call_openrouter_fallback(
         return None
 
 
-_OPENAI_COMPAT_PROVIDERS = frozenset({"deepseek", "moonshot", "kimi", "cursor", "openrouter", ""})
+#: The chat path posts the OpenAI-compatible shape; which names may take it
+#: is read from THE provider table (WK-2), never listed here.
+_OPENAI_COMPAT_PROVIDERS = frozenset(OPENAI_WIRE_PROVIDERS)
 
 
 def _is_usable_openai_chat_cfg(cfg: Dict[str, Any]) -> bool:
     """True when Floor chat can POST OpenAI-compatible /chat/completions.
 
     ``provider="cursor"`` is a coding-family name; HTTP still uses
-    ``CEREBRUM_CHAT_LLM_*`` / Moonshot / OpenRouter. Empty provider with a
-    usable key+host must not raise "No LLM provider configured".
+    ``CEREBRUM_CHAT_LLM_*`` / OpenRouter. An empty provider is a config
+    error (``llm_config``) and is not callable.
     ``api.cursor.com`` is never a chat host.
     """
     if not cfg.get("api_key"):
@@ -250,7 +253,7 @@ def _is_usable_openai_chat_cfg(cfg: Dict[str, Any]) -> bool:
 async def _call_llm(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     """Call the primary configured LLM, then the OpenRouter fallback.
 
-    Primary is ``CEREBRUM_CHAT_LLM_*`` (or leftover Moonshot). ``provider``
+    Primary is ``CEREBRUM_CHAT_LLM_*`` (or the shared slot). ``provider``
     ``cursor`` is OpenAI-compatible on that host — never ``api.cursor.com``.
     OpenRouter is fallback only when armed.
     """

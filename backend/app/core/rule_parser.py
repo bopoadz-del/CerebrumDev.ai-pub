@@ -4,7 +4,7 @@ import os
 from typing import Any, List, Dict
 import httpx
 
-from .llm_config import get_llm_config, active_provider
+from .llm_config import OPENAI_WIRE_PROVIDERS, get_llm_config, active_provider
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ def _call_openai_sync(base_url: str, api_key: str, model: str, messages: List[Di
 
 
 def _parse_with_llm(provider: str, rule_texts: List[str]) -> List[Dict[str, str]]:
-    """Ask the configured Kimi LLM to extract trigger/action/snippet for each rule."""
+    """Ask the configured LLM to extract trigger/action/snippet for each rule."""
     cfg = get_llm_config()
     system_prompt = (
         "You are a business-rule parser. Given a list of free-text rules, "
@@ -130,7 +130,9 @@ def _parse_with_llm(provider: str, rule_texts: List[str]) -> List[Dict[str, str]
         {"role": "user", "content": user_prompt},
     ]
 
-    if provider in ("moonshot", "kimi"):
+    # The rule parser posts the OpenAI-compatible shape: which providers may
+    # take it is read from THE provider table (WK-2), never listed here.
+    if provider in OPENAI_WIRE_PROVIDERS:
         result = _call_openai_sync(cfg["base_url"], cfg["api_key"], cfg["model"], messages)
     else:
         return _parse_naive(rule_texts)
