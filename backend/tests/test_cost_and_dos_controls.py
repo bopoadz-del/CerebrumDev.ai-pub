@@ -202,7 +202,7 @@ def capturing_llm(monkeypatch):
         product_architect,
         "get_factory_llm_config",
         lambda: {
-            "provider": "kimi",
+            "provider": "deepseek",
             "base_url": "https://example.invalid/v1",
             "api_key": "test",
             "model": "kimi-test",

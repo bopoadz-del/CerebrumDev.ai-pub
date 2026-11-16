@@ -22,7 +22,7 @@ def test_without_a_rule_model_a_rule_is_kept_verbatim_not_split_on_its_words(mon
 
 
 def test_the_rule_models_typed_trigger_and_action_drive_the_snippet(monkeypatch):
-    monkeypatch.setattr(rule_parser, "active_provider", lambda: "kimi")
+    monkeypatch.setattr(rule_parser, "active_provider", lambda: "deepseek")
     monkeypatch.setattr(
         rule_parser,
         "get_llm_config",

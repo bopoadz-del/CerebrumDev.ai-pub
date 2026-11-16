@@ -309,8 +309,8 @@ def test_coder_output_still_passes_the_validation_gate(monkeypatch):
     """The agent does not get to bypass the static gate on emitted code."""
     import app.factory.coder as coder
 
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-not-real")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-not-real")
     # Column-zero statements: _validate_body indents them into the wrapper.
     monkeypatch.setattr(
         coder, "_llm_code_call", lambda messages: ("import os\nreturn {}", "stub-model")
@@ -330,8 +330,8 @@ def test_valid_coder_output_is_indented_into_the_handler(monkeypatch):
     """The body the WRITER writes must be function-body indented, once."""
     import app.factory.coder as coder
 
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-not-real")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-not-real")
     monkeypatch.setattr(
         coder,
         "_llm_code_call",

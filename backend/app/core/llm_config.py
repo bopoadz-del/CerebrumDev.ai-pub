@@ -104,7 +104,6 @@ _READY_SECRET_ENVS = (
     "CEREBRUM_CHAT_LLM_API_KEY",
     "CEREBRUM_LLM_API_KEY",
     "CEREBRUM_FACTORY_LLM_API_KEY",
-    "KIMI_API_KEY",
     "OPENROUTER_API_KEY",
     "FACTORY_LLM_FALLBACK_API_KEY",
     "CURSOR_API_KEY",
@@ -163,7 +162,6 @@ def llm_ready_details() -> Dict[str, Any]:
             "CEREBRUM_CHAT_LLM_API_KEY"
         ),
         "cerebrum_llm_api_key_present": env_key_present("CEREBRUM_LLM_API_KEY"),
-        "kimi_api_key_present": env_key_present("KIMI_API_KEY"),
         "openrouter_api_key_present": env_key_present("OPENROUTER_API_KEY"),
         "cursor_api_key_present": env_key_present("CURSOR_API_KEY"),
         "llm_provider": os.getenv("LLM_PROVIDER") or "",
@@ -416,12 +414,16 @@ def _resolve_shared_primary(*prefixes: str) -> Dict[str, str]:
 
 
 def _llm_mock() -> bool:
-    """The offline switch for the OpenAI-compatible path.
+    """The offline switch for the OpenAI-compatible path: ``CEREBRUM_LLM_MOCK``.
 
-    ``KIMI_MOCK`` is read only as the legacy NAME of this test switch (22 test
-    files set it); it selects no provider, host or model.
+    It selects no provider, host or model.
     """
-    return _truthy("CEREBRUM_LLM_MOCK") or _truthy("KIMI_MOCK")
+    return _truthy("CEREBRUM_LLM_MOCK")
+
+
+def llm_mock_enabled() -> bool:
+    """Public read of the offline switch, for ``/ready``."""
+    return _llm_mock()
 
 
 def _claude_key(*prefixes: str) -> str:
@@ -758,8 +760,14 @@ def _config_for_provider(provider: str, *prefixes: str) -> Dict[str, Any]:
     raise RuntimeError(f"unsupported LLM provider: {provider!r}")
 
 
-def _no_provider_cfg(error: str) -> Dict[str, Any]:
-    """No provider resolved: an explicit error, and no call can be made."""
+def _no_provider_cfg(error: str, *, config_error: bool = False) -> Dict[str, Any]:
+    """No provider resolved: an explicit error, and no call can be made.
+
+    ``config_error`` marks a WRONG setting (a name outside the table, or two
+    vendors' credentials with no name) as opposed to an absent one. A caller
+    may run a zero-cost fallback leg when nothing is configured; it must not
+    when the configuration is wrong, or the leg hides the error.
+    """
     return {
         "provider": "",
         "api_key": "",
@@ -768,7 +776,15 @@ def _no_provider_cfg(error: str) -> Dict[str, Any]:
         # Preserve mock intent for callers even when no live provider is selected
         "mock": _llm_mock(),
         "error": error,
+        "config_error": config_error,
     }
+
+
+def _unresolved_provider_cfg() -> Dict[str, Any]:
+    """``LLM_PROVIDER`` unset and no single vendor named by credentials."""
+    return _no_provider_cfg(
+        _unresolved_provider_error(), config_error=len(_credential_providers()) > 1
+    )
 
 
 def _unknown_provider_error(raw: str) -> str:
@@ -789,10 +805,10 @@ def get_llm_config() -> Dict[str, Any]:
     raw = os.getenv("LLM_PROVIDER", "").strip().lower()
     explicit = normalise_provider(raw)
     if explicit and explicit not in SUPPORTED_PROVIDERS:
-        return _no_provider_cfg(_unknown_provider_error(raw))
+        return _no_provider_cfg(_unknown_provider_error(raw), config_error=True)
     provider = explicit or _detect_provider()
     if not provider:
-        return _no_provider_cfg(_unresolved_provider_error())
+        return _unresolved_provider_cfg()
 
     cfg = _config_for_provider(provider, "CEREBRUM_CHAT")
     # Mock+no-key wipe is only for *auto-detected* kit chat (stay offline).
@@ -824,13 +840,13 @@ def get_factory_llm_config() -> Dict[str, Any]:
     raw = os.getenv("LLM_PROVIDER", "").strip().lower()
     explicit = normalise_provider(raw)
     if raw and explicit not in SUPPORTED_PROVIDERS:
-        cfg = _no_provider_cfg(_unknown_provider_error(raw))
+        cfg = _no_provider_cfg(_unknown_provider_error(raw), config_error=True)
         cfg["mock"] = False
         return cfg
 
     provider = explicit or _detect_provider()
     if not provider:
-        return _no_provider_cfg(_unresolved_provider_error())
+        return _unresolved_provider_cfg()
 
     if provider == "cursor":
         cfg = _cursor_http_config("CEREBRUM_FACTORY")
@@ -858,7 +874,10 @@ def get_factory_llm_config() -> Dict[str, Any]:
             )
         return cfg
 
-    cfg = _deepseek_config("CEREBRUM_FACTORY")
+    # Factory first, then the chat slot (module docstring): the same slots
+    # :func:`_credential_providers` counts, so a key that names deepseek is
+    # a key this config reads.
+    cfg = _deepseek_config("CEREBRUM_FACTORY", "CEREBRUM_CHAT")
     if cfg["mock"] or not cfg.get("error"):
         return cfg
     if _is_openrouter_base(str(cfg.get("base_url", ""))):
@@ -976,3 +995,46 @@ def get_factory_fallback_leg() -> Dict[str, Any] | None:
 
 def active_provider() -> str:
     return get_llm_config()["provider"]
+
+
+# -- Boot validation ---------------------------------------------------------
+
+
+class ProviderConfigError(RuntimeError):
+    """The provider settings are wrong. Raised at start, not at the first call."""
+
+
+_FALLBACK_OFF = {"none", "off", "disabled"}
+
+
+def provider_setting_errors() -> List[str]:
+    """Every error in the provider SETTINGS, by setting name. No values of keys.
+
+    Checks what is wrong, not what is absent: ``LLM_PROVIDER`` naming a
+    provider outside :data:`PROVIDER_TABLE`; ``LLM_PROVIDER`` unset with two
+    vendors' credentials present; ``FACTORY_LLM_FALLBACK_PROVIDER`` naming a
+    provider whose table role is not ``fallback``. A box with no key at all
+    still boots (template fallback in dev).
+    """
+    errors: List[str] = []
+    raw = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if raw and normalise_provider(raw) not in SUPPORTED_PROVIDERS:
+        errors.append(_unknown_provider_error(raw))
+    if not raw and len(_credential_providers()) > 1:
+        errors.append(_unresolved_provider_error())
+    leg_name = os.getenv("FACTORY_LLM_FALLBACK_PROVIDER", "").strip().lower()
+    if leg_name and leg_name not in _FALLBACK_OFF and leg_name not in SUPPORTED_FALLBACK_PROVIDERS:
+        errors.append(
+            f"FACTORY_LLM_FALLBACK_PROVIDER={leg_name} is not a fallback provider "
+            f"in the provider table ({' / '.join(SUPPORTED_FALLBACK_PROVIDERS)}, or none)"
+        )
+    return errors
+
+
+def validate_provider_at_boot() -> None:
+    """Fail the start when the provider settings are wrong (see above)."""
+    errors = provider_setting_errors()
+    if errors:
+        raise ProviderConfigError(
+            "LLM provider settings are invalid: " + " | ".join(errors)
+        )

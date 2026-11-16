@@ -286,10 +286,13 @@ def _llm_json_call(
     # The primary is callable only when the config resolved it from THE
     # provider table without error: no second list here (WK-2).
     primary_ok = not cfg.get("error") and cfg.get("provider") in HTTP_CALL_PROVIDERS
-    if cfg.get("error") and os.getenv("LLM_PROVIDER", "").strip():
+    if cfg.get("error") and (
+        os.getenv("LLM_PROVIDER", "").strip() or cfg.get("config_error")
+    ):
         # A provider asked for BY NAME whose credentials are missing is an
         # error, never an invitation to substitute another vendor (the same
-        # rule the coder applies).
+        # rule the coder applies). A wrong setting (two vendors' keys with no
+        # name) is raised too: the fallback leg would hide it.
         raise ModelUnavailable(NOT_CONFIGURED, str(cfg["error"]))
     # The ladder: the configured primary, then the cross-provider fallback
     # leg. Each rung uses its OWN base_url and key (core.model_ladder).

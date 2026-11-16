@@ -2,7 +2,7 @@
 
 Live failure: generate_chain_suggestion posted to
 https://openrouter.ai/api/v1/chat/completions, 401'd, and Floor chat hard-failed
-while /ready reported llm_configured (CEREBRUM_LLM_API_KEY / Kimi).
+while /ready reported llm_configured (a primary key was set).
 """
 
 from __future__ import annotations
@@ -41,22 +41,22 @@ def _http_error(status: int, url: str) -> httpx.HTTPStatusError:
 
 @pytest.fixture
 def primary_and_broken_openrouter(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-moonshot-shared")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-native-primary")
     monkeypatch.setenv("CEREBRUM_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("CEREBRUM_LLM_MODEL", "minimax/minimax-m3:free")
-    monkeypatch.setenv("CEREBRUM_CHAT_LLM_MODEL", "moonshot-v1-8k")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dead")
     monkeypatch.setenv("FACTORY_LLM_FALLBACK_MODEL", "minimax/minimax-m3:free")
-    monkeypatch.delenv("KIMI_MOCK", raising=False)
     monkeypatch.delenv("CEREBRUM_LLM_MOCK", raising=False)
 
 
 def test_config_prefers_moonshot_over_openrouter_base(primary_and_broken_openrouter):
+    from app.core.llm_config import DEEPSEEK_BASE_URL, DEFAULT_PRIMARY_MODEL
+
     cfg = get_llm_config()
-    assert cfg["api_key"] == "sk-moonshot-shared"
-    assert cfg["base_url"] == "https://api.moonshot.ai/v1"
-    assert cfg["model"] == "moonshot-v1-8k"
+    assert cfg["api_key"] == "sk-native-primary"
+    assert cfg["base_url"] == DEEPSEEK_BASE_URL
+    assert cfg["model"] == DEFAULT_PRIMARY_MODEL
     assert "openrouter" not in cfg["base_url"]
 
 
@@ -68,15 +68,15 @@ async def test_call_llm_hits_moonshot_first(primary_and_broken_openrouter):
         posts.append(url)
         if "openrouter" in url:
             raise _http_error(401, url)
-        return _ok_json({"message": "from-kimi", "chain": None, "rules": []})
+        return _ok_json({"message": "from-primary", "chain": None, "rules": []})
 
     with patch.object(httpx.AsyncClient, "post", fake_post):
         result = await _call_llm([{"role": "user", "content": "hi"}])
 
-    assert result["message"] == "from-kimi"
-    assert posts, "primary Moonshot host must be called"
+    assert result["message"] == "from-primary"
+    assert posts, "the primary host must be called"
     assert "openrouter.ai" not in posts[0]
-    assert "api.moonshot.ai" in posts[0]
+    assert "api.deepseek.com" in posts[0]
 
 
 @pytest.mark.anyio
@@ -97,7 +97,7 @@ async def test_call_llm_falls_back_to_openrouter_after_primary_fails(
         result = await _call_llm([{"role": "user", "content": "hi"}])
 
     assert result["message"] == "from-openrouter"
-    assert any("api.moonshot.ai" in u for u in posts)
+    assert any("api.deepseek.com" in u for u in posts)
     assert any("openrouter.ai" in u for u in posts)
 
 
@@ -127,7 +127,7 @@ async def test_openrouter_401_does_not_hard_fail_when_primary_configured(
 
 @pytest.mark.anyio
 async def test_openrouter_only_401_is_soft_failure(monkeypatch):
-    """No Moonshot key: OpenRouter is primary; 401 still must not raise."""
+    """No primary key: OpenRouter is primary; 401 still must not raise."""
     monkeypatch.setenv("CEREBRUM_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dead")
     monkeypatch.delenv("CEREBRUM_LLM_API_KEY", raising=False)
@@ -159,9 +159,8 @@ def cursor_provider(monkeypatch):
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "chat-key-live")
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_BASE_URL", "https://chat.example.test/v1")
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_MODEL", "chat-model-live")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-moonshot-leftover")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-shared-leftover")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("KIMI_MOCK", raising=False)
     monkeypatch.delenv("CEREBRUM_LLM_MOCK", raising=False)
     monkeypatch.delenv("CURSOR_MOCK", raising=False)
 
@@ -205,15 +204,14 @@ async def test_cursor_provider_never_posts_to_cursor_completions(cursor_provider
 
 @pytest.fixture
 def cursor_moonshot_chat(monkeypatch):
-    """Exact live reproduction: LLM_PROVIDER=cursor + CEREBRUM_CHAT on Moonshot."""
+    """Live shape: LLM_PROVIDER=cursor + CEREBRUM_CHAT on an OpenAI-compatible host."""
     monkeypatch.setenv("LLM_PROVIDER", "cursor")
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-test")
-    monkeypatch.setenv("CEREBRUM_CHAT_LLM_BASE_URL", "https://api.moonshot.ai/v1")
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_BASE_URL", "https://api.deepseek.com/v1")
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
     monkeypatch.delenv("CEREBRUM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("KIMI_MOCK", raising=False)
     monkeypatch.delenv("CEREBRUM_LLM_MOCK", raising=False)
     monkeypatch.delenv("CURSOR_MOCK", raising=False)
 
@@ -222,7 +220,7 @@ def test_cursor_moonshot_config_has_provider_and_key(cursor_moonshot_chat):
     cfg = get_llm_config()
     assert cfg["provider"] == "cursor"
     assert cfg["api_key"] == "sk-test"
-    assert cfg["base_url"] == "https://api.moonshot.ai/v1"
+    assert cfg["base_url"] == "https://api.deepseek.com/v1"
     assert cfg.get("mock") is False
     assert "api.cursor.com" not in cfg["base_url"]
 
@@ -236,7 +234,7 @@ async def test_call_llm_cursor_provider_hits_moonshot_not_cursor_host(
     async def fake_post(self, url, *, json=None, headers=None):
         posts.append(url)
         assert "api.cursor.com" not in url
-        assert "api.moonshot.ai" in url
+        assert "api.deepseek.com" in url
         assert headers.get("Authorization") == "Bearer sk-test"
         return _ok_json({"message": "from-moonshot-chat", "chain": None, "rules": []})
 
@@ -246,7 +244,7 @@ async def test_call_llm_cursor_provider_hits_moonshot_not_cursor_host(
     assert result["message"] == "from-moonshot-chat"
     assert posts
     assert all("api.cursor.com" not in u for u in posts)
-    assert all("api.moonshot.ai" in u for u in posts)
+    assert all("api.deepseek.com" in u for u in posts)
     assert all(u.rstrip("/").endswith("/chat/completions") for u in posts)
 
 
@@ -277,7 +275,7 @@ async def test_generate_suggestion_cursor_moonshot_calls_openai_compat(
     assert "couldn't reach" not in result["message"]
     assert posts
     assert all("api.cursor.com" not in u for u in posts)
-    assert all("api.moonshot.ai" in u for u in posts)
+    assert all("api.deepseek.com" in u for u in posts)
 
 
 @pytest.mark.anyio

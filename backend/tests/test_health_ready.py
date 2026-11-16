@@ -44,7 +44,6 @@ def test_ready_endpoint(client, tmp_path, monkeypatch):
     for name in (
         "cerebrum_chat_llm_api_key_present",
         "cerebrum_llm_api_key_present",
-        "kimi_api_key_present",
         "openrouter_api_key_present",
         "cursor_api_key_present",
         "chat_http_api_key_present",

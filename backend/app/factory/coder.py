@@ -48,21 +48,16 @@ from .code_cli import (  # noqa: F401 — re-export the public FACTORY_CODE_CLI 
     DEFAULT_DEEPSEEK_MODEL,
     LEGACY_CODE_CLI_ENV,
     ClaudePrintPromptEmpty,
-    KimiPromptEmpty,
     claude_print_argv,
     claude_print_log_argv,
     claude_print_prompt,
     code_cli_command,
-    kimi_prompt_argv,
-    kimi_prompt_log_argv,
-    kimi_prompt_text,
     deepseek_api_key,
     deepseek_cli_environ,
     deepseek_coder_selected,
     deepseek_code_model,
     factory_code_provider,
     is_claude_code_cli,
-    is_kimi_code_cli,
 )
 from .llm_watchdog import (
     attempt_wall_s,
@@ -118,10 +113,7 @@ logger = logging.getLogger("cerebrumdev.factory.coder")
 
 CODER_ENABLED_ENV = "FACTORY_CODER_ENABLED"
 
-#: Provider-agnostic name for the agentic coding CLI. ``KIMI_CODE_CLI`` stays
-#: honoured so existing deployments keep working unchanged; point
-#: FACTORY_CODE_CLI at Kimi Code (DeepSeek V4 Pro OpenAI-compat, or
-#: historical Moonshot). Claude Code is not the DeepSeek vehicle.
+#: Provider-agnostic name for the agentic coding CLI: ``FACTORY_CODE_CLI``.
 #: The seam is "run this command, read its result". Selection + DeepSeek
 #: subprocess env live in ``app.factory.code_cli`` (re-exported above).
 
@@ -386,6 +378,12 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
     cfg = get_factory_llm_config()
     if cfg.get("mock"):
         raise CoderError("LLM mock mode — coder has no model to call")
+
+    if cfg.get("config_error"):
+        # A WRONG setting (a name outside the provider table, or two vendors'
+        # keys with no name) is raised here, before any leg: running the
+        # fallback leg alone would hide the error behind a working answer.
+        raise CoderError(str(cfg["error"]))
 
     cross = get_factory_fallback_leg()
     if cross and cross.get("error"):
