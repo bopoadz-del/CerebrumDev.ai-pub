@@ -119,7 +119,6 @@ def llm_key_configured() -> bool:
     return any(
         env_key_present(name)
         for name in (
-            "KIMI_API_KEY",
             "CEREBRUM_LLM_API_KEY",
             "CEREBRUM_CHAT_LLM_API_KEY",
             "CEREBRUM_FACTORY_LLM_API_KEY",

@@ -537,3 +537,106 @@ def test_the_app_start_runs_the_boot_validation_first(monkeypatch, name):
         asyncio.run(_enter())
     assert started == []
     assert llm_config.validate_provider_at_boot is main.validate_provider_at_boot
+
+
+# -- the retired vendor's name is not spelled as a bare string constant -------
+
+#: The retired vendor's names (the same two the table refuses above).
+_RETIRED = frozenset({"kimi", "moonshot"})
+
+#: Bare retired-name constants that exist on the base branch inside the
+#: item-1c files (the coding-CLI vehicle, its session wiring and the admin
+#: coder picker). Each entry must STILL trip the scan, so this set can only
+#: shrink; item 1c empties it.
+_PENDING_1C_RETIRED = {
+    ("factory/build/coder_session.py", "cli_unavailable_detail"),
+    ("factory/build/coder_session.py", "cli_no_model_detail"),
+    ("factory/build/coder_session.py", "cli_credentials_missing_detail"),
+    ("factory/build/coder_session.py", "_wire_deepseek_cli_credentials"),
+    ("factory/build/coder_session.py", "_merge_cli_credential_result"),
+    ("factory/code_cli.py", "<module>"),
+    ("factory/code_cli.py", "is_kimi_code_cli"),
+    ("factory/code_cli.py", "factory_code_provider"),
+    ("routers/admin_ops.py", "<module>"),
+}
+
+
+def _retired_constants(root: Path) -> set:
+    found = set()
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        owner = _enclosing(tree)
+        rel = path.relative_to(root).as_posix()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.strip().lower() in _RETIRED
+            ):
+                found.add((rel, owner.get(id(node), "<module>")))
+    return found
+
+
+@pytest.mark.parametrize("check", ["no_new_constant", "pending_still_trips"])
+def test_no_bare_retired_name_constant_under_backend_app(check):
+    """Any string constant under backend/app whose whole value is a retired
+    name fails, outside the pending item-1c entries (which can only shrink)."""
+    found = _retired_constants(_APP)
+    if check == "no_new_constant":
+        assert found - _PENDING_1C_RETIRED == set(), sorted(found - _PENDING_1C_RETIRED)
+    else:
+        assert _PENDING_1C_RETIRED - found == set(), (
+            "a pending entry no longer trips the scan: remove it from _PENDING_1C_RETIRED"
+        )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'def pick(p):\n    return p == "kimi"\n',
+        'def pick(p):\n    return p.lower() == " Moonshot "\n',
+        'def pick(p):\n    return {"KIMI": 1}.get(p)\n',
+    ],
+)
+def test_the_scan_catches_a_planted_retired_constant(tmp_path, source):
+    """The scan is live: a planted bare retired name is found in any case."""
+    (tmp_path / "planted.py").write_text(source, encoding="utf-8")
+    assert _retired_constants(tmp_path) == {("planted.py", "pick")}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'def pick(p):\n    return "kimi was retired" if p else ""\n',
+        'def pick(p):\n    return p == "moonshot-v1-8k"\n',
+    ],
+)
+def test_the_scan_ignores_a_retired_name_inside_longer_text(tmp_path, source):
+    """Only a bare name trips it; longer text that contains one does not."""
+    (tmp_path / "prose.py").write_text(source, encoding="utf-8")
+    assert _retired_constants(tmp_path) == set()
+
+
+# -- /ready's llm_configured counts only keys the table reads -----------------
+
+
+def test_the_retired_vendors_key_alone_is_not_reported_configured(monkeypatch):
+    """The table ignores the retired vendor's key, so /ready must not report
+    the model configured on it."""
+    from app.main import llm_key_configured
+
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("KIMI_API_KEY", "sk-" + secrets.token_hex(12))
+    assert llm_key_configured() is False
+
+
+@pytest.mark.parametrize(
+    "slot", ["CEREBRUM_LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]
+)
+def test_a_table_key_alone_is_reported_configured(monkeypatch, slot):
+    from app.main import llm_key_configured
+
+    _clean_env(monkeypatch)
+    assert llm_key_configured() is False
+    monkeypatch.setenv(slot, "sk-" + secrets.token_hex(12))
+    assert llm_key_configured() is True

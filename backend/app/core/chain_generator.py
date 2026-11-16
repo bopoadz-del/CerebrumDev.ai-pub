@@ -154,7 +154,7 @@ async def _call_openai_compatible(
     temperature: float | None = None,
     fallback_model: str | None = None,
 ) -> Dict[str, Any]:
-    """Call an OpenAI-compatible Kimi chat completion endpoint.
+    """Call an OpenAI-compatible chat completion endpoint.
 
     If *fallback_model* is provided and the primary call fails, retry once
     with the fallback model before giving up.
@@ -179,11 +179,11 @@ async def _call_openai_compatible(
             "messages": messages,
         }
         # OpenRouter free models often reject json_object. Only pin the
-        # format on native Moonshot-style hosts.
+        # format on a vendor's native host.
         if not _is_openrouter_base(base_url):
             payload["response_format"] = {"type": "json_object"}
         # Omit temperature unless explicitly configured: reasoning models
-        # (kimi-k2.x) reject any explicit temperature other than 1.
+        # reject any explicit temperature other than 1.
         if temperature is not None:
             payload["temperature"] = temperature
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -363,7 +363,8 @@ def _soft_failure_response(exc: Exception) -> Dict[str, Any]:
     """Honest Floor reply when every configured LLM hop failed.
 
     Must not raise — a dead OpenRouter key used to hard-fail chat with
-    ``Failed to generate suggestion: 401`` even when Kimi was configured.
+    ``Failed to generate suggestion: 401`` even when another provider was
+    configured.
     """
     logger.exception("LLM call failed; returning soft failure: %s", exc)
     return {

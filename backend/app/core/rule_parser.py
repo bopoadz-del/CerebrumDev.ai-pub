@@ -97,7 +97,7 @@ def _call_openai_sync(base_url: str, api_key: str, model: str, messages: List[Di
         "response_format": {"type": "json_object"},
     }
     # Omit temperature unless explicitly configured: reasoning models
-    # (kimi-k2.x) reject any explicit value other than 1.
+    # reject any explicit value other than 1.
     raw_temp = os.getenv("LLM_TEMPERATURE", "").strip()
     if raw_temp:
         try:

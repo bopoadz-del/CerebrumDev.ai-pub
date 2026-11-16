@@ -84,7 +84,7 @@ LLM_DRAFTING_ENV = "ARCHITECT_LLM_DRAFTING_ENABLED"
 class LlmSoftMiss(Exception):
     """Expected empty / unusable model output — fall back, do not Sentry-error.
 
-    OpenRouter free / Moonshot completions sometimes return ``''`` or ``{}``
+    OpenRouter free / vendor completions sometimes return ``''`` or ``{}``
     under billing pressure. That is a miss, not a contract bug. Floor chat
     logs these at warning and uses regex routing. Non-empty invalid actions
     stay ``ValueError`` (fail-closed).
