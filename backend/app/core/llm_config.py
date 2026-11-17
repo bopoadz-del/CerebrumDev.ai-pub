@@ -50,9 +50,12 @@ prevent.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List
 from urllib.parse import urlparse, urlsplit
+
+logger = logging.getLogger(__name__)
 
 #: Cursor BA key names (Factory coding / cli-pivot). Not /chat/completions
 #: credentials — Cursor has no public OpenAI-compatible chat API.
@@ -175,6 +178,7 @@ def llm_ready_details() -> Dict[str, Any]:
         "chat_http_base_url_host": host,
         "chat_http_api_key_present": bool(api_key.strip()),
         "chat_http_error": _redact_ready_secrets(error, api_key.strip()),
+        "llm_temperature_error": temperature_setting_error(),
     }
 
 
@@ -530,7 +534,33 @@ def _llm_temperature() -> float | None:
     try:
         return float(raw)
     except ValueError:
+        _report_invalid_temperature()
         return None
+
+
+def temperature_setting_error() -> str:
+    """Why ``LLM_TEMPERATURE`` is ignored, or ``""`` when it is unset, empty
+    or a number. Names the setting, never its value (``/ready`` shows it)."""
+    raw = os.getenv("LLM_TEMPERATURE", "").strip()
+    if not raw:
+        return ""
+    try:
+        float(raw)
+    except ValueError:
+        return "LLM_TEMPERATURE is set but is not a number; it is ignored and no temperature is sent"
+    return ""
+
+
+_temperature_reported = False
+
+
+def _report_invalid_temperature() -> None:
+    """One warning per process for a non-numeric ``LLM_TEMPERATURE``."""
+    global _temperature_reported
+    if _temperature_reported:
+        return
+    _temperature_reported = True
+    logger.warning(temperature_setting_error())
 
 
 def normalise_provider(name: str) -> str:

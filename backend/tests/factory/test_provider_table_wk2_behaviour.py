@@ -155,6 +155,50 @@ def test_llm_temperature_parses_the_setting(env, raw, want):
     assert llm_config._llm_temperature() == want
 
 
+@pytest.fixture
+def temperature_log(env, monkeypatch, caplog):
+    monkeypatch.setattr(llm_config, "_temperature_reported", False)
+    caplog.set_level("WARNING", logger=llm_config.logger.name)
+
+    def _warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.name == llm_config.logger.name]
+
+    return _warnings
+
+
+@pytest.mark.parametrize(
+    ("raw", "want", "reported"),
+    [("", None, False), ("   ", None, False), ("0.2", 0.2, False), ("abc", None, True)],
+)
+def test_an_invalid_temperature_is_reported_and_an_empty_one_is_not(
+    env, temperature_log, raw, want, reported
+):
+    env(LLM_TEMPERATURE=raw)
+    assert llm_config._llm_temperature() == want
+    warnings = temperature_log()
+    assert len(warnings) == (1 if reported else 0)
+    error = llm_config.temperature_setting_error()
+    assert bool(error) is reported
+    assert llm_config.llm_ready_details()["llm_temperature_error"] == error
+    if reported:
+        assert warnings == [error]
+        assert "LLM_TEMPERATURE" in error
+        assert raw not in error
+
+
+def test_an_unset_temperature_has_no_error(env, temperature_log):
+    assert llm_config._llm_temperature() is None
+    assert llm_config.temperature_setting_error() == ""
+    assert temperature_log() == []
+
+
+def test_an_invalid_temperature_warns_once_per_process(env, temperature_log):
+    env(LLM_TEMPERATURE="abc")
+    llm_config._llm_temperature()
+    llm_config._llm_temperature()
+    assert len(temperature_log()) == 1
+
+
 @pytest.mark.parametrize("name", ["openrouter", "nope"])
 def test_config_for_a_name_outside_the_primary_rows_raises(env, name):
     with pytest.raises(RuntimeError, match=name):
