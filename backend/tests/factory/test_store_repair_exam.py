@@ -138,9 +138,12 @@ def test_outcome_reads_a_raise_or_error_status_as_refusal(result, want):
 @pytest.mark.parametrize(
     "contract, mutants",
     [
-        (_ONE_REQUIRED, ("refuse_all", "silent_default", "accept_undeclared")),
-        (_NOTHING_REQUIRED, ("refuse_all",)),
-        ({"inputs": [{"name": "k", "required": False, "options": ["a"]}]}, ("refuse_all", "accept_undeclared")),
+        (_ONE_REQUIRED, ("refuse_all", "empty_result", "silent_default", "accept_undeclared")),
+        (_NOTHING_REQUIRED, ("refuse_all", "empty_result")),
+        (
+            {"inputs": [{"name": "k", "required": False, "options": ["a"]}]},
+            ("refuse_all", "empty_result", "accept_undeclared"),
+        ),
     ],
 )
 def test_mutants_are_the_wrong_variants_the_contract_can_tell_apart(contract, mutants):
@@ -233,7 +236,7 @@ def test_a_failed_case_names_its_input_and_kind_never_the_expectation(mutant, fa
 def test_a_static_defect_passes_only_when_the_same_check_no_longer_finds_it(findings, passed):
     defect = StoreDefect("zorblat", "vendor/blocks/zorblat/core/x.py", "forbidden_literal")
     exam = sre.generate_exam("zorblat", _ONE_REQUIRED, [defect])
-    run = sre.run_exam(exam, sre.contract_reference(_ONE_REQUIRED), lambda: findings)
+    run = sre.run_exam(exam, sre.contract_reference(_ONE_REQUIRED), lambda: findings, lambda: {"core/x.py": []})
     assert run.passed is passed
     if not passed:
         assert [f.failure for f in run.failures] == ["still found: forbidden_literal"]
@@ -284,7 +287,7 @@ _FIXED = (
     "        return {'status': 'error'}\n"
     "    if 'mode' in kw and kw['mode'] not in ('alpha', 'beta'):\n"
     "        return {'status': 'error'}\n"
-    "    return {'status': 'success'}\n"
+    "    return {'status': 'success', 'result': dict(kw)}\n"
 )
 
 
@@ -365,8 +368,8 @@ def test_an_exam_defect_stops_the_repair_before_the_writer_and_names_the_factory
     _vendor(tmp_path, "zorblat")
     real = sre.generate_exam
 
-    def degenerate(block_id, contract, defects):
-        exam = real(block_id, contract, defects)
+    def degenerate(block_id, contract, defects, surface=None):
+        exam = real(block_id, contract, defects, surface)
         return sre.Exam(exam.exam_id, block_id, exam.working, tuple(c for c in exam.sealed if dropped not in c.case_id))
 
     monkeypatch.setattr(sre, "generate_exam", degenerate)
