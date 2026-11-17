@@ -224,6 +224,13 @@ async def _lifespan(app: FastAPI):
         guard_exit_signals()
     except Exception:  # noqa: BLE001 -- boot must not die on the guard
         logging.getLogger("cerebrumdev.factory.agent_process").exception("exit-signal guard not installed")
+    # F-2: a proofs directory builds cannot use is one plain line at boot
+    # (and /ready answers not ready with the same reason), not a refused build.
+    _exam_proofs = _probe_exam_proofs()
+    if not _exam_proofs["ok"]:
+        logging.getLogger("cerebrumdev.factory.exam_proofs").error(
+            "factory not ready: %s", _exam_proofs["error"]
+        )
     try:
         from app.factory.build.orphan_recovery import recover_orphaned_model_calls
 
@@ -450,6 +457,17 @@ def _probe_storage() -> dict:
         return {"ok": False, "path": storage, "error": str(exc)}
 
 
+def _probe_exam_proofs() -> dict:
+    """F-2: whether the exam proofs directory can serve builds. A bad setting
+    shows here, where the rollout stops, not in a customer's build (every
+    build would be refused at its vendored-lock gate). Reason only, no path."""
+    from app.factory.build.store_override import probe_proofs_dir
+    from app.factory.paths import factory_outputs_root
+
+    reason = probe_proofs_dir(factory_outputs_root())
+    return {"ok": reason is None, "error": reason or ""}
+
+
 def _probe_blocks() -> dict:
     url = os.getenv("CEREBRUM_API_URL")
     if not url:
@@ -504,6 +522,9 @@ async def ready():
     }
     # Storage + API key are hard requirements; blocks/LLM may be degraded in local dev.
     ready_ok = checks["storage"] and checks["api_key_configured"]
+    exam_proofs = _probe_exam_proofs()
+    checks["exam_proofs_dir"] = bool(exam_proofs["ok"])
+    ready_ok = ready_ok and checks["exam_proofs_dir"]
     # Informational, not gating: a failed backup must page someone, not take
     # the API out of rotation.
     last_backup = _backup_details()
@@ -522,6 +543,7 @@ async def ready():
             "last_backup": last_backup,
             "sentry": _probe_sentry(),
             "data_encryption": encryption,
+            "exam_proofs_dir": exam_proofs,
             # Booleans + hostname + error only. Never echo key values.
             "llm": llm_ready_details(),
         },

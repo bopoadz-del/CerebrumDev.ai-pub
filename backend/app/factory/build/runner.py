@@ -1212,8 +1212,10 @@ class RoleRunner:
         """The proofs directory could not be resolved, created or written:
         this build keeps no proof store, and the lock gate refuses with this
         plain reason (the same state as a placement refusal), never a crash."""
+        from app.factory.build import store_override
+
         self._exam_proofs_store = None
-        self._exam_proofs_refusal = f"the exam proofs directory is not usable ({type(exc).__name__})"
+        self._exam_proofs_refusal = store_override.unusable_reason(exc)
 
     def _product_lock(self) -> Optional[Dict[str, Any]]:
         """The product's blocks.lock.json as it is on disk: {} when there is

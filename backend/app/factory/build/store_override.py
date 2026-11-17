@@ -55,6 +55,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
@@ -208,6 +209,36 @@ def placement_refusal(
     for root in rw_roots:
         if is_inside(directory, root) or is_inside(root, directory):
             return "exam proofs would sit where the coding agent may write"
+    return None
+
+
+def unusable_reason(exc: BaseException) -> str:
+    """The plain reason a proofs directory that could not be resolved,
+    created or written is refused: the error's type only, no path."""
+    return f"the exam proofs directory is not usable ({type(exc).__name__})"
+
+
+def probe_proofs_dir(
+    builds_root: Path | str, environ: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """None when the proofs directory can serve every build under
+    ``builds_root``; otherwise the plain reason it cannot. Every build lives
+    under ``builds_root``, and so does every root the coding agent may be
+    granted for it, so the directory is checked as builds see it: it must be
+    neither inside that tree nor above it (:func:`placement_refusal`, with a
+    build placed directly under the root). It is then created and a probe file
+    is written and removed in it."""
+    try:
+        base = proofs_base(environ).resolve()
+        why = placement_refusal(base, Path(builds_root) / "build", (builds_root,))
+        if why is not None:
+            return why
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / f".probe-{os.getpid()}-{secrets.token_hex(4)}"
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+    except (OSError, RuntimeError) as exc:
+        return unusable_reason(exc)
     return None
 
 
