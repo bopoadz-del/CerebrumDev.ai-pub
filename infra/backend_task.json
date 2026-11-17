@@ -1,5 +1,5 @@
 {
-  "_comment": "The backend ECS task's size, declared in the repo. deploy-aws.yml compares it with the live task definition and registers a new revision (everything else copied verbatim) only when cpu, memory or these environment values differ. Owner decision 2026-10-08: 2 vCPU / 4 GB; FACTORY_WORKER_PROFILE names the plan whose slot caps codewhale_worker.derive_profile_caps derives (2c-4g -> 4 user builds + 1 reserved smoke slot).",
+  "_comment": "The backend ECS task's size, declared in the repo. deploy-aws.yml compares it with the live task definition and registers a new revision (everything else copied verbatim) only when cpu, memory or these environment values differ. Owner decision 2026-10-08: 2 vCPU / 4 GB; FACTORY_WORKER_PROFILE names the plan whose slot caps codewhale_worker.derive_profile_caps derives (2c-4g -> 4 user builds + 1 reserved smoke slot). FACTORY_EXAM_PROOFS_DIR (F-2, #250): the Factory-held exam proofs live on the persistent volume, beside factory_outputs (never inside it, never above it), so a restart keeps them and the coding agent cannot reach them.",
   "container": "cerebrumdev-backend",
   "cpu": "2048",
   "memory": "4096",
@@ -10,6 +10,7 @@
     "FACTORY_BUILDS_REPO": "bopoadz-del/cerebrum-builds-pub",
     "FACTORY_SELF_REPO": "bopoadz-del/CerebrumDev.ai-pub",
     "CEREBRUM_BUILDS_REPO": "bopoadz-del/cerebrum-builds-pub",
-    "CEREBRUM_BLOCKS_REPO": "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git"
+    "CEREBRUM_BLOCKS_REPO": "https://github.com/bopoadz-del/Cerebrum-Blocks-pub.git",
+    "FACTORY_EXAM_PROOFS_DIR": "/app/storage/factory_exam_proofs"
   }
 }
