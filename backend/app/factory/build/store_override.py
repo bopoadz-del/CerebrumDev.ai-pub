@@ -25,6 +25,25 @@ OUTSIDE the product tree, and both acceptance and the lock check read it with
 passing on exactly these bytes. A block is vendored only at
 ``vendor/blocks/<id>``.
 
+F-2 (grader 19:35Z): the proofs live in a :class:`ProofStore` that the build's
+orchestrator (``RoleRunner``) opens. It is a Factory data directory that is
+not inside the product, not on the build volume beside it, and not under any
+root the coding agent's confinement may write. Every record in it is signed
+(HMAC-SHA256) with a key only the Factory process holds
+(:func:`take_proof_key` reads it once and removes it from the process
+environment, so no child ever gets it), and every record names the build it
+belongs to. A record that fails its signature or names another build reads as
+absent. The same store keeps the hashes of the blocks as CLONER vendored them
+(:func:`record_vendored`), so the lock check compares the bytes with what the
+Factory cloned, never with a hash claimed in the product's own lock.
+
+F-2 (grader 20:30Z): no key does not mean open. The store opens with or
+without a key, and CLONER's record of the vendored blocks is always kept, so
+any change to a vendored block is refused either way. With no key the record
+carries a plain content digest (it is protected by where it sits: outside
+every root the agent may write), no exam proof can be written or read, and so
+an override is simply impossible.
+
 The hash here walks every file on disk (not only git-tracked ones, unlike
 ``blocks_lock.block_content_hash``, which pins a committed Store tree): a file
 planted inside a vendored block is a change and must be seen.
@@ -33,9 +52,12 @@ planted inside a vendored block is a change and must be seen.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
-from dataclasses import asdict, dataclass
+import secrets
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
@@ -49,6 +71,30 @@ VENDORED_HASH_KEY = "vendored_content_hash"
 REPAIR_FAILED_REASON = "Store block defect, repair failed"
 #: File suffix of one Factory-held exam proof (F-2).
 PROOF_SUFFIX = ".exam.json"
+#: The Factory-held record of the blocks as CLONER vendored them (F-2).
+VENDORED_RECORD = "vendored.json"
+#: The Factory's secret that signs every proof. It is read once, then removed
+#: from the process environment so no child process inherits it.
+PROOF_KEY_ENV = "FACTORY_EXAM_PROOF_KEY"
+#: Where the Factory keeps proofs (default: under the Factory user's home).
+PROOFS_DIR_ENV = "FACTORY_EXAM_PROOFS_DIR"
+#: The lock-row fields the Factory records at CLONER; a later edit is refused.
+LOCK_ROW_FIELDS = ("source", "commit", "path")
+#: The runner's gate name and reason for a refused lock check.
+LOCK_GATE = "vendored_lock"
+LOCK_GATE_REASON = "vendored_lock_refused"
+#: Why the lock check refuses when the Factory's record is not there (a resumed
+#: build whose record is gone, a record from another key, or none kept).
+NO_RECORD = (
+    "no Factory-held record of the vendored blocks for this build: "
+    "the vendored blocks cannot be checked, so the build is refused"
+)
+#: Record kinds: a record of one kind never reads as the other.
+EXAM_KIND = "exam_proof"
+VENDORED_KIND = "vendored_copy"
+
+_KEY_UNREAD: Any = object()
+_process_key: Any = _KEY_UNREAD
 
 
 class OverrideError(ValueError):
@@ -114,6 +160,16 @@ class ExamProof:
     score: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class ProofStore:
+    """F-2: one build's Factory-held proofs, signed with the Factory's key."""
+
+    root: Path
+    build_id: str
+    #: None: no exam can be proven in this build, so no override is possible.
+    key: Optional[bytes] = field(default=None, repr=False)
+
+
 def is_inside(path: Path | str, root: Path | str) -> bool:
     """True when ``path`` is ``root`` or lies under it."""
     inner = Path(path).resolve()
@@ -121,32 +177,180 @@ def is_inside(path: Path | str, root: Path | str) -> bool:
     return inner == outer or outer in inner.parents
 
 
-def _proof_path(proofs_dir: Path | str, exam_id: str) -> Path:
-    name = hashlib.sha256(exam_id.encode("utf-8")).hexdigest()
-    return Path(proofs_dir) / (name + PROOF_SUFFIX)
+def take_proof_key(environ: Optional[MutableMapping[str, str]] = None) -> Optional[bytes]:
+    """The Factory's proof key. It is read once per process and then removed
+    from ``environ`` (the process environment by default), so no child
+    inherits it. None when it is not set."""
+    global _process_key
+    if _process_key is _KEY_UNREAD:
+        env = os.environ if environ is None else environ
+        raw = str(env.pop(PROOF_KEY_ENV, "") or "").strip()
+        _process_key = raw.encode("utf-8") if raw else None
+    return _process_key
 
 
-def write_proof(proofs_dir: Path | str, proof: ExamProof) -> Path:
-    """Write ``proof`` atomically (temp file, then rename) and return its path."""
-    if not proof.exam_id:
-        raise OverrideError(f"exam proof for {proof.block_id!r} has no exam id")
-    path = _proof_path(proofs_dir, proof.exam_id)
+def proofs_base(environ: Optional[Mapping[str, str]] = None) -> Path:
+    """The Factory data directory that proofs are kept under."""
+    env = os.environ if environ is None else environ
+    raw = str(env.get(PROOFS_DIR_ENV) or "").strip()
+    return Path(raw) if raw else Path.home() / ".cerebrum-factory" / "exam_proofs"
+
+
+def placement_refusal(
+    directory: Path | str, workspace: Path | str, rw_roots: Iterable[Path | str] = ()
+) -> Optional[str]:
+    """None when ``directory`` is out of the coding agent's reach for the
+    build in ``workspace``. That means it is not on the build volume beside
+    the product (this covers the product and every sibling build), and it is
+    neither under nor above any root the agent's confinement may write.
+    Otherwise, the reason it is refused."""
+    volume = Path(workspace).resolve().parent
+    if is_inside(directory, volume):
+        return "exam proofs would sit on the build volume, beside the product"
+    for root in rw_roots:
+        if is_inside(directory, root) or is_inside(root, directory):
+            return "exam proofs would sit where the coding agent may write"
+    return None
+
+
+def unusable_reason(exc: BaseException) -> str:
+    """The plain reason a proofs directory that could not be resolved,
+    created or written is refused: the error's type only, no path."""
+    return f"the exam proofs directory is not usable ({type(exc).__name__})"
+
+
+#: How long one probe of the proofs directory answers for: /ready is polled
+#: every few seconds, and each probe writes to the directory's volume.
+PROBE_CACHE_SECONDS = 60.0
+
+_probe_cache: Dict[Tuple[str, str], Tuple[float, Optional[str]]] = {}
+
+
+def probe_proofs_dir(
+    builds_root: Path | str, environ: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """None when the proofs directory can serve a build under ``builds_root``;
+    otherwise the plain reason it cannot. The directory is checked as the
+    vendored-lock gate checks it: :func:`placement_refusal` for a build placed
+    directly under ``builds_root``, against the same root list
+    (``runner.agent_rw_roots_for``). It is then created and a probe file is
+    written and removed in it. Any error at all is a reason (its type, no
+    path), never an exception."""
+    try:
+        from app.factory.build.runner import agent_rw_roots_for
+
+        workspace = Path(builds_root) / "build"
+        base = proofs_base(environ).resolve()
+        why = placement_refusal(base, workspace, agent_rw_roots_for(workspace))
+        if why is not None:
+            return why
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / f".probe-{os.getpid()}-{secrets.token_hex(4)}"
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+    except Exception as exc:  # noqa: BLE001 -- every failure is "not usable"
+        return unusable_reason(exc)
+    return None
+
+
+def builds_unavailable_reason(
+    builds_root: Path | str,
+    environ: Optional[Mapping[str, str]] = None,
+    *,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """:func:`probe_proofs_dir`, answered from a result at most
+    :data:`PROBE_CACHE_SECONDS` old for the same builds root and setting."""
+    env = os.environ if environ is None else environ
+    key = (str(builds_root), str(env.get(PROOFS_DIR_ENV) or ""))
+    clock = time.monotonic() if now is None else now
+    hit = _probe_cache.get(key)
+    if hit is not None and 0 <= clock - hit[0] < PROBE_CACHE_SECONDS:
+        return hit[1]
+    reason = probe_proofs_dir(builds_root, environ)
+    _probe_cache[key] = (clock, reason)
+    return reason
+
+
+def open_proof_store(
+    build_id: str,
+    workspace: Path | str,
+    *,
+    key: Optional[bytes],
+    base: Path | str,
+    rw_roots: Iterable[Path | str] = (),
+) -> ProofStore:
+    """The proof store of ``build_id`` under ``base``, with or without a key
+    (with none, overrides are impossible but the vendored record is still
+    kept). Raises OverrideError when there is no build id or the place is one
+    the coding agent could reach."""
+    if not str(build_id or "").strip():
+        raise OverrideError("a proof store needs the build id it belongs to")
+    root = Path(base) / hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:32]
+    why = placement_refusal(root, workspace, rw_roots)
+    if why is not None:
+        raise OverrideError(why)
+    return ProofStore(root=root.resolve(), build_id=build_id, key=bytes(key) if key else None)
+
+
+def _signature(key: Optional[bytes], payload: Mapping[str, Any]) -> str:
+    """HMAC-SHA256 with the Factory's key; a plain digest when there is none."""
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    if not key:
+        return "digest:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return hmac.new(key, body.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _write_signed(store: ProofStore, name: str, kind: str, payload: Mapping[str, Any]) -> Path:
+    signed = {**payload, "kind": kind, "build_id": store.build_id}
+    path = store.root / name
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(asdict(proof), sort_keys=True), encoding="utf-8")
+    body = {"payload": signed, "signature": _signature(store.key, signed)}
+    tmp.write_text(json.dumps(body, sort_keys=True, default=str), encoding="utf-8")
     os.replace(tmp, path)
     return path
 
 
-def read_proof(proofs_dir: Path | str, exam_id: str) -> Optional[ExamProof]:
-    """The Factory-held proof of ``exam_id``; None when absent or unreadable."""
-    if not exam_id:
-        return None
+def _read_signed(store: ProofStore, name: str, kind: str) -> Optional[Mapping[str, Any]]:
+    """The record's payload when the Factory signed it and it is of ``kind``
+    for this build; None otherwise."""
     try:
-        raw = json.loads(_proof_path(proofs_dir, exam_id).read_text(encoding="utf-8"))
+        raw = json.loads((store.root / name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(raw, Mapping) or raw.get("exam_id") != exam_id:
+    payload = raw.get("payload") if isinstance(raw, Mapping) else None
+    if not isinstance(payload, Mapping):
+        return None
+    if not hmac.compare_digest(str(raw.get("signature") or ""), _signature(store.key, payload)):
+        return None
+    if payload.get("kind") != kind or payload.get("build_id") != store.build_id:
+        return None
+    return payload
+
+
+def _proof_name(exam_id: str) -> str:
+    return hashlib.sha256(exam_id.encode("utf-8")).hexdigest() + PROOF_SUFFIX
+
+
+def write_proof(store: ProofStore, proof: ExamProof) -> Path:
+    """Sign ``proof`` for this build, write it atomically, and return its path.
+    Refused when the Factory holds no key: an unsigned proof proves nothing."""
+    if not store.key:
+        raise OverrideError(f"{PROOF_KEY_ENV} is not set: the Factory can prove no exam")
+    if not proof.exam_id:
+        raise OverrideError(f"exam proof for {proof.block_id!r} has no exam id")
+    return _write_signed(store, _proof_name(proof.exam_id), EXAM_KIND, asdict(proof))
+
+
+def read_proof(store: Optional[ProofStore], exam_id: str) -> Optional[ExamProof]:
+    """The Factory-held, signed proof of ``exam_id`` for this build. None when
+    it is absent, unreadable, not signed by the Factory, or from another build,
+    and always when the Factory holds no key."""
+    if store is None or not store.key or not exam_id:
+        return None
+    raw = _read_signed(store, _proof_name(exam_id), EXAM_KIND)
+    if raw is None or raw.get("exam_id") != exam_id:
         return None
     score = raw.get("score")
     return ExamProof(
@@ -168,6 +372,51 @@ def proof_refusal(proof: Optional[ExamProof], block_id: str, actual: str) -> Opt
     if proof.examined_hash != actual:
         return f"{block_id}: these bytes are not the tree its exam examined"
     return None
+
+
+def record_vendored(
+    store: ProofStore,
+    hashes: Mapping[str, str],
+    *,
+    rows: Optional[Mapping[str, Mapping[str, str]]] = None,
+) -> Path:
+    """Sign and keep the hash of every block as CLONER vendored it, and the
+    lock row (:data:`LOCK_ROW_FIELDS`) CLONER wrote for it."""
+    payload = {
+        "blocks": dict(hashes),
+        "rows": {k: dict(v) for k, v in (rows or {}).items()},
+    }
+    return _write_signed(store, VENDORED_RECORD, VENDORED_KIND, payload)
+
+
+def _vendored_payload(store: Optional[ProofStore]) -> Optional[Mapping[str, Any]]:
+    if store is None:
+        return None
+    raw = _read_signed(store, VENDORED_RECORD, VENDORED_KIND)
+    if raw is None or not isinstance(raw.get("blocks"), Mapping):
+        return None
+    return raw
+
+
+def vendored_record(store: Optional[ProofStore]) -> Optional[Dict[str, str]]:
+    """The Factory-held hashes of the vendored blocks; None when unproven."""
+    raw = _vendored_payload(store)
+    if raw is None:
+        return None
+    return {str(k): str(v) for k, v in raw["blocks"].items()}
+
+
+def vendored_rows(store: Optional[ProofStore]) -> Dict[str, Dict[str, str]]:
+    """The Factory-held lock rows CLONER wrote, by block ({} when none)."""
+    raw = _vendored_payload(store)
+    rows = raw.get("rows") if raw is not None else None
+    if not isinstance(rows, Mapping):
+        return {}
+    return {
+        str(b): {str(k): str(v) for k, v in row.items()}
+        for b, row in rows.items()
+        if isinstance(row, Mapping)
+    }
 
 
 def vendored_path(block_id: str) -> str:
@@ -243,9 +492,16 @@ def tree_hash(block_dir: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def record_override(lock: MutableMapping[str, Any], record: OverrideRecord) -> Dict[str, Any]:
+def record_override(
+    lock: MutableMapping[str, Any],
+    record: OverrideRecord,
+    *,
+    vendored_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     """R3: write ``record`` into the lock. Only a passed exam is recorded, and
-    only over a block the lock vendored, replacing the copy it recorded."""
+    only over a block the lock vendored, replacing the copy it recorded.
+    F-2: ``vendored_hash`` is the Factory-held hash of that copy; when given,
+    it is compared instead of the hash claimed in the lock."""
     if not record.exam_passed or not record.exam_id:
         raise OverrideError(
             f"override of {record.block_id!r} not recorded: it did not pass its exam"
@@ -253,7 +509,8 @@ def record_override(lock: MutableMapping[str, Any], record: OverrideRecord) -> D
     entry = (lock.get("blocks") or {}).get(record.block_id)
     if not isinstance(entry, Mapping):
         raise OverrideError(f"override of {record.block_id!r}: the lock vendored no such block")
-    if str(entry.get(VENDORED_HASH_KEY) or "") != record.replaces_hash:
+    replaced = vendored_hash if vendored_hash is not None else entry.get(VENDORED_HASH_KEY)
+    if str(replaced or "") != record.replaces_hash:
         raise OverrideError(
             f"override of {record.block_id!r} does not name the vendored copy it replaces"
         )
@@ -263,7 +520,7 @@ def record_override(lock: MutableMapping[str, Any], record: OverrideRecord) -> D
 
 
 def _override_refusal(
-    block_id: str, actual: str, recorded: str, raw: Any, proofs_dir: Path | str
+    block_id: str, actual: str, recorded: str, raw: Any, proofs: Optional[ProofStore]
 ) -> Optional[str]:
     """None when ``raw`` is a valid recorded override for these bytes."""
     if not isinstance(raw, Mapping):
@@ -277,43 +534,77 @@ def _override_refusal(
         return f"{block_id}: recorded override replaces a different copy than the one vendored"
     if record.override_hash != actual:
         return f"{block_id}: differs from both the vendored copy and its recorded override"
-    return proof_refusal(read_proof(proofs_dir, record.exam_id), block_id, actual)
+    return proof_refusal(read_proof(proofs, record.exam_id), block_id, actual)
+
+
+def _row_value(field_name: str, value: Any) -> str:
+    """A lock-row value as compared with CLONER's record; spellings of one
+    path are one path."""
+    if field_name == "path":
+        return "/".join(_rel_parts(value))
+    return str(value or "")
 
 
 def verify_vendored(
-    root: Path | str, lock: Mapping[str, Any], *, proofs_dir: Path | str
+    root: Path | str, lock: Mapping[str, Any], *, proofs: Optional[ProofStore]
 ) -> OverrideCheck:
     """R3, the lock check: refuse any difference from the vendored Store copy
-    that is not a recorded override which passed its exam, as the
-    Factory-held proof in ``proofs_dir`` (outside the product) shows."""
+    that is not a recorded override which passed its exam.
+
+    F-2: what the copy was, and whether its exam passed, are read from the
+    Factory-held, signed records in ``proofs``, never from the lock alone. The
+    lock is in the product, where the writer can edit it."""
     root = Path(root)
-    if is_inside(proofs_dir, root):
+    if proofs is not None and is_inside(proofs.root, root):
         return OverrideCheck(ok=False, refused=("exam proofs are held inside the product tree",))
+    cloned = vendored_record(proofs)
+    if cloned is None:
+        return OverrideCheck(ok=False, refused=(NO_RECORD,))
     entries = lock.get("blocks") or {}
     overrides = lock.get(OVERRIDES_KEY) or {}
     unchanged: List[str] = []
     overridden: List[str] = []
     refused: List[str] = []
+    rows = vendored_rows(proofs)
+    for block_id in sorted(set(cloned) - set(entries)):
+        refused.append(f"{block_id}: the lock no longer names a block the Factory vendored")
     for block_id in sorted(entries):
         entry = entries[block_id]
         if not isinstance(entry, Mapping) or not entry.get("path"):
+            if block_id in cloned:
+                refused.append(f"{block_id}: the lock's row no longer says where it is vendored")
             continue
         if not vendored_at(entry["path"], block_id):
             refused.append(f"{block_id}: not vendored at {vendored_path(block_id)}")
             continue
         block_dir = root.joinpath(*VENDOR_BLOCKS, block_id)
-        recorded = str(entry.get(VENDORED_HASH_KEY) or "")
+        recorded = cloned.get(block_id, "")
         if not recorded:
-            refused.append(f"{block_id}: no recorded hash of the vendored copy")
+            refused.append(f"{block_id}: the Factory holds no record of vendoring it")
+            continue
+        claimed = entry.get(VENDORED_HASH_KEY)
+        if claimed is not None and str(claimed) != recorded:
+            refused.append(f"{block_id}: the lock's vendored hash is not the copy the Factory cloned")
+            continue
+        edited = sorted(
+            k
+            for k, v in rows.get(block_id, {}).items()
+            if _row_value(k, entry.get(k)) != _row_value(k, v)
+        )
+        if edited:
+            refused.append(f"{block_id}: the lock's row was edited after CLONER ({', '.join(edited)})")
             continue
         if not block_dir.is_dir():
             refused.append(f"{block_id}: vendored copy is missing")
             continue
         actual = tree_hash(block_dir)
         if actual == recorded:
+            if block_id in overrides:
+                refused.append(f"{block_id}: an override is recorded, but the block is the vendored copy")
+                continue
             unchanged.append(block_id)
             continue
-        why = _override_refusal(block_id, actual, recorded, overrides.get(block_id), proofs_dir)
+        why = _override_refusal(block_id, actual, recorded, overrides.get(block_id), proofs)
         if why is None:
             overridden.append(block_id)
         else:

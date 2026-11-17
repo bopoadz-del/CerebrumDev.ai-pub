@@ -1992,6 +1992,16 @@ def start_runner_build(
                 fresh_workspace = True
                 fresh_reason = f"FRESH: prior workspace {prior} not re-enterable: {why}"
 
+    # F-2: a build whose exam proofs cannot be kept is refused at the door
+    # with the plain reason, not later at its vendored-lock gate.
+    from app.factory.build.coder_session import BuildsUnavailable
+    from app.factory.build.store_override import builds_unavailable_reason
+
+    builds_refused = builds_unavailable_reason(out.parent)
+    if builds_refused is not None:
+        logger.error("build refused at start: %s", builds_refused)
+        raise BuildsUnavailable(builds_refused)
+
     try:
         raise_if_cli_session_unready()
     except CodeCliUnavailable:

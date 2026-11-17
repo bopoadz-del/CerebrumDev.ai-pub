@@ -224,6 +224,13 @@ async def _lifespan(app: FastAPI):
         guard_exit_signals()
     except Exception:  # noqa: BLE001 -- boot must not die on the guard
         logging.getLogger("cerebrumdev.factory.agent_process").exception("exit-signal guard not installed")
+    # F-2: a proofs directory builds cannot use is one plain line at boot
+    # (and /ready's body says builds are unavailable, with the same reason).
+    _builds = _probe_builds()
+    if not _builds["available"]:
+        logging.getLogger("cerebrumdev.factory.exam_proofs").error(
+            "builds unavailable: %s", _builds["reason"]
+        )
     try:
         from app.factory.build.orphan_recovery import recover_orphaned_model_calls
 
@@ -450,6 +457,18 @@ def _probe_storage() -> dict:
         return {"ok": False, "path": storage, "error": str(exc)}
 
 
+def _probe_builds() -> dict:
+    """F-2: whether builds can start (the exam proofs directory can serve
+    them). Informational on /ready: an unusable directory refuses builds, it
+    does not take the API out of rotation; the post-deploy smoke reads it.
+    Reason only, no path."""
+    from app.factory.build.store_override import builds_unavailable_reason
+    from app.factory.paths import factory_outputs_root
+
+    reason = builds_unavailable_reason(factory_outputs_root())
+    return {"available": reason is None, "reason": reason or ""}
+
+
 def _probe_blocks() -> dict:
     url = os.getenv("CEREBRUM_API_URL")
     if not url:
@@ -522,6 +541,7 @@ async def ready():
             "last_backup": last_backup,
             "sentry": _probe_sentry(),
             "data_encryption": encryption,
+            "builds": _probe_builds(),
             # Booleans + hostname + error only. Never echo key values.
             "llm": llm_ready_details(),
         },

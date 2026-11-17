@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from app.factory.build import store_repair_exam as sre
-from app.factory.build.store_override import StoreDefect, read_proof
+from app.factory.build.store_override import ProofStore, StoreDefect, read_proof
 
 _ONE_REQUIRED = {
     "id": "zorblat",
@@ -404,17 +404,14 @@ def test_the_repairer_settles_a_store_only_verdict_through_k2(block_id, tmp_path
     from app.factory.build import store_proposal, store_repair
     from app.factory.build.store_override import OVERRIDES_KEY, VENDORED_HASH_KEY
 
+    from app.factory.build.store_override import record_vendored
+
     product = tmp_path / "product"
-    proofs = tmp_path / "proofs"
+    proofs = ProofStore(root=tmp_path / "proofs", build_id="build-one", key=b"factory-test-key")
     vendored = _vendor(product, block_id)
-    lock = {
-        "blocks": {
-            block_id: {
-                "path": f"vendor/blocks/{block_id}",
-                VENDORED_HASH_KEY: sre.tree_hash(vendored),
-            }
-        }
-    }
+    row = {"source": "store:origin-one", "commit": "c0ffee1", "path": f"vendor/blocks/{block_id}"}
+    lock = {"blocks": {block_id: {**row, VENDORED_HASH_KEY: sre.tree_hash(vendored)}}}
+    record_vendored(proofs, {block_id: sre.tree_hash(vendored)}, rows={block_id: row})
     finding = {"file": f"vendor/blocks/{block_id}/block.py", "kind": "crash", "input": {"payload": {}}, "owner": "FACTORY"}
     owed = (f"FACTORY owes {finding['file']}",)
     verdict = grader_mod.GraderVerdict(
@@ -424,12 +421,12 @@ def test_the_repairer_settles_a_store_only_verdict_through_k2(block_id, tmp_path
         factory_owed=owed,
     )
     repair = sre.make_repairer(
-        product, writer=_writer(_FIXED, []), invoker=_invoker, rescan=lambda d: [], proofs_dir=proofs
+        product, writer=_writer(_FIXED, []), invoker=_invoker, rescan=lambda d: [], proofs=proofs
     )
 
     def install(result, defects):
         return store_proposal.install_repair(
-            product, lock, result, build_id="build-one", proofs_dir=proofs, defects=defects
+            product, lock, result, proofs=proofs, defects=defects
         )
 
     caps = [SimpleNamespace(capability_id="cap_a", block_ids=[block_id])]
@@ -449,13 +446,15 @@ def test_the_repairer_settles_a_store_only_verdict_through_k2(block_id, tmp_path
 )
 def test_the_exam_run_leaves_its_proof_in_the_factory_held_directory(tmp_path, source, passed):
     product = tmp_path / "product"
-    proofs = tmp_path / "proofs"
+    proofs = ProofStore(root=tmp_path / "proofs", build_id="build-1", key=b"factory-test-key")
     _vendor(product, "zorblat")
     repair = sre.make_repairer(
-        product, writer=_writer(source, []), invoker=_invoker, rescan=lambda d: [], proofs_dir=proofs
+        product, writer=_writer(source, []), invoker=_invoker, rescan=lambda d: [], proofs=proofs
     )
     result = repair("zorblat", _defect("zorblat"))
     proof = read_proof(proofs, result.exam_id)
+    other_build = ProofStore(root=proofs.root, build_id="build-2", key=proofs.key)
+    assert read_proof(other_build, result.exam_id) is None
     assert (proof.block_id, proof.passed, proof.score) == ("zorblat", passed, result.exam_score)
     assert proof.examined_hash == sre.tree_hash(product / "repair" / "zorblat")
 
@@ -468,5 +467,5 @@ def test_a_repairer_with_proofs_inside_the_product_is_refused(tmp_path, inside):
             writer=_writer(_FIXED, []),
             invoker=_invoker,
             rescan=lambda d: [],
-            proofs_dir=tmp_path / inside,
+            proofs=ProofStore(root=tmp_path / inside, build_id="build-1", key=b"k"),
         )

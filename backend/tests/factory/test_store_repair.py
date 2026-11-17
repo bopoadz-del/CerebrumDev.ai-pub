@@ -853,3 +853,108 @@ def test_without_an_installer_a_store_defect_still_ends_the_run_naming_the_facto
     assert "FACTORY_FAULT" in outcome.detail
     assert called == []
     assert _repair_notes(runner) == []
+
+
+# -- F-3 end to end: a deliberately broken vendored block, the real installer --
+
+
+_BROKEN_BLOCK = {"block.py": "def run(x):\n    return x['missing']\n", "block.json": "{}\n"}
+_FIXED_BLOCK = {"block.py": "def run(x):\n    return x.get('missing')\n"}
+
+
+def _write_tree(root, files: dict) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("proof_passes", [True, False], ids=["installed", "refused"])
+def test_a_broken_vendored_block_through_the_runner_and_the_real_installer(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    proof_passes,
+):
+    """CLONER vendors a broken block (lock saved, the Factory records it); the
+    grader finds its defect; the repairer stages a fix and the Factory's proof
+    of its exam; the real ``install_repair`` puts it in place or refuses.
+
+    Installed: the fix stands in vendor/blocks, the override is in the lock on
+    disk, the product is graded again and the run completes. Refused (the
+    Factory's proof says the exam failed): the vendored Store copy is left
+    byte for byte, the saved lock carries no override, the block's
+    capabilities are listed not delivered in grade.json (marked, not
+    stripped: the block's code, imports and routes stay as vendored) and the
+    run still completes. Either way the writer is dispatched once and no
+    grader REWORK is spent: the repair is a NOTE under the block's own
+    allowance, never the writer's rework count."""
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.store_repair import GRADE_SECTION, STORE_REPAIR_KEY, RepairResult
+    from app.factory.build.store_repair_exam import REPAIR_DIR
+
+    monkeypatch.setattr(so, "_process_key", b"factory-test-key")
+    holder: dict = {}
+
+    def verdicts(runner):
+        holder["runner"] = runner
+        holder["block"], holder["bound"] = _bound_block(runner, 0)
+        found = _store_verdict(_finding(holder["block"], "block.py"))
+        return [found, _certified()] if proof_passes else [found]
+
+    def cloner(ctx):
+        ws, block = holder["runner"].workspace, holder["block"]
+        vendored = ws / "vendor" / "blocks" / block
+        _write_tree(vendored, _BROKEN_BLOCK)
+        row = {"source": "store:origin-one", "commit": "c0ffee1", "path": f"vendor/blocks/{block}"}
+        sp.save_lock(ws, {"blocks": {block: {**row, so.VENDORED_HASH_KEY: so.tree_hash(vendored)}}})
+        return _fake_pass(ctx)
+
+    def repairer(block_id, defects):
+        runner = holder["runner"]
+        staging = runner.workspace / REPAIR_DIR / block_id
+        _write_tree(staging, _BROKEN_BLOCK)
+        _write_tree(staging, _FIXED_BLOCK)
+        exam_id = f"exam-{block_id}"
+        so.write_proof(
+            runner.exam_proofs(),
+            so.ExamProof(exam_id, block_id, so.tree_hash(staging), proof_passes, 1.0),
+        )
+        return RepairResult(block_id, True, exam_id=exam_id, exam_score=1.0)
+
+    def installer(result, defects):
+        ws = holder["runner"].workspace
+        lock = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+        return sp.install_repair(
+            ws, lock, result, proofs=holder["runner"].exam_proofs(), defects=defects
+        )
+
+    runner, writes = _runner(
+        smoke_blueprint, tmp_path, monkeypatch, verdicts, repairer, installer=installer
+    )
+    runner.roles[BuildRole.CLONER] = cloner
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws, block = runner.workspace, holder["block"]
+    vendored = ws / "vendor" / "blocks" / block
+    saved = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    grade = json.loads((ws / "grade.json").read_text(encoding="utf-8"))
+    (row,) = grade[GRADE_SECTION]
+    notes = _repair_notes(runner)
+    assert [n.payload[STORE_REPAIR_KEY] for n in notes] == [block]
+    assert len(writes) == 1 and _grader_reworks(runner) == []
+    if proof_passes:
+        staged = so.tree_hash(ws / REPAIR_DIR / block)
+        assert so.tree_hash(vendored) == staged
+        assert saved[so.OVERRIDES_KEY][block]["override_hash"] == staged
+        assert (row["repaired"], row["not_delivered"]) == (True, [])
+        assert [r["block_id"] for r in sp.filed_proposals(ws)] == [block]
+    else:
+        assert (vendored / "block.py").read_text(encoding="utf-8") == _BROKEN_BLOCK["block.py"]
+        assert so.OVERRIDES_KEY not in saved
+        assert (row["repaired"], tuple(row["not_delivered"])) == (False, holder["bound"])
+        assert "not installed" in notes[0].payload["detail"]
+        assert sp.filed_proposals(ws) == []

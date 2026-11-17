@@ -21,22 +21,33 @@ Every value is read from the lock, the repair and the two trees; nothing names
 a block, product or value.
 
 F-2: the caller's :class:`RepairResult` is not trusted. Acceptance reads the
-exam's proof from the Factory-held directory outside the product (written by
-the repairer, see :func:`store_override.write_proof`) and accepts only when it
-shows this block passing on exactly the staged bytes; the block must be
+exam's signed proof from the build's Factory-held :class:`ProofStore` (the
+repairer writes it, see :func:`store_override.write_proof`). It accepts only
+when that proof shows this block passing on exactly the staged bytes, and the
+copy replaced is the one the Factory recorded at CLONER. The block must be
 vendored at ``vendor/blocks/<id>``. Every check runs before anything is
-written; the proposal is filed (atomically) first and only then is the
-override written into the lock, so a refusal or a failed filing leaves the
-lock untouched.
+written. The proposal is filed (atomically) first and only then is the
+override written into the lock and the lock saved to the product's
+``blocks.lock.json`` (atomically), so a refusal or a failed filing leaves the
+lock untouched; if recording or saving the override fails after filing, the
+row is withdrawn.
+
+F-2 (grader 20:30Z): this is compensation, not a transaction. A crash between
+filing and saving leaves a filed row with no override behind it. The retry is
+the repair: the same repair has the same proposal id, so filing it again files
+nothing new, and the retry records and saves the override. A retry of an
+accept that already completed changes nothing.
 A corrupt proposals line is skipped, not fatal.
 
 F-3: :func:`install_repair` is the installer :func:`store_repair.settle`
 calls. It accepts the repair (above) against a trial copy of the lock, puts
 the staged repair in place of the vendored copy and re-runs the lock check on
 the product as it now stands. Only when that check passes, with this block
-counted as a recorded override, is the override written into the caller's
-lock. Otherwise the vendored copy is restored, a proposal row this call filed
-is withdrawn and the reason is returned.
+counted as a recorded override, is the override in the caller's lock and in
+the product's saved ``blocks.lock.json``. Otherwise, and on any exception
+after it starts, the partial copy is removed, the vendored copy restored, the
+saved lock put back byte for byte, a proposal row this call filed withdrawn,
+and the reason returned.
 """
 
 from __future__ import annotations
@@ -54,8 +65,8 @@ from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence,
 from app.factory.build.store_override import (
     OVERRIDES_KEY,
     VENDOR_BLOCKS,
-    VENDORED_HASH_KEY,
     OverrideRecord,
+    ProofStore,
     StoreDefect,
     is_inside,
     proof_refusal,
@@ -64,6 +75,7 @@ from app.factory.build.store_override import (
     tree_hash,
     vendored_at,
     vendored_path,
+    vendored_record,
     verify_vendored,
 )
 from app.factory.build.store_repair import RepairResult
@@ -73,6 +85,8 @@ from app.factory.build.store_repair_exam import REPAIR_DIR
 PROPOSALS_FILE = ("docs", "store_upgrade_proposals.jsonl")
 #: A Store block's directory in the Store (the Carry-Back intake's block path).
 STORE_BLOCK_DIR = "block_registry"
+#: The product's lock, where an accepted override is saved.
+LOCK_FILE = "blocks.lock.json"
 #: The reason an accepted repair's override is recorded with.
 REPAIR_REASON = "Store block defect repaired under its exam"
 #: Suffix of the vendored copy kept aside while a repair is installed (F-3).
@@ -196,24 +210,6 @@ def filed_proposals(workspace: Path | str) -> List[Dict[str, Any]]:
     return rows
 
 
-def _write_rows(workspace: Path | str, rows: Sequence[Mapping[str, Any]]) -> None:
-    path = proposals_path(workspace)
-    text = "".join(json.dumps(dict(r), sort_keys=True, default=str) + "\n" for r in rows)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
-
-
-def withdraw_proposal(workspace: Path | str, proposal_id: str) -> bool:
-    """F-3: remove the row ``proposal_id``. False when it is not filed."""
-    rows = filed_proposals(workspace)
-    kept = [row for row in rows if row.get("proposal_id") != proposal_id]
-    if len(kept) == len(rows):
-        return False
-    _write_rows(workspace, kept)
-    return True
-
-
 def file_proposal(workspace: Path | str, proposal: StoreProposal) -> bool:
     """Append ``proposal`` once. False when the same proposal is already filed."""
     if any(row.get("proposal_id") == proposal.proposal_id for row in filed_proposals(workspace)):
@@ -230,22 +226,68 @@ def file_proposal(workspace: Path | str, proposal: StoreProposal) -> bool:
     return True
 
 
+def _write_rows(workspace: Path | str, rows: Sequence[Mapping[str, Any]]) -> None:
+    path = proposals_path(workspace)
+    text = "".join(json.dumps(dict(r), sort_keys=True, default=str) + "\n" for r in rows)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def withdraw_proposal(workspace: Path | str, proposal_id: str) -> bool:
+    """Remove the row ``proposal_id``. False when it is not filed."""
+    rows = filed_proposals(workspace)
+    kept = [row for row in rows if row.get("proposal_id") != proposal_id]
+    if len(kept) == len(rows):
+        return False
+    _write_rows(workspace, kept)
+    return True
+
+
+def save_lock(workspace: Path | str, lock: Mapping[str, Any]) -> Path:
+    """Write ``lock`` to the product's ``blocks.lock.json``, atomically."""
+    path = Path(workspace) / LOCK_FILE
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(dict(lock), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def _saved_override(workspace: Path | str, record: OverrideRecord) -> bool:
+    """True when the product's saved lock already holds exactly ``record``."""
+    try:
+        saved = json.loads((Path(workspace) / LOCK_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    overrides = saved.get(OVERRIDES_KEY) if isinstance(saved, Mapping) else None
+    return isinstance(overrides, Mapping) and overrides.get(record.block_id) == record.to_dict()
+
+
 def accept_repair(
     workspace: Path | str,
     lock: MutableMapping[str, Any],
     result: RepairResult,
     *,
-    build_id: str,
-    proofs_dir: Path | str,
+    proofs: Optional[ProofStore],
     defects: Sequence[StoreDefect] = (),
 ) -> StoreProposal:
     """R3 + R6: record the passed repair as the block's override and file its
     upgrade proposal, in one step. A repair that did not pass its exam, as the
-    Factory-held proof in ``proofs_dir`` shows, is neither recorded nor filed."""
+    Factory-held, signed proof in ``proofs`` shows for this build, is neither
+    recorded nor filed. The proposal names the build of ``proofs``.
+
+    The override is saved to the product's lock on disk. A refusal or a
+    failed filing leaves the lock untouched; a failure in recording or saving
+    the override after filing restores the lock and withdraws the row, unless
+    the saved lock already holds this override (an earlier accept completed).
+    Idempotent: retrying after a crash between filing and saving files
+    nothing twice and completes the override."""
     if result.passed is not True or not result.exam_id:
         raise ProposalError(f"repair of {result.block_id!r} did not pass its exam: nothing to file")
+    if proofs is None:
+        raise ProposalError("the Factory holds no proof store: nothing to file")
     root = Path(workspace)
-    if is_inside(proofs_dir, root):
+    if is_inside(proofs.root, root):
         raise ProposalError("exam proofs are held inside the product tree: nothing to file")
     block_id = result.block_id
     entry = (lock.get("blocks") or {}).get(block_id)
@@ -256,11 +298,13 @@ def accept_repair(
     staging = root / REPAIR_DIR / block_id
     if not staging.is_dir():
         raise ProposalError(f"repair of {block_id!r}: no staged repair at {REPAIR_DIR}/{block_id}")
-    replaces = str(entry.get(VENDORED_HASH_KEY) or "")
+    replaces = (vendored_record(proofs) or {}).get(block_id, "")
     if not replaces:
-        raise ProposalError(f"repair of {block_id!r}: no recorded hash of the vendored copy")
+        raise ProposalError(
+            f"repair of {block_id!r}: the Factory holds no signed record of the vendored copy"
+        )
     override_hash = tree_hash(staging)
-    proof = read_proof(proofs_dir, result.exam_id)
+    proof = read_proof(proofs, result.exam_id)
     why = proof_refusal(proof, block_id, override_hash)
     if why is not None:
         raise ProposalError(f"repair of {why}")
@@ -282,13 +326,67 @@ def accept_repair(
         override_hash=override_hash,
         exam_id=result.exam_id,
         exam_score=getattr(proof, "score", None),
-        build_id=str(build_id or ""),
+        build_id=proofs.build_id,
         patch=store_patch(root.joinpath(*VENDOR_BLOCKS, block_id), staging, block_id),
         defects=_defect_rows(defects),
     )
+    previous = lock.get(OVERRIDES_KEY)
+    before = dict(previous) if isinstance(previous, Mapping) else None
     file_proposal(root, proposal)
-    record_override(lock, record)
+    try:
+        record_override(lock, record, vendored_hash=replaces)
+        save_lock(root, lock)
+    except BaseException:
+        if before is None:
+            lock.pop(OVERRIDES_KEY, None)
+        else:
+            lock[OVERRIDES_KEY] = before
+        if not _saved_override(root, record):
+            withdraw_proposal(root, proposal.proposal_id)
+        raise
     return proposal
+
+
+def _read_bytes(path: Path) -> Optional[bytes]:
+    """The file's bytes, or None when there is no such file."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _put_back_lock(root: Path, saved: Optional[bytes]) -> None:
+    """The product's saved lock as it was before the install began."""
+    path = root / LOCK_FILE
+    if saved is None:
+        path.unlink(missing_ok=True)
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(saved)
+    os.replace(tmp, path)
+
+
+def _undo_install(
+    root: Path,
+    vendored: Path,
+    backup: Path,
+    *,
+    moved: bool,
+    saved_lock: Optional[bytes],
+    proposal_id: Optional[str],
+    filed_before: set,
+) -> None:
+    """F-3: the product as it was before :func:`install_repair` began: the
+    partial copy removed and the vendored copy restored (when it was moved
+    aside), the saved lock put back, and a proposal row this call filed
+    withdrawn."""
+    if moved:
+        if vendored.exists():
+            shutil.rmtree(vendored)
+        os.replace(backup, vendored)
+    _put_back_lock(root, saved_lock)
+    if proposal_id and proposal_id not in filed_before:
+        withdraw_proposal(root, proposal_id)
 
 
 def install_repair(
@@ -296,42 +394,63 @@ def install_repair(
     lock: MutableMapping[str, Any],
     result: RepairResult,
     *,
-    build_id: str,
-    proofs_dir: Path | str,
+    proofs: Optional[ProofStore],
     defects: Sequence[StoreDefect] = (),
 ) -> Optional[str]:
     """F-3: install the passed repair of ``result.block_id`` and record it.
 
     None when the staged repair now stands in place of the vendored copy, its
-    override is in ``lock`` and the lock check passes with this block counted
-    as overridden. Otherwise the reason, with the vendored copy, ``lock`` and
-    the proposals file as they were."""
+    override is in ``lock`` and in the product's saved lock, and the lock
+    check passes with this block counted as overridden. Otherwise the reason,
+    with the vendored copy, ``lock``, the saved lock and the proposals file as
+    they were. Nothing raised inside escapes: it is undone and returned."""
     root = Path(workspace)
     block_id = result.block_id
-    trial = copy.deepcopy(dict(lock))
-    filed_before = {row.get("proposal_id") for row in filed_proposals(root)}
-    try:
-        proposal = accept_repair(
-            root, trial, result, build_id=build_id, proofs_dir=proofs_dir, defects=defects
-        )
-    except ProposalError as exc:
-        return str(exc)
     vendored = root.joinpath(*VENDOR_BLOCKS, block_id)
     backup = vendored.with_name(vendored.name + INSTALL_BACKUP_SUFFIX)
-    if backup.exists():
-        shutil.rmtree(backup)
-    os.replace(vendored, backup)
-    shutil.copytree(
-        root / REPAIR_DIR / block_id, vendored, ignore=shutil.ignore_patterns("__pycache__")
+    trial = copy.deepcopy(dict(lock))
+    before = copy.deepcopy(lock.get(OVERRIDES_KEY))
+    had_overrides = OVERRIDES_KEY in lock
+    saved_lock = _read_bytes(root / LOCK_FILE)
+    filed_before = {row.get("proposal_id") for row in filed_proposals(root)}
+    proposal_id: Optional[str] = None
+    moved = False
+    why: Optional[str] = None
+    try:
+        try:
+            proposal = accept_repair(root, trial, result, proofs=proofs, defects=defects)
+        except ProposalError as exc:
+            why = str(exc)
+        else:
+            proposal_id = proposal.proposal_id
+            if backup.exists():
+                shutil.rmtree(backup)
+            os.replace(vendored, backup)
+            moved = True
+            shutil.copytree(
+                root / REPAIR_DIR / block_id, vendored, ignore=shutil.ignore_patterns("__pycache__")
+            )
+            check = verify_vendored(root, trial, proofs=proofs)
+            if check.ok and block_id in check.overridden:
+                lock.setdefault(OVERRIDES_KEY, {})[block_id] = trial[OVERRIDES_KEY][block_id]
+                save_lock(root, lock)
+                shutil.rmtree(backup)
+                return None
+            refused = "; ".join(check.refused) or f"{block_id}: not counted as a recorded override"
+            why = f"installed repair failed the lock check: {refused}"
+    except Exception as exc:  # noqa: BLE001 -- any failure midway is undone and named
+        why = f"install failed and was undone ({type(exc).__name__})"
+    if had_overrides:
+        lock[OVERRIDES_KEY] = before
+    else:
+        lock.pop(OVERRIDES_KEY, None)
+    _undo_install(
+        root,
+        vendored,
+        backup,
+        moved=moved,
+        saved_lock=saved_lock,
+        proposal_id=proposal_id,
+        filed_before=filed_before,
     )
-    check = verify_vendored(root, trial, proofs_dir=proofs_dir)
-    if not check.ok or block_id not in check.overridden:
-        shutil.rmtree(vendored)
-        os.replace(backup, vendored)
-        if proposal.proposal_id not in filed_before:
-            withdraw_proposal(root, proposal.proposal_id)
-        why = "; ".join(check.refused) or f"{block_id}: not counted as a recorded override"
-        return f"installed repair failed the lock check: {why}"
-    shutil.rmtree(backup)
-    lock.setdefault(OVERRIDES_KEY, {})[block_id] = trial[OVERRIDES_KEY][block_id]
-    return None
+    return why
