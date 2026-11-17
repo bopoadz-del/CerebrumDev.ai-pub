@@ -244,3 +244,66 @@ def test_only_the_writer_is_staged(tmp_path, role):
     runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "volume" / "build")
     assert runner._staging_for(role) is None
     assert runner._staging_for(BuildRole.WRITER) is not None
+
+
+# -- F-2 (grader 21:25Z): an unusable proofs directory refuses, never crashes --
+
+
+def _unusable_reason(name: str) -> str:
+    return f"the exam proofs directory is not usable ({name})"
+
+
+@pytest.mark.parametrize("below_file", ["", "deeper/still"])
+def test_an_unwritable_proofs_directory_ends_the_build_refused_not_crashed(
+    tmp_path, stub_coder, monkeypatch, below_file
+):
+    # A path through a regular file cannot be created on any OS: writing the
+    # vendored record there raises OSError at the end of CLONER.
+    blocker = tmp_path / "factory-data-is-a-file"
+    blocker.write_text("not a directory\n", encoding="utf-8")
+    monkeypatch.setenv(so.PROOFS_DIR_ENV, str(blocker / below_file if below_file else blocker))
+    product = tmp_path / "volume" / "build"
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+
+    outcome = runner.run()
+
+    assert not outcome.ok
+    assert runner.exam_proofs() is None
+    reason = runner._exam_proofs_refusal
+    # FileExistsError or NotADirectoryError, by OS: both are OSError.
+    assert reason in {_unusable_reason(n) for n in ("FileExistsError", "NotADirectoryError")}
+    notes = [
+        e
+        for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and (e.payload or {}).get("vendored_lock") == "unrecorded"
+    ]
+    assert [n.payload["reason"] for n in notes] == [reason]
+    failures = _lock_gate_failures(runner)
+    assert failures and failures[0].payload["findings"][-1] == reason
+
+
+@pytest.mark.parametrize(
+    "crash",
+    [RuntimeError("Could not determine home directory."), PermissionError(13, "denied")],
+    ids=["no-home", "permission"],
+)
+def test_a_proofs_directory_that_cannot_be_resolved_refuses_with_a_plain_reason(
+    tmp_path, stub_coder, monkeypatch, crash
+):
+    def unresolvable(environ=None):
+        raise crash
+
+    monkeypatch.setattr(so, "proofs_base", unresolvable)
+    product = tmp_path / "volume" / "build"
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+
+    outcome = runner.run()
+
+    assert not outcome.ok
+    assert runner.exam_proofs() is None
+    assert runner._exam_proofs_refusal == _unusable_reason(type(crash).__name__)
+    failures = _lock_gate_failures(runner)
+    assert failures and failures[0].payload["findings"] == [
+        so.NO_RECORD,
+        _unusable_reason(type(crash).__name__),
+    ]

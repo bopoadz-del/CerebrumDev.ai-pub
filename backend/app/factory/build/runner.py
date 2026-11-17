@@ -1204,7 +1204,16 @@ class RoleRunner:
                 )
             except store_override.OverrideError as exc:
                 self._exam_proofs_refusal = str(exc)
+            except (OSError, RuntimeError) as exc:
+                self._proofs_unusable(exc)
         return self._exam_proofs_store
+
+    def _proofs_unusable(self, exc: BaseException) -> None:
+        """The proofs directory could not be resolved, created or written:
+        this build keeps no proof store, and the lock gate refuses with this
+        plain reason (the same state as a placement refusal), never a crash."""
+        self._exam_proofs_store = None
+        self._exam_proofs_refusal = f"the exam proofs directory is not usable ({type(exc).__name__})"
 
     def _product_lock(self) -> Optional[Dict[str, Any]]:
         """The product's blocks.lock.json as it is on disk: {} when there is
@@ -1225,24 +1234,29 @@ class RoleRunner:
         from app.factory.build import store_override
 
         store = self.exam_proofs()
-        if store is None:
-            self.ledger.append(
-                EventKind.NOTE,
-                role=BuildRole.CLONER,
-                detail=f"VENDORED LOCK not recorded: {self._exam_proofs_refusal}",
-                payload={"vendored_lock": "unrecorded", "reason": self._exam_proofs_refusal},
-            )
-            return
-        entries = (self._product_lock() or {}).get("blocks") or {}
-        hashes: Dict[str, str] = {}
-        rows: Dict[str, Dict[str, str]] = {}
-        for block_id, entry in entries.items():
-            block_dir = self.workspace.joinpath(*store_override.VENDOR_BLOCKS, block_id)
-            if not isinstance(entry, Mapping) or not block_dir.is_dir():
-                continue
-            hashes[block_id] = store_override.tree_hash(block_dir)
-            rows[block_id] = {k: str(entry.get(k) or "") for k in store_override.LOCK_ROW_FIELDS}
-        store_override.record_vendored(store, hashes, rows=rows)
+        if store is not None:
+            entries = (self._product_lock() or {}).get("blocks") or {}
+            hashes: Dict[str, str] = {}
+            rows: Dict[str, Dict[str, str]] = {}
+            for block_id, entry in entries.items():
+                block_dir = self.workspace.joinpath(*store_override.VENDOR_BLOCKS, block_id)
+                if not isinstance(entry, Mapping) or not block_dir.is_dir():
+                    continue
+                hashes[block_id] = store_override.tree_hash(block_dir)
+                rows[block_id] = {
+                    k: str(entry.get(k) or "") for k in store_override.LOCK_ROW_FIELDS
+                }
+            try:
+                store_override.record_vendored(store, hashes, rows=rows)
+                return
+            except (OSError, RuntimeError) as exc:
+                self._proofs_unusable(exc)
+        self.ledger.append(
+            EventKind.NOTE,
+            role=BuildRole.CLONER,
+            detail=f"VENDORED LOCK not recorded: {self._exam_proofs_refusal}",
+            payload={"vendored_lock": "unrecorded", "reason": self._exam_proofs_refusal},
+        )
 
     def _vendored_lock_gate(self) -> Optional[GateResult]:
         """F-2, the lock gate after every role that follows CLONER: the
