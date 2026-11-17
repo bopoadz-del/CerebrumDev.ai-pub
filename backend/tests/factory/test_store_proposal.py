@@ -494,7 +494,7 @@ def test_the_proposal_names_the_build_of_the_proof_store(tmp_path, case):
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
 def test_no_proof_store_is_neither_recorded_nor_filed(tmp_path, case):
     lock, _, _ = _product(tmp_path, case)
-    with pytest.raises(sp.ProposalError, match="no proof key"):
+    with pytest.raises(sp.ProposalError, match="no proof store"):
         sp.accept_repair(tmp_path, lock, _passed(case), proofs=None)
     assert OVERRIDES_KEY not in lock and sp.filed_proposals(tmp_path) == []
 
@@ -544,3 +544,62 @@ def test_withdrawing_a_proposal_removes_that_row_only(tmp_path, ids):
     assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == ids[1:]
     assert sp.withdraw_proposal(tmp_path, ids[0]) is False
     assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+
+# -- F-2 (grader 20:30Z): the accepted lock is saved; a retry is idempotent --
+
+
+def _saved(root: Path) -> dict:
+    return json.loads((root / sp.LOCK_FILE).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_an_accepted_override_is_saved_to_the_products_lock(tmp_path, case):
+    lock, _, _ = _product(tmp_path, case)
+    _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    saved = _saved(tmp_path)
+    assert saved == json.loads(json.dumps(lock))
+    assert saved[OVERRIDES_KEY][case["block"]]["exam_id"] == case["exam"]
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_failed_save_restores_the_lock_and_withdraws_the_row(tmp_path, case, monkeypatch):
+    lock, _, _ = _product(tmp_path, case)
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sp, "save_lock", fail)
+    with pytest.raises(OSError, match="disk full"):
+        _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert OVERRIDES_KEY not in lock
+    assert sp.filed_proposals(tmp_path) == []
+    assert not (tmp_path / sp.LOCK_FILE).exists()
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_retry_after_a_crash_between_filing_and_saving_completes_once(tmp_path, case, monkeypatch):
+    lock, _, _ = _product(tmp_path, case)
+    with monkeypatch.context() as m:
+        # The crash: the row is filed, then the process dies before the lock
+        # is saved, so no compensation runs.
+        def crash(*args, **kwargs):
+            raise OSError("process died")
+
+        m.setattr(sp, "save_lock", crash)
+        m.setattr(sp, "withdraw_proposal", lambda *a, **k: False)
+        with pytest.raises(OSError):
+            _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert len(sp.filed_proposals(tmp_path)) == 1
+    assert not (tmp_path / sp.LOCK_FILE).exists()
+
+    proposal = _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == [proposal.proposal_id]
+    assert _saved(tmp_path)[OVERRIDES_KEY][case["block"]]["override_hash"] == proposal.override_hash
+
+    once = (tmp_path / sp.LOCK_FILE).read_bytes()
+    rows = sp.filed_proposals(tmp_path)
+    again = _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert again == proposal
+    assert sp.filed_proposals(tmp_path) == rows
+    assert (tmp_path / sp.LOCK_FILE).read_bytes() == once

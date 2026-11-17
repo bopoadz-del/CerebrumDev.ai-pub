@@ -555,7 +555,7 @@ def test_no_proof_store_refuses_the_lock_check(tmp_path, bid):
     _block(tmp_path, bid)
     lock = _lock(tmp_path, bid)
     check = so.verify_vendored(tmp_path, lock, proofs=None)
-    assert check.refused == ("no Factory-held, signed record of the vendored blocks",)
+    assert check.refused == (so.NO_RECORD,)
     assert not check.ok
 
 
@@ -665,14 +665,14 @@ def test_a_proof_store_opens_per_build_under_the_factory_base(tmp_path, build_id
 @pytest.mark.parametrize(
     "build_id, key, base, why",
     [
-        ("build:a", None, "factory", "is not set"),
-        ("build:a", b"", "factory", "is not set"),
         ("  ", _KEY, "factory", "needs the build id"),
+        ("  ", None, "factory", "needs the build id"),
         ("build:a", _KEY, "vol", "on the build volume"),
+        ("build:a", None, "vol", "on the build volume"),
     ],
-    ids=["no-key", "empty-key", "no-build", "on-the-volume"],
+    ids=["no-build", "no-build-no-key", "on-the-volume", "on-the-volume-no-key"],
 )
-def test_a_proof_store_is_refused_without_key_build_or_safe_place(tmp_path, build_id, key, base, why):
+def test_a_proof_store_is_refused_without_build_or_safe_place(tmp_path, build_id, key, base, why):
     workspace = tmp_path / "vol" / "build"
     workspace.mkdir(parents=True)
     with pytest.raises(so.OverrideError, match=why):
@@ -686,3 +686,76 @@ def test_the_proofs_base_is_the_factory_setting_or_the_factory_home(env, expecte
         assert base == so.Path(expected)
     else:
         assert base == so.Path.home() / ".cerebrum-factory" / "exam_proofs"
+
+
+# -- F-2 (grader 20:30Z): no key does not mean open --------------------------
+
+
+def _keyless(root: Path) -> so.ProofStore:
+    return _proofs(root, key=None)
+
+
+@pytest.mark.parametrize("key", [None, b""])
+def test_a_proof_store_opens_without_a_key(tmp_path, key):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    store = so.open_proof_store("build:a", workspace, key=key, base=tmp_path / "factory")
+    assert store.key is None
+    assert so.is_inside(store.root, tmp_path / "factory")
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_no_key_and_an_edit_to_a_vendored_block_is_refused(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    store = _keyless(tmp_path)
+    so.record_vendored(store, {bid: lock["blocks"][bid][so.VENDORED_HASH_KEY]},
+                       rows={bid: {"commit": "c0ffee", "path": f"vendor/blocks/{bid}"}})
+    _repair(tmp_path, bid)
+    check = so.verify_vendored(tmp_path, lock, proofs=store)
+    assert not check.ok
+    assert check.refused == (
+        f"{bid}: differs from the vendored Store copy and no override is recorded",
+    )
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_no_key_and_no_edit_passes(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    store = _keyless(tmp_path)
+    so.record_vendored(store, {bid: lock["blocks"][bid][so.VENDORED_HASH_KEY]},
+                       rows={bid: {"commit": "c0ffee", "path": f"vendor/blocks/{bid}"}})
+    check = so.verify_vendored(tmp_path, lock, proofs=store)
+    assert check.ok and check.unchanged == (bid,)
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_no_key_makes_an_override_impossible(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    store = _keyless(tmp_path)
+    so.record_vendored(store, {bid: lock["blocks"][bid][so.VENDORED_HASH_KEY]},
+                       rows={bid: {"commit": "c0ffee", "path": f"vendor/blocks/{bid}"}})
+    _repair(tmp_path, bid)
+    proof = so.ExamProof("exam-1", bid, so.tree_hash(tmp_path / "vendor" / "blocks" / bid), True, 1.0)
+    with pytest.raises(so.OverrideError, match="is not set"):
+        so.write_proof(store, proof)
+    # A proof planted by hand in the keyless store still proves nothing.
+    so._write_signed(store, so._proof_name("exam-1"), so.EXAM_KIND, so.asdict(proof))
+    assert so.read_proof(store, "exam-1") is None
+    lock[so.OVERRIDES_KEY] = {bid: _record(tmp_path, lock, bid).to_dict()}
+    assert so.verify_vendored(tmp_path, lock, proofs=store).refused == (
+        f"{bid}: no Factory-held proof of its exam",
+    )
+
+
+@pytest.mark.parametrize("writer_key, reader_key", [(None, _KEY), (_KEY, None)])
+def test_a_record_kept_under_one_key_setting_is_not_read_under_the_other(tmp_path, writer_key, reader_key):
+    _block(tmp_path, "blk_a")
+    lock = _lock(tmp_path, "blk_a")
+    so.record_vendored(_proofs(tmp_path, key=writer_key), {"blk_a": "h"})
+    assert so.vendored_record(_proofs(tmp_path, key=reader_key)) is None
+    assert so.verify_vendored(tmp_path, lock, proofs=_proofs(tmp_path, key=reader_key)).refused == (
+        so.NO_RECORD,
+    )

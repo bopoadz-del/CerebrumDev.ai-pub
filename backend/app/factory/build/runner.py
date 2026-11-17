@@ -1157,13 +1157,39 @@ class RoleRunner:
         )
         return "build:" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:24]
 
+    def _staging_for(self, role: BuildRole) -> Optional[Path]:
+        """The staging tree ``role`` writes into, or None when it writes the
+        product directory itself (only the WRITER is staged)."""
+        if role is not BuildRole.WRITER:
+            return None
+        return self.workspace.parent / f".{self.workspace.name}.staging-{role.value.lower()}"
+
+    def agent_rw_roots(self) -> Tuple[Path, ...]:
+        """Every root the coding agent's confinement may be asked to grant in
+        this build, for any role: the working directory each role runs in
+        plus the extras the spawn passes (``coder_session.agent_rw_extras``),
+        before confinement narrows them."""
+        from types import SimpleNamespace
+
+        from app.factory.build.coder_session import agent_rw_extras
+
+        roots: List[Path] = []
+        for role in BuildRole:
+            cwd = self._staging_for(role) or self.workspace
+            ws = SimpleNamespace(workspace=cwd, destination=self.workspace)
+            roots.extend([cwd, *agent_rw_extras(ws)])
+        return tuple(dict.fromkeys(roots))
+
     def exam_proofs(self) -> Any:
         """F-2: this build's proof store, opened once by the orchestrator.
 
         It sits in the Factory data directory, off the build volume and
-        outside every root the coding agent may write, and it is signed with
-        the key this process took from its environment at start. None, with
-        the reason kept, when there is no key or no safe place."""
+        outside every root the coding agent may write (:meth:`agent_rw_roots`).
+        It opens with or without a key: with the key this process took from
+        its environment at start its records are signed and exams can be
+        proven; with none, the vendored record is still kept and overrides
+        are impossible. None, with the reason kept, when there is no safe
+        place."""
         if not self._exam_proofs_opened:
             from app.factory.build import store_override
 
@@ -1174,7 +1200,7 @@ class RoleRunner:
                     self.workspace,
                     key=store_override.take_proof_key(),
                     base=store_override.proofs_base(),
-                    rw_roots=(self.workspace,),
+                    rw_roots=self.agent_rw_roots(),
                 )
             except store_override.OverrideError as exc:
                 self._exam_proofs_refusal = str(exc)
@@ -1222,9 +1248,10 @@ class RoleRunner:
         """F-2, the lock gate after every role that follows CLONER: the
         vendored blocks and the lock's rows are what the Factory cloned, and
         every override has this build's signed, passing exam proof. None when
-        it holds. With no proof store the bytes cannot be checked against a
-        Factory record (CLONER's ledger note says why), but any override row
-        is still refused: nothing could have proven it."""
+        it holds. With no key the record is still checked, so an unrecorded
+        change is refused and an override cannot be proven. A build that
+        finds no record (no safe place for one, or a resumed build whose
+        record is gone) is refused with that reason."""
         from app.factory.build import store_override
 
         lock = self._product_lock()
@@ -1232,13 +1259,9 @@ class RoleRunner:
             refused = ["blocks.lock.json is not a JSON object"]
         else:
             store = self.exam_proofs()
-            if store is None:
-                refused = [
-                    f"{block_id}: override recorded, but the Factory holds no proof key"
-                    for block_id in sorted(lock.get(store_override.OVERRIDES_KEY) or {})
-                ]
-            else:
-                refused = list(store_override.verify_vendored(self.workspace, lock, proofs=store).refused)
+            refused = list(store_override.verify_vendored(self.workspace, lock, proofs=store).refused)
+            if store is None and self._exam_proofs_refusal:
+                refused.append(self._exam_proofs_refusal)
         if not refused:
             return None
         return GateResult(
@@ -1443,11 +1466,7 @@ class RoleRunner:
         # beside routes.py from another. Observed live as
         # "no such table: field_defect". Other roles append rather than
         # replace, so a partial pass is recoverable by re-running them.
-        staging = (
-            self.workspace.parent / f".{self.workspace.name}.staging-{role.value.lower()}"
-            if role is BuildRole.WRITER
-            else None
-        )
+        staging = self._staging_for(role)
         resumed_pass = False
         if staging is not None and staging.exists():
             # A staging tree at phase start means the previous WRITER pass

@@ -114,6 +114,28 @@ def _grader_off_by_default():
         os.environ["FACTORY_GRADER"] = previous
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _exam_proofs_off_the_home():
+    """The build orchestrator keeps its record of the vendored blocks in the
+    Factory data directory (FACTORY_EXAM_PROOFS_DIR, default under the home
+    directory) on every build, with or without a proof key. The suite keeps
+    it in a temp directory of its own, never the runner's real home. It is
+    not under pytest's base temp: a test product at ``tmp_path`` has that
+    base as its build volume, where proofs are refused."""
+    import shutil
+    import tempfile
+
+    previous = os.environ.get("FACTORY_EXAM_PROOFS_DIR")
+    holder = tempfile.mkdtemp(prefix="factory-exam-proofs-")
+    os.environ["FACTORY_EXAM_PROOFS_DIR"] = holder
+    yield
+    shutil.rmtree(holder, ignore_errors=True)
+    if previous is None:
+        os.environ.pop("FACTORY_EXAM_PROOFS_DIR", None)
+    else:
+        os.environ["FACTORY_EXAM_PROOFS_DIR"] = previous
+
+
 @pytest.fixture
 def client() -> TestClient:
     """Shared FastAPI test client."""

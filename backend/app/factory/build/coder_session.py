@@ -2775,6 +2775,20 @@ def _write_receipt(root: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def agent_rw_extras(workspace: Any) -> List[Path]:
+    """The roots, beside its working directory, that the coding agent's
+    confinement is asked to grant for one role workspace: the product
+    destination and the tree its writes land in. The one source for the
+    agent's spawn and for the Factory's check that what it holds (the exam
+    proofs, F-2) sits outside every root the agent may write."""
+    extras: List[Path] = []
+    for attr in ("destination", "workspace"):
+        val = getattr(workspace, attr, None)
+        if isinstance(val, (str, Path)):
+            extras.append(Path(val))
+    return extras
+
+
 def _workspace_root(ctx: Any) -> Path:
     ws = getattr(ctx, "workspace", None)
     if ws is None:
@@ -3071,12 +3085,7 @@ def _run_cli_session(
     }
     if stdin_payload is not None:
         popen_kw["stdin"] = subprocess.PIPE
-    rw_extra = []
-    workspace = getattr(ctx, "workspace", None)
-    for attr in ("destination", "workspace"):
-        val = getattr(workspace, attr, None)
-        if isinstance(val, (str, Path)):
-            rw_extra.append(Path(val))
+    rw_extra = agent_rw_extras(getattr(ctx, "workspace", None))
     try:
         popen_kw.update(
             confinement_popen_kwargs(root, str(cmd[0]) if cmd else "", rw_extra)

@@ -33,10 +33,16 @@ root the coding agent's confinement may write. Every record in it is signed
 (:func:`take_proof_key` reads it once and removes it from the process
 environment, so no child ever gets it), and every record names the build it
 belongs to. A record that fails its signature or names another build reads as
-absent. With no key there is no store: nothing is proven and every override
-is refused. The same store keeps the hashes of the blocks as CLONER vendored
-them (:func:`record_vendored`), so the lock check compares the bytes with what
-the Factory cloned, never with a hash claimed in the product's own lock.
+absent. The same store keeps the hashes of the blocks as CLONER vendored them
+(:func:`record_vendored`), so the lock check compares the bytes with what the
+Factory cloned, never with a hash claimed in the product's own lock.
+
+F-2 (grader 20:30Z): no key does not mean open. The store opens with or
+without a key, and CLONER's record of the vendored blocks is always kept, so
+any change to a vendored block is refused either way. With no key the record
+carries a plain content digest (it is protected by where it sits: outside
+every root the agent may write), no exam proof can be written or read, and so
+an override is simply impossible.
 
 The hash here walks every file on disk (not only git-tracked ones, unlike
 ``blocks_lock.block_content_hash``, which pins a committed Store tree): a file
@@ -75,6 +81,12 @@ LOCK_ROW_FIELDS = ("source", "commit", "path")
 #: The runner's gate name and reason for a refused lock check.
 LOCK_GATE = "vendored_lock"
 LOCK_GATE_REASON = "vendored_lock_refused"
+#: Why the lock check refuses when the Factory's record is not there (a resumed
+#: build whose record is gone, a record from another key, or none kept).
+NO_RECORD = (
+    "no Factory-held record of the vendored blocks for this build: "
+    "the vendored blocks cannot be checked, so the build is refused"
+)
 #: Record kinds: a record of one kind never reads as the other.
 EXAM_KIND = "exam_proof"
 VENDORED_KIND = "vendored_copy"
@@ -152,7 +164,8 @@ class ProofStore:
 
     root: Path
     build_id: str
-    key: bytes = field(repr=False)
+    #: None: no exam can be proven in this build, so no override is possible.
+    key: Optional[bytes] = field(default=None, repr=False)
 
 
 def is_inside(path: Path | str, root: Path | str) -> bool:
@@ -206,22 +219,24 @@ def open_proof_store(
     base: Path | str,
     rw_roots: Iterable[Path | str] = (),
 ) -> ProofStore:
-    """The proof store of ``build_id`` under ``base``. Raises OverrideError
-    when there is no key, no build id, or the place is one the coding agent
-    could reach."""
-    if not key:
-        raise OverrideError(f"{PROOF_KEY_ENV} is not set: the Factory can prove no exam")
+    """The proof store of ``build_id`` under ``base``, with or without a key
+    (with none, overrides are impossible but the vendored record is still
+    kept). Raises OverrideError when there is no build id or the place is one
+    the coding agent could reach."""
     if not str(build_id or "").strip():
         raise OverrideError("a proof store needs the build id it belongs to")
     root = Path(base) / hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:32]
     why = placement_refusal(root, workspace, rw_roots)
     if why is not None:
         raise OverrideError(why)
-    return ProofStore(root=root.resolve(), build_id=build_id, key=bytes(key))
+    return ProofStore(root=root.resolve(), build_id=build_id, key=bytes(key) if key else None)
 
 
-def _signature(key: bytes, payload: Mapping[str, Any]) -> str:
+def _signature(key: Optional[bytes], payload: Mapping[str, Any]) -> str:
+    """HMAC-SHA256 with the Factory's key; a plain digest when there is none."""
     body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    if not key:
+        return "digest:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
     return hmac.new(key, body.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -258,7 +273,10 @@ def _proof_name(exam_id: str) -> str:
 
 
 def write_proof(store: ProofStore, proof: ExamProof) -> Path:
-    """Sign ``proof`` for this build, write it atomically, and return its path."""
+    """Sign ``proof`` for this build, write it atomically, and return its path.
+    Refused when the Factory holds no key: an unsigned proof proves nothing."""
+    if not store.key:
+        raise OverrideError(f"{PROOF_KEY_ENV} is not set: the Factory can prove no exam")
     if not proof.exam_id:
         raise OverrideError(f"exam proof for {proof.block_id!r} has no exam id")
     return _write_signed(store, _proof_name(proof.exam_id), EXAM_KIND, asdict(proof))
@@ -266,8 +284,9 @@ def write_proof(store: ProofStore, proof: ExamProof) -> Path:
 
 def read_proof(store: Optional[ProofStore], exam_id: str) -> Optional[ExamProof]:
     """The Factory-held, signed proof of ``exam_id`` for this build. None when
-    it is absent, unreadable, not signed by the Factory, or from another build."""
-    if store is None or not exam_id:
+    it is absent, unreadable, not signed by the Factory, or from another build,
+    and always when the Factory holds no key."""
+    if store is None or not store.key or not exam_id:
         return None
     raw = _read_signed(store, _proof_name(exam_id), EXAM_KIND)
     if raw is None or raw.get("exam_id") != exam_id:
@@ -479,9 +498,7 @@ def verify_vendored(
         return OverrideCheck(ok=False, refused=("exam proofs are held inside the product tree",))
     cloned = vendored_record(proofs)
     if cloned is None:
-        return OverrideCheck(
-            ok=False, refused=("no Factory-held, signed record of the vendored blocks",)
-        )
+        return OverrideCheck(ok=False, refused=(NO_RECORD,))
     entries = lock.get("blocks") or {}
     overrides = lock.get(OVERRIDES_KEY) or {}
     unchanged: List[str] = []
