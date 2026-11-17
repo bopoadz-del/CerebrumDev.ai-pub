@@ -19,6 +19,16 @@ The patch is written against the block's path in the Store
 (``python -m carry_back classify --diff``) reads it as a block-level fix.
 Every value is read from the lock, the repair and the two trees; nothing names
 a block, product or value.
+
+F-2: the caller's :class:`RepairResult` is not trusted. Acceptance reads the
+exam's proof from the Factory-held directory outside the product (written by
+the repairer, see :func:`store_override.write_proof`) and accepts only when it
+shows this block passing on exactly the staged bytes; the block must be
+vendored at ``vendor/blocks/<id>``. Every check runs before anything is
+written; the proposal is filed (atomically) first and only then is the
+override written into the lock, so a refusal or a failed filing leaves the
+lock untouched.
+A corrupt proposals line is skipped, not fatal.
 """
 
 from __future__ import annotations
@@ -26,6 +36,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
@@ -35,8 +46,13 @@ from app.factory.build.store_override import (
     VENDORED_HASH_KEY,
     OverrideRecord,
     StoreDefect,
+    is_inside,
+    proof_refusal,
+    read_proof,
     record_override,
     tree_hash,
+    vendored_at,
+    vendored_path,
 )
 from app.factory.build.store_repair import RepairResult
 from app.factory.build.store_repair_exam import REPAIR_DIR
@@ -148,14 +164,21 @@ def proposals_path(workspace: Path | str) -> Path:
 
 
 def filed_proposals(workspace: Path | str) -> List[Dict[str, Any]]:
-    """Every proposal row filed in this product, in filing order."""
+    """Every proposal row filed in this product, in filing order. A line that
+    is not a JSON object (a torn or hand-edited line) is skipped."""
     path = proposals_path(workspace)
     if not path.is_file():
         return []
     rows: List[Dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
     return rows
 
 
@@ -165,8 +188,13 @@ def file_proposal(workspace: Path | str, proposal: StoreProposal) -> bool:
         return False
     path = proposals_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(proposal.row(), sort_keys=True, default=str) + "\n")
+    before = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if before and not before.endswith("\n"):
+        before += "\n"
+    line = json.dumps(proposal.row(), sort_keys=True, default=str) + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(before + line, encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
     return True
 
 
@@ -176,18 +204,23 @@ def accept_repair(
     result: RepairResult,
     *,
     build_id: str,
+    proofs_dir: Path | str,
     defects: Sequence[StoreDefect] = (),
 ) -> StoreProposal:
     """R3 + R6: record the passed repair as the block's override and file its
-    upgrade proposal, in one step. A repair that did not pass its exam is
-    neither recorded nor filed."""
+    upgrade proposal, in one step. A repair that did not pass its exam, as the
+    Factory-held proof in ``proofs_dir`` shows, is neither recorded nor filed."""
     if result.passed is not True or not result.exam_id:
         raise ProposalError(f"repair of {result.block_id!r} did not pass its exam: nothing to file")
     root = Path(workspace)
+    if is_inside(proofs_dir, root):
+        raise ProposalError("exam proofs are held inside the product tree: nothing to file")
     block_id = result.block_id
     entry = (lock.get("blocks") or {}).get(block_id)
     if not isinstance(entry, Mapping):
         raise ProposalError(f"repair of {block_id!r}: the lock vendored no such block")
+    if not vendored_at(entry.get("path"), block_id):
+        raise ProposalError(f"repair of {block_id!r}: not vendored at {vendored_path(block_id)}")
     staging = root / REPAIR_DIR / block_id
     if not staging.is_dir():
         raise ProposalError(f"repair of {block_id!r}: no staged repair at {REPAIR_DIR}/{block_id}")
@@ -195,6 +228,10 @@ def accept_repair(
     if not replaces:
         raise ProposalError(f"repair of {block_id!r}: no recorded hash of the vendored copy")
     override_hash = tree_hash(staging)
+    proof = read_proof(proofs_dir, result.exam_id)
+    why = proof_refusal(proof, block_id, override_hash)
+    if why is not None:
+        raise ProposalError(f"repair of {why}")
     record = OverrideRecord(
         block_id=block_id,
         replaces_hash=replaces,
@@ -204,7 +241,6 @@ def accept_repair(
         exam_passed=True,
         store_commit=str(entry.get("commit") or ""),
     )
-    record_override(lock, record)
     proposal = StoreProposal(
         proposal_id=proposal_id_of(block_id, replaces, override_hash),
         block_id=block_id,
@@ -213,10 +249,11 @@ def accept_repair(
         replaces_hash=replaces,
         override_hash=override_hash,
         exam_id=result.exam_id,
-        exam_score=result.exam_score,
+        exam_score=getattr(proof, "score", None),
         build_id=str(build_id or ""),
         patch=store_patch(root.joinpath(*VENDOR_BLOCKS, block_id), staging, block_id),
         defects=_defect_rows(defects),
     )
     file_proposal(root, proposal)
+    record_override(lock, record)
     return proposal

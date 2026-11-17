@@ -3,6 +3,7 @@ check accepts only a recorded override that passed its exam."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,28 @@ def _repair(root: Path, bid: str) -> None:
     (root / "vendor" / "blocks" / bid / "main.py").write_text(
         "def run(x):\n    return abs(x)\n", encoding="utf-8"
     )
+
+
+def _proofs(root: Path) -> Path:
+    """The Factory-held proofs directory: a sibling of the product, outside it."""
+    return root.parent / (root.name + "-proofs")
+
+
+def _prove(root: Path, bid: str, exam_id: str = "exam-1", **over) -> None:
+    """The Factory's proof that ``bid`` passed ``exam_id`` on its bytes now."""
+    fields = dict(
+        exam_id=exam_id,
+        block_id=bid,
+        examined_hash=so.tree_hash(root / "vendor" / "blocks" / bid),
+        passed=True,
+        score=1.0,
+    )
+    fields.update(over)
+    so.write_proof(_proofs(root), so.ExamProof(**fields))
+
+
+def _verify(root: Path, lock: dict) -> so.OverrideCheck:
+    return so.verify_vendored(root, lock, proofs_dir=_proofs(root))
 
 
 def _record(root: Path, lock: dict, bid: str, **over) -> so.OverrideRecord:
@@ -126,7 +149,7 @@ def test_block_of_path_needs_the_vendor_blocks_prefix(path, expected):
 def test_untouched_vendored_blocks_pass(tmp_path, bids):
     for bid in bids:
         _block(tmp_path, bid)
-    check = so.verify_vendored(tmp_path, _lock(tmp_path, *bids))
+    check = _verify(tmp_path, _lock(tmp_path, *bids))
     assert check.ok
     assert check.unchanged == tuple(sorted(bids))
     assert check.overridden == () and check.refused == ()
@@ -142,7 +165,7 @@ def test_unrecorded_change_to_a_store_block_is_refused(tmp_path, change):
     _block(tmp_path, "blk_b")
     lock = _lock(tmp_path, "blk_a", "blk_b")
     change(tmp_path, "blk_a")
-    check = so.verify_vendored(tmp_path, lock)
+    check = _verify(tmp_path, lock)
     assert not check.ok
     assert check.unchanged == ("blk_b",)
     assert check.refused == (
@@ -154,7 +177,7 @@ def test_a_planted_file_is_a_change_even_if_untracked(tmp_path):
     _block(tmp_path, "blk_a")
     lock = _lock(tmp_path, "blk_a")
     (tmp_path / "vendor" / "blocks" / "blk_a" / "extra.py").write_text("X = 1\n", encoding="utf-8")
-    assert not so.verify_vendored(tmp_path, lock).ok
+    assert not _verify(tmp_path, lock).ok
 
 
 def test_pycache_and_line_endings_are_not_changes(tmp_path):
@@ -164,7 +187,7 @@ def test_pycache_and_line_endings_are_not_changes(tmp_path):
     (d / "__pycache__" / "main.cpython-311.pyc").write_bytes(b"\x00\x01")
     lf = (d / "main.py").read_bytes().replace(b"\r\n", b"\n")
     (d / "main.py").write_bytes(lf.replace(b"\n", b"\r\n"))
-    assert so.verify_vendored(tmp_path, lock).ok
+    assert _verify(tmp_path, lock).ok
 
 
 @pytest.mark.parametrize("repaired, untouched", [("blk_a", "blk_b"), ("blk_b", "blk_a")])
@@ -173,10 +196,11 @@ def test_recorded_override_that_passed_its_exam_is_accepted(tmp_path, repaired, 
     _block(tmp_path, "blk_b")
     lock = _lock(tmp_path, "blk_a", "blk_b")
     _repair(tmp_path, repaired)
+    _prove(tmp_path, repaired)
     row = so.record_override(lock, _record(tmp_path, lock, repaired))
     assert row["exam_passed"] is True and row["store_commit"] == "c0ffee"
     assert row["block_id"] == repaired
-    check = so.verify_vendored(tmp_path, lock)
+    check = _verify(tmp_path, lock)
     assert check.ok
     assert check.overridden == (repaired,)
     assert check.unchanged == (untouched,)
@@ -191,9 +215,10 @@ def test_override_that_drifted_after_its_record_is_refused(tmp_path, drift):
     _block(tmp_path, "blk_a")
     lock = _lock(tmp_path, "blk_a")
     _repair(tmp_path, "blk_a")
+    _prove(tmp_path, "blk_a")
     so.record_override(lock, _record(tmp_path, lock, "blk_a"))
     drift(tmp_path, "blk_a")
-    check = so.verify_vendored(tmp_path, lock)
+    check = _verify(tmp_path, lock)
     assert check.refused == (
         "blk_a: differs from both the vendored copy and its recorded override",
     )
@@ -247,8 +272,9 @@ def test_hand_written_override_rows_are_still_checked(tmp_path, overrides, expec
     _block(tmp_path, "blk_a")
     lock = _lock(tmp_path, "blk_a")
     _repair(tmp_path, "blk_a")
+    _prove(tmp_path, "blk_a")
     lock[so.OVERRIDES_KEY] = overrides(_record(tmp_path, lock, "blk_a").to_dict())
-    check = so.verify_vendored(tmp_path, lock)
+    check = _verify(tmp_path, lock)
     assert check.refused == expected
     assert not check.ok
 
@@ -259,16 +285,16 @@ def test_hand_written_override_rows_are_still_checked(tmp_path, overrides, expec
         ({"path": "vendor/blocks/blk_a"}, ("blk_a: no recorded hash of the vendored copy",)),
         (
             {"path": "vendor/blocks/blk_gone", so.VENDORED_HASH_KEY: "sha256:x"},
-            ("blk_a: vendored copy is missing",),
+            ("blk_a: not vendored at vendor/blocks/blk_a",),
         ),
         ({"commit": "c0ffee"}, ()),
         ("not a mapping", ()),
     ],
-    ids=["no-hash", "missing-copy", "no-path", "not-a-mapping"],
+    ids=["no-hash", "other-path", "no-path", "not-a-mapping"],
 )
 def test_lock_entries_without_a_recorded_hash_or_copy_are_refused(tmp_path, entry, expected):
     _block(tmp_path, "blk_a")
-    check = so.verify_vendored(tmp_path, {"blocks": {"blk_a": entry}})
+    check = _verify(tmp_path, {"blocks": {"blk_a": entry}})
     assert check.refused == expected
     assert check.ok is (not expected)
     assert check.unchanged == ()
@@ -297,3 +323,153 @@ def test_record_round_trips(record):
 )
 def test_record_coerces_exam_passed_strictly(raw, field, expected):
     assert getattr(so.OverrideRecord.from_mapping(raw), field) == expected
+
+
+# --- F-2: the exam's proof is held by the Factory, outside the product --------
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_a_missing_vendored_copy_is_refused(tmp_path, bid):
+    entry = {"path": f"vendor/blocks/{bid}", so.VENDORED_HASH_KEY: "sha256:x"}
+    check = _verify(tmp_path, {"blocks": {bid: entry}})
+    assert check.refused == (f"{bid}: vendored copy is missing",)
+
+
+@pytest.mark.parametrize("path", ["vendor/blocks/other", "src/blk_a", "vendor/blocks/blk_a/sub"])
+def test_a_block_vendored_anywhere_but_its_own_path_is_refused(tmp_path, path):
+    _block(tmp_path, "blk_a")
+    lock = _lock(tmp_path, "blk_a")
+    lock["blocks"]["blk_a"]["path"] = path
+    check = _verify(tmp_path, lock)
+    assert check.refused == ("blk_a: not vendored at vendor/blocks/blk_a",)
+
+
+@pytest.mark.parametrize("path", ["./vendor/blocks/blk_a", r"vendor\blocks\blk_a/"])
+def test_spellings_of_the_vendored_path_are_the_same_path(tmp_path, path):
+    _block(tmp_path, "blk_a")
+    lock = _lock(tmp_path, "blk_a")
+    lock["blocks"]["blk_a"]["path"] = path
+    assert _verify(tmp_path, lock).unchanged == ("blk_a",)
+
+
+def _no_proof(root: Path) -> None:
+    pass
+
+
+def _failed_proof(root: Path) -> None:
+    _prove(root, "blk_a", passed=False)
+
+
+def _other_block_proof(root: Path) -> None:
+    _prove(root, "blk_a", block_id="blk_b")
+
+
+def _other_tree_proof(root: Path) -> None:
+    _prove(root, "blk_a", examined_hash="sha256:not-these-bytes")
+
+
+@pytest.mark.parametrize(
+    "prove, expected",
+    [
+        (_no_proof, "blk_a: no Factory-held proof of its exam"),
+        (_failed_proof, "blk_a: the Factory-held proof does not show it passing its exam"),
+        (_other_block_proof, "blk_a: the Factory-held proof does not show it passing its exam"),
+        (_other_tree_proof, "blk_a: these bytes are not the tree its exam examined"),
+    ],
+    ids=["no-proof", "failed", "other-block", "other-tree"],
+)
+def test_an_override_row_the_factory_holds_no_passing_proof_for_is_refused(
+    tmp_path, prove, expected
+):
+    _block(tmp_path, "blk_a")
+    lock = _lock(tmp_path, "blk_a")
+    _repair(tmp_path, "blk_a")
+    prove(tmp_path)
+    lock[so.OVERRIDES_KEY] = {"blk_a": _record(tmp_path, lock, "blk_a").to_dict()}
+    check = _verify(tmp_path, lock)
+    assert check.refused == (expected,) and not check.ok
+
+
+@pytest.mark.parametrize("exam_id", ["", None])
+def test_an_override_row_with_no_exam_id_is_refused(tmp_path, exam_id):
+    _block(tmp_path, "blk_a")
+    lock = _lock(tmp_path, "blk_a")
+    _repair(tmp_path, "blk_a")
+    path = so._proof_path(_proofs(tmp_path), "")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '{"exam_id": "", "block_id": "blk_a", "passed": true, "examined_hash": "%s"}'
+        % so.tree_hash(tmp_path / "vendor" / "blocks" / "blk_a"),
+        encoding="utf-8",
+    )
+    row = {**_record(tmp_path, lock, "blk_a").to_dict(), "exam_id": exam_id}
+    lock[so.OVERRIDES_KEY] = {"blk_a": row}
+    assert _verify(tmp_path, lock).refused == ("blk_a: recorded override names no exam",)
+
+
+@pytest.mark.parametrize("inside", [".", "docs/proofs"])
+def test_proofs_held_inside_the_product_are_refused(tmp_path, inside):
+    _block(tmp_path, "blk_a")
+    check = so.verify_vendored(tmp_path, _lock(tmp_path, "blk_a"), proofs_dir=tmp_path / inside)
+    assert check.refused == ("exam proofs are held inside the product tree",)
+    assert not check.ok and check.unchanged == ()
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        so.ExamProof("exam:a:1", "blk_a", "sha256:1", True, 1.0),
+        so.ExamProof("exam:b:2", "blk_b", "sha256:2", False, 0.25),
+    ],
+)
+def test_a_proof_reads_back_as_written_and_leaves_no_temp_file(tmp_path, proof):
+    path = so.write_proof(tmp_path, proof)
+    assert so.read_proof(tmp_path, proof.exam_id) == proof
+    assert path.name.endswith(so.PROOF_SUFFIX)
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+@pytest.mark.parametrize("block_id", ["blk_a", "blk_b"])
+def test_a_proof_without_an_exam_id_is_never_written(tmp_path, block_id):
+    with pytest.raises(so.OverrideError, match="has no exam id"):
+        so.write_proof(tmp_path, so.ExamProof("", block_id, "sha256:1", True))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["{torn", "[1, 2]", '{"exam_id": "exam:other", "passed": true}'],
+    ids=["not-json", "not-an-object", "other-exam"],
+)
+def test_an_unreadable_or_foreign_proof_is_no_proof(tmp_path, text):
+    path = so._proof_path(tmp_path, "exam:a:1")
+    path.write_text(text, encoding="utf-8")
+    assert so.read_proof(tmp_path, "exam:a:1") is None
+
+
+@pytest.mark.parametrize("score, read", [(1, 1.0), ("high", None)])
+def test_a_proof_score_is_a_number_or_nothing(tmp_path, score, read):
+    path = so._proof_path(tmp_path, "exam:a:1")
+    path.write_text(
+        '{"exam_id": "exam:a:1", "passed": "yes", "score": %s}' % json.dumps(score),
+        encoding="utf-8",
+    )
+    proof = so.read_proof(tmp_path, "exam:a:1")
+    assert proof.score == read and proof.passed is False and proof.block_id == ""
+
+
+@pytest.mark.parametrize(
+    "inner, inside",
+    [("a", True), ("a/b/c", True), ("a/b/../c", True), (".", False), ("a-proofs", False)],
+)
+def test_is_inside_reads_the_tree_not_the_name(tmp_path, inner, inside):
+    assert so.is_inside(tmp_path / inner, tmp_path / "a") is inside
+
+
+@pytest.mark.parametrize("block_id", ["blk_a", "blk_b"])
+def test_an_empty_exam_id_reads_no_proof_even_if_a_file_claims_it(tmp_path, block_id):
+    path = so._proof_path(tmp_path, "")
+    path.write_text(
+        json.dumps({"exam_id": "", "block_id": block_id, "passed": True}), encoding="utf-8"
+    )
+    assert so.read_proof(tmp_path, "") is None

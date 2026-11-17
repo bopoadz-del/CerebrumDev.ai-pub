@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from app.factory.build import store_repair_exam as sre
-from app.factory.build.store_override import StoreDefect
+from app.factory.build.store_override import StoreDefect, read_proof
 
 _ONE_REQUIRED = {
     "id": "zorblat",
@@ -412,3 +412,34 @@ def test_the_repairer_settles_a_store_only_verdict_through_k2(block_id, tmp_path
     caps = [SimpleNamespace(capability_id="cap_a", block_ids=[block_id])]
     (row,) = store_repair.settle(verdict, plan_capabilities=caps, events=[], repairer=repair)
     assert (row.repaired, row.not_delivered, row.exam_score) == (True, (), 1.0)
+
+
+# --- F-2: every exam run leaves the Factory's proof outside the product -------
+
+
+@pytest.mark.parametrize(
+    "source, passed", [(_FIXED, True), (_BROKEN, False)], ids=["passed", "failed"]
+)
+def test_the_exam_run_leaves_its_proof_in_the_factory_held_directory(tmp_path, source, passed):
+    product = tmp_path / "product"
+    proofs = tmp_path / "proofs"
+    _vendor(product, "zorblat")
+    repair = sre.make_repairer(
+        product, writer=_writer(source, []), invoker=_invoker, rescan=lambda d: [], proofs_dir=proofs
+    )
+    result = repair("zorblat", _defect("zorblat"))
+    proof = read_proof(proofs, result.exam_id)
+    assert (proof.block_id, proof.passed, proof.score) == ("zorblat", passed, result.exam_score)
+    assert proof.examined_hash == sre.tree_hash(product / "repair" / "zorblat")
+
+
+@pytest.mark.parametrize("inside", [".", "repair/proofs"])
+def test_a_repairer_with_proofs_inside_the_product_is_refused(tmp_path, inside):
+    with pytest.raises(ValueError, match="outside the product tree"):
+        sre.make_repairer(
+            tmp_path,
+            writer=_writer(_FIXED, []),
+            invoker=_invoker,
+            rescan=lambda d: [],
+            proofs_dir=tmp_path / inside,
+        )

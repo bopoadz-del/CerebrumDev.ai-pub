@@ -36,7 +36,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from app.factory.build.store_override import VENDOR_BLOCKS, StoreDefect, tree_hash
+from app.factory.build.store_override import (
+    VENDOR_BLOCKS,
+    ExamProof,
+    StoreDefect,
+    is_inside,
+    tree_hash,
+    write_proof,
+)
 from app.factory.build.store_repair import RepairResult
 
 #: Where the writer's repair of a block is staged inside the product.
@@ -309,9 +316,18 @@ def make_repairer(
     writer: Writer,
     invoker: Callable[[Path], Invoke],
     rescan: Rescan,
+    proofs_dir: Path | str | None = None,
 ) -> Callable[[str, Tuple[StoreDefect, ...]], RepairResult]:
-    """R2: the ``repairer`` K-2's :func:`store_repair.settle` calls."""
+    """R2: the ``repairer`` K-2's :func:`store_repair.settle` calls.
+
+    F-2: with ``proofs_dir`` (a Factory-held directory outside the product),
+    every exam run leaves its proof there: the exam id, the block, the hash of
+    the tree it examined and the verdict. Acceptance trusts that proof, not the
+    returned result. Without ``proofs_dir`` no proof is written, so no repair
+    from this repairer can be accepted."""
     root = Path(workspace)
+    if proofs_dir is not None and is_inside(proofs_dir, root):
+        raise ValueError("exam proofs must be held outside the product tree")
 
     def repair(block_id: str, defects: Tuple[StoreDefect, ...]) -> RepairResult:
         block_dir = root.joinpath(*VENDOR_BLOCKS, block_id)
@@ -332,6 +348,9 @@ def make_repairer(
         if tree_hash(block_dir) != vendored:
             return RepairResult(block_id, False, exam.exam_id, detail="the repair changed the vendored copy")
         run = run_exam(exam, invoker(staging), lambda: rescan(staging))
+        if proofs_dir is not None:
+            proof = ExamProof(exam.exam_id, block_id, tree_hash(staging), run.passed, run.score)
+            write_proof(proofs_dir, proof)
         detail = "; ".join(f"{f.case_id}: {f.failure}" for f in run.failures)
         return RepairResult(block_id, run.passed, exam.exam_id, run.score, detail)
 
