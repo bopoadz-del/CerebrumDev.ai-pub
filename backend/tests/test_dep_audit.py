@@ -127,11 +127,13 @@ def test_registry_lists_exactly_chromadb_adjudications():
     # fastembed 0.9.1 relaxes the transitive constraint to pillow<14, so
     # pillow==13.0.0 ships and clears the 37 image-codec CVEs on merit. Its
     # fix-on-merit is guarded by the probe-determinism test, not an adjudication.
+    # picomatch (2026-11-17) is the one dated, expiring npm row; its twin is
+    # the picomatch section below.
     rows = json.loads(REGISTRY.read_text(encoding="utf-8"))["adjudications"]
     by_pkg: dict[str, list] = {}
     for r in rows:
         by_pkg.setdefault(r["package"], []).append(r)
-    assert set(by_pkg) == {"chromadb"}, sorted(by_pkg)
+    assert set(by_pkg) == {"chromadb", "picomatch"}, sorted(by_pkg)
     assert "pillow" not in by_pkg, "pillow must be fixed on merit, not adjudicated"
 
     assert sorted(r["id"] for r in by_pkg["chromadb"]) == [
@@ -417,3 +419,148 @@ def test_npm_lockfile_clears_the_three_dev_advisories():
     assert Version(baseline) >= Version("2.11.0")
     assert Version(braces) >= Version("5.0.9")
     assert Version(browsers) >= Version("4.28.7")
+
+
+# -- picomatch GHSA-fc5q-39xc-vjpf (2026-11-17): dev tooling, 14-day expiry --
+
+PICOMATCH_ID = "GHSA-fc5q-39xc-vjpf"
+PICOMATCH_NOTE = (
+    REPO_ROOT
+    / "docs"
+    / "security"
+    / "dependency-adjudications"
+    / "2026-11-17-picomatch.md"
+)
+FRONTEND_PROD_DOCKERFILE = REPO_ROOT / "frontend" / "Dockerfile.prod"
+
+
+def _picomatch_row() -> dict:
+    rows = json.loads(REGISTRY.read_text(encoding="utf-8"))["adjudications"]
+    hits = [r for r in rows if r["package"] == "picomatch"]
+    assert len(hits) == 1, hits
+    return hits[0]
+
+
+def _lock_packages() -> dict:
+    return json.loads(FRONTEND_LOCK.read_text(encoding="utf-8"))["packages"]
+
+
+def _resolve(packages: dict, parent: str, name: str) -> str | None:
+    """Node's lookup: nested node_modules first, then each ancestor."""
+    base = parent
+    while True:
+        key = f"{base}/node_modules/{name}" if base else f"node_modules/{name}"
+        if key in packages:
+            return key
+        if not base:
+            return None
+        cut = base.rfind("/node_modules/")
+        base = base[:cut] if cut >= 0 else ""
+
+
+def test_picomatch_row_expires_within_fourteen_days_and_is_not_open_ended():
+    row = _picomatch_row()
+    assert row["id"] == PICOMATCH_ID
+    assert row["date"] == "2026-11-17"
+    granted = date.fromisoformat(row["date"])
+    expires = date.fromisoformat(row["expires"])
+    assert 0 < (expires - granted).days <= 14
+    assert row["decision"] not in ("suppress", "accept_until_fix")
+    text = PICOMATCH_NOTE.read_text(encoding="utf-8")
+    assert f"## {PICOMATCH_ID}" in text
+    assert row["expires"] in text
+    assert "first_patched_version: null" in text
+
+
+def test_every_locked_picomatch_is_dev_only_and_inside_the_advisory_range():
+    """A row for a copy that is no longer vulnerable is a stale row: delete it."""
+    packages = _lock_packages()
+    copies = {k: v for k, v in packages.items() if k.endswith("node_modules/picomatch")}
+    assert copies, "picomatch left the lockfile: delete the adjudication row"
+    for key, info in copies.items():
+        assert info.get("dev") is True, f"{key} is not dev-only"
+        assert Version(info["version"]) <= Version("4.0.7"), (
+            f"{key} is {info['version']}: outside the advisory range, delete the row"
+        )
+
+
+def test_runtime_dependencies_never_reach_picomatch():
+    packages = _lock_packages()
+    root = packages[""]
+    seen: set[str] = set()
+    stack: list[str] = []
+    for name in root.get("dependencies") or {}:
+        key = _resolve(packages, "", name)
+        assert key, name
+        stack.append(key)
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        info = packages[key]
+        for name in {**(info.get("dependencies") or {}), **(info.get("peerDependencies") or {})}:
+            child = _resolve(packages, key, name)
+            if child is not None:
+                stack.append(child)
+    assert seen, "no runtime dependency resolved"
+    assert not [k for k in seen if k.endswith("node_modules/picomatch")]
+
+
+def test_prod_image_runtime_stage_installs_no_node_modules():
+    text = FRONTEND_PROD_DOCKERFILE.read_text(encoding="utf-8")
+    runtime = text.split("AS runtime", 1)[1]
+    assert "npm " not in runtime
+    assert "node_modules" not in runtime
+    copies = [ln.split()[2] for ln in runtime.splitlines() if ln.startswith("COPY ")]
+    assert copies == [
+        "/app/dist",
+        "/app/serve.mjs",
+        "/app/security-headers.json",
+        "/app/package.json",
+    ]
+
+
+def _picomatch_npm_json() -> dict:
+    return {
+        "vulnerabilities": {
+            "picomatch": {
+                "range": "*",
+                "via": [
+                    {
+                        "name": "picomatch",
+                        "url": f"https://github.com/advisories/{PICOMATCH_ID}",
+                        "range": "<=4.0.7",
+                    }
+                ],
+                "fixAvailable": {"name": "vite", "version": "6.2.7", "isSemVerMajor": True},
+            }
+        }
+    }
+
+
+def test_adjudicated_picomatch_finding_exits_0(audit, tmp_path):
+    pip = _write_json(tmp_path / "pip.json", {"dependencies": []})
+    npm = _write_json(tmp_path / "npm.json", _picomatch_npm_json())
+    proc = _run("--pip-json", str(pip), "--npm-json", str(npm))
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_picomatch_row_goes_red_when_its_expiry_passes(audit, tmp_path):
+    row = dict(_picomatch_row())
+    row["expires"] = "2026-01-01"
+    reg = _write_json(tmp_path / "registry.json", {"adjudications": [row]})
+    pip = _write_json(tmp_path / "pip.json", {"dependencies": []})
+    npm = _write_json(tmp_path / "npm.json", _picomatch_npm_json())
+    proc = _run(
+        "--pip-json",
+        str(pip),
+        "--npm-json",
+        str(npm),
+        "--registry",
+        str(reg),
+        "--repo",
+        str(REPO_ROOT),
+    )
+    assert proc.returncode == 1, proc.stdout
+    assert "adjudication expired 2026-01-01" in proc.stderr
