@@ -17,10 +17,12 @@ from pathlib import Path
 import pytest
 
 from app.factory.build import store_proposal as sp
+from app.factory.build import store_override as so
 from app.factory.build.store_override import (
     OVERRIDES_KEY,
     VENDORED_HASH_KEY,
     ExamProof,
+    ProofStore,
     StoreDefect,
     tree_hash,
     verify_vendored,
@@ -82,13 +84,23 @@ def _product(tmp_path: Path, case: dict):
     staging = tmp_path / "repair" / bid
     _write(staging, case["files"])
     _write(staging, case["repair"])
+    so.record_vendored(
+        _proofs(tmp_path, case["build"]),
+        {bid: tree_hash(vendored)},
+        rows={bid: {"source": case["source"], "commit": case["commit"], "path": f"vendor/blocks/{bid}"}},
+    )
     _prove(tmp_path, case)
     return lock, vendored, staging
 
 
-def _proofs(root: Path) -> Path:
-    """The Factory-held proofs directory: a sibling of the product, outside it."""
-    return root.parent / (root.name + "-proofs")
+#: The Factory's signing key in these tests (the real one is never in a test).
+_KEY = b"factory-test-key"
+
+
+def _proofs(root: Path, build_id: str, key: bytes = _KEY) -> ProofStore:
+    """The build's Factory-held proof store (placement is tested in
+    test_store_override; here it only has to be outside the product)."""
+    return ProofStore(root=root.parent / (root.name + "-proofs"), build_id=build_id, key=key)
 
 
 def _prove(root: Path, case: dict, **over) -> None:
@@ -101,15 +113,15 @@ def _prove(root: Path, case: dict, **over) -> None:
         score=case["score"],
     )
     fields.update(over)
-    write_proof(_proofs(root), ExamProof(**fields))
+    write_proof(_proofs(root, case["build"]), ExamProof(**fields))
 
 
 def _passed(case: dict) -> RepairResult:
     return RepairResult(case["block"], True, case["exam"], case["score"])
 
 
-def _accept(root: Path, lock: dict, result: RepairResult, **kw):
-    return sp.accept_repair(root, lock, result, proofs_dir=_proofs(root), **kw)
+def _accept(root: Path, lock: dict, result: RepairResult, *, build_id: str, **kw):
+    return sp.accept_repair(root, lock, result, proofs=_proofs(root, build_id), **kw)
 
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
@@ -154,7 +166,7 @@ def test_the_recorded_override_passes_the_lock_check_once_the_repair_is_installe
     _write(vendored, case["repair"])
     for rel in set(sp._files(vendored)) - set(sp._files(staging)):
         (vendored / rel).unlink()
-    check = verify_vendored(tmp_path, lock, proofs_dir=_proofs(tmp_path))
+    check = verify_vendored(tmp_path, lock, proofs=_proofs(tmp_path, case["build"]))
     assert check.ok and check.overridden == (case["block"],)
 
 
@@ -198,8 +210,8 @@ def test_no_staged_repair_is_refused(tmp_path, case):
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
 def test_a_block_with_no_recorded_vendored_hash_is_refused(tmp_path, case):
     lock, _, _ = _product(tmp_path, case)
-    lock["blocks"][case["block"]][VENDORED_HASH_KEY] = ""
-    with pytest.raises(sp.ProposalError, match="no recorded hash of the vendored copy"):
+    (_proofs(tmp_path, case["build"]).root / so.VENDORED_RECORD).unlink()
+    with pytest.raises(sp.ProposalError, match="no signed record of the vendored copy"):
         _accept(tmp_path, lock, _passed(case), build_id=case["build"])
     assert OVERRIDES_KEY not in lock and sp.filed_proposals(tmp_path) == []
 
@@ -350,7 +362,7 @@ def test_filed_proposals_reads_every_row_and_skips_blank_lines(tmp_path, rows):
 
 
 def _drop_proofs(root: Path, case: dict) -> None:
-    for path in _proofs(root).iterdir():
+    for path in _proofs(root, case["build"]).root.glob("*" + so.PROOF_SUFFIX):
         path.unlink()
 
 
@@ -393,7 +405,10 @@ def test_proofs_held_inside_the_product_are_refused(tmp_path, inside):
     lock, _, _ = _product(tmp_path, case)
     with pytest.raises(sp.ProposalError, match="inside the product tree"):
         sp.accept_repair(
-            tmp_path, lock, _passed(case), build_id=case["build"], proofs_dir=tmp_path / inside
+            tmp_path,
+            lock,
+            _passed(case),
+            proofs=ProofStore(root=tmp_path / inside, build_id=case["build"], key=_KEY),
         )
     assert OVERRIDES_KEY not in lock and sp.filed_proposals(tmp_path) == []
 
@@ -443,4 +458,89 @@ def test_a_corrupt_proposals_line_is_skipped_kept_and_filing_goes_on(tmp_path, c
     assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == ["p0", proposal.proposal_id]
     assert path.read_text(encoding="utf-8").splitlines()[1] == corrupt
     assert lock[OVERRIDES_KEY][case["block"]]["exam_id"] == case["exam"]
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+
+# --- F-2 (grader 19:35Z): signed, build-bound proofs; accept is atomic ---------
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_proof_signed_with_another_key_is_neither_recorded_nor_filed(tmp_path, case):
+    lock, _, staging = _product(tmp_path, case)
+    forged = _proofs(tmp_path, case["build"], key=b"a-key-the-writer-made-up")
+    write_proof(forged, ExamProof(case["exam"], case["block"], tree_hash(staging), True, 1.0))
+    with pytest.raises(sp.ProposalError, match="no Factory-held proof of its exam"):
+        _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert OVERRIDES_KEY not in lock and sp.filed_proposals(tmp_path) == []
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_proof_from_another_build_is_neither_recorded_nor_filed(tmp_path, case):
+    lock, _, staging = _product(tmp_path, case)
+    other = _proofs(tmp_path, case["build"] + "-other")
+    write_proof(other, ExamProof(case["exam"], case["block"], tree_hash(staging), True, 1.0))
+    with pytest.raises(sp.ProposalError, match="no Factory-held proof of its exam"):
+        _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert OVERRIDES_KEY not in lock and sp.filed_proposals(tmp_path) == []
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_the_proposal_names_the_build_of_the_proof_store(tmp_path, case):
+    lock, _, _ = _product(tmp_path, case)
+    proposal = _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert proposal.build_id == case["build"]
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_no_proof_store_is_neither_recorded_nor_filed(tmp_path, case):
+    lock, _, _ = _product(tmp_path, case)
+    with pytest.raises(sp.ProposalError, match="no proof key"):
+        sp.accept_repair(tmp_path, lock, _passed(case), proofs=None)
+    assert OVERRIDES_KEY not in lock and sp.filed_proposals(tmp_path) == []
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_failure_recording_the_override_after_filing_withdraws_the_proposal(
+    tmp_path, case, monkeypatch
+):
+    lock, _, _ = _product(tmp_path, case)
+    path = sp.proposals_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"proposal_id": "earlier"}) + "\n", encoding="utf-8")
+    seen = []
+
+    def fail_after_filing(*args, **kwargs):
+        seen.append([r["proposal_id"] for r in sp.filed_proposals(tmp_path)])
+        raise OSError("lock write failed")
+
+    monkeypatch.setattr(sp, "record_override", fail_after_filing)
+    with pytest.raises(OSError, match="lock write failed"):
+        _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert len(seen) == 1 and len(seen[0]) == 2, "the proposal was filed before the override"
+    assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == ["earlier"]
+    assert OVERRIDES_KEY not in lock
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_failure_after_filing_keeps_a_row_this_call_did_not_file(tmp_path, case, monkeypatch):
+    lock, _, _ = _product(tmp_path, case)
+    first = _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+
+    def fail(*args, **kwargs):
+        raise OSError("lock write failed")
+
+    monkeypatch.setattr(sp, "record_override", fail)
+    with pytest.raises(OSError):
+        _accept(tmp_path, lock, _passed(case), build_id=case["build"])
+    assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == [first.proposal_id]
+
+
+@pytest.mark.parametrize("ids", [["p1", "p2", "p3"], ["only"]])
+def test_withdrawing_a_proposal_removes_that_row_only(tmp_path, ids):
+    path = sp.proposals_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("".join(json.dumps({"proposal_id": i}) + "\n" for i in ids), encoding="utf-8")
+    assert sp.withdraw_proposal(tmp_path, ids[0]) is True
+    assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == ids[1:]
+    assert sp.withdraw_proposal(tmp_path, ids[0]) is False
     assert sorted(p.name for p in path.parent.iterdir()) == [path.name]

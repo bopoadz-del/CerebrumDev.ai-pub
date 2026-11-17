@@ -21,13 +21,15 @@ Every value is read from the lock, the repair and the two trees; nothing names
 a block, product or value.
 
 F-2: the caller's :class:`RepairResult` is not trusted. Acceptance reads the
-exam's proof from the Factory-held directory outside the product (written by
-the repairer, see :func:`store_override.write_proof`) and accepts only when it
-shows this block passing on exactly the staged bytes; the block must be
+exam's signed proof from the build's Factory-held :class:`ProofStore` (the
+repairer writes it, see :func:`store_override.write_proof`). It accepts only
+when that proof shows this block passing on exactly the staged bytes, and the
+copy replaced is the one the Factory recorded at CLONER. The block must be
 vendored at ``vendor/blocks/<id>``. Every check runs before anything is
-written; the proposal is filed (atomically) first and only then is the
+written. The proposal is filed (atomically) first and only then is the
 override written into the lock, so a refusal or a failed filing leaves the
-lock untouched.
+lock untouched; if writing the override fails after filing, the row this call
+filed is withdrawn.
 A corrupt proposals line is skipped, not fatal.
 """
 
@@ -43,8 +45,8 @@ from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence,
 
 from app.factory.build.store_override import (
     VENDOR_BLOCKS,
-    VENDORED_HASH_KEY,
     OverrideRecord,
+    ProofStore,
     StoreDefect,
     is_inside,
     proof_refusal,
@@ -53,6 +55,7 @@ from app.factory.build.store_override import (
     tree_hash,
     vendored_at,
     vendored_path,
+    vendored_record,
 )
 from app.factory.build.store_repair import RepairResult
 from app.factory.build.store_repair_exam import REPAIR_DIR
@@ -198,22 +201,46 @@ def file_proposal(workspace: Path | str, proposal: StoreProposal) -> bool:
     return True
 
 
+def _write_rows(workspace: Path | str, rows: Sequence[Mapping[str, Any]]) -> None:
+    path = proposals_path(workspace)
+    text = "".join(json.dumps(dict(r), sort_keys=True, default=str) + "\n" for r in rows)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def withdraw_proposal(workspace: Path | str, proposal_id: str) -> bool:
+    """Remove the row ``proposal_id``. False when it is not filed."""
+    rows = filed_proposals(workspace)
+    kept = [row for row in rows if row.get("proposal_id") != proposal_id]
+    if len(kept) == len(rows):
+        return False
+    _write_rows(workspace, kept)
+    return True
+
+
 def accept_repair(
     workspace: Path | str,
     lock: MutableMapping[str, Any],
     result: RepairResult,
     *,
-    build_id: str,
-    proofs_dir: Path | str,
+    proofs: Optional[ProofStore],
     defects: Sequence[StoreDefect] = (),
 ) -> StoreProposal:
     """R3 + R6: record the passed repair as the block's override and file its
     upgrade proposal, in one step. A repair that did not pass its exam, as the
-    Factory-held proof in ``proofs_dir`` shows, is neither recorded nor filed."""
+    Factory-held, signed proof in ``proofs`` shows for this build, is neither
+    recorded nor filed. The proposal names the build of ``proofs``.
+
+    Atomic in both directions: a refusal or a failed filing leaves the lock
+    untouched, and a failure in recording the override after the proposal was
+    filed withdraws the row this call filed."""
     if result.passed is not True or not result.exam_id:
         raise ProposalError(f"repair of {result.block_id!r} did not pass its exam: nothing to file")
+    if proofs is None:
+        raise ProposalError("the Factory holds no proof key: nothing to file")
     root = Path(workspace)
-    if is_inside(proofs_dir, root):
+    if is_inside(proofs.root, root):
         raise ProposalError("exam proofs are held inside the product tree: nothing to file")
     block_id = result.block_id
     entry = (lock.get("blocks") or {}).get(block_id)
@@ -224,11 +251,13 @@ def accept_repair(
     staging = root / REPAIR_DIR / block_id
     if not staging.is_dir():
         raise ProposalError(f"repair of {block_id!r}: no staged repair at {REPAIR_DIR}/{block_id}")
-    replaces = str(entry.get(VENDORED_HASH_KEY) or "")
+    replaces = (vendored_record(proofs) or {}).get(block_id, "")
     if not replaces:
-        raise ProposalError(f"repair of {block_id!r}: no recorded hash of the vendored copy")
+        raise ProposalError(
+            f"repair of {block_id!r}: the Factory holds no signed record of the vendored copy"
+        )
     override_hash = tree_hash(staging)
-    proof = read_proof(proofs_dir, result.exam_id)
+    proof = read_proof(proofs, result.exam_id)
     why = proof_refusal(proof, block_id, override_hash)
     if why is not None:
         raise ProposalError(f"repair of {why}")
@@ -250,10 +279,15 @@ def accept_repair(
         override_hash=override_hash,
         exam_id=result.exam_id,
         exam_score=getattr(proof, "score", None),
-        build_id=str(build_id or ""),
+        build_id=proofs.build_id,
         patch=store_patch(root.joinpath(*VENDOR_BLOCKS, block_id), staging, block_id),
         defects=_defect_rows(defects),
     )
-    file_proposal(root, proposal)
-    record_override(lock, record)
+    filed = file_proposal(root, proposal)
+    try:
+        record_override(lock, record, vendored_hash=replaces)
+    except BaseException:
+        if filed:
+            withdraw_proposal(root, proposal.proposal_id)
+        raise
     return proposal

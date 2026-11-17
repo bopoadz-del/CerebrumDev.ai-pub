@@ -20,6 +20,7 @@ def _block(root: Path, bid: str, body: str = "def run(x):\n    return x\n") -> P
 
 
 def _lock(root: Path, *bids: str) -> dict:
+    """The product lock CLONER wrote, and the Factory's signed record of it."""
     blocks = {}
     for bid in bids:
         path = f"vendor/blocks/{bid}"
@@ -28,7 +29,13 @@ def _lock(root: Path, *bids: str) -> dict:
             "commit": "c0ffee",
             so.VENDORED_HASH_KEY: so.tree_hash(root / path),
         }
+    _cloned(root, {b: e[so.VENDORED_HASH_KEY] for b, e in blocks.items()})
     return {"blocks": blocks}
+
+
+def _cloned(root: Path, hashes: dict) -> None:
+    rows = {b: {"commit": "c0ffee", "path": f"vendor/blocks/{b}"} for b in hashes}
+    so.record_vendored(_proofs(root), hashes, rows=rows)
 
 
 def _repair(root: Path, bid: str) -> None:
@@ -37,9 +44,15 @@ def _repair(root: Path, bid: str) -> None:
     )
 
 
-def _proofs(root: Path) -> Path:
-    """The Factory-held proofs directory: a sibling of the product, outside it."""
-    return root.parent / (root.name + "-proofs")
+#: The Factory's signing key in these tests (the real one is never in a test).
+_KEY = b"factory-test-key"
+_BUILD = "build-1"
+
+
+def _proofs(root: Path, build_id: str = _BUILD, key: bytes = _KEY) -> so.ProofStore:
+    """The build's Factory-held proof store, outside the product (placement
+    itself is tested below with open_proof_store)."""
+    return so.ProofStore(root=root.parent / (root.name + "-proofs"), build_id=build_id, key=key)
 
 
 def _prove(root: Path, bid: str, exam_id: str = "exam-1", **over) -> None:
@@ -56,7 +69,7 @@ def _prove(root: Path, bid: str, exam_id: str = "exam-1", **over) -> None:
 
 
 def _verify(root: Path, lock: dict) -> so.OverrideCheck:
-    return so.verify_vendored(root, lock, proofs_dir=_proofs(root))
+    return so.verify_vendored(root, lock, proofs=_proofs(root))
 
 
 def _record(root: Path, lock: dict, bid: str, **over) -> so.OverrideRecord:
@@ -282,22 +295,23 @@ def test_hand_written_override_rows_are_still_checked(tmp_path, overrides, expec
 @pytest.mark.parametrize(
     "entry, expected",
     [
-        ({"path": "vendor/blocks/blk_a"}, ("blk_a: no recorded hash of the vendored copy",)),
+        ({"path": "vendor/blocks/blk_a", "commit": "c0ffee"}, ()),
         (
             {"path": "vendor/blocks/blk_gone", so.VENDORED_HASH_KEY: "sha256:x"},
             ("blk_a: not vendored at vendor/blocks/blk_a",),
         ),
-        ({"commit": "c0ffee"}, ()),
-        ("not a mapping", ()),
+        ({"commit": "c0ffee"}, ("blk_a: the lock's row no longer says where it is vendored",)),
+        ("not a mapping", ("blk_a: the lock's row no longer says where it is vendored",)),
     ],
-    ids=["no-hash", "other-path", "no-path", "not-a-mapping"],
+    ids=["no-hash-claim", "other-path", "no-path", "not-a-mapping"],
 )
 def test_lock_entries_without_a_recorded_hash_or_copy_are_refused(tmp_path, entry, expected):
     _block(tmp_path, "blk_a")
+    _lock(tmp_path, "blk_a")
     check = _verify(tmp_path, {"blocks": {"blk_a": entry}})
     assert check.refused == expected
     assert check.ok is (not expected)
-    assert check.unchanged == ()
+    assert check.unchanged == (() if expected else ("blk_a",))
 
 
 @pytest.mark.parametrize(
@@ -330,7 +344,8 @@ def test_record_coerces_exam_passed_strictly(raw, field, expected):
 
 @pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
 def test_a_missing_vendored_copy_is_refused(tmp_path, bid):
-    entry = {"path": f"vendor/blocks/{bid}", so.VENDORED_HASH_KEY: "sha256:x"}
+    _cloned(tmp_path, {bid: "sha256:x"})
+    entry = {"path": f"vendor/blocks/{bid}", "commit": "c0ffee", so.VENDORED_HASH_KEY: "sha256:x"}
     check = _verify(tmp_path, {"blocks": {bid: entry}})
     assert check.refused == (f"{bid}: vendored copy is missing",)
 
@@ -395,12 +410,16 @@ def test_an_override_row_with_no_exam_id_is_refused(tmp_path, exam_id):
     _block(tmp_path, "blk_a")
     lock = _lock(tmp_path, "blk_a")
     _repair(tmp_path, "blk_a")
-    path = so._proof_path(_proofs(tmp_path), "")
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        '{"exam_id": "", "block_id": "blk_a", "passed": true, "examined_hash": "%s"}'
-        % so.tree_hash(tmp_path / "vendor" / "blocks" / "blk_a"),
-        encoding="utf-8",
+    so._write_signed(
+        _proofs(tmp_path),
+        so._proof_name(""),
+        so.EXAM_KIND,
+        {
+            "exam_id": "",
+            "block_id": "blk_a",
+            "passed": True,
+            "examined_hash": so.tree_hash(tmp_path / "vendor" / "blocks" / "blk_a"),
+        },
     )
     row = {**_record(tmp_path, lock, "blk_a").to_dict(), "exam_id": exam_id}
     lock[so.OVERRIDES_KEY] = {"blk_a": row}
@@ -410,7 +429,8 @@ def test_an_override_row_with_no_exam_id_is_refused(tmp_path, exam_id):
 @pytest.mark.parametrize("inside", [".", "docs/proofs"])
 def test_proofs_held_inside_the_product_are_refused(tmp_path, inside):
     _block(tmp_path, "blk_a")
-    check = so.verify_vendored(tmp_path, _lock(tmp_path, "blk_a"), proofs_dir=tmp_path / inside)
+    inner = so.ProofStore(root=tmp_path / inside, build_id=_BUILD, key=_KEY)
+    check = so.verify_vendored(tmp_path, _lock(tmp_path, "blk_a"), proofs=inner)
     assert check.refused == ("exam proofs are held inside the product tree",)
     assert not check.ok and check.unchanged == ()
 
@@ -423,8 +443,9 @@ def test_proofs_held_inside_the_product_are_refused(tmp_path, inside):
     ],
 )
 def test_a_proof_reads_back_as_written_and_leaves_no_temp_file(tmp_path, proof):
-    path = so.write_proof(tmp_path, proof)
-    assert so.read_proof(tmp_path, proof.exam_id) == proof
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    path = so.write_proof(store, proof)
+    assert so.read_proof(store, proof.exam_id) == proof
     assert path.name.endswith(so.PROOF_SUFFIX)
     assert [p.name for p in tmp_path.iterdir()] == [path.name]
 
@@ -432,7 +453,10 @@ def test_a_proof_reads_back_as_written_and_leaves_no_temp_file(tmp_path, proof):
 @pytest.mark.parametrize("block_id", ["blk_a", "blk_b"])
 def test_a_proof_without_an_exam_id_is_never_written(tmp_path, block_id):
     with pytest.raises(so.OverrideError, match="has no exam id"):
-        so.write_proof(tmp_path, so.ExamProof("", block_id, "sha256:1", True))
+        so.write_proof(
+            so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY),
+            so.ExamProof("", block_id, "sha256:1", True),
+        )
     assert list(tmp_path.iterdir()) == []
 
 
@@ -442,19 +466,21 @@ def test_a_proof_without_an_exam_id_is_never_written(tmp_path, block_id):
     ids=["not-json", "not-an-object", "other-exam"],
 )
 def test_an_unreadable_or_foreign_proof_is_no_proof(tmp_path, text):
-    path = so._proof_path(tmp_path, "exam:a:1")
-    path.write_text(text, encoding="utf-8")
-    assert so.read_proof(tmp_path, "exam:a:1") is None
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    (tmp_path / so._proof_name("exam:a:1")).write_text(text, encoding="utf-8")
+    assert so.read_proof(store, "exam:a:1") is None
 
 
 @pytest.mark.parametrize("score, read", [(1, 1.0), ("high", None)])
 def test_a_proof_score_is_a_number_or_nothing(tmp_path, score, read):
-    path = so._proof_path(tmp_path, "exam:a:1")
-    path.write_text(
-        '{"exam_id": "exam:a:1", "passed": "yes", "score": %s}' % json.dumps(score),
-        encoding="utf-8",
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    so._write_signed(
+        store,
+        so._proof_name("exam:a:1"),
+        so.EXAM_KIND,
+        {"exam_id": "exam:a:1", "passed": "yes", "score": score},
     )
-    proof = so.read_proof(tmp_path, "exam:a:1")
+    proof = so.read_proof(store, "exam:a:1")
     assert proof.score == read and proof.passed is False and proof.block_id == ""
 
 
@@ -468,8 +494,195 @@ def test_is_inside_reads_the_tree_not_the_name(tmp_path, inner, inside):
 
 @pytest.mark.parametrize("block_id", ["blk_a", "blk_b"])
 def test_an_empty_exam_id_reads_no_proof_even_if_a_file_claims_it(tmp_path, block_id):
-    path = so._proof_path(tmp_path, "")
-    path.write_text(
-        json.dumps({"exam_id": "", "block_id": block_id, "passed": True}), encoding="utf-8"
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    so._write_signed(
+        store, so._proof_name(""), so.EXAM_KIND, {"exam_id": "", "block_id": block_id, "passed": True}
     )
-    assert so.read_proof(tmp_path, "") is None
+    assert so.read_proof(store, "") is None
+
+
+# --- F-2 (grader 19:35Z): signed, build-bound, out of the agent's reach -------
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_a_proof_signed_with_another_key_is_no_proof(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    _repair(tmp_path, bid)
+    forged = _proofs(tmp_path, key=b"a-key-the-writer-made-up")
+    so.write_proof(
+        forged,
+        so.ExamProof("exam-1", bid, so.tree_hash(tmp_path / "vendor" / "blocks" / bid), True, 1.0),
+    )
+    lock[so.OVERRIDES_KEY] = {bid: _record(tmp_path, lock, bid).to_dict()}
+    assert _verify(tmp_path, lock).refused == (f"{bid}: no Factory-held proof of its exam",)
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_a_proof_from_another_build_is_no_proof(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    _repair(tmp_path, bid)
+    other = _proofs(tmp_path, build_id="build-2")
+    so.write_proof(
+        other,
+        so.ExamProof("exam-1", bid, so.tree_hash(tmp_path / "vendor" / "blocks" / bid), True, 1.0),
+    )
+    lock[so.OVERRIDES_KEY] = {bid: _record(tmp_path, lock, bid).to_dict()}
+    assert _verify(tmp_path, lock).refused == (f"{bid}: no Factory-held proof of its exam",)
+
+
+@pytest.mark.parametrize("field, value", [("passed", True), ("examined_hash", "sha256:other")])
+def test_an_edited_signed_proof_is_no_proof(tmp_path, field, value):
+    store = _proofs(tmp_path)
+    path = so.write_proof(store, so.ExamProof("exam-1", "blk_a", "sha256:1", False, 0.0))
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["payload"][field] = value
+    path.write_text(json.dumps(body), encoding="utf-8")
+    assert so.read_proof(store, "exam-1") is None
+
+
+def test_a_vendored_record_is_not_an_exam_proof_and_back(tmp_path):
+    store = _proofs(tmp_path)
+    so._write_signed(store, so._proof_name("exam-1"), so.VENDORED_KIND, {"exam_id": "exam-1"})
+    so._write_signed(store, so.VENDORED_RECORD, so.EXAM_KIND, {"blocks": {"blk_a": "h"}})
+    assert so.read_proof(store, "exam-1") is None
+    assert so.vendored_record(store) is None
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_no_proof_store_refuses_the_lock_check(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    check = so.verify_vendored(tmp_path, lock, proofs=None)
+    assert check.refused == ("no Factory-held, signed record of the vendored blocks",)
+    assert not check.ok
+
+
+@pytest.mark.parametrize(
+    "edit, expected",
+    [
+        (lambda e: e.update(commit="beef"), "blk_a: the lock's row was edited after CLONER (commit)"),
+        (
+            lambda e: e.update({so.VENDORED_HASH_KEY: "sha256:forged"}),
+            "blk_a: the lock's vendored hash is not the copy the Factory cloned",
+        ),
+    ],
+    ids=["commit", "vendored-hash"],
+)
+def test_a_lock_row_edited_after_cloner_is_refused(tmp_path, edit, expected):
+    _block(tmp_path, "blk_a")
+    lock = _lock(tmp_path, "blk_a")
+    edit(lock["blocks"]["blk_a"])
+    assert _verify(tmp_path, lock).refused == (expected,)
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_a_row_removed_from_the_lock_is_refused(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    del lock["blocks"][bid]
+    assert _verify(tmp_path, lock).refused == (
+        f"{bid}: the lock no longer names a block the Factory vendored",
+    )
+
+
+@pytest.mark.parametrize("bid", ["blk_a", "blk_q"])
+def test_an_override_row_over_the_unchanged_copy_is_refused(tmp_path, bid):
+    _block(tmp_path, bid)
+    lock = _lock(tmp_path, bid)
+    _prove(tmp_path, bid)
+    lock[so.OVERRIDES_KEY] = {bid: _record(tmp_path, lock, bid).to_dict()}
+    assert _verify(tmp_path, lock).refused == (
+        f"{bid}: an override is recorded, but the block is the vendored copy",
+    )
+
+
+@pytest.mark.parametrize("value", ["s3cret-one", "  s3cret-two  "])
+def test_the_proof_key_is_taken_once_and_leaves_the_environment(monkeypatch, value):
+    monkeypatch.setattr(so, "_process_key", so._KEY_UNREAD)
+    env = {so.PROOF_KEY_ENV: value, "OTHER": "kept"}
+    assert so.take_proof_key(env) == value.strip().encode("utf-8")
+    assert env == {"OTHER": "kept"}
+    env[so.PROOF_KEY_ENV] = "a-later-value"
+    assert so.take_proof_key(env) == value.strip().encode("utf-8")
+
+
+@pytest.mark.parametrize("env", [{}, {so.PROOF_KEY_ENV: "   "}])
+def test_no_proof_key_is_none(monkeypatch, env):
+    monkeypatch.setattr(so, "_process_key", so._KEY_UNREAD)
+    assert so.take_proof_key(dict(env)) is None
+
+
+def test_a_coding_agent_child_never_gets_the_proof_key():
+    from app.factory.build.agent_confine import scoped_child_env
+
+    parent = {so.PROOF_KEY_ENV: "s3cret", "PATH": "/usr/bin"}
+    child = scoped_child_env(parent, {so.PROOF_KEY_ENV: "s3cret"}, provider_key=so.PROOF_KEY_ENV)
+    assert so.PROOF_KEY_ENV not in child
+    assert "s3cret" not in child.values()
+
+
+@pytest.mark.parametrize(
+    "where, refused",
+    [
+        ("vol/build", True),
+        ("vol/build/docs/proofs", True),
+        ("vol/build-proofs", True),
+        ("vol", True),
+        ("factory/proofs", False),
+    ],
+    ids=["the-product", "inside-product", "sibling-build", "the-volume", "factory-data"],
+)
+def test_proofs_are_placed_only_off_the_build_volume(tmp_path, where, refused):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    why = so.placement_refusal(tmp_path / where, workspace)
+    assert (why is not None) is refused
+
+
+@pytest.mark.parametrize("rw", ["agent-rw", "agent-rw/deeper"])
+def test_proofs_are_never_placed_under_or_above_a_root_the_agent_writes(tmp_path, rw):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    assert so.placement_refusal(tmp_path / "agent-rw", workspace, [tmp_path / rw]) == (
+        "exam proofs would sit where the coding agent may write"
+    )
+
+
+@pytest.mark.parametrize("build_id", ["build:aaa", "build:bbb"])
+def test_a_proof_store_opens_per_build_under_the_factory_base(tmp_path, build_id):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    store = so.open_proof_store(build_id, workspace, key=_KEY, base=tmp_path / "factory")
+    assert store.build_id == build_id
+    assert so.is_inside(store.root, tmp_path / "factory")
+    assert _KEY not in repr(store).encode("utf-8")
+    other = so.open_proof_store(build_id + "x", workspace, key=_KEY, base=tmp_path / "factory")
+    assert other.root != store.root
+
+
+@pytest.mark.parametrize(
+    "build_id, key, base, why",
+    [
+        ("build:a", None, "factory", "is not set"),
+        ("build:a", b"", "factory", "is not set"),
+        ("  ", _KEY, "factory", "needs the build id"),
+        ("build:a", _KEY, "vol", "on the build volume"),
+    ],
+    ids=["no-key", "empty-key", "no-build", "on-the-volume"],
+)
+def test_a_proof_store_is_refused_without_key_build_or_safe_place(tmp_path, build_id, key, base, why):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    with pytest.raises(so.OverrideError, match=why):
+        so.open_proof_store(build_id, workspace, key=key, base=tmp_path / base)
+
+
+@pytest.mark.parametrize("env, expected", [({so.PROOFS_DIR_ENV: "/data/p"}, "/data/p"), ({}, None)])
+def test_the_proofs_base_is_the_factory_setting_or_the_factory_home(env, expected):
+    base = so.proofs_base(env)
+    if expected:
+        assert base == so.Path(expected)
+    else:
+        assert base == so.Path.home() / ".cerebrum-factory" / "exam_proofs"

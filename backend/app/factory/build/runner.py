@@ -729,6 +729,11 @@ class RoleRunner:
         # path. Same path the tenant handle takes, for the same reason.
         if str(session_id or "").strip():
             self.state["session_id"] = str(session_id).strip()
+        # F-2: the exam-proof key is taken out of this process's environment
+        # before any role can spawn a child, so no child inherits it.
+        from app.factory.build.store_override import take_proof_key
+
+        take_proof_key()
         # The user's own words from the Floor chat — the WRITER's BRIEF
         # section. Threaded from the session at generate/resume time.
         if str(brief or "").strip():
@@ -1136,6 +1141,114 @@ class RoleRunner:
             return None
         return verdict
 
+    # -- F-2: the Factory-held exam proofs and the vendored-lock gate ------
+
+    _exam_proofs_opened: bool = False
+    _exam_proofs_store: Any = None
+    _exam_proofs_refusal: str = ""
+
+    @property
+    def build_id(self) -> str:
+        """This build's identity for its proofs: the product directory, the
+        session and the frozen inputs. A proof from any other build names a
+        different id and is refused."""
+        body = "\0".join(
+            (str(self.workspace), str(self.state.get("session_id") or ""), self.inputs_hash)
+        )
+        return "build:" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:24]
+
+    def exam_proofs(self) -> Any:
+        """F-2: this build's proof store, opened once by the orchestrator.
+
+        It sits in the Factory data directory, off the build volume and
+        outside every root the coding agent may write, and it is signed with
+        the key this process took from its environment at start. None, with
+        the reason kept, when there is no key or no safe place."""
+        if not self._exam_proofs_opened:
+            from app.factory.build import store_override
+
+            self._exam_proofs_opened = True
+            try:
+                self._exam_proofs_store = store_override.open_proof_store(
+                    self.build_id,
+                    self.workspace,
+                    key=store_override.take_proof_key(),
+                    base=store_override.proofs_base(),
+                    rw_roots=(self.workspace,),
+                )
+            except store_override.OverrideError as exc:
+                self._exam_proofs_refusal = str(exc)
+        return self._exam_proofs_store
+
+    def _product_lock(self) -> Optional[Dict[str, Any]]:
+        """The product's blocks.lock.json as it is on disk: {} when there is
+        none, None when it is there but is not a JSON object."""
+        path = self.workspace / "blocks.lock.json"
+        if not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    def _record_vendored(self) -> None:
+        """F-2: at the end of CLONER, sign and keep each vendored block's hash
+        and lock row in this build's proof store. With no store, say so in the
+        ledger: no override can be proven in this build."""
+        from app.factory.build import store_override
+
+        store = self.exam_proofs()
+        if store is None:
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.CLONER,
+                detail=f"VENDORED LOCK not recorded: {self._exam_proofs_refusal}",
+                payload={"vendored_lock": "unrecorded", "reason": self._exam_proofs_refusal},
+            )
+            return
+        entries = (self._product_lock() or {}).get("blocks") or {}
+        hashes: Dict[str, str] = {}
+        rows: Dict[str, Dict[str, str]] = {}
+        for block_id, entry in entries.items():
+            block_dir = self.workspace.joinpath(*store_override.VENDOR_BLOCKS, block_id)
+            if not isinstance(entry, Mapping) or not block_dir.is_dir():
+                continue
+            hashes[block_id] = store_override.tree_hash(block_dir)
+            rows[block_id] = {k: str(entry.get(k) or "") for k in store_override.LOCK_ROW_FIELDS}
+        store_override.record_vendored(store, hashes, rows=rows)
+
+    def _vendored_lock_gate(self) -> Optional[GateResult]:
+        """F-2, the lock gate after every role that follows CLONER: the
+        vendored blocks and the lock's rows are what the Factory cloned, and
+        every override has this build's signed, passing exam proof. None when
+        it holds. With no proof store the bytes cannot be checked against a
+        Factory record (CLONER's ledger note says why), but any override row
+        is still refused: nothing could have proven it."""
+        from app.factory.build import store_override
+
+        lock = self._product_lock()
+        if lock is None:
+            refused = ["blocks.lock.json is not a JSON object"]
+        else:
+            store = self.exam_proofs()
+            if store is None:
+                refused = [
+                    f"{block_id}: override recorded, but the Factory holds no proof key"
+                    for block_id in sorted(lock.get(store_override.OVERRIDES_KEY) or {})
+                ]
+            else:
+                refused = list(store_override.verify_vendored(self.workspace, lock, proofs=store).refused)
+        if not refused:
+            return None
+        return GateResult(
+            ok=False,
+            gate=store_override.LOCK_GATE,
+            reason=store_override.LOCK_GATE_REASON,
+            detail="; ".join(refused)[:400],
+            findings=refused,
+        )
+
     #: K-2 (R4): the writer's repair of a defective Store block,
     #: ``repairer(block_id, defects) -> store_repair.RepairResult``. None (the
     #: default until K-3 supplies the block exam) keeps today's path: a
@@ -1514,9 +1627,16 @@ class RoleRunner:
                     store_repo=str(lock.get("source", "unknown")),
                     vendored_path=str(lock.get("path", f"vendor/blocks/{bid}")),
                 )
+            self._record_vendored()
 
         gate = gate_for(role)
         verdict = gate(self._gate_context(role))
+        if (
+            verdict.ok
+            and role is not BuildRole.CLONER
+            and BuildRole.CLONER in self.ledger.completed_roles()
+        ):
+            verdict = self._vendored_lock_gate() or verdict
         kind = EventKind.GATE_PASSED if verdict.ok else EventKind.GATE_FAILED
         logger.info(
             "gate verdict: role=%s gate=%s ok=%s reason=%s",
