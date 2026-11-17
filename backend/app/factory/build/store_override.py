@@ -301,7 +301,7 @@ def verify_vendored(
         if not vendored_at(entry["path"], block_id):
             refused.append(f"{block_id}: not vendored at {vendored_path(block_id)}")
             continue
-        block_dir = root / str(entry["path"])
+        block_dir = root.joinpath(*VENDOR_BLOCKS, block_id)
         recorded = str(entry.get(VENDORED_HASH_KEY) or "")
         if not recorded:
             refused.append(f"{block_id}: no recorded hash of the vendored copy")
