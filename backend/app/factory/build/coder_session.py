@@ -71,6 +71,7 @@ NAMED_BLOCKER_CLI = "FACTORY_CODE_CLI_UNAVAILABLE"
 NAMED_BLOCKER_CLI_CREDS = "FACTORY_CODE_CLI_CREDENTIALS_MISSING"
 NAMED_BLOCKER_CLI_FAILED = "FACTORY_CODE_CLI_FAILED"
 NAMED_BLOCKER_CLI_NO_MODEL = "FACTORY_CODE_CLI_NO_MODEL"
+NAMED_BLOCKER_BUILDS_UNAVAILABLE = "FACTORY_BUILDS_UNAVAILABLE"
 NAMED_BLOCKER_CLI_MODEL_DENIED = "FACTORY_CODE_CLI_MODEL_DENIED"
 NAMED_BLOCKER_CLI_BILLING = "FACTORY_CODE_CLI_BILLING"
 #: DeepSeek CLI was ready but C-BRIEF never ran, or the run SUCCESS-ed
@@ -215,6 +216,14 @@ class CodeCliUnavailable(RuntimeError):
     """Operator/config class: FACTORY_CODE_CLI is not on the factory host."""
 
     blocker = NAMED_BLOCKER_CLI
+
+
+class BuildsUnavailable(CodeCliUnavailable):
+    """Operator/config class: builds cannot start on this host (the exam
+    proofs directory cannot serve them). Refused at the door with the plain
+    reason, through every handler of an unavailable coding session."""
+
+    blocker = NAMED_BLOCKER_BUILDS_UNAVAILABLE
 
 
 class CodeCliCredentialsMissing(CodeCliUnavailable):

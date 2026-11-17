@@ -630,6 +630,34 @@ def _under_owner_control(run: Callable[["RoleRunner"], "BuildOutcome"]) -> Calla
 
     return controlled
 
+def role_staging_dir(workspace: Path, role: BuildRole) -> Optional[Path]:
+    """The staging tree ``role`` writes into for the product at ``workspace``,
+    or None when it writes the product directory itself (only the WRITER is
+    staged)."""
+    if role is not BuildRole.WRITER:
+        return None
+    return workspace.parent / f".{workspace.name}.staging-{role.value.lower()}"
+
+
+def agent_rw_roots_for(workspace: Path) -> Tuple[Path, ...]:
+    """Every root the coding agent's confinement may be asked to grant in the
+    build of the product at ``workspace``, for any role: the working directory
+    each role runs in plus the extras the spawn passes
+    (``coder_session.agent_rw_extras``), before confinement narrows them. The
+    one list the vendored-lock gate and the proofs readiness probe check."""
+    from types import SimpleNamespace
+
+    from app.factory.build.coder_session import agent_rw_extras
+
+    workspace = Path(workspace)
+    roots: List[Path] = []
+    for role in BuildRole:
+        cwd = role_staging_dir(workspace, role) or workspace
+        ws = SimpleNamespace(workspace=cwd, destination=workspace)
+        roots.extend([cwd, *agent_rw_extras(ws)])
+    return tuple(dict.fromkeys(roots))
+
+
 class RoleRunner:
     """Drives one build of *blueprint* into *workspace*."""
 
@@ -1160,25 +1188,12 @@ class RoleRunner:
     def _staging_for(self, role: BuildRole) -> Optional[Path]:
         """The staging tree ``role`` writes into, or None when it writes the
         product directory itself (only the WRITER is staged)."""
-        if role is not BuildRole.WRITER:
-            return None
-        return self.workspace.parent / f".{self.workspace.name}.staging-{role.value.lower()}"
+        return role_staging_dir(self.workspace, role)
 
     def agent_rw_roots(self) -> Tuple[Path, ...]:
         """Every root the coding agent's confinement may be asked to grant in
-        this build, for any role: the working directory each role runs in
-        plus the extras the spawn passes (``coder_session.agent_rw_extras``),
-        before confinement narrows them."""
-        from types import SimpleNamespace
-
-        from app.factory.build.coder_session import agent_rw_extras
-
-        roots: List[Path] = []
-        for role in BuildRole:
-            cwd = self._staging_for(role) or self.workspace
-            ws = SimpleNamespace(workspace=cwd, destination=self.workspace)
-            roots.extend([cwd, *agent_rw_extras(ws)])
-        return tuple(dict.fromkeys(roots))
+        this build (:func:`agent_rw_roots_for` of its workspace)."""
+        return agent_rw_roots_for(self.workspace)
 
     def exam_proofs(self) -> Any:
         """F-2: this build's proof store, opened once by the orchestrator.

@@ -56,6 +56,7 @@ import hmac
 import json
 import os
 import secrets
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
@@ -218,28 +219,57 @@ def unusable_reason(exc: BaseException) -> str:
     return f"the exam proofs directory is not usable ({type(exc).__name__})"
 
 
+#: How long one probe of the proofs directory answers for: /ready is polled
+#: every few seconds, and each probe writes to the directory's volume.
+PROBE_CACHE_SECONDS = 60.0
+
+_probe_cache: Dict[Tuple[str, str], Tuple[float, Optional[str]]] = {}
+
+
 def probe_proofs_dir(
     builds_root: Path | str, environ: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
-    """None when the proofs directory can serve every build under
-    ``builds_root``; otherwise the plain reason it cannot. Every build lives
-    under ``builds_root``, and so does every root the coding agent may be
-    granted for it, so the directory is checked as builds see it: it must be
-    neither inside that tree nor above it (:func:`placement_refusal`, with a
-    build placed directly under the root). It is then created and a probe file
-    is written and removed in it."""
+    """None when the proofs directory can serve a build under ``builds_root``;
+    otherwise the plain reason it cannot. The directory is checked as the
+    vendored-lock gate checks it: :func:`placement_refusal` for a build placed
+    directly under ``builds_root``, against the same root list
+    (``runner.agent_rw_roots_for``). It is then created and a probe file is
+    written and removed in it. Any error at all is a reason (its type, no
+    path), never an exception."""
     try:
+        from app.factory.build.runner import agent_rw_roots_for
+
+        workspace = Path(builds_root) / "build"
         base = proofs_base(environ).resolve()
-        why = placement_refusal(base, Path(builds_root) / "build", (builds_root,))
+        why = placement_refusal(base, workspace, agent_rw_roots_for(workspace))
         if why is not None:
             return why
         base.mkdir(parents=True, exist_ok=True)
         probe = base / f".probe-{os.getpid()}-{secrets.token_hex(4)}"
         probe.write_text("probe", encoding="utf-8")
         probe.unlink()
-    except (OSError, RuntimeError) as exc:
+    except Exception as exc:  # noqa: BLE001 -- every failure is "not usable"
         return unusable_reason(exc)
     return None
+
+
+def builds_unavailable_reason(
+    builds_root: Path | str,
+    environ: Optional[Mapping[str, str]] = None,
+    *,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """:func:`probe_proofs_dir`, answered from a result at most
+    :data:`PROBE_CACHE_SECONDS` old for the same builds root and setting."""
+    env = os.environ if environ is None else environ
+    key = (str(builds_root), str(env.get(PROOFS_DIR_ENV) or ""))
+    clock = time.monotonic() if now is None else now
+    hit = _probe_cache.get(key)
+    if hit is not None and 0 <= clock - hit[0] < PROBE_CACHE_SECONDS:
+        return hit[1]
+    reason = probe_proofs_dir(builds_root, environ)
+    _probe_cache[key] = (clock, reason)
+    return reason
 
 
 def open_proof_store(
