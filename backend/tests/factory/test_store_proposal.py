@@ -190,11 +190,13 @@ def test_filing_the_same_repair_twice_is_one_row(tmp_path, case):
     assert [r["proposal_id"] for r in sp.filed_proposals(tmp_path)] == [first.proposal_id]
 
 
-def test_two_different_repairs_are_two_rows_in_filing_order(tmp_path):
-    for case in _CASES:
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)], ids=["as-listed", "reversed"])
+def test_two_different_repairs_are_two_rows_in_filing_order(tmp_path, order):
+    filed = [_CASES[i] for i in order]
+    for case in filed:
         lock, _, _ = _product(tmp_path, case)
         sp.accept_repair(tmp_path, lock, _passed(case), build_id=case["build"])
-    assert [r["block_id"] for r in sp.filed_proposals(tmp_path)] == [c["block"] for c in _CASES]
+    assert [r["block_id"] for r in sp.filed_proposals(tmp_path)] == [c["block"] for c in filed]
 
 
 @pytest.mark.parametrize(
