@@ -74,6 +74,25 @@
         "latest_published": "1.5.9",
         "factory_client": "chromadb.PersistentClient"
       }
+    },
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "aliases": [
+        "CVE-2026-112366"
+      ],
+      "package": "picomatch",
+      "date": "2026-11-17",
+      "expires": "2026-12-01",
+      "note": "docs/security/dependency-adjudications/2026-11-17-picomatch.md",
+      "decision": "accept_until_expiry",
+      "evidence": {
+        "kind": "no_patched_version_dev_tooling_only",
+        "installed_pin": "4.0.7",
+        "latest_published": "4.0.7",
+        "vulnerable_range": "<=4.0.7",
+        "lockfile_dev": true,
+        "shipped": false
+      }
     }
   ]
 }
