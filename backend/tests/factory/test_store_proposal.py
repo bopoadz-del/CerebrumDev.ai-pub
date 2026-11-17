@@ -520,8 +520,8 @@ def test_an_install_the_lock_check_refuses_is_rolled_back(tmp_path, case):
     assert not vendored.with_name(vendored.name + sp.INSTALL_BACKUP_SUFFIX).exists()
 
 
-def test_a_rolled_back_install_keeps_a_proposal_filed_before_it(tmp_path):
-    case = _CASES[0]
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_rolled_back_install_keeps_a_proposal_filed_before_it(tmp_path, case):
     lock, _, _ = _product(tmp_path, case)
     _accept(tmp_path, dict(lock), _passed(case), build_id=case["build"])
     filed = _proposals_text(tmp_path)
@@ -532,18 +532,26 @@ def test_a_rolled_back_install_keeps_a_proposal_filed_before_it(tmp_path):
     assert _proposals_text(tmp_path) == filed
 
 
-def test_a_stale_backup_from_an_earlier_install_is_replaced(tmp_path):
-    case = _CASES[1]
+@pytest.mark.parametrize(
+    "case, stale_files",
+    [
+        (_CASES[0], {"left.py": "OLD = 1\n"}),
+        (_CASES[1], {"block.py": "VALUE = 0\n", "lib/old.py": "Y = 9\n"}),
+    ],
+    ids=["zorblat-one-file", "quxbar-nested"],
+)
+def test_a_stale_backup_from_an_earlier_install_is_replaced(tmp_path, case, stale_files):
     lock, vendored, staging = _product(tmp_path, case)
     stale = vendored.with_name(vendored.name + sp.INSTALL_BACKUP_SUFFIX)
-    _write(stale, {"left.py": "OLD = 1\n"})
+    _write(stale, stale_files)
 
     assert _install(tmp_path, lock, case) is None
     assert tree_hash(vendored) == tree_hash(staging)
     assert not stale.exists()
 
 
-def test_withdrawing_a_proposal_removes_only_that_row(tmp_path):
+@pytest.mark.parametrize("withdrawn, kept", [(0, 1), (1, 0)])
+def test_withdrawing_a_proposal_removes_only_that_row(tmp_path, withdrawn, kept):
     root = tmp_path / "shared"
     rows = [{"proposal_id": "p-one", "n": 1}, {"proposal_id": "p-two", "n": 2}]
     path = sp.proposals_path(root)
@@ -552,5 +560,6 @@ def test_withdrawing_a_proposal_removes_only_that_row(tmp_path):
 
     assert sp.withdraw_proposal(root, "p-absent") is False
     assert sp.filed_proposals(root) == rows
-    assert sp.withdraw_proposal(root, "p-one") is True
-    assert sp.filed_proposals(root) == [rows[1]]
+    assert sp.withdraw_proposal(root, rows[withdrawn]["proposal_id"]) is True
+    assert sp.filed_proposals(root) == [rows[kept]]
+    assert sp.withdraw_proposal(root, rows[withdrawn]["proposal_id"]) is False

@@ -621,18 +621,23 @@ def test_a_passed_exam_that_is_not_installed_is_not_a_repair(installer, detail):
     assert out[0].detail == detail
 
 
-def test_an_install_refusal_with_no_exam_detail_is_named_alone():
+@pytest.mark.parametrize(
+    "block, refusal",
+    [("plinket", "no lock entry"), ("zorblat", "staged copy missing")],
+)
+def test_an_install_refusal_with_no_exam_detail_is_named_alone(block, refusal):
     from app.factory.build.store_repair import RepairResult, settle
 
     out = settle(
-        _store_verdict(_finding("plinket")),
+        _store_verdict(_finding(block)),
         plan_capabilities=[],
         events=[],
-        repairer=lambda b, d: RepairResult(b, True, exam_id="exam-plinket"),
-        installer=lambda r, d: "no lock entry",
+        repairer=lambda b, d: RepairResult(b, True, exam_id=f"exam-{b}"),
+        installer=lambda r, d: refusal,
     )
+    assert out[0].block_id == block
     assert out[0].repaired is False
-    assert out[0].detail == "not installed: no lock entry"
+    assert out[0].detail == f"not installed: {refusal}"
 
 
 @pytest.mark.parametrize("passes", [True, False])
@@ -732,12 +737,26 @@ def test_a_repair_the_regrade_still_finds_does_not_settle_the_run(
     assert notes[0].payload["settled"] is False
 
 
-def test_a_crashed_regrade_settles_nothing(smoke_blueprint, tmp_path, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize(
+    "index, crash, named",
+    [
+        (0, RuntimeError("grader down"), "RuntimeError: grader down"),
+        (1, OSError("socket closed"), "OSError: socket closed"),
+    ],
+)
+def test_a_crashed_regrade_settles_nothing(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+    crash,
+    named,
+):
     holder: dict = {}
 
     def verdicts(runner):
-        holder["block"], _ = _bound_block(runner, 0)
-        return [_store_verdict(_finding(holder["block"])), RuntimeError("grader down")]
+        holder["block"], _ = _bound_block(runner, index)
+        return [_store_verdict(_finding(holder["block"])), crash]
 
     runner, _ = _runner(smoke_blueprint, tmp_path, monkeypatch, verdicts, _passes)
     outcome = runner.run()
@@ -745,13 +764,15 @@ def test_a_crashed_regrade_settles_nothing(smoke_blueprint, tmp_path, monkeypatc
     notes = _regrade_notes(runner)
     assert len(notes) == 1
     assert notes[0].payload["settled"] is False
-    assert "re-grade crashed: RuntimeError: grader down" in notes[0].detail
+    assert f"re-grade crashed: {named}" in notes[0].detail
 
 
+@pytest.mark.parametrize("index", [0, 1])
 def test_a_settling_regrade_is_recorded_and_its_grade_kept(
     smoke_blueprint,  # noqa: F811
     tmp_path,
     monkeypatch,
+    index,
 ):
     from app.factory.build import grader as grader_mod
     from app.factory.build.store_repair import GRADE_SECTION
@@ -759,7 +780,7 @@ def test_a_settling_regrade_is_recorded_and_its_grade_kept(
     holder: dict = {}
 
     def verdicts(runner):
-        holder["block"], _ = _bound_block(runner, 0)
+        holder["block"], _ = _bound_block(runner, index)
         regraded = grader_mod.GraderVerdict(
             tier=grader_mod.CERTIFIED, grade={"product_id": "plinket", "regraded": True}
         )
@@ -809,10 +830,12 @@ def test_a_repair_the_installer_refuses_is_marked_and_never_regraded(
     assert [tuple(r["not_delivered"]) for r in grade[GRADE_SECTION]] == [holder["bound"]]
 
 
+@pytest.mark.parametrize("index", [0, 1])
 def test_without_an_installer_a_store_defect_still_ends_the_run_naming_the_factory(
     smoke_blueprint,  # noqa: F811
     tmp_path,
     monkeypatch,
+    index,
 ):
     called: list = []
 
@@ -821,7 +844,7 @@ def test_without_an_installer_a_store_defect_still_ends_the_run_naming_the_facto
         return _passes(block_id, defects)
 
     def verdicts(runner):
-        block, _ = _bound_block(runner, 0)
+        block, _ = _bound_block(runner, index)
         return [_store_verdict(_finding(block))]
 
     runner, _ = _runner(smoke_blueprint, tmp_path, monkeypatch, verdicts, repairer, installer=None)
