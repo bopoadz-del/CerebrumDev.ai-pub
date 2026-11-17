@@ -444,3 +444,113 @@ def test_a_corrupt_proposals_line_is_skipped_kept_and_filing_goes_on(tmp_path, c
     assert path.read_text(encoding="utf-8").splitlines()[1] == corrupt
     assert lock[OVERRIDES_KEY][case["block"]]["exam_id"] == case["exam"]
     assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+
+# -- F-3: the installer puts the examined repair in place, or changes nothing --
+
+
+def _install(root: Path, lock: dict, case: dict, **kw):
+    return sp.install_repair(
+        root, lock, _passed(case), build_id=case["build"], proofs_dir=_proofs(root), **kw
+    )
+
+
+def _proposals_text(root: Path) -> str:
+    path = sp.proposals_path(root)
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_an_installed_repair_stands_in_the_vendored_place_and_passes_the_lock_check(tmp_path, case):
+    lock, vendored, staging = _product(tmp_path, case)
+    original = tree_hash(vendored)
+
+    assert _install(tmp_path, lock, case) is None
+
+    assert tree_hash(vendored) == tree_hash(staging) != original
+    record = lock[OVERRIDES_KEY][case["block"]]
+    assert record["replaces_hash"] == original
+    assert record["override_hash"] == tree_hash(staging)
+    check = verify_vendored(tmp_path, lock, proofs_dir=_proofs(tmp_path))
+    assert check.ok and check.overridden == (case["block"],)
+    assert [r["block_id"] for r in sp.filed_proposals(tmp_path)] == [case["block"]]
+    assert not vendored.with_name(vendored.name + sp.INSTALL_BACKUP_SUFFIX).exists()
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_repair_without_its_proof_is_not_installed_and_nothing_changes(tmp_path, case):
+    lock, vendored, _ = _product(tmp_path, case)
+    _prove(tmp_path, case, passed=False)
+    before = (tree_hash(vendored), json.dumps(lock, sort_keys=True))
+
+    why = _install(tmp_path, lock, case)
+
+    assert why and case["block"] in why
+    assert (tree_hash(vendored), json.dumps(lock, sort_keys=True)) == before
+    assert sp.filed_proposals(tmp_path) == []
+
+
+def _tamper_other_block(root: Path, lock: dict) -> None:
+    """A second vendored block whose bytes differ from its recorded copy, so
+    the lock check refuses the product whatever this repair does."""
+    other = root / "vendor" / "blocks" / "frobnic"
+    _write(other, {"core.py": "A = 1\n"})
+    lock["blocks"]["frobnic"] = {
+        "source": "store:origin-three",
+        "commit": "abc1234",
+        "path": "vendor/blocks/frobnic",
+        VENDORED_HASH_KEY: tree_hash(other),
+    }
+    _write(other, {"core.py": "A = 2\n"})
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_an_install_the_lock_check_refuses_is_rolled_back(tmp_path, case):
+    lock, vendored, _ = _product(tmp_path, case)
+    _tamper_other_block(tmp_path, lock)
+    before = (tree_hash(vendored), json.dumps(lock, sort_keys=True))
+
+    why = _install(tmp_path, lock, case)
+
+    assert why.startswith("installed repair failed the lock check: ")
+    assert "frobnic" in why
+    assert (tree_hash(vendored), json.dumps(lock, sort_keys=True)) == before
+    assert OVERRIDES_KEY not in lock
+    assert sp.filed_proposals(tmp_path) == []
+    assert not vendored.with_name(vendored.name + sp.INSTALL_BACKUP_SUFFIX).exists()
+
+
+def test_a_rolled_back_install_keeps_a_proposal_filed_before_it(tmp_path):
+    case = _CASES[0]
+    lock, _, _ = _product(tmp_path, case)
+    _accept(tmp_path, dict(lock), _passed(case), build_id=case["build"])
+    filed = _proposals_text(tmp_path)
+    assert filed
+    _tamper_other_block(tmp_path, lock)
+
+    assert _install(tmp_path, lock, case) is not None
+    assert _proposals_text(tmp_path) == filed
+
+
+def test_a_stale_backup_from_an_earlier_install_is_replaced(tmp_path):
+    case = _CASES[1]
+    lock, vendored, staging = _product(tmp_path, case)
+    stale = vendored.with_name(vendored.name + sp.INSTALL_BACKUP_SUFFIX)
+    _write(stale, {"left.py": "OLD = 1\n"})
+
+    assert _install(tmp_path, lock, case) is None
+    assert tree_hash(vendored) == tree_hash(staging)
+    assert not stale.exists()
+
+
+def test_withdrawing_a_proposal_removes_only_that_row(tmp_path):
+    root = tmp_path / "shared"
+    rows = [{"proposal_id": "p-one", "n": 1}, {"proposal_id": "p-two", "n": 2}]
+    path = sp.proposals_path(root)
+    path.parent.mkdir(parents=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    assert sp.withdraw_proposal(root, "p-absent") is False
+    assert sp.filed_proposals(root) == rows
+    assert sp.withdraw_proposal(root, "p-one") is True
+    assert sp.filed_proposals(root) == [rows[1]]

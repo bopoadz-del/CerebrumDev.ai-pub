@@ -1097,19 +1097,20 @@ class RoleRunner:
             or str(self.state.get("platform_id") or "")
             or self.workspace.name
         )
+        grader_inputs = dict(
+            blueprint=self.blueprint,
+            workspace=self.workspace,
+            product_id=product_id,
+            plan_capabilities=[c.capability_id for c in self.plan.capabilities],
+            state_specs=self.state.get("model_specs"),
+            route_bodies=self.state.get("route_bodies"),
+            compiled_brief=told["brief"],
+            prompt_text=told["prompt"],
+            supplied_text=told["supplied"],
+            store_root=self.store_root,
+        )
         try:
-            verdict = run_grader(
-                blueprint=self.blueprint,
-                workspace=self.workspace,
-                product_id=product_id,
-                plan_capabilities=[c.capability_id for c in self.plan.capabilities],
-                state_specs=self.state.get("model_specs"),
-                route_bodies=self.state.get("route_bodies"),
-                compiled_brief=told["brief"],
-                prompt_text=told["prompt"],
-                supplied_text=told["supplied"],
-                store_root=self.store_root,
-            )
+            verdict = run_grader(**grader_inputs)
         except Exception as exc:  # noqa: BLE001 -- named, never silent
             self.ledger.append(
                 EventKind.NOTE,
@@ -1132,7 +1133,7 @@ class RoleRunner:
         )
         if verdict.ok:
             return None
-        if self._store_repair_settles(verdict):
+        if self._store_repair_settles(verdict, lambda: run_grader(**grader_inputs)):
             return None
         return verdict
 
@@ -1141,17 +1142,28 @@ class RoleRunner:
     #: default until K-3 supplies the block exam) keeps today's path: a
     #: verdict owed only by vendored blocks ends the run naming the Factory.
     store_repairer: Optional[Callable[..., Any]] = None
+    #: F-3: puts a passed repair in place and records it,
+    #: ``installer(result, defects) -> None | reason`` (``store_proposal.
+    #: install_repair`` bound to this product's lock). None keeps today's
+    #: path, as an unset repairer does: no repair settles uninstalled.
+    store_installer: Optional[Callable[..., Any]] = None
 
-    def _store_repair_settles(self, verdict: Any) -> bool:
+    def _store_repair_settles(self, verdict: Any, regrade: Callable[[], Any]) -> bool:
         """R4 + R5: a NOT_CERTIFIED verdict whose every open item is a Store
         defect is settled by repair, each block within its own allowance
         (NOTE events, never REWORK). A failed repair marks only the block's
         capabilities not delivered; the grade record lists the defects in
         its own section, and the run goes on. False leaves the verdict to
-        the existing paths."""
-        if self.store_repairer is None:
+        the existing paths.
+
+        F-3: a repair counts only once installed (``store_installer``), and
+        when any was installed the product is graded again (``regrade``);
+        the run is settled only if :func:`store_repair.regrade_settles`
+        accepts that new verdict."""
+        if self.store_repairer is None or self.store_installer is None:
             return False
         from app.factory.build import store_repair
+        from app.factory.build.grader import GRADER_GATE
         from app.factory.build.product_grader import grade_writer
 
         repairs = store_repair.settle(
@@ -1159,6 +1171,7 @@ class RoleRunner:
             plan_capabilities=list(getattr(self.plan, "capabilities", None) or []),
             events=self.ledger.events() if self.ledger.exists() else [],
             repairer=self.store_repairer,
+            installer=self.store_installer,
         )
         if repairs is None:
             return False
@@ -1174,8 +1187,25 @@ class RoleRunner:
                 ),
                 payload=repair.note(spent + 1),
             )
+        final = verdict
+        if any(r.repaired for r in repairs):
+            try:
+                final = regrade()
+                settled = store_repair.regrade_settles(final, repairs)
+                why = "; ".join(getattr(final, "items", ()) or ())[:400] or "-"
+            except Exception as exc:  # noqa: BLE001 -- a crashed re-grade settles nothing, named
+                settled = False
+                why = f"re-grade crashed: {type(exc).__name__}: {exc}"
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.WRITER,
+                detail=f"GRADER RE-GRADE after Store repair: {'settled' if settled else 'not settled'}: {why}",
+                payload={"grader_gate": GRADER_GATE, "store_regrade": True, "settled": settled},
+            )
+            if not settled:
+                return False
         grade_writer.write_grade_json(
-            self.workspace, store_repair.grade_with_section(verdict.grade, repairs)
+            self.workspace, store_repair.grade_with_section(final.grade, repairs)
         )
         return True
 

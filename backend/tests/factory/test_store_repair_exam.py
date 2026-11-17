@@ -396,13 +396,25 @@ def test_a_stale_staging_copy_is_replaced_by_the_vendored_one(stale, tmp_path):
 
 @pytest.mark.parametrize("block_id", ["zorblat", "quxbar"])
 def test_the_repairer_settles_a_store_only_verdict_through_k2(block_id, tmp_path):
-    """The repairer is the one K-2's settle() calls: a passed repair delivers."""
+    """The repairer is the one K-2's settle() calls, and F-3's installer puts
+    the examined repair in place: only then does the repair deliver."""
     from types import SimpleNamespace
 
     from app.factory.build import grader as grader_mod
-    from app.factory.build import store_repair
+    from app.factory.build import store_proposal, store_repair
+    from app.factory.build.store_override import OVERRIDES_KEY, VENDORED_HASH_KEY
 
-    _vendor(tmp_path, block_id)
+    product = tmp_path / "product"
+    proofs = tmp_path / "proofs"
+    vendored = _vendor(product, block_id)
+    lock = {
+        "blocks": {
+            block_id: {
+                "path": f"vendor/blocks/{block_id}",
+                VENDORED_HASH_KEY: sre.tree_hash(vendored),
+            }
+        }
+    }
     finding = {"file": f"vendor/blocks/{block_id}/block.py", "kind": "crash", "input": {"payload": {}}, "owner": "FACTORY"}
     owed = (f"FACTORY owes {finding['file']}",)
     verdict = grader_mod.GraderVerdict(
@@ -411,10 +423,22 @@ def test_the_repairer_settles_a_store_only_verdict_through_k2(block_id, tmp_path
         grade={"hardwiring": {"findings": [finding]}},
         factory_owed=owed,
     )
-    repair = sre.make_repairer(tmp_path, writer=_writer(_FIXED, []), invoker=_invoker, rescan=lambda d: [])
+    repair = sre.make_repairer(
+        product, writer=_writer(_FIXED, []), invoker=_invoker, rescan=lambda d: [], proofs_dir=proofs
+    )
+
+    def install(result, defects):
+        return store_proposal.install_repair(
+            product, lock, result, build_id="build-one", proofs_dir=proofs, defects=defects
+        )
+
     caps = [SimpleNamespace(capability_id="cap_a", block_ids=[block_id])]
-    (row,) = store_repair.settle(verdict, plan_capabilities=caps, events=[], repairer=repair)
+    (row,) = store_repair.settle(
+        verdict, plan_capabilities=caps, events=[], repairer=repair, installer=install
+    )
     assert (row.repaired, row.not_delivered, row.exam_score) == (True, (), 1.0)
+    assert sre.tree_hash(vendored) == sre.tree_hash(product / "repair" / block_id)
+    assert lock[OVERRIDES_KEY][block_id]["override_hash"] == sre.tree_hash(vendored)
 
 
 # --- F-2: every exam run leaves the Factory's proof outside the product -------
