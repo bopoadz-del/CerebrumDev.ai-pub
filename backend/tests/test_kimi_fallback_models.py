@@ -1,6 +1,6 @@
-"""Fallback-model regression tests for Kimi-only LLM paths.
+"""Fallback-model regression tests for the OpenAI-compatible LLM paths.
 
-If the primary Kimi model fails, each path retries once with a configured
+If the primary model fails, each path retries once with a configured
 fallback model before giving up.
 """
 
@@ -26,9 +26,6 @@ def _clear_env():
         "CEREBRUM_CHAT_LLM_FALLBACK_MODEL",
         "CEREBRUM_FACTORY_LLM_MODEL",
         "CEREBRUM_FACTORY_LLM_FALLBACK_MODEL",
-        "KIMI_API_KEY",
-        "KIMI_MODEL",
-        "KIMI_MOCK",
         "CEREBRUM_LLM_MOCK",
     ]
     old = {k: os.environ.get(k) for k in keys}
@@ -44,30 +41,30 @@ def _clear_env():
 
 @pytest.fixture
 def chat_env(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-test")
-    monkeypatch.setenv("CEREBRUM_CHAT_LLM_MODEL", "kimi-k2.7")
-    monkeypatch.setenv("CEREBRUM_CHAT_LLM_FALLBACK_MODEL", "moonshot-v1-8k")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_MODEL", "chat-model")
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_FALLBACK_MODEL", "chat-fallback-model")
 
 
 @pytest.fixture
 def factory_env(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-test")
-    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_MODEL", "kimi-k2.7-code")
-    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_FALLBACK_MODEL", "kimi-k2.5-code")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_MODEL", "code-model")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_FALLBACK_MODEL", "code-fallback-model")
 
 
 def test_chat_config_includes_fallback_model(chat_env):
     cfg = get_llm_config()
-    assert cfg["model"] == "kimi-k2.7"
-    assert cfg["fallback_model"] == "moonshot-v1-8k"
+    assert cfg["model"] == "chat-model"
+    assert cfg["fallback_model"] == "chat-fallback-model"
 
 
 def test_factory_config_includes_code_fallback_model(factory_env):
     cfg = get_factory_llm_config()
-    assert cfg["model"] == "kimi-k2.7-code"
-    assert cfg["fallback_model"] == "kimi-k2.5-code"
+    assert cfg["model"] == "code-model"
+    assert cfg["fallback_model"] == "code-fallback-model"
 
 
 @pytest.mark.anyio
@@ -91,7 +88,7 @@ async def test_chain_generator_retries_with_fallback_model():
 
     with patch.object(httpx.AsyncClient, "post", fake_post):
         result = await _call_openai_compatible(
-            "https://api.test.kimi/v1",
+            "https://api.test.example/v1",
             "sk-test",
             "primary",
             [{"role": "user", "content": "hi"}],
@@ -110,7 +107,7 @@ async def test_chain_generator_does_not_retry_when_no_fallback():
     with patch.object(httpx.AsyncClient, "post", return_value=primary_resp):
         with pytest.raises(httpx.HTTPError):
             await _call_openai_compatible(
-                "https://api.test.kimi/v1",
+                "https://api.test.example/v1",
                 "sk-test",
                 "primary",
                 [{"role": "user", "content": "hi"}],
@@ -131,12 +128,12 @@ def test_product_architect_retries_with_fallback_model(factory_env):
 
     def fake_post(url, json=None, headers=None, timeout=None):
         calls.append(json["model"])
-        if json["model"] == "kimi-k2.7-code":
+        if json["model"] == "code-model":
             return primary_resp
         return fallback_resp
 
     with patch.object(httpx, "post", fake_post):
         result = _llm_json_call([{"role": "user", "content": "build"}])
 
-    assert calls == ["kimi-k2.7-code", "kimi-k2.5-code"]
+    assert calls == ["code-model", "code-fallback-model"]
     assert result == {"ok": True}

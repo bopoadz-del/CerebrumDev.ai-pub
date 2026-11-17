@@ -50,10 +50,8 @@ def _no_paid_calls(monkeypatch):
     monkeypatch.delenv("FACTORY_AUTO_PILOT", raising=False)
     monkeypatch.delenv("KEYED_PATH_CI", raising=False)
     for var in (
-        "KIMI_API_KEY",
         "CEREBRUM_LLM_API_KEY",
         "CEREBRUM_FACTORY_LLM_API_KEY",
-        "KIMI_MOCK",
         "CEREBRUM_LLM_MOCK",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -79,21 +77,21 @@ def test_auto_pilot_off_without_a_factory_key():
 
 def test_auto_pilot_on_when_factory_key_is_set(monkeypatch):
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "1")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-live-not-used")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-live-not-used")
     assert factory_llm_ready() is True
     assert factory_auto_pilot_enabled() is True
 
 
 def test_auto_pilot_explicit_off_wins_even_with_a_key(monkeypatch):
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "1")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-live-not-used")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-live-not-used")
     monkeypatch.setenv("FACTORY_AUTO_PILOT", "0")
     assert factory_auto_pilot_enabled() is False
 
 
 def test_keyed_path_ci_does_not_auto_open_pilot(monkeypatch):
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "1")
-    monkeypatch.setenv("KIMI_API_KEY", "ci-stub-not-a-real-key")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "ci-stub-not-a-real-key")
     monkeypatch.setenv("KEYED_PATH_CI", "1")
     assert factory_auto_pilot_enabled() is False
 
@@ -320,7 +318,7 @@ def test_code_only_success_still_exists_without_auto_pilot(tmp_path, stub_coder)
 
 def test_build_status_exposes_auto_pilot_when_keyed(tmp_path, monkeypatch):
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "1")
-    monkeypatch.setenv("KIMI_API_KEY", "sk-live-not-used")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-live-not-used")
     out = tmp_path / "build"
     out.mkdir()
     ledger = BuildLedger(out / "build_ledger.jsonl")

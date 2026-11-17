@@ -25,6 +25,7 @@ from typing import Any, Dict, Final, List, Optional
 import yaml
 
 from app.core.llm_config import (
+    HTTP_CALL_PROVIDERS,
     get_factory_llm_config,
     get_llm_config,
     _is_cursor_chat_host,
@@ -83,7 +84,7 @@ LLM_DRAFTING_ENV = "ARCHITECT_LLM_DRAFTING_ENABLED"
 class LlmSoftMiss(Exception):
     """Expected empty / unusable model output — fall back, do not Sentry-error.
 
-    OpenRouter free / Moonshot completions sometimes return ``''`` or ``{}``
+    OpenRouter free / vendor completions sometimes return ``''`` or ``{}``
     under billing pressure. That is a miss, not a contract bug. Floor chat
     logs these at warning and uses regex routing. Non-empty invalid actions
     stay ``ValueError`` (fail-closed).
@@ -282,15 +283,16 @@ def _llm_json_call(
             "Refusing api.cursor.com/v1/chat/completions — Cursor has no "
             "public chat-completions API. Floor chat uses CEREBRUM_CHAT_LLM_*."
         )
-    provider = cfg.get("provider")
-    primary_ok = not cfg.get("error") and (
-        provider in ("deepseek", "moonshot", "kimi", "cursor", "openrouter")
-        or (not provider and cfg.get("api_key") and cfg.get("base_url"))
-    )
-    if cfg.get("error") and os.getenv("LLM_PROVIDER", "").strip():
+    # The primary is callable only when the config resolved it from THE
+    # provider table without error: no second list here (WK-2).
+    primary_ok = not cfg.get("error") and cfg.get("provider") in HTTP_CALL_PROVIDERS
+    if cfg.get("error") and (
+        os.getenv("LLM_PROVIDER", "").strip() or cfg.get("config_error")
+    ):
         # A provider asked for BY NAME whose credentials are missing is an
         # error, never an invitation to substitute another vendor (the same
-        # rule the coder applies).
+        # rule the coder applies). A wrong setting (two vendors' keys with no
+        # name) is raised too: the fallback leg would hide it.
         raise ModelUnavailable(NOT_CONFIGURED, str(cfg["error"]))
     # The ladder: the configured primary, then the cross-provider fallback
     # leg. Each rung uses its OWN base_url and key (core.model_ladder).
@@ -303,6 +305,21 @@ def _llm_json_call(
     from app.factory.llm_watchdog import call_timeout_s, post_with_deadline
 
     def _post(rung: Any, m: str) -> Dict[str, Any]:
+        if rung.provider == "claude":
+            # The Messages API, not an OpenAI-shaped call: the coder's own
+            # request builder, so the two callers cannot drift apart.
+            from app.factory.coder import _anthropic_request, _anthropic_text
+
+            url, body, claude_headers = _anthropic_request(
+                {"api_key": rung.api_key, "temperature": rung.temperature, "base_url": rung.base_url},
+                messages,
+                m,
+            )
+            resp = post_with_deadline(
+                url, json=body, headers=claude_headers, timeout=call_timeout_s()
+            )
+            resp.raise_for_status()
+            return _extract_json(_anthropic_text(resp.json()))
         headers = {"Content-Type": "application/json"}
         if rung.api_key:
             headers["Authorization"] = f"Bearer {rung.api_key}"
@@ -320,7 +337,7 @@ def _llm_json_call(
         if not _is_openrouter_base(rung.base_url):
             payload["response_format"] = {"type": "json_object"}
         # Omit temperature unless explicitly configured: reasoning models
-        # (kimi-k2.x) reject any explicit temperature other than 1.
+        # reject any explicit temperature other than 1.
         if rung.temperature is not None:
             payload["temperature"] = rung.temperature
         resp = post_with_deadline(

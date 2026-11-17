@@ -51,22 +51,22 @@ def _hold_build_thread(output_dir):
         thread.join(timeout=2)
 
 
-def _kimi_cfg(**overrides):
+def _primary_cfg(**overrides):
     cfg = {
-        "provider": "kimi",
+        "provider": "deepseek",
         "model": "primary",
         "fallback_model": "fallback",
-        "base_url": "https://api.moonshot.ai/v1",
+        "base_url": "https://api.deepseek.com/v1",
         "api_key": "test-key-not-real",
     }
     cfg.update(overrides)
     return cfg
 
 
-def _arm_kimi(monkeypatch, **overrides):
+def _arm_primary(monkeypatch, **overrides):
     monkeypatch.setattr(
         "app.factory.product_architect.get_factory_llm_config",
-        lambda: _kimi_cfg(**overrides),
+        lambda: _primary_cfg(**overrides),
     )
     monkeypatch.setattr(
         "app.core.llm_config.get_factory_fallback_leg", lambda: None
@@ -77,10 +77,10 @@ def _arm_kimi(monkeypatch, **overrides):
 def test_watchdog_fires_when_httpx_never_returns(monkeypatch):
     """(a) A hung post is cut off by the wall-clock join, not by idle-read."""
     monkeypatch.setenv("FACTORY_CODER_TIMEOUT_S", "0.15")
-    _arm_kimi(monkeypatch, fallback_model=None)
+    _arm_primary(monkeypatch, fallback_model=None)
 
     def _hang(url, json=None, headers=None, timeout=None):
-        # time.sleep is no-op'd by _arm_kimi (connect-retry backoff).
+        # time.sleep is no-op'd by _arm_primary (connect-retry backoff).
         threading.Event().wait(8)
         raise AssertionError("caller was not released")
 
@@ -270,7 +270,7 @@ def test_llm_code_call_hung_close_retries_then_coder_timeout(monkeypatch):
     monkeypatch.setattr("app.factory.coder.MODEL_CALL_GRACE_S", 0.2, raising=False)
 
     port = _dribble_server(hold_s=6.0, accept_n=3)
-    _arm_kimi(monkeypatch, base_url=f"http://127.0.0.1:{port}")
+    _arm_primary(monkeypatch, base_url=f"http://127.0.0.1:{port}")
     # Real httpx.post — Client.close is the live abort path.
 
     started = time.monotonic()
@@ -293,7 +293,7 @@ def test_stacked_legs_cannot_outrun_attempt_wall(monkeypatch):
     monkeypatch.setenv("FACTORY_CODER_TIMEOUT_S", "0.2")
     monkeypatch.setattr("app.factory.llm_watchdog.MODEL_CALL_GRACE_S", 0.15)
     monkeypatch.setattr("app.factory.coder.MODEL_CALL_GRACE_S", 0.15, raising=False)
-    _arm_kimi(monkeypatch)
+    _arm_primary(monkeypatch)
     monkeypatch.setattr(
         "app.core.llm_config.get_factory_fallback_leg",
         lambda: {
@@ -306,7 +306,7 @@ def test_stacked_legs_cannot_outrun_attempt_wall(monkeypatch):
     )
 
     def _hang(url, json=None, headers=None, timeout=None):  # noqa: ARG001
-        # Must not use time.sleep: _arm_kimi no-ops it for connect-retry
+        # Must not use time.sleep: _arm_primary no-ops it for connect-retry
         # backoff, which made this test a false pass on the old join path.
         threading.Event().wait(2.0)
         raise httpx.ReadTimeout("model still open")
@@ -343,7 +343,7 @@ def test_validate_retry_does_not_swallow_coder_timeout(monkeypatch):
 def test_timeout_retries_the_alternate_configured_model(monkeypatch):
     """(b) First-leg timeout tries the fallback model; it may still succeed."""
     monkeypatch.setenv("FACTORY_CODER_TIMEOUT_S", "30")
-    _arm_kimi(monkeypatch)
+    _arm_primary(monkeypatch)
     models = []
 
     def _post(url, json=None, headers=None, timeout=None):
@@ -379,7 +379,7 @@ def test_timeout_exhaustion_raises_coder_timeout_not_a_generic_failure(
     monkeypatch,
 ):
     """(c) After every configured leg times out, the error names the timeout."""
-    _arm_kimi(monkeypatch)
+    _arm_primary(monkeypatch)
     models = []
 
     def _timeout(url, json=None, headers=None, timeout=None):
@@ -400,7 +400,7 @@ def test_timeout_exhaustion_raises_coder_timeout_not_a_generic_failure(
 
 
 def test_timeout_without_alternate_retries_the_same_model_once(monkeypatch):
-    _arm_kimi(monkeypatch, fallback_model=None)
+    _arm_primary(monkeypatch, fallback_model=None)
     calls = []
 
     def _timeout(url, json=None, headers=None, timeout=None):

@@ -4,37 +4,38 @@ Two paths are configured independently:
 
 * Chat / chain_generator / platform_chat_llm path: ``get_llm_config()``
   - Preferred: ``CEREBRUM_CHAT_LLM_API_KEY / BASE_URL / MODEL`` (authoritative)
-  - Fallback: leftover ``CEREBRUM_LLM_*`` / ``KIMI_*`` / ``ANTHROPIC_*``
+  - Fallback: the shared ``CEREBRUM_LLM_*`` slot / ``ANTHROPIC_*``
   - Cursor keys never select a chat-completions host. Cursor has no public
     ``/v1/chat/completions`` (Cloud Agents is ``/v0/agents`` only).
   - Do not invent OpenRouter as the chat host when ``OPENROUTER_API_KEY``
     is absent. A leftover ``CEREBRUM_LLM_BASE_URL=openrouter.ai`` plus a
-    dead OpenRouter key must not steal a healthy leftover Moonshot primary
+    dead OpenRouter key must not steal a healthy shared-slot primary
     when ``CEREBRUM_CHAT_*`` is unset.
 
 * Factory Product Architect / platform CLI path: ``get_factory_llm_config()``
   - Preferred: ``CEREBRUM_FACTORY_LLM_API_KEY / BASE_URL / MODEL``
-  - Fallback: ``CEREBRUM_CHAT_*`` then ``CEREBRUM_LLM_*`` / leftover ``KIMI_*``
+  - Fallback: ``CEREBRUM_CHAT_*`` then ``CEREBRUM_LLM_*``
   - ``LLM_PROVIDER=cursor`` HTTP draft uses ``CEREBRUM_CHAT_*``, not Cursor.
   - Factory coding / Cursor BA stays on ``CURSOR_*``
     (``FACTORY_CODE_PROVIDER=cursor`` / cli-pivot).
 
-``LLM_PROVIDER`` accepts ``cursor``, ``kimi``/``moonshot`` (aliased to kimi)
-and ``claude``/``anthropic`` (aliased to claude).
+``LLM_PROVIDER`` accepts the names in :data:`PROVIDER_TABLE` whose role is
+``primary`` (``claude`` also answers to ``anthropic``). Any other name is a
+configuration error and no call is made. The retired vendor is not in the
+table: not as a provider, an alias, a default, a fallback or a host.
 
 ``LLM_PROVIDER=cursor`` names the Factory coding family (Cursor BA keys).
 It is valid and render.yaml may pin it. HTTP Floor chat uses
 ``CEREBRUM_CHAT_LLM_*`` — those Cursor keys are not chat-completions
 credentials.
 
-Claude remains an opt-in HTTP provider. Leftover Kimi/Moonshot credentials
-still resolve when ``LLM_PROVIDER`` is unset or ``kimi``/``moonshot``.
-Selection is deliberate, never accidental -- :func:`_detect_provider`
-resolves to Kimi whenever leftover Kimi credentials are present, *even if
-Claude credentials are also present*, so nobody's bill changes by having a
-second key in the environment. Claude is used only when
-``LLM_PROVIDER=claude`` is set explicitly, or when Kimi has no credentials
-and Claude does.
+With ``LLM_PROVIDER`` unset, the provider is the ONE vendor whose
+credentials are present (:func:`_credential_providers`): the shared
+OpenAI-compatible slots (``CEREBRUM_CHAT_LLM_*`` / ``CEREBRUM_FACTORY_LLM_*``
+/ ``CEREBRUM_LLM_*``) resolve to ``deepseek``, whose host is the default
+when no base URL is set; an Anthropic key resolves to ``claude``. None, or
+both, is an explicit error naming the settings to set -- a second key in
+the environment never picks a vendor by itself.
 
 Selecting a provider whose key is missing is a loud error. It never falls
 through to the other provider -- a silent switch is a cost surprise, which is
@@ -49,9 +50,12 @@ prevent.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List
 from urllib.parse import urlparse, urlsplit
+
+logger = logging.getLogger(__name__)
 
 #: Cursor BA key names (Factory coding / cli-pivot). Not /chat/completions
 #: credentials — Cursor has no public OpenAI-compatible chat API.
@@ -64,21 +68,14 @@ CURSOR_KEY_ENVS = (
 #: DeepSeek is the primary provider and OpenRouter is the fallback. These are the
 #: DEFAULTS used when no *_LLM_BASE_URL / *_LLM_MODEL is configured.
 #:
-#: They used to be `https://api.moonshot.ai/v1` and `kimi-k2.7-code`, a retired
-#: provider. That is not a cosmetic default: `_scoped_path_endpoint` returns on the
-#: FIRST prefix with an API key and takes host+model from that prefix alone, so a
-#: prefix with a key but no BASE_URL fell through to the Moonshot constant and the
-#: loop never reached the prefix where the real DeepSeek endpoint was configured.
-#: A DeepSeek key was POSTed to Moonshot, 401'd, and the Floor reported "LLM
-#: drafting failed, falling back" -- shipping deterministic-template blueprints
-#: while every key in the environment was valid. Diagnosed live on build
-#: sess_f427772fcfcc4087 and worked around with two env vars; this is the fix.
+#: They used to be a retired provider's host and model. That is not a cosmetic
+#: default: `_scoped_path_endpoint` returns on the FIRST prefix with an API key and
+#: takes host+model from that prefix alone, so a prefix with a key but no BASE_URL
+#: fell through to the retired host and a DeepSeek key was POSTed there, 401'd, and
+#: the Floor shipped deterministic-template blueprints while every key in the
+#: environment was valid. The retired provider is now out of the provider table
+#: entirely (owner rule, item F-K1): no member, alias, default, fallback or host.
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-#: The retired host, kept as a NAMED legacy constant for one reason: an operator
-#: who sets KIMI_API_KEY and nothing else is explicitly naming that provider, and
-#: sending their key anywhere else would be the same defect mirrored -- a named key
-#: POSTed to a host that will 401 it. It is never a default on its own.
-MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1"
 #: Both default to the same id, matching the explicit DeepSeek branch further down
 #: rather than inventing a sibling model name that might 404.
 DEFAULT_PRIMARY_MODEL = "deepseek-chat"
@@ -110,7 +107,6 @@ _READY_SECRET_ENVS = (
     "CEREBRUM_CHAT_LLM_API_KEY",
     "CEREBRUM_LLM_API_KEY",
     "CEREBRUM_FACTORY_LLM_API_KEY",
-    "KIMI_API_KEY",
     "OPENROUTER_API_KEY",
     "FACTORY_LLM_FALLBACK_API_KEY",
     "CURSOR_API_KEY",
@@ -169,7 +165,6 @@ def llm_ready_details() -> Dict[str, Any]:
             "CEREBRUM_CHAT_LLM_API_KEY"
         ),
         "cerebrum_llm_api_key_present": env_key_present("CEREBRUM_LLM_API_KEY"),
-        "kimi_api_key_present": env_key_present("KIMI_API_KEY"),
         "openrouter_api_key_present": env_key_present("OPENROUTER_API_KEY"),
         "cursor_api_key_present": env_key_present("CURSOR_API_KEY"),
         "llm_provider": os.getenv("LLM_PROVIDER") or "",
@@ -183,6 +178,7 @@ def llm_ready_details() -> Dict[str, Any]:
         "chat_http_base_url_host": host,
         "chat_http_api_key_present": bool(api_key.strip()),
         "chat_http_error": _redact_ready_secrets(error, api_key.strip()),
+        "llm_temperature_error": temperature_setting_error(),
     }
 
 
@@ -204,12 +200,12 @@ def _env_first(*names: str, default: str = "") -> str:
     return default
 
 
-def _kimi_key(*prefixes: str) -> str:
-    """Resolve a Kimi API key from prefixed env vars, then shared fallbacks."""
+def _shared_key(*prefixes: str) -> str:
+    """Resolve an OpenAI-compatible API key: prefixed env vars, then the shared slot."""
     candidates: List[str] = []
     for prefix in prefixes:
         candidates.append(f"{prefix}_LLM_API_KEY")
-    candidates.extend(["KIMI_API_KEY", "CEREBRUM_LLM_API_KEY"])
+    candidates.append("CEREBRUM_LLM_API_KEY")
     return _env_first(*candidates)
 
 
@@ -259,25 +255,25 @@ def _first_off_openrouter(slots, default: str = "") -> str:
 
 
 def _openrouter_key(*prefixes: str) -> str:
-    """Resolve an OpenRouter key for a kimi-wire OpenRouter base_url.
+    """Resolve an OpenRouter key for an OpenRouter base_url.
 
-    Path-prefixed ``*_LLM_API_KEY`` still wins (operator override). Shared
-    Moonshot names (``KIMI_API_KEY`` / ``CEREBRUM_LLM_API_KEY``) are excluded
-    — those keys 401 on OpenRouter.
+    Path-prefixed ``*_LLM_API_KEY`` still wins (operator override). The
+    shared ``CEREBRUM_LLM_API_KEY`` is excluded -- it belongs to the default
+    host and would 401 on OpenRouter.
     """
     candidates: List[str] = [f"{prefix}_LLM_API_KEY" for prefix in prefixes]
     candidates.extend(["OPENROUTER_API_KEY", "FACTORY_LLM_FALLBACK_API_KEY"])
     return _env_first(*candidates)
 
 
-def _resolve_kimi_api_key(base_url: str, *prefixes: str) -> str:
+def _resolve_shared_api_key(base_url: str, *prefixes: str) -> str:
     """Pick the key that belongs to the resolved host.
 
-    When ``base_url`` is OpenRouter, never fall back to Moonshot keys.
+    When ``base_url`` is OpenRouter, never fall back to the shared key.
     """
     if _is_openrouter_base(base_url):
         return _openrouter_key(*prefixes)
-    return _kimi_key(*prefixes)
+    return _shared_key(*prefixes)
 
 
 def _env_first_skipping(*names: str, default: str = "", reject=None) -> str:
@@ -290,60 +286,29 @@ def _env_first_skipping(*names: str, default: str = "", reject=None) -> str:
     return default
 
 
-def _native_moonshot_key(*prefixes: str) -> str:
-    """Moonshot credentials only — never a key configured for OpenRouter.
+def _native_shared_key(*prefixes: str) -> str:
+    """A shared-slot key that is not configured for OpenRouter.
 
     Path-prefixed ``*_LLM_API_KEY`` still wins when its own base URL is not
     OpenRouter. A key whose slot points at OpenRouter (``CEREBRUM_LLM_API_KEY``
     beside ``CEREBRUM_LLM_BASE_URL=openrouter``) does not count as a native
     primary; OpenRouter stays the fallback leg.
-
-    Unless the operator DECLARED the provider (``LLM_PROVIDER=kimi`` or a
-    ``KIMI_*`` key): then the shared key slot is that provider's by
-    declaration, and an OpenRouter base left beside it is the stale value --
-    rejected by ``_kimi_base_url(skip_openrouter=True)``.
     """
     slots = [(f"{prefix}_LLM_API_KEY", f"{prefix}_LLM_BASE_URL") for prefix in prefixes]
-    slots.extend(
-        [("KIMI_API_KEY", "KIMI_BASE_URL"), ("CEREBRUM_LLM_API_KEY", "CEREBRUM_LLM_BASE_URL")]
-    )
-    if _names_kimi_explicitly():
-        return _env_first(*(value_env for value_env, _base in slots))
+    slots.append(("CEREBRUM_LLM_API_KEY", "CEREBRUM_LLM_BASE_URL"))
     return _first_off_openrouter(slots)
 
 
 def _default_base_url() -> str:
-    """DeepSeek, unless the environment explicitly names Kimi credentials.
-
-    A blanket DeepSeek default would mirror the very defect it fixes: an operator
-    with only KIMI_API_KEY set would have that key POSTed to DeepSeek and 401'd. So
-    the default follows the credential that is actually present -- an environment
-    that configures nothing, or configures DeepSeek, gets DeepSeek; one that names
-    Kimi gets Kimi, because it asked.
-    """
-    if _names_kimi_explicitly():
-        return MOONSHOT_BASE_URL
+    """The DeepSeek host: the one default for a shared slot with no base URL."""
     return DEEPSEEK_BASE_URL
 
 
-def _names_kimi_explicitly() -> bool:
-    """Whether this environment ASKED for the retired provider.
-
-    Two ways to ask, and both are explicit: ``LLM_PROVIDER=kimi``/``moonshot``, or a
-    ``KIMI_*`` credential. Either one means the default host and model must be that
-    provider's, because sending a named key to a host that will 401 it is the same
-    defect as the one the DeepSeek default fixes -- just pointing the other way.
-    """
-    if os.getenv("KIMI_API_KEY", "").strip():
-        return True
-    return os.getenv("LLM_PROVIDER", "").strip().lower() in ("kimi", "moonshot")
-
-
-def _kimi_base_url(*prefixes: str, skip_openrouter: bool = False) -> str:
+def _shared_base_url(*prefixes: str, skip_openrouter: bool = False) -> str:
     candidates: List[str] = []
     for prefix in prefixes:
         candidates.append(f"{prefix}_LLM_BASE_URL")
-    candidates.extend(["KIMI_BASE_URL", "CEREBRUM_LLM_BASE_URL"])
+    candidates.append("CEREBRUM_LLM_BASE_URL")
     reject = _is_openrouter_base if skip_openrouter else None
     return _env_first_skipping(
         *candidates, default=_default_base_url(), reject=reject
@@ -351,48 +316,36 @@ def _kimi_base_url(*prefixes: str, skip_openrouter: bool = False) -> str:
 
 
 def _default_model() -> str:
-    """Same rule as the base URL: the model must belong to the host the key goes to."""
-    return "kimi-k2.7-code" if _names_kimi_explicitly() else DEFAULT_PRIMARY_MODEL
+    """Same rule as the base URL: the model belongs to the default host."""
+    return DEFAULT_PRIMARY_MODEL
 
 
 def _default_fallback_model() -> str:
-    return "moonshot-v1-8k" if _names_kimi_explicitly() else DEFAULT_FALLBACK_MODEL
+    return DEFAULT_FALLBACK_MODEL
 
 
-def _kimi_model(*prefixes: str, skip_openrouter: bool = False) -> str:
+def _shared_model(*prefixes: str, skip_openrouter: bool = False) -> str:
     candidates: List[str] = []
     for prefix in prefixes:
         candidates.append(f"{prefix}_LLM_MODEL")
-    candidates.extend(["KIMI_MODEL", "CEREBRUM_LLM_MODEL"])
-    # KIMI_MODEL / KIMI_BASE_URL are still READ, because a live service may still
-    # have them set and silently ignoring a value someone configured is its own
-    # defect. They are legacy aliases only: the DEFAULT is DeepSeek, so an
-    # environment that configures nothing can no longer be routed to a retired
-    # provider. Override with {PREFIX}_LLM_MODEL or CEREBRUM_LLM_MODEL.
+    candidates.append("CEREBRUM_LLM_MODEL")
     if skip_openrouter:
         slots = [(f"{prefix}_LLM_MODEL", f"{prefix}_LLM_BASE_URL") for prefix in prefixes]
-        slots.extend(
-            [("KIMI_MODEL", "KIMI_BASE_URL"), ("CEREBRUM_LLM_MODEL", "CEREBRUM_LLM_BASE_URL")]
-        )
+        slots.append(("CEREBRUM_LLM_MODEL", "CEREBRUM_LLM_BASE_URL"))
         return _first_off_openrouter(slots, default=_default_model())
     return _env_first(*candidates, default=_default_model())
 
 
-def _kimi_fallback_model(*prefixes: str, default: str, skip_openrouter: bool = False) -> str:
+def _shared_fallback_model(*prefixes: str, default: str, skip_openrouter: bool = False) -> str:
     candidates: List[str] = []
     for prefix in prefixes:
         candidates.append(f"{prefix}_LLM_FALLBACK_MODEL")
-    candidates.extend(["KIMI_FALLBACK_MODEL", "CEREBRUM_LLM_FALLBACK_MODEL"])
+    candidates.append("CEREBRUM_LLM_FALLBACK_MODEL")
     if skip_openrouter:
         slots = [
             (f"{prefix}_LLM_FALLBACK_MODEL", f"{prefix}_LLM_BASE_URL") for prefix in prefixes
         ]
-        slots.extend(
-            [
-                ("KIMI_FALLBACK_MODEL", "KIMI_BASE_URL"),
-                ("CEREBRUM_LLM_FALLBACK_MODEL", "CEREBRUM_LLM_BASE_URL"),
-            ]
-        )
+        slots.append(("CEREBRUM_LLM_FALLBACK_MODEL", "CEREBRUM_LLM_BASE_URL"))
         return _first_off_openrouter(slots, default=default)
     return _env_first(*candidates, default=default)
 
@@ -406,9 +359,9 @@ def _non_cursor_base(value: str, default: str | None = None) -> str:
 def _scoped_path_endpoint(*prefixes: str) -> Dict[str, str] | None:
     """Use the first path-scoped ``*_LLM_API_KEY`` as an authoritative triple.
 
-    ``CEREBRUM_CHAT_LLM_*`` is Floor chat. Leftover ``KIMI_*`` / ``CURSOR_*``
-    must not replace a present scoped key. ``api.cursor.com`` is never a
-    chat host — Cursor has no public ``/v1/chat/completions``.
+    ``CEREBRUM_CHAT_LLM_*`` is Floor chat. Leftover ``CURSOR_*`` must not
+    replace a present scoped key. ``api.cursor.com`` is never a chat host —
+    Cursor has no public ``/v1/chat/completions``.
     """
     for prefix in prefixes:
         key = os.getenv(f"{prefix}_LLM_API_KEY", "").strip()
@@ -416,15 +369,12 @@ def _scoped_path_endpoint(*prefixes: str) -> Dict[str, str] | None:
             continue
         base = _non_cursor_base(os.getenv(f"{prefix}_LLM_BASE_URL", "").strip(), default="")
         if not base:
-            shared = _env_first("CEREBRUM_LLM_BASE_URL", "KIMI_BASE_URL")
-            base = _non_cursor_base(shared)
+            base = _non_cursor_base(_env_first("CEREBRUM_LLM_BASE_URL"))
         model = os.getenv(f"{prefix}_LLM_MODEL", "").strip() or _env_first(
-            "CEREBRUM_LLM_MODEL", "KIMI_MODEL", default=_default_model()
+            "CEREBRUM_LLM_MODEL", default=_default_model()
         )
         fallback = os.getenv(f"{prefix}_LLM_FALLBACK_MODEL", "").strip() or _env_first(
-            "CEREBRUM_LLM_FALLBACK_MODEL",
-            "KIMI_FALLBACK_MODEL",
-            default=_default_fallback_model(),
+            "CEREBRUM_LLM_FALLBACK_MODEL", default=_default_fallback_model()
         )
         return {
             "api_key": key,
@@ -435,65 +385,55 @@ def _scoped_path_endpoint(*prefixes: str) -> Dict[str, str] | None:
     return None
 
 
-def _resolve_kimi_primary(*prefixes: str) -> Dict[str, str]:
-    """Pick the HTTP chat/architect endpoint.
+def _resolve_shared_primary(*prefixes: str) -> Dict[str, str]:
+    """Pick the HTTP chat/architect endpoint from the shared slots.
 
     A present path-scoped key (``CEREBRUM_CHAT_LLM_API_KEY``) owns host and
-    model, including an operator-set OpenRouter base. Leftover ``KIMI_*``
-    must not steal that triple.
+    model, including an operator-set OpenRouter base.
 
-    When the scoped key is absent, a leftover Moonshot key owns the host so
-    a leftover ``CEREBRUM_LLM_BASE_URL=openrouter.ai`` cannot 401 through a
-    missing ``OPENROUTER_API_KEY``.
+    When the scoped key is absent, a shared key not configured for OpenRouter
+    owns the host, so a leftover ``CEREBRUM_LLM_BASE_URL=openrouter.ai``
+    cannot 401 through a missing ``OPENROUTER_API_KEY``.
     """
     scoped = _scoped_path_endpoint(*prefixes)
     if scoped:
         return scoped
-    native = _native_moonshot_key(*prefixes)
+    native = _native_shared_key(*prefixes)
     if native:
         return {
-            "base_url": _kimi_base_url(*prefixes, skip_openrouter=True),
+            "base_url": _shared_base_url(*prefixes, skip_openrouter=True),
             "api_key": native,
-            "model": _kimi_model(*prefixes, skip_openrouter=True),
-            "fallback_model": _kimi_fallback_model(
+            "model": _shared_model(*prefixes, skip_openrouter=True),
+            "fallback_model": _shared_fallback_model(
                 *prefixes, default=_default_fallback_model(), skip_openrouter=True
             ),
         }
-    base_url = _non_cursor_base(_kimi_base_url(*prefixes))
+    base_url = _non_cursor_base(_shared_base_url(*prefixes))
     return {
         "base_url": base_url,
-        "api_key": _resolve_kimi_api_key(base_url, *prefixes),
-        "model": _kimi_model(*prefixes),
-        "fallback_model": _kimi_fallback_model(*prefixes, default=_default_fallback_model()),
+        "api_key": _resolve_shared_api_key(base_url, *prefixes),
+        "model": _shared_model(*prefixes),
+        "fallback_model": _shared_fallback_model(*prefixes, default=_default_fallback_model()),
     }
 
 
-def _kimi_config(*prefixes: str) -> Dict[str, Any]:
-    endpoint = _resolve_kimi_primary(*prefixes)
-    return {
-        "provider": "kimi",
-        "api_key": endpoint["api_key"],
-        "base_url": endpoint["base_url"],
-        "model": endpoint["model"],
-        "fallback_model": endpoint["fallback_model"],
-        "mock": _truthy("CEREBRUM_LLM_MOCK") or _truthy("KIMI_MOCK"),
-        "temperature": _llm_temperature(),
-    }
+def _llm_mock() -> bool:
+    """The offline switch for the OpenAI-compatible path: ``CEREBRUM_LLM_MOCK``.
+
+    It selects no provider, host or model.
+    """
+    return _truthy("CEREBRUM_LLM_MOCK")
 
 
-def _factory_kimi_config(*prefixes: str) -> Dict[str, Any]:
-    """Factory config with a code-oriented fallback model default."""
-    # Same primary-resolution as chat: Moonshot key wins the host so a
-    # leftover OpenRouter base_url cannot steal architect / Floor chat.
-    # fallback_model default stays moonshot-v1-8k — a different live
-    # model from kimi-k2.7-code so a 429 is not replayed into itself.
-    return _kimi_config(*prefixes)
+def llm_mock_enabled() -> bool:
+    """Public read of the offline switch, for ``/ready``."""
+    return _llm_mock()
 
 
 def _claude_key(*prefixes: str) -> str:
-    """Resolve a Claude API key. Mirrors _kimi_key's prefix-then-shared order.
+    """Resolve a Claude API key. Mirrors _shared_key's prefix-then-shared order.
 
-    ``CEREBRUM_LLM_API_KEY`` is shared with Kimi deliberately: it is the
+    ``CEREBRUM_LLM_API_KEY`` is shared with the deepseek slot deliberately: it is the
     provider-agnostic name already in use, and which provider consumes it is
     decided by LLM_PROVIDER, not by the variable.
     """
@@ -546,11 +486,11 @@ def _claude_fallback_model(*prefixes: str, default: str, skip_openrouter: bool =
 
 def _native_claude_key(*prefixes: str) -> str:
     """Anthropic keys only — skip a key configured for OpenRouter and leave
-    shared Moonshot keys alone."""
+    the shared slot alone."""
     slots = [(f"{prefix}_LLM_API_KEY", f"{prefix}_LLM_BASE_URL") for prefix in prefixes]
     slots.extend([("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"), ("CLAUDE_API_KEY", "ANTHROPIC_BASE_URL")])
     if normalise_provider(os.getenv("LLM_PROVIDER", "")) == "claude":
-        # Declared provider: its key slots are its own (see _native_moonshot_key).
+        # Declared provider: its key slots are its own (see _native_shared_key).
         return _env_first(*(value_env for value_env, _base in slots))
     return _first_off_openrouter(slots)
 
@@ -573,7 +513,7 @@ def _claude_config(*prefixes: str) -> Dict[str, Any]:
 
 
 def _factory_claude_config(*prefixes: str) -> Dict[str, Any]:
-    """Factory config. Same shape as _factory_kimi_config, different provider."""
+    """Factory config. Same shape as the deepseek config, different provider."""
     cfg = _claude_config(*prefixes)
     cfg["fallback_model"] = _claude_fallback_model(
         *prefixes, default="claude-haiku-4-5-20251001"
@@ -585,7 +525,7 @@ def _llm_temperature() -> float | None:
     """Optional temperature override (LLM_TEMPERATURE).
 
     None means: do not send a temperature at all — the provider applies the
-    model default. Required for reasoning models (kimi-k2.x) which reject
+    model default. Required for reasoning models which reject
     any explicit temperature other than 1.
     """
     raw = os.getenv("LLM_TEMPERATURE", "").strip()
@@ -594,20 +534,67 @@ def _llm_temperature() -> float | None:
     try:
         return float(raw)
     except ValueError:
+        _report_invalid_temperature()
         return None
 
 
+def temperature_setting_error() -> str:
+    """Why ``LLM_TEMPERATURE`` is ignored, or ``""`` when it is unset, empty
+    or a number. Names the setting, never its value (``/ready`` shows it)."""
+    raw = os.getenv("LLM_TEMPERATURE", "").strip()
+    if not raw:
+        return ""
+    try:
+        float(raw)
+    except ValueError:
+        return "LLM_TEMPERATURE is set but is not a number; it is ignored and no temperature is sent"
+    return ""
+
+
+_temperature_reported = False
+
+
+def _report_invalid_temperature() -> None:
+    """One warning per process for a non-numeric ``LLM_TEMPERATURE``."""
+    global _temperature_reported
+    if _temperature_reported:
+        return
+    _temperature_reported = True
+    logger.warning(temperature_setting_error())
+
+
 def normalise_provider(name: str) -> str:
-    """``moonshot`` -> ``kimi``, ``anthropic`` -> ``claude``. Others pass through."""
+    """``anthropic`` -> ``claude``. Others pass through (and are checked
+    against :data:`PROVIDER_TABLE` by the caller)."""
     name = (name or "").strip().lower()
-    if name == "moonshot":
-        return "kimi"
     if name == "anthropic":
         return "claude"
     return name
 
 
-SUPPORTED_PROVIDERS = ("deepseek", "cursor", "kimi", "claude")
+#: THE provider table (WK-2). Every name a config may resolve and every name
+#: an HTTP model caller (the coder, the architect, the model ladder) may
+#: dispatch on is a key here, with the one role it may play: ``primary`` (may
+#: be selected by ``LLM_PROVIDER`` or by credentials) or ``fallback`` (only
+#: the cross-provider leg of :func:`get_factory_fallback_leg`). A name that
+#: is not a key is refused before any call.
+#: ``wire`` is the request shape a caller must build for that provider:
+#: ``openai`` (``/chat/completions``) or ``anthropic`` (the Messages API).
+PROVIDER_TABLE: Dict[str, Dict[str, str]] = {
+    "deepseek": {"role": "primary", "wire": "openai"},
+    "cursor": {"role": "primary", "wire": "openai"},
+    "claude": {"role": "primary", "wire": "anthropic"},
+    "openrouter": {"role": "fallback", "wire": "openai"},
+}
+
+SUPPORTED_PROVIDERS = tuple(n for n, row in PROVIDER_TABLE.items() if row["role"] == "primary")
+
+#: Every table name a caller may POST to with the OpenAI-compatible shape.
+OPENAI_WIRE_PROVIDERS = tuple(n for n, row in PROVIDER_TABLE.items() if row["wire"] == "openai")
+
+#: The primary names an HTTP caller accepts: the same tuple, by identity, so
+#: the config can never resolve a provider name the coder then refuses.
+HTTP_CALL_PROVIDERS = SUPPORTED_PROVIDERS
 
 
 def _cursor_http_config(*prefixes: str) -> Dict[str, Any]:
@@ -617,13 +604,13 @@ def _cursor_http_config(*prefixes: str) -> Dict[str, Any]:
     ``/v0/agents``). ``CURSOR_*`` keys arm Background Agents
     (``FACTORY_CODE_PROVIDER=cursor`` / cli-pivot). Floor chat uses the
     OpenAI-compatible ``CEREBRUM_CHAT_LLM_*`` triple already on Render,
-    then leftover ``CEREBRUM_LLM_*`` / Moonshot. Never invent OpenRouter
+    then the shared ``CEREBRUM_LLM_*`` slot. Never invent OpenRouter
     when ``OPENROUTER_API_KEY`` is absent.
     """
     # CEREBRUM_CHAT_LLM_API_KEY is authoritative for Floor HTTP even when
-    # LLM_PROVIDER=cursor (coding-family name). Read it first; leftover
-    # Kimi / CEREBRUM_LLM_* only fill gaps. Never use CURSOR_* here.
-    endpoint = _scoped_path_endpoint("CEREBRUM_CHAT", *prefixes) or _resolve_kimi_primary(
+    # LLM_PROVIDER=cursor (coding-family name). Read it first; the shared
+    # CEREBRUM_LLM_* slot only fills gaps. Never use CURSOR_* here.
+    endpoint = _scoped_path_endpoint("CEREBRUM_CHAT", *prefixes) or _resolve_shared_primary(
         "CEREBRUM_CHAT", *prefixes
     )
     if not endpoint.get("api_key"):
@@ -641,7 +628,7 @@ def _cursor_http_config(*prefixes: str) -> Dict[str, Any]:
         endpoint = {
             **endpoint,
             "base_url": _non_cursor_base(
-                _env_first("CEREBRUM_LLM_BASE_URL", "KIMI_BASE_URL")
+                _env_first("CEREBRUM_LLM_BASE_URL")
             ),
         }
 
@@ -657,7 +644,7 @@ def _cursor_http_config(*prefixes: str) -> Dict[str, Any]:
     if not cfg["api_key"]:
         cfg["error"] = (
             "LLM_PROVIDER=cursor: HTTP Floor chat uses CEREBRUM_CHAT_LLM_API_KEY "
-            "(or CEREBRUM_LLM_API_KEY / leftover Moonshot). "
+            "(or CEREBRUM_LLM_API_KEY). "
             "CURSOR_API_KEY / CURSOR_AGENT_API_KEY / FACTORY_CURSOR_API_KEY "
             "arm Background Agents (FACTORY_CODE_PROVIDER=cursor), not chat "
             "completions. Cursor has no public /v1/chat/completions."
@@ -665,50 +652,73 @@ def _cursor_http_config(*prefixes: str) -> Dict[str, Any]:
     return cfg
 
 
-def _has_kimi_credentials() -> bool:
-    """A Kimi-specific key, or the shared key with no Claude-specific key.
-
-    The shared ``CEREBRUM_LLM_API_KEY`` is ambiguous by design. It counts as
-    Kimi unless the environment says otherwise, which keeps every existing
-    single-key deployment on Kimi exactly as before.
-    """
-    if _env_first("CEREBRUM_CHAT_LLM_API_KEY", "CEREBRUM_FACTORY_LLM_API_KEY", "KIMI_API_KEY"):
-        return True
-    shared = _env_first("CEREBRUM_LLM_API_KEY")
-    if not shared:
-        return False
-    # A shared key alongside an explicit Anthropic key belongs to Kimi only if
-    # no Anthropic-specific key is set; otherwise it is genuinely ambiguous and
-    # we still prefer Kimi (see _detect_provider) -- this only decides whether
-    # Kimi credentials are considered *present at all*.
-    return True
+def _has_shared_credentials() -> bool:
+    """A key in one of the shared OpenAI-compatible slots (the deepseek row)."""
+    return bool(
+        _env_first(
+            "CEREBRUM_CHAT_LLM_API_KEY",
+            "CEREBRUM_FACTORY_LLM_API_KEY",
+            "CEREBRUM_LLM_API_KEY",
+        )
+    )
 
 
 def _has_claude_credentials() -> bool:
     return bool(_env_first("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"))
 
 
-def _detect_provider() -> str:
-    """Auto-detect HTTP chat provider from configured credentials.
+#: The settings an operator sets to choose a provider. Names only.
+_PROVIDER_SETTINGS_HINT = (
+    "set LLM_PROVIDER to one of {names}, with that provider's key "
+    "(deepseek: CEREBRUM_FACTORY_LLM_API_KEY / CEREBRUM_CHAT_LLM_API_KEY / "
+    "CEREBRUM_LLM_API_KEY / DEEPSEEK_API_KEY; claude: ANTHROPIC_API_KEY; "
+    "cursor: CEREBRUM_CHAT_LLM_API_KEY)"
+)
 
-    Cursor BA keys never select a chat-completions host. ``CURSOR_*`` arms
-    Factory coding only. ``CEREBRUM_CHAT_*`` / leftover Kimi credentials
-    win chat.
 
-    Kimi wins whenever those credentials are present, even if Claude
-    credentials are also present. Claude is auto-selected only when it is
-    the only HTTP provider configured.
+def _credential_providers() -> List[str]:
+    """Every primary provider whose credentials are present, in table order.
+
+    Cursor BA keys never select a chat-completions host (``CURSOR_*`` arms
+    Factory coding only). An OpenRouter base with its key counts for the
+    shared slot, because that is where the operator pointed it.
     """
-    chat_base = _kimi_base_url("CEREBRUM_CHAT")
+    found: List[str] = []
+    chat_base = _shared_base_url("CEREBRUM_CHAT")
     if (
         _scoped_path_endpoint("CEREBRUM_CHAT")
-        or _resolve_kimi_api_key(chat_base, "CEREBRUM_CHAT")
-        or _has_kimi_credentials()
+        or _resolve_shared_api_key(chat_base, "CEREBRUM_CHAT")
+        or _has_shared_credentials()
     ):
-        return "kimi"
+        found.append("deepseek")
     if _has_claude_credentials():
-        return "claude"
+        found.append("claude")
+    return found
+
+
+def _detect_provider() -> str:
+    """The one provider the credentials name, or ``''``.
+
+    ``''`` when no credentials are present OR when two vendors' are: a second
+    key in the environment never chooses a vendor by itself. See
+    :func:`_unresolved_provider_error` for the message.
+    """
+    found = _credential_providers()
+    if len(found) == 1:
+        return found[0]
     return ""
+
+
+def _unresolved_provider_error() -> str:
+    """Why no provider was resolved with ``LLM_PROVIDER`` unset. Names only."""
+    found = _credential_providers()
+    hint = _PROVIDER_SETTINGS_HINT.format(names=" / ".join(SUPPORTED_PROVIDERS))
+    if len(found) > 1:
+        return (
+            "LLM_PROVIDER is unset and credentials for more than one provider "
+            f"are present ({' and '.join(found)}); the choice is ambiguous: {hint}"
+        )
+    return f"LLM_PROVIDER is unset and no provider credentials are present: {hint}"
 
 
 def _deepseek_config(*prefixes: str) -> Dict[str, Any]:
@@ -716,7 +726,8 @@ def _deepseek_config(*prefixes: str) -> Dict[str, Any]:
 
     A present path-scoped triple (``CEREBRUM_FACTORY_LLM_*`` /
     ``CEREBRUM_CHAT_LLM_*``) owns host and model; otherwise
-    ``DEEPSEEK_API_KEY`` + the default deepseek endpoint.
+    ``DEEPSEEK_API_KEY`` + the default deepseek endpoint; otherwise the
+    shared ``CEREBRUM_LLM_*`` slot (host defaults to DeepSeek).
     """
     scoped = _scoped_path_endpoint(*prefixes)
     if scoped:
@@ -735,28 +746,36 @@ def _deepseek_config(*prefixes: str) -> Dict[str, Any]:
             "base_url": scoped["base_url"],
             "model": scoped["model"],
             "fallback_model": fallback,
-            "mock": False,
+            "mock": _llm_mock(),
             "temperature": _llm_temperature(),
         }
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
-        return {
+        shared = _resolve_shared_primary(*prefixes)
+        cfg: Dict[str, Any] = {
             "provider": "deepseek",
-            "api_key": "",
-            "base_url": "https://api.deepseek.com/v1",
-            "model": "deepseek-chat",
-            "fallback_model": "deepseek-chat",
-            "mock": False,
+            "api_key": shared["api_key"],
+            "base_url": shared["base_url"],
+            "model": shared["model"],
+            "fallback_model": shared["fallback_model"],
+            "mock": _llm_mock(),
             "temperature": _llm_temperature(),
-            "error": "deepseek selected but DEEPSEEK_API_KEY is not set",
         }
+        if not cfg["api_key"]:
+            cfg["error"] = (
+                "deepseek selected but no key is set: set "
+                + " or ".join(f"{prefix}_LLM_API_KEY" for prefix in prefixes)
+                + (" or " if prefixes else "")
+                + "CEREBRUM_LLM_API_KEY or DEEPSEEK_API_KEY"
+            )
+        return cfg
     return {
         "provider": "deepseek",
         "api_key": api_key,
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-        "fallback_model": "deepseek-chat",
-        "mock": False,
+        "base_url": DEEPSEEK_BASE_URL,
+        "model": DEFAULT_PRIMARY_MODEL,
+        "fallback_model": DEFAULT_FALLBACK_MODEL,
+        "mock": _llm_mock(),
         "temperature": _llm_temperature(),
     }
 
@@ -764,8 +783,6 @@ def _deepseek_config(*prefixes: str) -> Dict[str, Any]:
 def _config_for_provider(provider: str, *prefixes: str) -> Dict[str, Any]:
     if provider == "deepseek":
         return _deepseek_config(*prefixes)
-    if provider == "kimi":
-        return _kimi_config(*prefixes)
     if provider == "claude":
         return _claude_config(*prefixes)
     if provider == "cursor":
@@ -773,111 +790,93 @@ def _config_for_provider(provider: str, *prefixes: str) -> Dict[str, Any]:
     raise RuntimeError(f"unsupported LLM provider: {provider!r}")
 
 
-def _openai_compatible_chat_cfg(
-    *,
-    provider: str,
-    api_key: str,
-    base_url: str,
-    model: str = "",
-    fallback_model: str = "",
-    mock: bool = False,
-) -> Dict[str, Any] | None:
-    """Usable OpenAI-compatible Floor chat config, or None.
+def _no_provider_cfg(error: str, *, config_error: bool = False) -> Dict[str, Any]:
+    """No provider resolved: an explicit error, and no call can be made.
 
-    ``api.cursor.com`` is never a chat-completions host. A present
-    ``CEREBRUM_CHAT_LLM_API_KEY`` plus Moonshot / OpenRouter / other
-    OpenAI-compatible base must not collapse to ``provider=""``.
+    ``config_error`` marks a WRONG setting (a name outside the table, or two
+    vendors' credentials with no name) as opposed to an absent one. A caller
+    may run a zero-cost fallback leg when nothing is configured; it must not
+    when the configuration is wrong, or the leg hides the error.
     """
-    if not api_key or not base_url or _is_cursor_chat_host(base_url):
-        return None
-    return {
-        "provider": provider,
-        "api_key": api_key,
-        "base_url": base_url,
-        "model": model or _default_model(),
-        "fallback_model": fallback_model or _default_fallback_model(),
-        "mock": mock,
-        "temperature": _llm_temperature(),
-    }
-
-
-def get_llm_config() -> Dict[str, Any]:
-    """Return resolved LLM config for the chat/chain_generator path."""
-    explicit = normalise_provider(os.getenv("LLM_PROVIDER", ""))
-    provider = explicit or _detect_provider()
-
-    if provider in SUPPORTED_PROVIDERS:
-        cfg = _config_for_provider(provider, "CEREBRUM_CHAT")
-        # Mock+no-key wipe is only for *auto-detected* kit chat (stay offline).
-        # An explicit ``LLM_PROVIDER=cursor`` must keep provider="cursor".
-        # Wiping it to "" made Floor chat log "No LLM provider configured"
-        # while /ready still counted CURSOR_* as llm_configured.
-        if cfg["mock"] and not cfg["api_key"] and not explicit:
-            return {
-                "provider": "",
-                "api_key": "",
-                "base_url": "",
-                "model": "",
-                "mock": True,
-            }
-        return cfg
-
-    # Last resort: CEREBRUM_CHAT_LLM_* is a live OpenAI-compatible triple
-    # even when LLM_PROVIDER is missing or an unknown alias. Empty provider
-    # here is what _call_llm logs as "No LLM provider configured".
-    scoped = _scoped_path_endpoint("CEREBRUM_CHAT")
-    if scoped:
-        rescued = _openai_compatible_chat_cfg(
-            provider="kimi",
-            api_key=scoped.get("api_key", ""),
-            base_url=scoped.get("base_url", ""),
-            model=scoped.get("model", ""),
-            fallback_model=scoped.get("fallback_model", ""),
-            mock=_truthy("CEREBRUM_LLM_MOCK") or _truthy("KIMI_MOCK"),
-        )
-        if rescued:
-            return rescued
-
     return {
         "provider": "",
         "api_key": "",
         "base_url": "",
         "model": "",
         # Preserve mock intent for callers even when no live provider is selected
-        "mock": _truthy("CEREBRUM_LLM_MOCK") or _truthy("KIMI_MOCK"),
+        "mock": _llm_mock(),
+        "error": error,
+        "config_error": config_error,
     }
 
 
-def get_factory_llm_config() -> Dict[str, Any]:
-    """Factory Product Architect HTTP draft — CEREBRUM_CHAT when cursor, leftover Kimi, or Claude.
+def _unresolved_provider_cfg() -> Dict[str, Any]:
+    """``LLM_PROVIDER`` unset and no single vendor named by credentials."""
+    return _no_provider_cfg(
+        _unresolved_provider_error(), config_error=len(_credential_providers()) > 1
+    )
 
-    ``LLM_PROVIDER=cursor`` names the coding family (Cursor BA / cli-pivot).
-    HTTP architect draft uses ``CEREBRUM_CHAT_*`` / leftover Moonshot.
-    Cursor keys never go to ``api.cursor.com/v1/chat/completions``.
 
-    Fails closed per provider: asking for a provider whose HTTP key is absent
-    is an error carrying that provider's name.
+def _unknown_provider_error(raw: str) -> str:
+    return (
+        f"LLM_PROVIDER={raw} is not in the provider table; "
+        + _PROVIDER_SETTINGS_HINT.format(names=" / ".join(SUPPORTED_PROVIDERS))
+    )
+
+
+def get_llm_config() -> Dict[str, Any]:
+    """Return resolved LLM config for the chat/chain_generator path.
+
+    A provider is named by ``LLM_PROVIDER`` or by the ONE vendor whose
+    credentials are present. A name outside the table, no credentials, or two
+    vendors' credentials is a config error (``provider=''`` plus ``error``):
+    no caller makes a call.
     """
     raw = os.getenv("LLM_PROVIDER", "").strip().lower()
     explicit = normalise_provider(raw)
-    if raw and explicit not in SUPPORTED_PROVIDERS:
+    if explicit and explicit not in SUPPORTED_PROVIDERS:
+        return _no_provider_cfg(_unknown_provider_error(raw), config_error=True)
+    provider = explicit or _detect_provider()
+    if not provider:
+        return _unresolved_provider_cfg()
+
+    cfg = _config_for_provider(provider, "CEREBRUM_CHAT")
+    # Mock+no-key wipe is only for *auto-detected* kit chat (stay offline).
+    # An explicit ``LLM_PROVIDER=cursor`` must keep provider="cursor".
+    # Wiping it to "" made Floor chat log "No LLM provider configured"
+    # while /ready still counted CURSOR_* as llm_configured.
+    if cfg["mock"] and not cfg["api_key"] and not explicit:
         return {
             "provider": "",
             "api_key": "",
             "base_url": "",
             "model": "",
-            "mock": False,
-            "error": (
-                f"Factory architect supports {' / '.join(SUPPORTED_PROVIDERS)} "
-                f"(cursor is accepted); LLM_PROVIDER={raw} is not allowed for "
-                "product architecture"
-            ),
+            "mock": True,
         }
+    return cfg
 
-    provider = explicit or _detect_provider() or "kimi"
 
-    if provider == "deepseek":
-        return _deepseek_config("CEREBRUM_FACTORY")
+def get_factory_llm_config() -> Dict[str, Any]:
+    """Factory Product Architect HTTP draft config.
+
+    ``LLM_PROVIDER=cursor`` names the coding family (Cursor BA / cli-pivot).
+    HTTP architect draft uses ``CEREBRUM_CHAT_*`` / the shared slot.
+    Cursor keys never go to ``api.cursor.com/v1/chat/completions``.
+
+    Fails closed: a name outside the table, an unresolved or ambiguous
+    provider, or a named provider whose key is absent is an error naming the
+    settings to set.
+    """
+    raw = os.getenv("LLM_PROVIDER", "").strip().lower()
+    explicit = normalise_provider(raw)
+    if raw and explicit not in SUPPORTED_PROVIDERS:
+        cfg = _no_provider_cfg(_unknown_provider_error(raw), config_error=True)
+        cfg["mock"] = False
+        return cfg
+
+    provider = explicit or _detect_provider()
+    if not provider:
+        return _unresolved_provider_cfg()
 
     if provider == "cursor":
         cfg = _cursor_http_config("CEREBRUM_FACTORY")
@@ -887,7 +886,7 @@ def get_factory_llm_config() -> Dict[str, Any]:
             cfg["error"] = (
                 "LLM_PROVIDER=cursor: HTTP architect draft uses "
                 "CEREBRUM_CHAT_LLM_API_KEY (or CEREBRUM_FACTORY_LLM_API_KEY / "
-                "leftover Moonshot). CURSOR_API_KEY / CURSOR_AGENT_API_KEY / "
+                "CEREBRUM_LLM_API_KEY). CURSOR_API_KEY / CURSOR_AGENT_API_KEY / "
                 "FACTORY_CURSOR_API_KEY arm Background Agents, not chat "
                 "completions. Cursor has no public /v1/chat/completions."
             )
@@ -905,37 +904,19 @@ def get_factory_llm_config() -> Dict[str, Any]:
             )
         return cfg
 
-    cfg = _factory_kimi_config("CEREBRUM_FACTORY")
-    if cfg["mock"]:
+    # Factory first, then the chat slot (module docstring): the same slots
+    # :func:`_credential_providers` counts, so a key that names deepseek is
+    # a key this config reads.
+    cfg = _deepseek_config("CEREBRUM_FACTORY", "CEREBRUM_CHAT")
+    if cfg["mock"] or not cfg.get("error"):
         return cfg
-    if not cfg["api_key"]:
-        if _is_openrouter_base(str(cfg.get("base_url", ""))):
-            cfg["error"] = (
-                "Factory architect base_url is OpenRouter but OPENROUTER_API_KEY "
-                "(or FACTORY_LLM_FALLBACK_API_KEY) is not set; "
-                "KIMI_API_KEY / CEREBRUM_LLM_API_KEY are Moonshot credentials "
-                "and will 401 on this host"
-            )
-        elif _names_kimi_explicitly():
-            # The operator asked for this provider by name, so name THEIR variable.
-            cfg["error"] = (
-                "Factory architect was asked for Kimi/Moonshot (LLM_PROVIDER or a "
-                "KIMI_* credential) but KIMI_API_KEY (or CEREBRUM_LLM_API_KEY) is not "
-                "set; set the key, or unset LLM_PROVIDER to use the DeepSeek default. "
-                "Set KIMI_MOCK=1 for tests"
-            )
-        else:
-            # Name the vars an operator should actually set. This said "requires
-            # KIMI_API_KEY" unconditionally -- pointing whoever read it at a retired
-            # provider, which is the one thing a fail-closed message must not do.
-            cfg["error"] = (
-                "Factory architect has no LLM credential: set "
-                "CEREBRUM_FACTORY_LLM_API_KEY, or CEREBRUM_CHAT_LLM_API_KEY, or "
-                "CEREBRUM_LLM_API_KEY (DeepSeek is the default host; set the matching "
-                "*_LLM_BASE_URL for any other provider). Set KIMI_MOCK=1 for tests. "
-                "DEEPSEEK_API_KEY is the coding CLI's credential and does not arm "
-                "this path."
-            )
+    if _is_openrouter_base(str(cfg.get("base_url", ""))):
+        cfg["error"] = (
+            "Factory architect base_url is OpenRouter but OPENROUTER_API_KEY "
+            "(or FACTORY_LLM_FALLBACK_API_KEY) is not set; "
+            "CEREBRUM_LLM_API_KEY is the default host's credential "
+            "and will 401 on this host"
+        )
     return cfg
 
 
@@ -959,7 +940,9 @@ def get_factory_llm_config() -> Dict[str, Any]:
 # module top so chat config can reuse them. The ``:free`` suffix is
 # load-bearing -- plain ``minimax/minimax-m3`` is the paid tier.
 
-SUPPORTED_FALLBACK_PROVIDERS = ("openrouter",)
+SUPPORTED_FALLBACK_PROVIDERS = tuple(
+    n for n, row in PROVIDER_TABLE.items() if row["role"] == "fallback"
+)
 
 
 def _is_free_slug(model: str) -> bool:
@@ -980,13 +963,27 @@ def get_factory_fallback_leg() -> Dict[str, Any] | None:
     Returns None when unarmed (no key, or explicitly disabled). Returns a leg
     carrying ``error`` when it is armed but misconfigured, so the caller can
     report why the leg did not run instead of silently having no fallback.
+
+    The leg's provider is gated against :data:`PROVIDER_TABLE`: a name whose
+    role is not ``fallback`` returns a leg carrying ``error`` and no
+    endpoint, so no caller can POST to it.
     """
-    if _env_first("FACTORY_LLM_FALLBACK_PROVIDER", default="openrouter").lower() in {
-        "none",
-        "off",
-        "disabled",
-    }:
+    name = _env_first("FACTORY_LLM_FALLBACK_PROVIDER", default="openrouter").lower()
+    if name in {"none", "off", "disabled"}:
         return None
+    if name not in SUPPORTED_FALLBACK_PROVIDERS:
+        return {
+            "provider": name,
+            "api_key": "",
+            "base_url": "",
+            "model": "",
+            "is_free": False,
+            "error": (
+                f"FACTORY_LLM_FALLBACK_PROVIDER={name} is not a fallback provider "
+                f"in the provider table ({' / '.join(SUPPORTED_FALLBACK_PROVIDERS)}"
+                ", or none)"
+            ),
+        }
 
     api_key = _env_first("OPENROUTER_API_KEY", "FACTORY_LLM_FALLBACK_API_KEY")
     if not api_key:
@@ -999,7 +996,7 @@ def get_factory_fallback_leg() -> Dict[str, Any] | None:
     )
 
     leg: Dict[str, Any] = {
-        "provider": "openrouter",
+        "provider": name,
         "api_key": api_key,
         "base_url": _env_first("OPENROUTER_BASE_URL", default=OPENROUTER_BASE_URL),
         "model": model,
@@ -1028,3 +1025,46 @@ def get_factory_fallback_leg() -> Dict[str, Any] | None:
 
 def active_provider() -> str:
     return get_llm_config()["provider"]
+
+
+# -- Boot validation ---------------------------------------------------------
+
+
+class ProviderConfigError(RuntimeError):
+    """The provider settings are wrong. Raised at start, not at the first call."""
+
+
+_FALLBACK_OFF = {"none", "off", "disabled"}
+
+
+def provider_setting_errors() -> List[str]:
+    """Every error in the provider SETTINGS, by setting name. No values of keys.
+
+    Checks what is wrong, not what is absent: ``LLM_PROVIDER`` naming a
+    provider outside :data:`PROVIDER_TABLE`; ``LLM_PROVIDER`` unset with two
+    vendors' credentials present; ``FACTORY_LLM_FALLBACK_PROVIDER`` naming a
+    provider whose table role is not ``fallback``. A box with no key at all
+    still boots (template fallback in dev).
+    """
+    errors: List[str] = []
+    raw = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if raw and normalise_provider(raw) not in SUPPORTED_PROVIDERS:
+        errors.append(_unknown_provider_error(raw))
+    if not raw and len(_credential_providers()) > 1:
+        errors.append(_unresolved_provider_error())
+    leg_name = os.getenv("FACTORY_LLM_FALLBACK_PROVIDER", "").strip().lower()
+    if leg_name and leg_name not in _FALLBACK_OFF and leg_name not in SUPPORTED_FALLBACK_PROVIDERS:
+        errors.append(
+            f"FACTORY_LLM_FALLBACK_PROVIDER={leg_name} is not a fallback provider "
+            f"in the provider table ({' / '.join(SUPPORTED_FALLBACK_PROVIDERS)}, or none)"
+        )
+    return errors
+
+
+def validate_provider_at_boot() -> None:
+    """Fail the start when the provider settings are wrong (see above)."""
+    errors = provider_setting_errors()
+    if errors:
+        raise ProviderConfigError(
+            "LLM provider settings are invalid: " + " | ".join(errors)
+        )

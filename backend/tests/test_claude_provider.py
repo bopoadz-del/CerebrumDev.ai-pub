@@ -1,11 +1,11 @@
-"""Claude is an addition, not a swap: Kimi must stay the default.
+"""Claude is an addition, not a swap: it never takes another vendor's traffic.
 
 New-shape tests for second-provider support. The failure that matters here is
 not a crash -- it is a *silent* one. Two shapes specifically:
 
-* Adding an ANTHROPIC_API_KEY to a working Kimi deployment must not move that
+* Adding an ANTHROPIC_API_KEY to a working deployment must not move that
   deployment's traffic, or its bill, onto Claude. A cost surprise is a product
-  bug, so "both keys present" resolving to kimi is asserted directly.
+  bug, so "both keys present, no LLM_PROVIDER" is an explicit error (WK-2).
 * Asking for a provider whose key is missing must be a loud error, never a
   quiet fall-through to whichever provider happens to be configured.
 
@@ -37,12 +37,11 @@ CRED_VARS = [
     "CEREBRUM_LLM_API_KEY",
     "CEREBRUM_LLM_BASE_URL",
     "CEREBRUM_LLM_MODEL",
-    "KIMI_API_KEY",
+    "DEEPSEEK_API_KEY",
     "KIMI_BASE_URL",
     "KIMI_MODEL",
-    "KIMI_MOCK",
-    "CLAUDE_MOCK",
     "CEREBRUM_LLM_MOCK",
+    "CLAUDE_MOCK",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_MODEL",
@@ -57,7 +56,7 @@ CRED_VARS = [
 ]
 
 # Obviously-fake values. No real key may appear in this repository.
-FAKE_KIMI = "sk-kimi-not-a-real-key"
+FAKE_PRIMARY = "sk-primary-not-a-real-key"
 FAKE_CLAUDE = "sk-ant-not-a-real-key"
 
 
@@ -78,8 +77,11 @@ def _clean_env():
 
 
 def test_kimi_only_resolves_to_kimi():
-    os.environ["KIMI_API_KEY"] = FAKE_KIMI
-    assert get_llm_config()["provider"] == "kimi"
+    """WK-2: LLM_PROVIDER unset with ONE vendor's key resolves to that vendor
+    (the shared slot is the deepseek row)."""
+    os.environ["CEREBRUM_LLM_API_KEY"] = FAKE_PRIMARY
+    assert get_llm_config()["provider"] == "deepseek"
+    assert get_factory_llm_config()["provider"] == "deepseek"
 
 
 def test_claude_only_resolves_to_claude():
@@ -90,11 +92,21 @@ def test_claude_only_resolves_to_claude():
 
 
 def test_both_present_resolves_to_kimi():
-    """The load-bearing one: a second key must not move anyone's bill."""
-    os.environ["KIMI_API_KEY"] = FAKE_KIMI
+    """The load-bearing one: a second key must not move anyone's bill.
+
+    WK-2: with no LLM_PROVIDER, two vendors' keys are AMBIGUOUS -- an error
+    naming the setting to set, no endpoint resolved, and marked as a config
+    error so no fallback leg can hide it.
+    """
+    os.environ["CEREBRUM_LLM_API_KEY"] = FAKE_PRIMARY
     os.environ["ANTHROPIC_API_KEY"] = FAKE_CLAUDE
-    assert get_llm_config()["provider"] == "kimi"
-    assert get_factory_llm_config()["provider"] == "kimi"
+    for cfg in (get_llm_config(), get_factory_llm_config()):
+        assert cfg["provider"] == ""
+        assert cfg["api_key"] == ""
+        assert "more than one provider" in cfg["error"]
+        assert "LLM_PROVIDER" in cfg["error"]
+        assert cfg["config_error"] is True
+        assert FAKE_PRIMARY not in str(cfg) and FAKE_CLAUDE not in str(cfg)
 
 
 def test_neither_present_resolves_to_no_provider():
@@ -102,7 +114,7 @@ def test_neither_present_resolves_to_no_provider():
 
 
 def test_claude_is_used_when_asked_for_even_though_kimi_is_configured():
-    os.environ["KIMI_API_KEY"] = FAKE_KIMI
+    os.environ["DEEPSEEK_API_KEY"] = FAKE_PRIMARY
     os.environ["ANTHROPIC_API_KEY"] = FAKE_CLAUDE
     os.environ["LLM_PROVIDER"] = "claude"
     assert get_llm_config()["provider"] == "claude"
@@ -112,7 +124,7 @@ def test_claude_is_used_when_asked_for_even_though_kimi_is_configured():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     (
-        ("moonshot", "kimi"),
+        ("moonshot", "moonshot"),
         ("kimi", "kimi"),
         ("anthropic", "claude"),
         ("claude", "claude"),
@@ -121,7 +133,13 @@ def test_claude_is_used_when_asked_for_even_though_kimi_is_configured():
     ),
 )
 def test_provider_aliases(raw, expected):
+    """``anthropic`` is the one alias. Retired names are NOT aliases: they
+    pass through unchanged and the table then refuses them."""
     assert normalise_provider(raw) == expected
+    if expected not in SUPPORTED_PROVIDERS:
+        os.environ["LLM_PROVIDER"] = raw
+        assert get_llm_config()["provider"] == ""
+        assert "not in the provider table" in get_llm_config()["error"]
 
 
 def test_anthropic_alias_reaches_the_claude_config():
@@ -135,21 +153,23 @@ def test_anthropic_alias_reaches_the_claude_config():
 
 def test_claude_without_a_key_errors_and_does_not_borrow_kimi():
     os.environ["LLM_PROVIDER"] = "claude"
-    os.environ["KIMI_API_KEY"] = FAKE_KIMI  # present, and must NOT be used
+    os.environ["DEEPSEEK_API_KEY"] = FAKE_PRIMARY  # present, and must NOT be used
     cfg = get_factory_llm_config()
     assert cfg["provider"] == "claude"
     assert cfg["api_key"] == ""
     assert "ANTHROPIC_API_KEY" in cfg.get("error", "")
-    assert FAKE_KIMI not in str(cfg)
+    assert FAKE_PRIMARY not in str(cfg)
 
 
 def test_kimi_without_a_key_errors_and_does_not_borrow_claude():
-    os.environ["LLM_PROVIDER"] = "kimi"
+    """A provider named without its key is an error; the other vendor's key,
+    present, is never borrowed."""
+    os.environ["LLM_PROVIDER"] = "deepseek"
     os.environ["ANTHROPIC_API_KEY"] = FAKE_CLAUDE  # present, must NOT be used
     cfg = get_factory_llm_config()
-    assert cfg["provider"] == "kimi"
+    assert cfg["provider"] == "deepseek"
     assert cfg["api_key"] == ""
-    assert "KIMI_API_KEY" in cfg.get("error", "")
+    assert "deepseek selected but no key is set" in cfg.get("error", "")
     assert FAKE_CLAUDE not in str(cfg)
 
 
@@ -157,7 +177,7 @@ def test_the_coder_refuses_rather_than_switching_provider(monkeypatch):
     from app.factory.coder import CoderError, _llm_code_call
 
     monkeypatch.setenv("LLM_PROVIDER", "claude")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_PRIMARY)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with pytest.raises(CoderError, match="ANTHROPIC_API_KEY"):
@@ -269,8 +289,8 @@ def test_kimi_code_call_is_unchanged_by_claude_support(monkeypatch):
     """Regression guard on the default path's wire format."""
     import app.factory.coder as coder
 
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_PRIMARY)
     sent = {}
 
     class _Resp:
@@ -288,7 +308,7 @@ def test_kimi_code_call_is_unchanged_by_claude_support(monkeypatch):
 
     assert coder._llm_code_call([{"role": "user", "content": "U"}])[0] == "    return {}"
     assert sent["url"].endswith("/chat/completions")
-    assert sent["headers"]["Authorization"] == f"Bearer {FAKE_KIMI}"
+    assert sent["headers"]["Authorization"] == f"Bearer {FAKE_PRIMARY}"
     assert "x-api-key" not in sent["headers"]
 
 
@@ -330,4 +350,4 @@ def test_code_cli_defaults_to_kimi_when_deepseek_key_present(monkeypatch):
 
 
 def test_supported_providers_include_cursor():
-    assert set(SUPPORTED_PROVIDERS) == {"deepseek", "cursor", "kimi", "claude"}
+    assert set(SUPPORTED_PROVIDERS) == {"deepseek", "cursor", "claude"}
