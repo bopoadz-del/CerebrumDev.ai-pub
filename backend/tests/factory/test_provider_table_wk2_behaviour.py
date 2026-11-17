@@ -186,16 +186,19 @@ def test_an_invalid_temperature_is_reported_and_an_empty_one_is_not(
         assert raw not in error
 
 
-def test_an_unset_temperature_has_no_error(env, temperature_log):
-    assert llm_config._llm_temperature() is None
+@pytest.mark.parametrize("reads", [1, 3])
+def test_an_unset_temperature_has_no_error(env, temperature_log, reads):
+    for _ in range(reads):
+        assert llm_config._llm_temperature() is None
     assert llm_config.temperature_setting_error() == ""
     assert temperature_log() == []
 
 
-def test_an_invalid_temperature_warns_once_per_process(env, temperature_log):
-    env(LLM_TEMPERATURE="abc")
-    llm_config._llm_temperature()
-    llm_config._llm_temperature()
+@pytest.mark.parametrize("raw, reads", [("abc", 2), ("warm", 5)])
+def test_an_invalid_temperature_warns_once_per_process(env, temperature_log, raw, reads):
+    env(LLM_TEMPERATURE=raw)
+    for _ in range(reads):
+        assert llm_config._llm_temperature() is None
     assert len(temperature_log()) == 1
 
 
