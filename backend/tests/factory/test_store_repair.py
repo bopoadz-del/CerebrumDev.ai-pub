@@ -958,3 +958,108 @@ def test_a_broken_vendored_block_through_the_runner_and_the_real_installer(
         assert (row["repaired"], tuple(row["not_delivered"])) == (False, holder["bound"])
         assert "not installed" in notes[0].payload["detail"]
         assert sp.filed_proposals(ws) == []
+
+
+# -- F-3b: "repaired" is said only after a settling re-grade -------------------
+
+
+@pytest.mark.parametrize(
+    "repaired, settled, word",
+    [
+        (False, None, "repair failed"),
+        (False, True, "repair failed"),
+        (True, True, "repaired"),
+        (True, False, "installed, but the re-grade did not settle the run"),
+        (True, None, "installed, but the re-grade did not settle the run"),
+    ],
+)
+def test_the_note_word_is_repaired_only_after_a_settling_regrade(repaired, settled, word):
+    from app.factory.build.store_repair import BlockRepair, outcome_word
+
+    repair = BlockRepair(
+        "zorblat", ("crash",), True, repaired, reason="" if repaired else "repair failed"
+    )
+    assert outcome_word(repair, settled) == word
+
+
+@pytest.mark.parametrize(
+    "index, regraded, word, settled",
+    [
+        (0, "certified", "repaired", True),
+        (1, "still-open", "installed, but the re-grade did not settle the run", False),
+    ],
+)
+def test_the_repair_note_is_written_after_the_regrade_and_says_what_it_settled(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+    regraded,
+    word,
+    settled,
+):
+    from app.factory.build.ledger import EventKind
+
+    holder: dict = {}
+
+    def verdicts(runner):
+        holder["block"], _ = _bound_block(runner, index)
+        first = _store_verdict(_finding(holder["block"]))
+        return [first, _certified() if regraded == "certified" else first]
+
+    runner, _ = _runner(smoke_blueprint, tmp_path, monkeypatch, verdicts, _passes)
+    runner.run()
+    events = [e for e in runner.ledger.events() if e.kind is EventKind.NOTE]
+    regrade_at = [i for i, e in enumerate(events) if (e.payload or {}).get("store_regrade")]
+    repair_at = [i for i, e in enumerate(events) if "store_defect" in (e.payload or {})]
+    assert len(regrade_at) == 1 and len(repair_at) == 1
+    assert regrade_at[0] < repair_at[0]
+    note = events[repair_at[0]]
+    assert note.detail == f"STORE DEFECT {holder['block']}: {word}"
+    assert note.payload["regrade_settled"] is settled
+
+
+@pytest.mark.parametrize(
+    "files, partial",
+    [
+        ({"block.py": "def run(x):\n    return x\n"}, {"half.py": "PARTIAL = 1\n"}),
+        ({"block.py": "VALUE = 1\n", "lib/u.py": "X = 2\n"}, None),
+    ],
+    ids=["half-copied", "moved-aside"],
+)
+def test_a_build_that_starts_over_a_killed_install_restores_the_vendored_copy(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    files,
+    partial,
+):
+    from app.factory.build.ledger import EventKind
+    from app.factory.build.store_override import VENDORED_HASH_KEY, tree_hash
+    from app.factory.build.store_proposal import INSTALL_BACKUP_SUFFIX, LOCK_FILE
+
+    runner, _ = _runner(smoke_blueprint, tmp_path, monkeypatch, lambda r: [_certified()], None)
+    vendor = runner.workspace / "vendor" / "blocks"
+    backup = vendor / ("zorblat" + INSTALL_BACKUP_SUFFIX)
+    for rel, text in files.items():
+        (backup / rel).parent.mkdir(parents=True, exist_ok=True)
+        (backup / rel).write_text(text, encoding="utf-8")
+    original = tree_hash(backup)
+    for rel, text in (partial or {}).items():
+        (vendor / "zorblat" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vendor / "zorblat" / rel).write_text(text, encoding="utf-8")
+    lock = {"blocks": {"zorblat": {"path": "vendor/blocks/zorblat", VENDORED_HASH_KEY: original}}}
+    (runner.workspace / LOCK_FILE).write_text(json.dumps(lock), encoding="utf-8")
+
+    runner.run()
+
+    assert not backup.exists()
+    assert tree_hash(vendor / "zorblat") == original
+    recovered = [
+        e.detail
+        for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and "store_install_recovery" in (e.payload or {})
+    ]
+    assert recovered == [
+        "STORE INSTALL RECOVERED zorblat: a half-done install was undone; the vendored copy is back"
+    ]

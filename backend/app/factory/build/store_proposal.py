@@ -65,6 +65,7 @@ from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence,
 from app.factory.build.store_override import (
     OVERRIDES_KEY,
     VENDOR_BLOCKS,
+    VENDORED_HASH_KEY,
     OverrideRecord,
     ProofStore,
     StoreDefect,
@@ -454,3 +455,63 @@ def install_repair(
         filed_before=filed_before,
     )
     return why
+
+
+def _lock_on_disk(root: Path) -> Dict[str, Any]:
+    """The product's saved lock, or {} when there is none or it is not an object."""
+    try:
+        raw = json.loads((root / LOCK_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _recover_one(root: Path, backup: Path) -> str:
+    """F-3b: settle one backup an :func:`install_repair` killed midway left.
+
+    The backup is restored when it is the copy the saved lock records as
+    vendored (the override's ``replaces_hash``, else the block row's hash):
+    whatever stands in its place is removed, and the override that now
+    describes a repair no longer in place is dropped from the saved lock.
+    When the backup is not that copy but the block is the override's repair,
+    the install had finished and only the leftover is removed. Anything else
+    is left as found, with the reason, for the lock check to refuse."""
+    block_id = backup.name[: -len(INSTALL_BACKUP_SUFFIX)]
+    vendored = backup.with_name(block_id)
+    lock = _lock_on_disk(root)
+    overrides = lock.get(OVERRIDES_KEY)
+    override = overrides.get(block_id) if isinstance(overrides, dict) else None
+    override = override if isinstance(override, dict) else {}
+    entry = (lock.get("blocks") or {}).get(block_id)
+    entry = entry if isinstance(entry, Mapping) else {}
+    original = str(override.get("replaces_hash") or entry.get(VENDORED_HASH_KEY) or "")
+    if original and tree_hash(backup) == original:
+        if vendored.exists():
+            shutil.rmtree(vendored)
+        os.replace(backup, vendored)
+        if override:
+            del overrides[block_id]
+            if not overrides:
+                lock.pop(OVERRIDES_KEY)
+            save_lock(root, lock)
+        return f"{block_id}: a half-done install was undone; the vendored copy is back"
+    if override and vendored.is_dir() and tree_hash(vendored) == override.get("override_hash"):
+        shutil.rmtree(backup)
+        return f"{block_id}: the install had finished; its leftover backup was removed"
+    return f"{block_id}: a half-done install was left as found: its backup is not the copy the lock records"
+
+
+def recover_installs(workspace: Path | str) -> List[str]:
+    """F-3b, the start-up check: every backup a killed :func:`install_repair`
+    left beside a vendored block is settled by :func:`_recover_one`, one
+    line each, before anything reads the vendored blocks. A proposal row the
+    install filed stays filed: its repair passed its exam either way."""
+    root = Path(workspace)
+    vendor = root.joinpath(*VENDOR_BLOCKS)
+    if not vendor.is_dir():
+        return []
+    return [
+        _recover_one(root, path)
+        for path in sorted(vendor.iterdir())
+        if path.is_dir() and path.name.endswith(INSTALL_BACKUP_SUFFIX)
+    ]
