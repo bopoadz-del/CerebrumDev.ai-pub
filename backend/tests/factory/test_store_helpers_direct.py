@@ -37,6 +37,14 @@ def _store(tmp_path: Path, key: bytes | None = KEY, build_id: str = "b-1") -> so
 # --- store_override -------------------------------------------------------
 
 
+@pytest.mark.parametrize("key", [None, b""])
+def test_write_proof_without_a_key_is_refused_and_writes_nothing(tmp_path: Path, key: bytes | None) -> None:
+    store = _store(tmp_path, key=key)
+    with pytest.raises(so.OverrideError, match=f"{so.PROOF_KEY_ENV} is not set"):
+        write_proof(store, ExamProof("e1", "blk", "h1", True))
+    assert not store.root.exists() or list(store.root.iterdir()) == []
+
+
 @pytest.mark.parametrize("exc", [OSError("/secret/path"), PermissionError("/x")])
 def test_unusable_reason_names_the_error_type_and_no_path(exc: BaseException) -> None:
     reason = unusable_reason(exc)
@@ -44,19 +52,20 @@ def test_unusable_reason_names_the_error_type_and_no_path(exc: BaseException) ->
     assert "/" not in reason
 
 
-def test_signature_is_a_digest_without_a_key_and_an_hmac_with_one() -> None:
-    payload = {"b": 1, "a": "x"}
+@pytest.mark.parametrize("payload", [{"b": 1, "a": "x"}, {"exam_id": "e2", "passed": False}])
+def test_signature_is_a_digest_without_a_key_and_an_hmac_with_one(payload: dict) -> None:
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     assert _signature(None, payload) == "digest:" + hashlib.sha256(body).hexdigest()
     assert _signature(KEY, payload) == hmac.new(KEY, body, hashlib.sha256).hexdigest()
     assert _signature(KEY, payload) != _signature(b"other", payload)
 
 
-def test_read_signed_returns_the_payload_of_a_record_this_build_signed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("examined", ["h1", "sha256:other"])
+def test_read_signed_returns_the_payload_of_a_record_this_build_signed(tmp_path: Path, examined: str) -> None:
     store = _store(tmp_path)
-    path = write_proof(store, ExamProof("e1", "blk", "h1", True))
+    path = write_proof(store, ExamProof("e1", "blk", examined, True))
     got = _read_signed(store, path.name, so.EXAM_KIND)
-    assert got is not None and got["examined_hash"] == "h1"
+    assert got is not None and got["examined_hash"] == examined
     assert _read_signed(store, path.name, "another_kind") is None
     other = so.ProofStore(root=store.root, build_id="b-2", key=KEY)
     assert _read_signed(other, path.name, so.EXAM_KIND) is None
