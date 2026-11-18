@@ -295,15 +295,16 @@ def test_hand_written_override_rows_are_still_checked(tmp_path, overrides, expec
 @pytest.mark.parametrize(
     "entry, expected",
     [
-        ({"path": "vendor/blocks/blk_a", "commit": "c0ffee"}, ()),
+        ({"path": "vendor/blocks/blk_a"}, ("blk_a: the lock's row was edited after CLONER (commit)",)),
         (
             {"path": "vendor/blocks/blk_gone", so.VENDORED_HASH_KEY: "sha256:x"},
             ("blk_a: not vendored at vendor/blocks/blk_a",),
         ),
         ({"commit": "c0ffee"}, ("blk_a: the lock's row no longer says where it is vendored",)),
         ("not a mapping", ("blk_a: the lock's row no longer says where it is vendored",)),
+        ({"path": "vendor/blocks/blk_a", "commit": "c0ffee"}, ()),
     ],
-    ids=["no-hash-claim", "other-path", "no-path", "not-a-mapping"],
+    ids=["no-hash", "missing-copy", "no-path", "not-a-mapping", "no-hash-claim"],
 )
 def test_lock_entries_without_a_recorded_hash_or_copy_are_refused(tmp_path, entry, expected):
     _block(tmp_path, "blk_a")

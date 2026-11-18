@@ -93,6 +93,23 @@ def test_agent_rw_roots_for_is_the_product_and_the_writers_staging(tmp_path, pro
     assert _runner(product).agent_rw_roots() == (product, staging)
 
 
+# -- agent_rw_extras ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("as_str", [False, True])
+def test_agent_rw_extras_grants_the_destination_and_the_workspace(tmp_path, as_str):
+    dest, tree = tmp_path / "product", tmp_path / "tree"
+    ws = SimpleNamespace(
+        destination=str(dest) if as_str else dest, workspace=str(tree) if as_str else tree
+    )
+    assert agent_rw_extras(ws) == [dest, tree]
+
+
+@pytest.mark.parametrize("workspace", [None, SimpleNamespace(destination=7), SimpleNamespace(workspace=None)])
+def test_agent_rw_extras_grants_nothing_that_is_not_a_path(workspace):
+    assert agent_rw_extras(workspace) == []
+
+
 # -- build_id ----------------------------------------------------------------
 
 
@@ -215,21 +232,3 @@ def test_vendored_lock_gate_refuses_a_lock_that_is_not_an_object(tmp_path, body)
     verdict = runner._vendored_lock_gate()
     assert verdict is not None
     assert verdict.findings == ["blocks.lock.json is not a JSON object"]
-
-
-# -- agent_rw_extras ---------------------------------------------------------
-
-
-@pytest.mark.parametrize("as_str", [False, True])
-def test_agent_rw_extras_grants_the_destination_and_the_workspace(tmp_path, as_str):
-    dest, tree = tmp_path / "product", tmp_path / "tree"
-    ws = SimpleNamespace(
-        destination=str(dest) if as_str else dest, workspace=str(tree) if as_str else tree
-    )
-    assert agent_rw_extras(ws) == [dest, tree]
-
-
-@pytest.mark.parametrize("workspace", [None, SimpleNamespace(destination=7), SimpleNamespace(workspace=None)])
-def test_agent_rw_extras_grants_nothing_that_is_not_a_path(workspace):
-    assert agent_rw_extras(workspace) == []
-

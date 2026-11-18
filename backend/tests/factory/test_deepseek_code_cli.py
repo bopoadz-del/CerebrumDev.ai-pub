@@ -115,15 +115,17 @@ def _require_cli(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_deepseek_key_selects_kimi_cli_not_claude(monkeypatch):
+@pytest.mark.parametrize("provider_setting", ["", "DeepSeek"])
+def test_deepseek_key_selects_deepseek_and_assumes_no_cli(monkeypatch, provider_setting):
+    """Item 1c: no CLI binary is assumed; the operator names it. The key
+    alone and the key with the table name set give the same answer."""
     monkeypatch.delenv("FACTORY_CODE_CLI", raising=False)
     monkeypatch.delenv("KIMI_CODE_CLI", raising=False)
-    monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
+    monkeypatch.setenv("FACTORY_CODE_PROVIDER", provider_setting)
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
     assert factory_code_provider() == "deepseek"
-    assert code_cli_command() == "kimi"
-    assert code_cli_command() != "claude"
-    assert DEFAULT_DEEPSEEK_CLI == "kimi"
+    assert code_cli_command() == ""
+    assert DEFAULT_DEEPSEEK_CLI == ""
     assert deepseek_coder_selected() is True
     assert cli_requires_deepseek_credentials() is True
     assert cli_requires_kimi_credentials() is False
@@ -141,45 +143,38 @@ def test_explicit_kimi_cli_plus_deepseek_key_is_deepseek_backend(monkeypatch):
     assert cli_requires_deepseek_credentials() is True
 
 
-def test_explicit_provider_kimi_keeps_moonshot_when_deepseek_key_set(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("retired", ["kimi", "moonshot"])
+def test_a_retired_provider_name_fails_closed_with_the_deepseek_key_present(
+    monkeypatch, retired
 ):
-    """Historical Moonshot path: FACTORY_CODE_PROVIDER=kimi + KIMI_CODE_API_KEY."""
+    """Item 1c, inverted by grader #256 bar 5: the retired vendor is never a
+    coder provider, and its name does NOT fall through to the DeepSeek key:
+    no provider is selected and the credential check refuses."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
-    monkeypatch.setenv("FACTORY_CODE_PROVIDER", "kimi")
-    monkeypatch.setenv("FACTORY_CODE_CLI", "kimi")
-    monkeypatch.setenv("KIMI_CODE_API_KEY", "sk-kimi-test-not-real")
-    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi-home"))
-    monkeypatch.delenv("KIMI_CODE_MODEL", raising=False)
-    monkeypatch.delenv("KIMI_CODE_MODEL_ID", raising=False)
-    assert factory_code_provider() == "kimi"
-    assert code_cli_command() == "kimi"
+    monkeypatch.setenv("FACTORY_CODE_PROVIDER", retired)
+    monkeypatch.delenv("FACTORY_CODE_CLI", raising=False)
+    monkeypatch.delenv("KIMI_CODE_CLI", raising=False)
+    assert factory_code_provider() == ""
     assert deepseek_coder_selected() is False
     assert cli_requires_kimi_credentials() is True
-    result = ensure_code_cli_credentials()
-    assert result["ok"] is True
-    text = Path(result["path"]).read_text(encoding="utf-8")
-    assert "[providers.kimi]" in text
-    assert "sk-kimi-test-not-real" in text
-    assert 'default_model = "kimi-k3"' in text
-    assert "[providers.deepseek]" not in text
 
 
-def test_leftover_claude_cli_remaps_to_kimi_when_deepseek(monkeypatch):
+@pytest.mark.parametrize("cli", ["claude", "/usr/local/bin/Claude"])
+def test_leftover_claude_cli_is_not_the_deepseek_vehicle(monkeypatch, cli):
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
-    monkeypatch.setenv("FACTORY_CODE_CLI", "claude")
+    monkeypatch.setenv("FACTORY_CODE_CLI", cli)
     monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
     assert factory_code_provider() == "deepseek"
-    assert code_cli_command() == "kimi"
-    assert code_cli_command() != "claude"
+    assert code_cli_command() == ""
 
 
 def test_provider_deepseek_without_key_requires_credentials(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("FACTORY_CODE_PROVIDER", "deepseek")
     monkeypatch.delenv("FACTORY_CODE_CLI", raising=False)
+    monkeypatch.delenv("KIMI_CODE_CLI", raising=False)
     assert factory_code_provider() == "deepseek"
-    assert code_cli_command() == "kimi"
+    assert code_cli_command() == ""
     assert cli_requires_deepseek_credentials() is True
     assert cli_credentials_ok() is False
 
@@ -221,7 +216,7 @@ def test_ensure_deepseek_writes_kimi_openai_provider(tmp_path, monkeypatch):
     assert result["ok"] is True
     assert result["deepseek"]["ok"] is True
     assert result["deepseek"]["model"] == DEFAULT_DEEPSEEK_MODEL
-    assert result["deepseek"]["cli"] == "kimi"
+    assert result["deepseek"]["cli"] == code_cli_command()
     dest = tmp_path / "kimi-home" / "config.toml"
     assert dest.is_file()
     text = dest.read_text(encoding="utf-8")
@@ -1302,3 +1297,29 @@ def test_zero_written_stays_no_authorship_not_thin_floor(tmp_path, monkeypatch):
     assert blocker
     assert NAMED_BLOCKER_CLI_NO_AUTHORSHIP in blocker
     assert NAMED_BLOCKER_CLI_THIN_AUTHORSHIP not in blocker
+
+
+@pytest.mark.parametrize("provider", ["", "deepseek"])
+def test_a_selected_deepseek_coder_never_needs_outside_credentials(monkeypatch, provider):
+    """The rule's first conjunct on its own: whenever DeepSeek is the selected
+    coder, no credential outside the provider table is required, whatever the
+    provider lookup answers (the collaborators are stubbed so each conjunct is
+    tested apart from the other)."""
+    import app.factory.coder as coder
+
+    monkeypatch.setattr(coder, "deepseek_coder_selected", lambda command=None: True)
+    monkeypatch.setattr(coder, "factory_code_provider", lambda: provider)
+    assert cli_requires_kimi_credentials() is False
+
+
+@pytest.mark.parametrize("provider, expected", [("", True), ("anthropic", False)])
+def test_without_deepseek_only_a_missing_table_provider_needs_outside_credentials(
+    monkeypatch, provider, expected
+):
+    """The second conjunct: DeepSeek not selected, so the answer is exactly
+    whether the shared table configures no provider."""
+    import app.factory.coder as coder
+
+    monkeypatch.setattr(coder, "deepseek_coder_selected", lambda command=None: False)
+    monkeypatch.setattr(coder, "factory_code_provider", lambda: provider)
+    assert cli_requires_kimi_credentials() is expected
