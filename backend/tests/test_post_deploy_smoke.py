@@ -20,6 +20,10 @@ def _load_smoke():
     return mod
 
 
+#: /ready as a deployed backend answers it: ready, and builds can start.
+READY_BODY = {"status": "ready", "details": {"builds": {"available": True, "reason": ""}}}
+
+
 @pytest.fixture
 def smoke(monkeypatch):
     # CI sets GITHUB_SHA to the PR commit. Tests that do not opt into the
@@ -118,7 +122,7 @@ class TestWaitForReady:
                     return 200, {}
                 return 200, {"status": "ok"}
             if path == "/ready":
-                return 200, {"status": "ready"}
+                return 200, READY_BODY
             if path == "/version":
                 if rounds["n"] == 1:
                     return 200, {"git_sha": "725425e636c30774fc13fb82f7318313dca12a69"}
@@ -142,7 +146,7 @@ class TestWaitForReady:
             if path == "/health":
                 return 200, {"status": "ok"}
             if path == "/ready":
-                return 200, {"status": "ready"}
+                return 200, READY_BODY
             if path == "/version":
                 return 200, {"git_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
             raise AssertionError(path)
@@ -164,7 +168,7 @@ class TestWaitForReady:
             if path == "/health":
                 return 200, {"status": "ok"}
             if path == "/ready":
-                return 200, {"status": "ready"}
+                return 200, READY_BODY
             raise AssertionError(path)
 
         assert smoke.wait_for_ready(
@@ -256,7 +260,7 @@ class TestUnauthenticatedSkip:
             if path == "/health":
                 return 200, {"status": "ok", "redis": {"configured": False}}
             if path == "/ready":
-                return 200, {"status": "ready"}
+                return 200, READY_BODY
             if path == "/version":
                 return 200, {"git_sha": "abc123456789"}
             raise AssertionError(path)
@@ -308,7 +312,7 @@ class TestUnauthenticatedSkip:
                     return 200, {}  # status=None — the #283 job failure mode
                 return 200, {"status": "ok"}
             if path == "/ready":
-                return 200, {"status": "ready"}
+                return 200, READY_BODY
             if path == "/version":
                 if rounds["n"] == 1:
                     return 200, {"git_sha": "725425e636c30774fc13fb82f7318313dca12a69"}
@@ -341,7 +345,7 @@ class TestUnauthenticatedSkip:
             if path == "/health":
                 return 200, {"status": "ok"}
             if path == "/ready":
-                return 200, {"status": "ready"}
+                return 200, READY_BODY
             if path == "/version":
                 return 200, {"git_sha": "not-the-commit-under-test"}
             raise AssertionError(path)
@@ -678,3 +682,49 @@ def test_an_outage_longer_than_the_wait_ends_it(smoke, monkeypatch):
     kw = _export_answers(smoke, monkeypatch, [504])
     http, _blob, _build = smoke.wait_for_export("s", "t", wait_s=60, **kw)
     assert http == 504
+
+
+class TestBuildsAvailable:
+    """F-2: /ready stays 200 when builds cannot start; the smoke goes red."""
+
+    @pytest.mark.parametrize("reason", ["", "ignored when available"])
+    def test_builds_available_is_live(self, smoke, reason):
+        body = {"status": "ready", "details": {"builds": {"available": True, "reason": reason}}}
+        assert smoke.record_builds_available(body) is True
+        assert smoke.FAILURES == []
+
+    @pytest.mark.parametrize(
+        "body, shown",
+        [
+            (
+                {
+                    "status": "ready",
+                    "details": {
+                        "builds": {
+                            "available": False,
+                            "reason": "the exam proofs directory is not usable (PermissionError)",
+                        }
+                    },
+                },
+                "not usable (PermissionError)",
+            ),
+            ({"status": "ready", "details": {}}, "not reported by /ready"),
+        ],
+    )
+    def test_builds_unavailable_or_unreported_is_dead(self, smoke, capsys, body, shown):
+        assert smoke.record_builds_available(body) is False
+        assert smoke.FAILURES == ["builds available"]
+        assert shown in capsys.readouterr().out
+
+    @pytest.mark.parametrize("reason", ["on the build volume", "not usable (OSError)"])
+    def test_the_unauthenticated_surface_fails_when_builds_cannot_start(self, smoke, reason):
+        ready = (
+            200,
+            {"status": "ready", "details": {"builds": {"available": False, "reason": reason}}},
+        )
+        smoke.record_unauthenticated_surface(
+            health=(200, {"status": "ok"}),
+            ready=ready,
+            version=(200, {"git_sha": "abc123456789"}),
+        )
+        assert smoke.FAILURES == ["builds available"]
