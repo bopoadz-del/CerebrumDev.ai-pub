@@ -16,6 +16,34 @@ Two pure pieces, not yet wired into the runner (K-1 of the spec's section K):
   naming the block. An override is recorded only through
   :func:`record_override`, which refuses one that did not pass its exam.
 
+F-2: the lock alone is not proof. The lock lives in the product tree, which
+the writer can edit, so a hand-written override row could claim an exam. The
+exam's proof (exam id, block, hash of the tree the exam examined, verdict) is
+written by the Factory with :func:`write_proof` into a directory it holds
+OUTSIDE the product tree, and both acceptance and the lock check read it with
+:func:`read_proof`: an override counts only when that proof shows this block
+passing on exactly these bytes. A block is vendored only at
+``vendor/blocks/<id>``.
+
+F-2 (grader 19:35Z): the proofs live in a :class:`ProofStore` that the build's
+orchestrator (``RoleRunner``) opens. It is a Factory data directory that is
+not inside the product, not on the build volume beside it, and not under any
+root the coding agent's confinement may write. Every record in it is signed
+(HMAC-SHA256) with a key only the Factory process holds
+(:func:`take_proof_key` reads it once and removes it from the process
+environment, so no child ever gets it), and every record names the build it
+belongs to. A record that fails its signature or names another build reads as
+absent. The same store keeps the hashes of the blocks as CLONER vendored them
+(:func:`record_vendored`), so the lock check compares the bytes with what the
+Factory cloned, never with a hash claimed in the product's own lock.
+
+F-2 (grader 20:30Z): no key does not mean open. The store opens with or
+without a key, and CLONER's record of the vendored blocks is always kept, so
+any change to a vendored block is refused either way. With no key the record
+carries a plain content digest (it is protected by where it sits: outside
+every root the agent may write), no exam proof can be written or read, and so
+an override is simply impossible.
+
 The hash here walks every file on disk (not only git-tracked ones, unlike
 ``blocks_lock.block_content_hash``, which pins a committed Store tree): a file
 planted inside a vendored block is a change and must be seen.
@@ -24,7 +52,12 @@ planted inside a vendored block is a change and must be seen.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass
+import hmac
+import json
+import os
+import secrets
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
@@ -36,6 +69,18 @@ OVERRIDES_KEY = "overrides"
 VENDORED_HASH_KEY = "vendored_content_hash"
 #: Reason a failed repair is reported with (R4).
 REPAIR_FAILED_REASON = "Store block defect, repair failed"
+#: File suffix of one Factory-held exam proof (F-2).
+PROOF_SUFFIX = ".exam.json"
+#: The Factory's secret that signs every proof. It is read once, then removed
+#: from the process environment so no child process inherits it.
+PROOF_KEY_ENV = "FACTORY_EXAM_PROOF_KEY"
+#: Where the Factory keeps proofs (default: under the Factory user's home).
+PROOFS_DIR_ENV = "FACTORY_EXAM_PROOFS_DIR"
+#: The record kind of an exam proof.
+EXAM_KIND = "exam_proof"
+
+_KEY_UNREAD: Any = object()
+_process_key: Any = _KEY_UNREAD
 
 
 class OverrideError(ValueError):
@@ -88,6 +133,231 @@ class OverrideCheck:
     unchanged: Tuple[str, ...] = ()
     overridden: Tuple[str, ...] = ()
     refused: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExamProof:
+    """F-2: what the Factory saw when it ran a block's exam."""
+
+    exam_id: str
+    block_id: str
+    examined_hash: str
+    passed: bool
+    score: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ProofStore:
+    """F-2: one build's Factory-held proofs, signed with the Factory's key."""
+
+    root: Path
+    build_id: str
+    #: None: no exam can be proven in this build, so no override is possible.
+    key: Optional[bytes] = field(default=None, repr=False)
+
+
+def is_inside(path: Path | str, root: Path | str) -> bool:
+    """True when ``path`` is ``root`` or lies under it."""
+    inner = Path(path).resolve()
+    outer = Path(root).resolve()
+    return inner == outer or outer in inner.parents
+
+
+def take_proof_key(environ: Optional[MutableMapping[str, str]] = None) -> Optional[bytes]:
+    """The Factory's proof key. It is read once per process and then removed
+    from ``environ`` (the process environment by default), so no child
+    inherits it. None when it is not set."""
+    global _process_key
+    if _process_key is _KEY_UNREAD:
+        env = os.environ if environ is None else environ
+        raw = str(env.pop(PROOF_KEY_ENV, "") or "").strip()
+        _process_key = raw.encode("utf-8") if raw else None
+    return _process_key
+
+
+def proofs_base(environ: Optional[Mapping[str, str]] = None) -> Path:
+    """The Factory data directory that proofs are kept under."""
+    env = os.environ if environ is None else environ
+    raw = str(env.get(PROOFS_DIR_ENV) or "").strip()
+    return Path(raw) if raw else Path.home() / ".cerebrum-factory" / "exam_proofs"
+
+
+def placement_refusal(
+    directory: Path | str, workspace: Path | str, rw_roots: Iterable[Path | str] = ()
+) -> Optional[str]:
+    """None when ``directory`` is out of the coding agent's reach for the
+    build in ``workspace``. That means it is not on the build volume beside
+    the product (this covers the product and every sibling build), and it is
+    neither under nor above any root the agent's confinement may write.
+    Otherwise, the reason it is refused."""
+    volume = Path(workspace).resolve().parent
+    if is_inside(directory, volume):
+        return "exam proofs would sit on the build volume, beside the product"
+    for root in rw_roots:
+        if is_inside(directory, root) or is_inside(root, directory):
+            return "exam proofs would sit where the coding agent may write"
+    return None
+
+
+def unusable_reason(exc: BaseException) -> str:
+    """The plain reason a proofs directory that could not be resolved,
+    created or written is refused: the error's type only, no path."""
+    return f"the exam proofs directory is not usable ({type(exc).__name__})"
+
+
+#: How long one probe of the proofs directory answers for: /ready is polled
+#: every few seconds, and each probe writes to the directory's volume.
+PROBE_CACHE_SECONDS = 60.0
+
+_probe_cache: Dict[Tuple[str, str], Tuple[float, Optional[str]]] = {}
+
+
+def probe_proofs_dir(
+    builds_root: Path | str, environ: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """None when the proofs directory can serve a build under ``builds_root``;
+    otherwise the plain reason it cannot. The directory is checked as the
+    vendored-lock gate checks it: :func:`placement_refusal` for a build placed
+    directly under ``builds_root``, against the same root list
+    (``runner.agent_rw_roots_for``). It is then created and a probe file is
+    written and removed in it. Any error at all is a reason (its type, no
+    path), never an exception."""
+    try:
+        from app.factory.build.runner import agent_rw_roots_for
+
+        workspace = Path(builds_root) / "build"
+        base = proofs_base(environ).resolve()
+        why = placement_refusal(base, workspace, agent_rw_roots_for(workspace))
+        if why is not None:
+            return why
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / f".probe-{os.getpid()}-{secrets.token_hex(4)}"
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+    except Exception as exc:  # noqa: BLE001 -- every failure is "not usable"
+        return unusable_reason(exc)
+    return None
+
+
+def builds_unavailable_reason(
+    builds_root: Path | str,
+    environ: Optional[Mapping[str, str]] = None,
+    *,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """:func:`probe_proofs_dir`, answered from a result at most
+    :data:`PROBE_CACHE_SECONDS` old for the same builds root and setting."""
+    env = os.environ if environ is None else environ
+    key = (str(builds_root), str(env.get(PROOFS_DIR_ENV) or ""))
+    clock = time.monotonic() if now is None else now
+    hit = _probe_cache.get(key)
+    if hit is not None and 0 <= clock - hit[0] < PROBE_CACHE_SECONDS:
+        return hit[1]
+    reason = probe_proofs_dir(builds_root, environ)
+    _probe_cache[key] = (clock, reason)
+    return reason
+
+
+def open_proof_store(
+    build_id: str,
+    workspace: Path | str,
+    *,
+    key: Optional[bytes],
+    base: Path | str,
+    rw_roots: Iterable[Path | str] = (),
+) -> ProofStore:
+    """The proof store of ``build_id`` under ``base``, with or without a key
+    (with none, overrides are impossible but the vendored record is still
+    kept). Raises OverrideError when there is no build id or the place is one
+    the coding agent could reach."""
+    if not str(build_id or "").strip():
+        raise OverrideError("a proof store needs the build id it belongs to")
+    root = Path(base) / hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:32]
+    why = placement_refusal(root, workspace, rw_roots)
+    if why is not None:
+        raise OverrideError(why)
+    return ProofStore(root=root.resolve(), build_id=build_id, key=bytes(key) if key else None)
+
+
+def _signature(key: Optional[bytes], payload: Mapping[str, Any]) -> str:
+    """HMAC-SHA256 with the Factory's key; a plain digest when there is none."""
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    if not key:
+        return "digest:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return hmac.new(key, body.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _write_signed(store: ProofStore, name: str, kind: str, payload: Mapping[str, Any]) -> Path:
+    signed = {**payload, "kind": kind, "build_id": store.build_id}
+    path = store.root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    body = {"payload": signed, "signature": _signature(store.key, signed)}
+    tmp.write_text(json.dumps(body, sort_keys=True, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def _read_signed(store: ProofStore, name: str, kind: str) -> Optional[Mapping[str, Any]]:
+    """The record's payload when the Factory signed it and it is of ``kind``
+    for this build; None otherwise."""
+    try:
+        raw = json.loads((store.root / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    payload = raw.get("payload") if isinstance(raw, Mapping) else None
+    if not isinstance(payload, Mapping):
+        return None
+    if not hmac.compare_digest(str(raw.get("signature") or ""), _signature(store.key, payload)):
+        return None
+    if payload.get("kind") != kind or payload.get("build_id") != store.build_id:
+        return None
+    return payload
+
+
+def _proof_name(exam_id: str) -> str:
+    return hashlib.sha256(exam_id.encode("utf-8")).hexdigest() + PROOF_SUFFIX
+
+
+def write_proof(store: ProofStore, proof: ExamProof) -> Path:
+    """Sign ``proof`` for this build, write it atomically, and return its path.
+    Refused when the Factory holds no key: an unsigned proof proves nothing."""
+    if not store.key:
+        raise OverrideError(f"{PROOF_KEY_ENV} is not set: the Factory can prove no exam")
+    if not proof.exam_id:
+        raise OverrideError(f"exam proof for {proof.block_id!r} has no exam id")
+    return _write_signed(store, _proof_name(proof.exam_id), EXAM_KIND, asdict(proof))
+
+
+def read_proof(store: Optional[ProofStore], exam_id: str) -> Optional[ExamProof]:
+    """The Factory-held, signed proof of ``exam_id`` for this build. None when
+    it is absent, unreadable, not signed by the Factory, or from another build,
+    and always when the Factory holds no key."""
+    if store is None or not store.key or not exam_id:
+        return None
+    raw = _read_signed(store, _proof_name(exam_id), EXAM_KIND)
+    if raw is None or raw.get("exam_id") != exam_id:
+        return None
+    score = raw.get("score")
+    return ExamProof(
+        exam_id=exam_id,
+        block_id=str(raw.get("block_id") or ""),
+        examined_hash=str(raw.get("examined_hash") or ""),
+        passed=raw.get("passed") is True,
+        score=float(score) if isinstance(score, (int, float)) else None,
+    )
+
+
+def proof_refusal(proof: Optional[ExamProof], block_id: str, actual: str) -> Optional[str]:
+    """None when the Factory-held ``proof`` shows ``block_id`` passing its
+    exam on a tree whose hash is ``actual``; otherwise why not."""
+    if proof is None:
+        return f"{block_id}: no Factory-held proof of its exam"
+    if proof.block_id != block_id or proof.passed is not True:
+        return f"{block_id}: the Factory-held proof does not show it passing its exam"
+    if proof.examined_hash != actual:
+        return f"{block_id}: these bytes are not the tree its exam examined"
+    return None
 
 
 def _rel_parts(path: Any) -> Tuple[str, ...]:

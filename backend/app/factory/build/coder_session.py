@@ -71,6 +71,7 @@ NAMED_BLOCKER_CLI = "FACTORY_CODE_CLI_UNAVAILABLE"
 NAMED_BLOCKER_CLI_CREDS = "FACTORY_CODE_CLI_CREDENTIALS_MISSING"
 NAMED_BLOCKER_CLI_FAILED = "FACTORY_CODE_CLI_FAILED"
 NAMED_BLOCKER_CLI_NO_MODEL = "FACTORY_CODE_CLI_NO_MODEL"
+NAMED_BLOCKER_BUILDS_UNAVAILABLE = "FACTORY_BUILDS_UNAVAILABLE"
 NAMED_BLOCKER_CLI_MODEL_DENIED = "FACTORY_CODE_CLI_MODEL_DENIED"
 NAMED_BLOCKER_CLI_BILLING = "FACTORY_CODE_CLI_BILLING"
 #: DeepSeek CLI was ready but C-BRIEF never ran, or the run SUCCESS-ed
@@ -215,6 +216,14 @@ class CodeCliUnavailable(RuntimeError):
     """Operator/config class: FACTORY_CODE_CLI is not on the factory host."""
 
     blocker = NAMED_BLOCKER_CLI
+
+
+class BuildsUnavailable(CodeCliUnavailable):
+    """Operator/config class: builds cannot start on this host (the exam
+    proofs directory cannot serve them). Refused at the door with the plain
+    reason, through every handler of an unavailable coding session."""
+
+    blocker = NAMED_BLOCKER_BUILDS_UNAVAILABLE
 
 
 class CodeCliCredentialsMissing(CodeCliUnavailable):
@@ -2775,6 +2784,20 @@ def _write_receipt(root: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def agent_rw_extras(workspace: Any) -> List[Path]:
+    """The roots, beside its working directory, that the coding agent's
+    confinement is asked to grant for one role workspace: the product
+    destination and the tree its writes land in. The one source for the
+    agent's spawn and for the Factory's check that what it holds (the exam
+    proofs, F-2) sits outside every root the agent may write."""
+    extras: List[Path] = []
+    for attr in ("destination", "workspace"):
+        val = getattr(workspace, attr, None)
+        if isinstance(val, (str, Path)):
+            extras.append(Path(val))
+    return extras
+
+
 def _workspace_root(ctx: Any) -> Path:
     ws = getattr(ctx, "workspace", None)
     if ws is None:
@@ -3071,12 +3094,7 @@ def _run_cli_session(
     }
     if stdin_payload is not None:
         popen_kw["stdin"] = subprocess.PIPE
-    rw_extra = []
-    workspace = getattr(ctx, "workspace", None)
-    for attr in ("destination", "workspace"):
-        val = getattr(workspace, attr, None)
-        if isinstance(val, (str, Path)):
-            rw_extra.append(Path(val))
+    rw_extra = agent_rw_extras(getattr(ctx, "workspace", None))
     try:
         popen_kw.update(
             confinement_popen_kwargs(root, str(cmd[0]) if cmd else "", rw_extra)

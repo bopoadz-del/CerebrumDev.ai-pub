@@ -719,6 +719,18 @@ def record_security_headers(api_base=None, frontend=None):
         )
 
 
+def record_builds_available(ready_body):
+    """DEAD when /ready says builds cannot start. /ready stays 200 then (the
+    API serves everything else), so a bad setting shows as a red deploy here
+    with the service still up. A /ready that does not report it is DEAD too."""
+    builds = _mapping(_mapping(ready_body).get("details")).get("builds")
+    builds = _mapping(builds)
+    available = builds.get("available") is True
+    reason = builds.get("reason") or ("" if available else "not reported by /ready")
+    check("builds available", available, f"available={available} reason={reason}")
+    return available
+
+
 def record_unauthenticated_surface(health=None, ready=None, version=None):
     """LIVE/DEAD lines for the public ops surface (no principal)."""
     if health is None:
@@ -737,6 +749,7 @@ def record_unauthenticated_surface(health=None, ready=None, version=None):
         rs == 200 and r.get("status") == "ready",
         f"http={rs} status={r.get('status')}",
     )
+    record_builds_available(r)
     vs, v = version
     v = _mapping(v)
     sha = v.get("git_sha") or ""

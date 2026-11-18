@@ -3,6 +3,7 @@ check accepts only a recorded override that passed its exam."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -297,3 +298,212 @@ def test_record_round_trips(record):
 )
 def test_record_coerces_exam_passed_strictly(raw, field, expected):
     assert getattr(so.OverrideRecord.from_mapping(raw), field) == expected
+
+
+# --- F-2: the Factory-held exam proofs ------------------------------------
+
+
+#: The Factory's signing key in these tests (the real one is never in a test).
+_KEY = b"factory-test-key"
+
+
+_BUILD = "build-1"
+
+
+def _proofs(root: Path, build_id: str = _BUILD, key: bytes = _KEY) -> so.ProofStore:
+    """The build's Factory-held proof store, outside the product (placement
+    itself is tested below with open_proof_store)."""
+    return so.ProofStore(root=root.parent / (root.name + "-proofs"), build_id=build_id, key=key)
+
+
+def _prove(root: Path, bid: str, exam_id: str = "exam-1", **over) -> None:
+    """The Factory's proof that ``bid`` passed ``exam_id`` on its bytes now."""
+    fields = dict(
+        exam_id=exam_id,
+        block_id=bid,
+        examined_hash=so.tree_hash(root / "vendor" / "blocks" / bid),
+        passed=True,
+        score=1.0,
+    )
+    fields.update(over)
+    so.write_proof(_proofs(root), so.ExamProof(**fields))
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        so.ExamProof("exam:a:1", "blk_a", "sha256:1", True, 1.0),
+        so.ExamProof("exam:b:2", "blk_b", "sha256:2", False, 0.25),
+    ],
+)
+def test_a_proof_reads_back_as_written_and_leaves_no_temp_file(tmp_path, proof):
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    path = so.write_proof(store, proof)
+    assert so.read_proof(store, proof.exam_id) == proof
+    assert path.name.endswith(so.PROOF_SUFFIX)
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+@pytest.mark.parametrize("block_id", ["blk_a", "blk_b"])
+def test_a_proof_without_an_exam_id_is_never_written(tmp_path, block_id):
+    with pytest.raises(so.OverrideError, match="has no exam id"):
+        so.write_proof(
+            so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY),
+            so.ExamProof("", block_id, "sha256:1", True),
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["{torn", "[1, 2]", '{"exam_id": "exam:other", "passed": true}'],
+    ids=["not-json", "not-an-object", "other-exam"],
+)
+def test_an_unreadable_or_foreign_proof_is_no_proof(tmp_path, text):
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    (tmp_path / so._proof_name("exam:a:1")).write_text(text, encoding="utf-8")
+    assert so.read_proof(store, "exam:a:1") is None
+
+
+@pytest.mark.parametrize("score, read", [(1, 1.0), ("high", None)])
+def test_a_proof_score_is_a_number_or_nothing(tmp_path, score, read):
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    so._write_signed(
+        store,
+        so._proof_name("exam:a:1"),
+        so.EXAM_KIND,
+        {"exam_id": "exam:a:1", "passed": "yes", "score": score},
+    )
+    proof = so.read_proof(store, "exam:a:1")
+    assert proof.score == read and proof.passed is False and proof.block_id == ""
+
+
+@pytest.mark.parametrize(
+    "inner, inside",
+    [("a", True), ("a/b/c", True), ("a/b/../c", True), (".", False), ("a-proofs", False)],
+)
+def test_is_inside_reads_the_tree_not_the_name(tmp_path, inner, inside):
+    assert so.is_inside(tmp_path / inner, tmp_path / "a") is inside
+
+
+@pytest.mark.parametrize("block_id", ["blk_a", "blk_b"])
+def test_an_empty_exam_id_reads_no_proof_even_if_a_file_claims_it(tmp_path, block_id):
+    store = so.ProofStore(root=tmp_path, build_id=_BUILD, key=_KEY)
+    so._write_signed(
+        store, so._proof_name(""), so.EXAM_KIND, {"exam_id": "", "block_id": block_id, "passed": True}
+    )
+    assert so.read_proof(store, "") is None
+
+
+@pytest.mark.parametrize("field, value", [("passed", True), ("examined_hash", "sha256:other")])
+def test_an_edited_signed_proof_is_no_proof(tmp_path, field, value):
+    store = _proofs(tmp_path)
+    path = so.write_proof(store, so.ExamProof("exam-1", "blk_a", "sha256:1", False, 0.0))
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["payload"][field] = value
+    path.write_text(json.dumps(body), encoding="utf-8")
+    assert so.read_proof(store, "exam-1") is None
+
+
+@pytest.mark.parametrize("value", ["s3cret-one", "  s3cret-two  "])
+def test_the_proof_key_is_taken_once_and_leaves_the_environment(monkeypatch, value):
+    monkeypatch.setattr(so, "_process_key", so._KEY_UNREAD)
+    env = {so.PROOF_KEY_ENV: value, "OTHER": "kept"}
+    assert so.take_proof_key(env) == value.strip().encode("utf-8")
+    assert env == {"OTHER": "kept"}
+    env[so.PROOF_KEY_ENV] = "a-later-value"
+    assert so.take_proof_key(env) == value.strip().encode("utf-8")
+
+
+@pytest.mark.parametrize("env", [{}, {so.PROOF_KEY_ENV: "   "}])
+def test_no_proof_key_is_none(monkeypatch, env):
+    monkeypatch.setattr(so, "_process_key", so._KEY_UNREAD)
+    assert so.take_proof_key(dict(env)) is None
+
+
+def test_a_coding_agent_child_never_gets_the_proof_key():
+    from app.factory.build.agent_confine import scoped_child_env
+
+    parent = {so.PROOF_KEY_ENV: "s3cret", "PATH": "/usr/bin"}
+    child = scoped_child_env(parent, {so.PROOF_KEY_ENV: "s3cret"}, provider_key=so.PROOF_KEY_ENV)
+    assert so.PROOF_KEY_ENV not in child
+    assert "s3cret" not in child.values()
+
+
+@pytest.mark.parametrize(
+    "where, refused",
+    [
+        ("vol/build", True),
+        ("vol/build/docs/proofs", True),
+        ("vol/build-proofs", True),
+        ("vol", True),
+        ("factory/proofs", False),
+    ],
+    ids=["the-product", "inside-product", "sibling-build", "the-volume", "factory-data"],
+)
+def test_proofs_are_placed_only_off_the_build_volume(tmp_path, where, refused):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    why = so.placement_refusal(tmp_path / where, workspace)
+    assert (why is not None) is refused
+
+
+@pytest.mark.parametrize("rw", ["agent-rw", "agent-rw/deeper"])
+def test_proofs_are_never_placed_under_or_above_a_root_the_agent_writes(tmp_path, rw):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    assert so.placement_refusal(tmp_path / "agent-rw", workspace, [tmp_path / rw]) == (
+        "exam proofs would sit where the coding agent may write"
+    )
+
+
+@pytest.mark.parametrize("build_id", ["build:aaa", "build:bbb"])
+def test_a_proof_store_opens_per_build_under_the_factory_base(tmp_path, build_id):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    store = so.open_proof_store(build_id, workspace, key=_KEY, base=tmp_path / "factory")
+    assert store.build_id == build_id
+    assert so.is_inside(store.root, tmp_path / "factory")
+    assert _KEY not in repr(store).encode("utf-8")
+    other = so.open_proof_store(build_id + "x", workspace, key=_KEY, base=tmp_path / "factory")
+    assert other.root != store.root
+
+
+@pytest.mark.parametrize(
+    "build_id, key, base, why",
+    [
+        ("  ", _KEY, "factory", "needs the build id"),
+        ("  ", None, "factory", "needs the build id"),
+        ("build:a", _KEY, "vol", "on the build volume"),
+        ("build:a", None, "vol", "on the build volume"),
+    ],
+    ids=["no-build", "no-build-no-key", "on-the-volume", "on-the-volume-no-key"],
+)
+def test_a_proof_store_is_refused_without_build_or_safe_place(tmp_path, build_id, key, base, why):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    with pytest.raises(so.OverrideError, match=why):
+        so.open_proof_store(build_id, workspace, key=key, base=tmp_path / base)
+
+
+@pytest.mark.parametrize("env, expected", [({so.PROOFS_DIR_ENV: "/data/p"}, "/data/p"), ({}, None)])
+def test_the_proofs_base_is_the_factory_setting_or_the_factory_home(env, expected):
+    base = so.proofs_base(env)
+    if expected:
+        assert base == so.Path(expected)
+    else:
+        assert base == so.Path.home() / ".cerebrum-factory" / "exam_proofs"
+
+
+def _keyless(root: Path) -> so.ProofStore:
+    return _proofs(root, key=None)
+
+
+@pytest.mark.parametrize("key", [None, b""])
+def test_a_proof_store_opens_without_a_key(tmp_path, key):
+    workspace = tmp_path / "vol" / "build"
+    workspace.mkdir(parents=True)
+    store = so.open_proof_store("build:a", workspace, key=key, base=tmp_path / "factory")
+    assert store.key is None
+    assert so.is_inside(store.root, tmp_path / "factory")
+
