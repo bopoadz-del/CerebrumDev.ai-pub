@@ -117,31 +117,46 @@ def test_proof_refusal_accepts_only_a_passing_proof_of_these_bytes() -> None:
     assert "does not show it passing" in (proof_refusal(good, "other", "h1") or "")
 
 
-def test_read_signed_reads_the_vendored_record_only_as_its_own_kind(tmp_path: Path) -> None:
+@pytest.mark.parametrize("blocks", [{"blk": "h1"}, {"a": "h1", "b": "sha256:other"}])
+def test_read_signed_reads_the_vendored_record_only_as_its_own_kind(
+    tmp_path: Path, blocks: dict[str, str]
+) -> None:
     store = _store(tmp_path)
-    path = record_vendored(store, {"blk": "h1"})
+    path = record_vendored(store, blocks)
     got = _read_signed(store, path.name, so.VENDORED_KIND)
-    assert got is not None and got["blocks"] == {"blk": "h1"}
+    assert got is not None and got["blocks"] == blocks
     assert _read_signed(store, path.name, so.EXAM_KIND) is None
     other = so.ProofStore(root=store.root, build_id="b-2", key=KEY)
     assert _read_signed(other, path.name, so.VENDORED_KIND) is None
 
 
-def test_vendored_payload_is_none_without_a_store_and_the_record_with_one(tmp_path: Path) -> None:
+@pytest.mark.parametrize("blocks", [{"blk": "h1"}, {"a": "h1", "b": "sha256:other"}])
+def test_vendored_payload_is_none_without_a_store_and_the_record_with_one(
+    tmp_path: Path, blocks: dict[str, str]
+) -> None:
     assert _vendored_payload(None) is None
     store = _store(tmp_path)
     assert _vendored_payload(store) is None
-    record_vendored(store, {"blk": "h1"})
+    record_vendored(store, blocks)
     got = _vendored_payload(store)
-    assert got is not None and got["blocks"] == {"blk": "h1"}
+    assert got is not None and got["blocks"] == blocks
 
 
-def test_vendored_rows_are_empty_without_a_record_and_the_rows_with_one(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "rows",
+    [
+        {"blk": {"source": "s", "commit": "c1"}},
+        {"a": {"source": "s", "commit": "c1"}, "b": {"path": "vendor/blocks/b", "commit": "c2"}},
+    ],
+)
+def test_vendored_rows_are_empty_without_a_record_and_the_rows_with_one(
+    tmp_path: Path, rows: dict[str, dict[str, str]]
+) -> None:
     assert vendored_rows(None) == {}
     store = _store(tmp_path)
     assert vendored_rows(store) == {}
-    record_vendored(store, {"blk": "h1"}, rows={"blk": {"source": "s", "commit": "c1"}})
-    assert vendored_rows(store) == {"blk": {"source": "s", "commit": "c1"}}
+    record_vendored(store, {b: "h1" for b in rows}, rows=rows)
+    assert vendored_rows(store) == rows
 
 
 @pytest.mark.parametrize(
@@ -192,11 +207,17 @@ def test_row_value_normalises_only_the_path(field_name: str, value: object, expe
 # --- store_proposal -------------------------------------------------------
 
 
-def test_text_lines_reads_lf_lines_and_is_empty_without_a_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "data,expected",
+    [(b"one\r\ntwo\n", ["one\n", "two\n"]), (b"solo", ["solo"])],
+)
+def test_text_lines_reads_lf_lines_and_is_empty_without_a_file(
+    tmp_path: Path, data: bytes, expected: list[str]
+) -> None:
     assert _text_lines(None) == []
     f = tmp_path / "a.txt"
-    f.write_bytes(b"one\r\ntwo\n")
-    assert _text_lines(f) == ["one\n", "two\n"]
+    f.write_bytes(data)
+    assert _text_lines(f) == expected
 
 
 def test_text_lines_is_none_for_bytes_that_are_not_text(tmp_path: Path) -> None:
@@ -205,20 +226,33 @@ def test_text_lines_is_none_for_bytes_that_are_not_text(tmp_path: Path) -> None:
     assert _text_lines(f) is None
 
 
-def test_defect_rows_keep_path_kind_and_input_of_each_defect() -> None:
-    defects = [StoreDefect("blk", "a.py", "raises", {"x": 1}), StoreDefect("blk", "b.py", "wrong", None)]
-    assert _defect_rows(defects) == (
-        {"path": "a.py", "kind": "raises", "failing_input": {"x": 1}},
-        {"path": "b.py", "kind": "wrong", "failing_input": None},
-    )
-    assert _defect_rows([]) == ()
+@pytest.mark.parametrize(
+    "defects,expected",
+    [
+        (
+            [StoreDefect("blk", "a.py", "raises", {"x": 1}), StoreDefect("blk", "b.py", "wrong", None)],
+            (
+                {"path": "a.py", "kind": "raises", "failing_input": {"x": 1}},
+                {"path": "b.py", "kind": "wrong", "failing_input": None},
+            ),
+        ),
+        ([], ()),
+    ],
+)
+def test_defect_rows_keep_path_kind_and_input_of_each_defect(
+    defects: list[StoreDefect], expected: tuple[dict, ...]
+) -> None:
+    assert _defect_rows(defects) == expected
 
 
-def test_write_rows_replaces_the_proposals_file_with_one_json_line_per_row(tmp_path: Path) -> None:
+@pytest.mark.parametrize("rows", [[{"id": "p1"}, {"id": "p2", "b": 2}], [{"id": "q1", "c": [1, 2]}]])
+def test_write_rows_replaces_the_proposals_file_with_one_json_line_per_row(
+    tmp_path: Path, rows: list[dict]
+) -> None:
     proposals_path(tmp_path).parent.mkdir(parents=True)
-    _write_rows(tmp_path, [{"id": "p1"}, {"id": "p2", "b": 2}])
+    _write_rows(tmp_path, rows)
     lines = proposals_path(tmp_path).read_text(encoding="utf-8").splitlines()
-    assert [json.loads(x) for x in lines] == [{"id": "p1"}, {"id": "p2", "b": 2}]
+    assert [json.loads(x) for x in lines] == rows
     _write_rows(tmp_path, [{"id": "p3"}])
     assert proposals_path(tmp_path).read_text(encoding="utf-8") == '{"id": "p3"}\n'
 
