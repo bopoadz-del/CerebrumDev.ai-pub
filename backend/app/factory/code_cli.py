@@ -117,13 +117,26 @@ def code_provider_setting_error() -> str:
     """Plain text when ``FACTORY_CODE_PROVIDER`` names a provider the shared
     table does not know; empty when it is unset or a table name. Names the
     setting and the accepted names, never a secret."""
+    return provider_setting_refusal(CODE_PROVIDER_ENV, os.getenv(CODE_PROVIDER_ENV, ""))
+
+
+def provider_setting_refusal(setting: str, value: str) -> str:
+    """The ONE refusal for a provider setting outside the shared table.
+
+    Plain text naming ``setting`` and the accepted names when ``value`` is a
+    non-empty name the table does not know (after the table's one alias is
+    normalised); empty when ``value`` is blank or a table name. Every path
+    that lets an operator choose a provider (the code-CLI setting, the
+    headless worker's settings) refuses through this, so the accepted names
+    and the wording cannot drift apart. Never prints a secret: a provider
+    name is not one."""
     from app.core.llm_config import PROVIDER_TABLE, normalise_provider
 
-    raw = os.getenv(CODE_PROVIDER_ENV, "").strip()
+    raw = (value or "").strip()
     if not raw or normalise_provider(raw) in PROVIDER_TABLE:
         return ""
     return (
-        f"{CODE_PROVIDER_ENV}={raw} is not a provider in the shared table; "
+        f"{setting}={raw} is not a provider in the shared table; "
         f"set it to one of {', '.join(sorted(PROVIDER_TABLE))} or unset it"
     )
 
