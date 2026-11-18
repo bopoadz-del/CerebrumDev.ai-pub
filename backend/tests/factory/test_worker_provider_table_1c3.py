@@ -70,7 +70,10 @@ def test_an_env_setting_outside_the_table_selects_no_provider(rs, monkeypatch, t
     assert "not a provider in the shared table" in refusal
 
 
-def test_nothing_set_is_the_default_table_name(rs):
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_nothing_set_is_the_default_table_name(rs, monkeypatch, blank):
+    # An empty or blank env setting is "nothing set": the default table name.
+    monkeypatch.setenv("CODEWHALE_PROVIDER", blank)
     assert codewhale_worker.worker_provider() == codewhale_worker.WORKER_PROVIDER_DEFAULT
     assert codewhale_worker.worker_provider_setting_error() == ""
 
@@ -134,13 +137,14 @@ def test_worker_and_code_cli_refuse_through_one_helper(rs, monkeypatch, marker):
 # --- the child env never stamps a key for a refused provider ------------------
 
 
-def test_child_env_stamps_no_provider_var_for_a_refused_provider(rs, monkeypatch):
-    monkeypatch.setenv("CODEWHALE_PROVIDER", "acme")
+@pytest.mark.parametrize("typed", ["acme", "zzz"])
+def test_child_env_stamps_no_provider_var_for_a_refused_provider(rs, monkeypatch, typed):
+    monkeypatch.setenv("CODEWHALE_PROVIDER", typed)
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-valid")
     env = codewhale_worker._child_env(session_id="sess_x")
     assert env["CODEWHALE_API_KEY"] == "sk-valid"
     assert "_API_KEY" not in env
-    assert "ACME_API_KEY" not in env
+    assert f"{typed.upper()}_API_KEY" not in env
     assert "DEEPSEEK_API_KEY" not in env
 
 
