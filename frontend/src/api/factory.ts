@@ -667,6 +667,12 @@ export interface BuildQueuePlace {
 /** One check the foreman proposed. `floor_entry` is a pre-filled
  *  acceptance_floor.v2.json entry for a human to review and paste; the
  *  Floor only copies it -- nothing writes the floor file from the UI. */
+export interface NotDeliveredRow {
+  block_id: string
+  capabilities: string[]
+  reason: string
+}
+
 export interface SuggestedCheck {
   name: string
   rule: string
@@ -748,6 +754,9 @@ export type BuildStatus = {
   suggested_checks?: SuggestedCheck[]
   /** The first failure of a run that went on to SUCCEED -- history, not an alert. */
   recovered_failure?: BuildFailure | null
+  /** F-3c (a): capabilities the ledger marks not delivered -- a Store block
+   *  whose repair failed -- with the block and the reason. Read-only. */
+  not_delivered?: NotDeliveredRow[]
   /** Client's delivery choice + repo URL when github_repo was delivered. */
   delivery_format?: string
   repo_url?: string

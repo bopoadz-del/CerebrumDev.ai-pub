@@ -1576,6 +1576,55 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByTestId('floor-phase-failed-TESTER')).not.toBeInTheDocument()
   })
 
+  it('names what the ledger marks not delivered, in one line', async () => {
+    // F-3c (a): read-only surfacing of the build record's not_delivered rows.
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({
+        state: 'succeeded',
+        cycle: 'pilot',
+        pilot_ready: true,
+        completed: ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER'],
+        acceptance: { passed: 13, total: 13, ok: true },
+        failure: null,
+        not_delivered: [
+          { block_id: 'blk_a', capabilities: ['cap_one', 'cap_two'], reason: 'repair failed its exam' },
+        ],
+      })
+    })
+    getMock.mockResolvedValue({
+      blueprint: LLM_BLUEPRINT,
+      blueprint_approved: true,
+      generation: { engine: 'runner', product_id: 'bakery', triggered_by: 'chat_llm' },
+    })
+    render(<Floor sessionId="sess_not_delivered" goPlatforms={() => {}} />)
+
+    const line = await screen.findByTestId('floor-not-delivered-line')
+    expect(line).toHaveTextContent('Not delivered: cap_one, cap_two (Store block blk_a: repair failed its exam)')
+  })
+
+  it('shows no not-delivered line when nothing is marked', async () => {
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({
+        state: 'succeeded',
+        cycle: 'pilot',
+        pilot_ready: true,
+        completed: ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER'],
+        acceptance: { passed: 13, total: 13, ok: true },
+        failure: null,
+        not_delivered: [],
+      })
+    })
+    getMock.mockResolvedValue({
+      blueprint: LLM_BLUEPRINT,
+      blueprint_approved: true,
+      generation: { engine: 'runner', product_id: 'bakery', triggered_by: 'chat_llm' },
+    })
+    render(<Floor sessionId="sess_all_delivered" goPlatforms={() => {}} />)
+
+    await screen.findAllByText(/13\/13/)
+    expect(screen.queryByTestId('floor-not-delivered-line')).not.toBeInTheDocument()
+  })
+
   it('keeps the drafted name on the build header after approve', async () => {
     // The name is shown in the finished header ("<name> 13/13 -- ...").
     watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {

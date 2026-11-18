@@ -1294,6 +1294,16 @@ export function Floor({
           {(liveCoderBuild?.suggested_checks?.length ?? 0) > 0 && (
             <SuggestedChecks checks={liveCoderBuild!.suggested_checks!} />
           )}
+          {(liveCoderBuild?.not_delivered?.length ?? 0) > 0 && (
+            <p className="coder-not-delivered-line" data-testid="floor-not-delivered-line">
+              Not delivered:{' '}
+              {liveCoderBuild!
+                .not_delivered!.map(
+                  (row) => `${row.capabilities.join(', ')} (Store block ${row.block_id}: ${row.reason || 'repair failed'})`,
+                )
+                .join('; ')}
+            </p>
+          )}
           {!liveCoderBuild?.failure && liveCoderBuild?.recovered_failure && (
             <p className="coder-recovered-line" data-testid="floor-recovered-line">
               Recovered in rework —{' '}

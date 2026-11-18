@@ -1033,6 +1033,12 @@ def _advisory_checks(events: Any) -> List[Dict[str, Any]]:
     return advisory_checks(events)
 
 
+def _not_delivered(events: Any) -> List[Dict[str, Any]]:
+    from app.factory.build.store_repair import not_delivered
+
+    return not_delivered(events)
+
+
 def _suggested_checks(events: Any) -> List[Dict[str, Any]]:
     from app.factory.build.foreman import suggested_checks
 
@@ -1287,6 +1293,9 @@ def build_status(
         # F4/F2: checks the foreman PROPOSED for a human to accept into the
         # floor -- read-only suggestions, never a verdict.
         "suggested_checks": _suggested_checks(events),
+        # F-3c (a): capabilities the ledger marks not delivered (a Store
+        # block whose repair failed), block and reason -- read-only.
+        "not_delivered": _not_delivered(events),
         # The runner rule's every decision (gate, class, round n/2 and build
         # n/6, check, finding) and, when it stopped the build, the stop.
         "decisions": [
