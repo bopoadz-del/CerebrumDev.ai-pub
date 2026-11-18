@@ -265,3 +265,24 @@ def regrade_settles(verdict: Any, repairs: Sequence[BlockRepair]) -> bool:
     if not left:
         return False
     return all(d.block_id in failed for d in left)
+
+
+def not_delivered(events: Iterable[Any]) -> List[Dict[str, Any]]:
+    """F-3c (a): what the ledger already says is not delivered, for the
+    build's API record. Read-only: each block's newest Store-defect NOTE
+    decides, and only blocks whose note names capabilities are listed."""
+    newest: Dict[str, Mapping[str, Any]] = {}
+    for event in events:
+        payload = getattr(event, "payload", None) or {}
+        block_id = payload.get(STORE_DEFECT_KEY)
+        if block_id:
+            newest[str(block_id)] = payload
+    return [
+        {
+            "block_id": block_id,
+            "capabilities": list(payload.get("not_delivered") or ()),
+            "reason": str(payload.get("reason") or ""),
+        }
+        for block_id, payload in newest.items()
+        if payload.get("not_delivered")
+    ]
