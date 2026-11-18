@@ -610,9 +610,10 @@ def _model_family(model_id: str) -> str:
 
 
 def writer_identity(env: Optional[Mapping[str, str]] = None) -> str:
-    """The WRITER's identity -- the target fingerprint the grader may never
-    equal. The provider and model come from the coder's own configuration
-    (never spelled here); version is carried when the coder declares one."""
+    """The writer's CONFIGURED identity: provider and model from the coder's
+    own configuration (never spelled here); version is carried when the
+    coder declares one. A declaration only -- the in-build independence
+    check uses :func:`recorded_writer_identity`, the model that ran (WK-1)."""
     from app.factory import code_cli
 
     values = env if env is not None else os.environ
@@ -672,6 +673,39 @@ def independence_refusal(writer_id: str, grader_cfg: Optional[Mapping[str, str]]
             "model vendor"
         )
     return None
+
+
+def recorded_writer_identity(writer_run: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """The identity of the writer that RAN, from the provider and model its
+    run receipt reported and the build recorded (WK-1), or None when either
+    is missing. Never the configured identity: a configured model is a
+    declaration, and a CLI that ran its own default makes it false."""
+    record = writer_run if isinstance(writer_run, Mapping) else {}
+    provider = str(record.get("provider") or "").strip()
+    model = str(record.get("model") or "").strip()
+    if not (provider and model):
+        return None
+    return _norm_identity(provider, model)
+
+
+def graded_writer_refusal(
+    writer_run: Optional[Mapping[str, Any]], grader_cfg: Optional[Mapping[str, str]]
+) -> Optional[str]:
+    """Why Layer 2 may not run against THIS build's writer, or None. An
+    unconfigured grader is refused first; then a build with no recorded
+    writer model is refused (independence cannot be checked against a model
+    nobody recorded); then the recorded identity meets the independence
+    rule."""
+    if grader_cfg is None:
+        return independence_refusal("", None)
+    writer_id = recorded_writer_identity(writer_run)
+    if writer_id is None:
+        return (
+            "layer 2 refused: no writer model was recorded for this build (the run "
+            "receipt named no provider or no model) -- independence is checked "
+            "against the model that ran, never a declared one"
+        )
+    return independence_refusal(writer_id, grader_cfg)
 
 
 def _grader_complete(messages: List[Dict[str, str]]) -> str:
@@ -927,6 +961,7 @@ def run_grader(
     base_url: Optional[str] = None,
     python: str = sys.executable,
     grader_root: Optional[Path | str] = None,
+    writer_run: Optional[Mapping[str, Any]] = None,
 ) -> GraderVerdict:
     """Grade the writer's tree and write the record into it. Returns the
     verdict; raises nothing (an outage is an ERROR verdict, never an
@@ -1017,7 +1052,7 @@ def run_grader(
     l2: Mapping[str, Any]
     if ui_not_run:
         ungraded.append(ui_not_run)
-    refusal = independence_refusal(writer_identity(), grader_llm_config())
+    refusal = graded_writer_refusal(writer_run, grader_llm_config())
     if refusal:
         l2 = {"ran": False, "verdicts": [], "open_fails": [refusal]}
         ungraded.append(refusal)

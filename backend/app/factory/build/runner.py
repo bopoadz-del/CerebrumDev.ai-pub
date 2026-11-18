@@ -1114,7 +1114,11 @@ class RoleRunner:
         if not grader_enabled():
             return None
         from app.factory.build.grader import ERROR, GraderVerdict
-        from app.factory.build.writer_prompt import DispatchRecordMissing, dispatched_writer_inputs
+        from app.factory.build.writer_prompt import (
+            WRITER_RUN_STATE_KEY,
+            DispatchRecordMissing,
+            dispatched_writer_inputs,
+        )
 
         # FG-4: the grader derives from what the writer was actually told,
         # recorded at dispatch; no record is an error about the run, never a
@@ -1146,6 +1150,8 @@ class RoleRunner:
             prompt_text=told["prompt"],
             supplied_text=told["supplied"],
             store_root=self.store_root,
+            # WK-1: the model the writer's run reported, recorded on the build.
+            writer_run=self.state.get(WRITER_RUN_STATE_KEY),
         )
         try:
             verdict = run_grader(**grader_inputs)

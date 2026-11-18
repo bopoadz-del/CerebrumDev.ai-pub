@@ -209,6 +209,29 @@ def test_worker_dispatch_records_the_receipt(tmp_path, monkeypatch):
     assert payload["via"] == "codewhale_worker"
 
 
+@pytest.mark.parametrize(
+    "provider, model",
+    [("writerco", "writer-model-1"), ("otherco", "other/model-2")],
+)
+def test_worker_dispatch_records_the_model_the_run_reported(tmp_path, monkeypatch, provider, model):
+    """WK-1: the build records the provider and model the run's receipt
+    reported -- the grader's independence check reads this record."""
+    from app.factory.build.writer_prompt import WRITER_RUN_STATE_KEY
+
+    ctx = _ctx(tmp_path)
+    _plant_authored_handler(tmp_path / "build")
+
+    def fake_run(prompt, dest, **kwargs):
+        return _receipt(
+            tools=[{"tool": "write", "path": "app/actions/cap.py"}], provider=provider, model=model
+        )
+
+    monkeypatch.setattr("app.factory.build.codewhale_worker.run_worker_job", fake_run)
+    result = _run_writer_via_codewhale_worker(ctx)
+    assert result.ok is True
+    assert ctx.state[WRITER_RUN_STATE_KEY] == {"provider": provider, "model": model}
+
+
 def test_worker_succeeded_but_wrote_nothing_is_refused(tmp_path, monkeypatch):
     """E1: a 'completed' receipt with zero tool calls or zero stamped
     handlers is the same silent success the writer_contract gate refuses â€”
