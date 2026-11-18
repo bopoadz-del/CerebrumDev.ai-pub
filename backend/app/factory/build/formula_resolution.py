@@ -35,6 +35,10 @@ WRITER_DEFINITIONS_REL = "app/formulas/writer_definitions.jsonl"
 WRITER_CANDIDATES_REL = "app/formulas/new_domain_candidates.jsonl"
 #: The Factory's record of this pass's formula findings (rework reads it).
 FORMULA_FINDINGS_REL = ".factory/writer_formula_findings.json"
+#: The product module the writer puts its formula functions in (named to it
+#: in the prompt). With the formula package (the parent of
+#: WRITER_DEFINITIONS_REL) this is where the H-1 reach record looks.
+FORMULAS_MODULE_REL = "app/formulas.py"
 
 
 def _store_root(store_root: Any) -> Optional[Path]:
@@ -238,6 +242,19 @@ def attach_improvised_metadata(
     return {"labelled": labelled, "candidates_added": added}
 
 
+def reach_record(root: Path) -> Dict[str, Any]:
+    """The H-1 reach record for the audit. It is a record, not a gate: the
+    analysis failing in ANY way is recorded as unknown ("analysis crashed:
+    <class>") and never raised, so the errors written beside it (what the
+    writer gate reads) are always written."""
+    from app.factory.build import formula_reach
+
+    try:
+        return formula_reach.formula_reach(root)
+    except Exception as exc:  # noqa: BLE001 -- any failure is recorded, never raised
+        return formula_reach.unknown_record(f"analysis crashed: {type(exc).__name__}", [])
+
+
 def audit_product_formulas(
     product_root: Any,
     kernel_index: Sequence[Mapping[str, Any]],
@@ -248,7 +265,8 @@ def audit_product_formulas(
     Reads WRITER_DEFINITIONS_REL / WRITER_CANDIDATES_REL, ATTACHES the
     improvised label + Store candidate by construction (0555Z), runs
     :func:`writer_formula_errors`, and writes the findings to
-    FORMULA_FINDINGS_REL (an empty list on a clean pass).
+    FORMULA_FINDINGS_REL (an empty list on a clean pass), with the H-1
+    reach record (:func:`formula_reach.formula_reach`) beside it.
     """
     root = Path(product_root)
     attach_improvised_metadata(root, kernel_index, store_index)
@@ -258,7 +276,8 @@ def audit_product_formulas(
         store_index,
         _jsonl(root / WRITER_CANDIDATES_REL),
     )
+    record = {"errors": errs, "reach": reach_record(root)}
     target = root / FORMULA_FINDINGS_REL
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"errors": errs}, indent=2) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     return errs
