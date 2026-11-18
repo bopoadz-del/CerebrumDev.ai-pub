@@ -247,6 +247,22 @@ def store_schema_report(store_root: Any) -> Dict[str, Any]:
     return summarize(load_store_packs(store_root))
 
 
+def stocking_schema_record(store_root: Any) -> Dict[str, Any]:
+    """The schema report as the CLONER records it at the stocking step (H-3a).
+
+    Report only and never raises: a build with no Store root, or a Store
+    tree that cannot be read, records why instead of crashing the CLONER.
+    """
+    if store_root is None:
+        return {"mode": MODE, "recorded": False, "reason": "no_store_root"}
+    try:
+        report = store_schema_report(store_root)
+    except (OSError, TypeError, ValueError) as exc:
+        return {"mode": MODE, "recorded": False, "reason": "unreadable", "error": str(exc)}
+    report["recorded"] = True
+    return report
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
 
