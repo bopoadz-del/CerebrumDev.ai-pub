@@ -1748,7 +1748,9 @@ def run_cloner(ctx: RoleContext) -> RoleResult:
                 stage="coder_brief_unwritten",
             )
 
-    notes = {"lock": lock}
+    from app.factory.build.knowledge_schema import stocking_schema_record
+
+    notes = {"lock": lock, "knowledge_schema": stocking_schema_record(ctx.blocks_root)}
     notes.update(handoff_notes)
     return RoleResult(
         ok=True,

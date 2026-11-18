@@ -258,3 +258,29 @@ def test_cli_prints_report_and_exits_zero(seed, tmp_path, capsys):
     assert ks.main(["--store", str(tmp_path)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["counts"] == {"formula.basis_missing": 1}
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("n_packs", [1, 3])
+def test_stocking_record_reports_the_store_it_was_given(seed, n_packs, tmp_path):
+    """H-3a: the CLONER's record is the schema report of ITS Store tree."""
+    for i in range(n_packs):
+        d = tmp_path / "domain_packs" / f"p{i}"
+        d.mkdir(parents=True)
+        (d / "pack.json").write_text(json.dumps(_world(seed + i)), encoding="utf-8")
+    record = ks.stocking_schema_record(tmp_path)
+    assert record["recorded"] is True
+    assert record["mode"] == ks.MODE
+    assert (record["packs"], record["formulas"], record["data_items"]) == (n_packs,) * 3
+    assert record["formulas_failing"] == 0
+
+
+@pytest.mark.parametrize(
+    "root, reason", [(None, "no_store_root"), (12345, "unreadable")]
+)
+def test_stocking_record_without_a_readable_store_says_why(root, reason):
+    """No Store root, or one that is not a path, is recorded; the CLONER never crashes."""
+    record = ks.stocking_schema_record(root)
+    assert record["recorded"] is False
+    assert record["reason"] == reason
+    assert record["mode"] == ks.MODE

@@ -1438,3 +1438,18 @@ def test_a_store_shim_without_a_registry_runtime_entry_fails_closed(tmp_path):
 
     with pytest.raises(RoleError, match="ghost_runtime"):
         _clone(tmp_path, store, block_ids=("ghost_runtime",))
+
+
+@pytest.mark.parametrize("n_packs", [0, 2])
+def test_the_cloner_records_the_store_knowledge_schema(tmp_path, n_packs):
+    """H-3a: the stocking step records the schema report of the Store it cloned from."""
+    store = _faux_store(tmp_path)
+    for i in range(n_packs):
+        d = store / "domain_packs" / f"p{i}"
+        d.mkdir(parents=True)
+        (d / "pack.json").write_text(json.dumps({"formulas": [{}]}), encoding="utf-8")
+    _, result = _clone(tmp_path, store)
+    assert result.ok, result.detail
+    record = result.notes["knowledge_schema"]
+    assert record["recorded"] is True
+    assert (record["packs"], record["formulas"]) == (n_packs, n_packs)
