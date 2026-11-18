@@ -603,3 +603,200 @@ def test_a_retry_after_a_crash_between_filing_and_saving_completes_once(tmp_path
     assert again == proposal
     assert sp.filed_proposals(tmp_path) == rows
     assert (tmp_path / sp.LOCK_FILE).read_bytes() == once
+
+
+# -- F-3: the installer puts the examined repair in place, or changes nothing --
+
+
+def _install(root: Path, lock: dict, case: dict, **kw):
+    return sp.install_repair(
+        root, lock, _passed(case), proofs=_proofs(root, case["build"]), **kw
+    )
+
+
+def _proposals_text(root: Path) -> str:
+    path = sp.proposals_path(root)
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def _saved_lock(root: Path):
+    path = root / sp.LOCK_FILE
+    return path.read_bytes() if path.is_file() else None
+
+
+def _backup_of(vendored: Path) -> Path:
+    return vendored.with_name(vendored.name + sp.INSTALL_BACKUP_SUFFIX)
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_an_installed_repair_stands_in_place_and_is_saved_to_the_lock_on_disk(tmp_path, case):
+    lock, vendored, staging = _product(tmp_path, case)
+    original = tree_hash(vendored)
+
+    assert _install(tmp_path, lock, case) is None
+
+    assert tree_hash(vendored) == tree_hash(staging) != original
+    record = lock[OVERRIDES_KEY][case["block"]]
+    assert record["replaces_hash"] == original
+    assert record["override_hash"] == tree_hash(staging)
+    on_disk = json.loads((tmp_path / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    assert on_disk[OVERRIDES_KEY][case["block"]] == record
+    check = verify_vendored(tmp_path, on_disk, proofs=_proofs(tmp_path, case["build"]))
+    assert check.ok and check.overridden == (case["block"],)
+    assert [r["block_id"] for r in sp.filed_proposals(tmp_path)] == [case["block"]]
+    assert not _backup_of(vendored).exists()
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_repair_without_its_proof_is_not_installed_and_nothing_changes(tmp_path, case):
+    lock, vendored, _ = _product(tmp_path, case)
+    _prove(tmp_path, case, passed=False)
+    before = (tree_hash(vendored), json.dumps(lock, sort_keys=True), _saved_lock(tmp_path))
+
+    why = _install(tmp_path, lock, case)
+
+    assert why and case["block"] in why
+    assert (tree_hash(vendored), json.dumps(lock, sort_keys=True), _saved_lock(tmp_path)) == before
+    assert sp.filed_proposals(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [{}, {"elsewhere": {"override_hash": "1" * 64, "exam_id": "exam:elsewhere:cccc"}}],
+    ids=["empty", "another-block"],
+)
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_refused_install_keeps_the_overrides_the_lock_already_had(tmp_path, case, prior):
+    """A lock that already carries an overrides table (empty, or recording
+    another block) keeps that table, as it was, when this install is refused;
+    the table is not dropped just because this block was not added."""
+    lock, vendored, _ = _product(tmp_path, case)
+    lock[OVERRIDES_KEY] = json.loads(json.dumps(prior))
+    sp.save_lock(tmp_path, lock)
+    _prove(tmp_path, case, passed=False)
+    saved = _saved_lock(tmp_path)
+
+    why = _install(tmp_path, lock, case)
+
+    assert why and case["block"] in why
+    assert lock[OVERRIDES_KEY] == prior
+    assert _saved_lock(tmp_path) == saved
+    assert json.loads(saved.decode("utf-8"))[OVERRIDES_KEY] == prior
+
+
+def _tamper_other_block(root: Path, lock: dict) -> None:
+    """A second block whose bytes differ from its lock row and that the
+    Factory never recorded, so the lock check refuses the product whatever
+    this repair does."""
+    other = root / "vendor" / "blocks" / "frobnic"
+    _write(other, {"core.py": "A = 1\n"})
+    lock["blocks"]["frobnic"] = {
+        "source": "store:origin-three",
+        "commit": "abc1234",
+        "path": "vendor/blocks/frobnic",
+        VENDORED_HASH_KEY: tree_hash(other),
+    }
+    _write(other, {"core.py": "A = 2\n"})
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_an_install_the_lock_check_refuses_is_rolled_back_on_disk_too(tmp_path, case):
+    lock, vendored, _ = _product(tmp_path, case)
+    _tamper_other_block(tmp_path, lock)
+    sp.save_lock(tmp_path, lock)
+    before = (tree_hash(vendored), json.dumps(lock, sort_keys=True), _saved_lock(tmp_path))
+
+    why = _install(tmp_path, lock, case)
+
+    assert why.startswith("installed repair failed the lock check: ")
+    assert "frobnic" in why
+    assert (tree_hash(vendored), json.dumps(lock, sort_keys=True), _saved_lock(tmp_path)) == before
+    assert OVERRIDES_KEY not in lock
+    assert sp.filed_proposals(tmp_path) == []
+    assert not _backup_of(vendored).exists()
+
+
+@pytest.mark.parametrize(
+    "stage, error",
+    [("copy", OSError), ("verify", RuntimeError), ("save", PermissionError)],
+)
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_any_failure_after_the_backup_move_is_undone_and_named(
+    tmp_path, monkeypatch, case, stage, error
+):
+    """The copy raising halfway, the lock check raising, or the final save
+    raising: the partial copy is removed, the vendored copy restored, the
+    saved lock and the proposals file are as they were, and the reason is
+    returned, not raised."""
+    lock, vendored, _ = _product(tmp_path, case)
+    sp.save_lock(tmp_path, lock)
+    before = (
+        tree_hash(vendored),
+        json.dumps(lock, sort_keys=True),
+        _saved_lock(tmp_path),
+        _proposals_text(tmp_path),
+    )
+    real_copytree, real_save = sp.shutil.copytree, sp.save_lock
+
+    def half_copy(src, dst, **kw):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "half.py").write_text("PARTIAL = 1\n", encoding="utf-8")
+        raise error("copy stopped halfway")
+
+    def verify_raises(*_a, **_k):
+        raise error("check crashed")
+
+    saves = []
+
+    def save_raises_on_install(root, data):
+        saves.append(1)
+        if len(saves) > 1:  # the first save is accept_repair's on the trial lock
+            raise error("disk full")
+        return real_save(root, data)
+
+    if stage == "copy":
+        monkeypatch.setattr(sp.shutil, "copytree", half_copy)
+    elif stage == "verify":
+        monkeypatch.setattr(sp, "verify_vendored", verify_raises)
+    else:
+        monkeypatch.setattr(sp, "save_lock", save_raises_on_install)
+
+    why = _install(tmp_path, lock, case)
+    monkeypatch.setattr(sp.shutil, "copytree", real_copytree)
+
+    assert why == f"install failed and was undone ({error.__name__})"
+    assert (
+        tree_hash(vendored),
+        json.dumps(lock, sort_keys=True),
+        _saved_lock(tmp_path),
+        _proposals_text(tmp_path),
+    ) == before
+    assert not (vendored / "half.py").exists()
+    assert not _backup_of(vendored).exists()
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_rolled_back_install_keeps_a_proposal_filed_before_it(tmp_path, case):
+    lock, _, _ = _product(tmp_path, case)
+    _accept(tmp_path, json.loads(json.dumps(lock)), _passed(case), build_id=case["build"])
+    filed = _proposals_text(tmp_path)
+    assert filed
+    _tamper_other_block(tmp_path, lock)
+
+    assert _install(tmp_path, lock, case) is not None
+    assert _proposals_text(tmp_path) == filed
+
+
+@pytest.mark.parametrize(
+    "case, stale_files",
+    [(_CASES[0], {"left.py": "OLD = 1\n"}), (_CASES[1], {"a/b.py": "OLD = 2\n"})],
+    ids=["one-file", "nested"],
+)
+def test_a_stale_backup_from_an_earlier_install_is_replaced(tmp_path, case, stale_files):
+    lock, vendored, staging = _product(tmp_path, case)
+    stale = _backup_of(vendored)
+    _write(stale, stale_files)
+
+    assert _install(tmp_path, lock, case) is None
+    assert tree_hash(vendored) == tree_hash(staging)
+    assert not stale.exists()

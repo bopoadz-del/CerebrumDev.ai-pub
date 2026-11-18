@@ -19,6 +19,14 @@ path, never from a list of names). Anything the writer owns, any ungraded
 layer and any other Factory finding leaves the verdict to the paths that
 handle it today. The repair itself (R2: an exam from the block's contract)
 is the ``repairer`` the caller passes; K-3 supplies it.
+
+F-3 (grader 21:50Z): a passed exam is not yet a repair. A block counts as
+repaired only when the caller's ``installer`` has put the examined repair in
+place of the vendored copy, recorded its override and passed the lock check
+(it returns None; any other value is the reason it did not). The caller then
+re-grades the product, and :func:`regrade_settles` decides from that new
+verdict: what is still open may only be Store defects of blocks whose repair
+failed, and those blocks' capabilities are marked not delivered.
 """
 
 from __future__ import annotations
@@ -58,6 +66,9 @@ class RepairResult:
 
 #: ``repairer(block_id, defects) -> RepairResult``.
 Repairer = Callable[[str, Tuple[StoreDefect, ...]], RepairResult]
+#: ``installer(result, defects) -> None`` when the passed repair is installed,
+#: recorded and passes the lock check; otherwise the reason it is not (F-3).
+Installer = Callable[[RepairResult, Tuple[StoreDefect, ...]], Optional[str]]
 
 
 @dataclass(frozen=True)
@@ -153,19 +164,34 @@ def _repair_one(
     return result
 
 
+def _install_one(
+    installer: Installer, result: RepairResult, defects: Tuple[StoreDefect, ...]
+) -> Optional[str]:
+    """F-3: None when ``installer`` installed the passed repair, else why not."""
+    try:
+        refusal = installer(result, defects)
+    except Exception as exc:  # noqa: BLE001 -- a crashed install is a failed one, named
+        return f"install crashed: {type(exc).__name__}: {exc}"
+    if refusal is None:
+        return None
+    return f"not installed: {refusal}"
+
+
 def settle(
     verdict: Any,
     *,
     plan_capabilities: Sequence[Any],
     events: Iterable[Any],
     repairer: Repairer,
+    installer: Installer,
     allowance: int = STORE_REPAIR_ALLOWANCE,
 ) -> Optional[Tuple[BlockRepair, ...]]:
     """R4: repair each defective block within its own allowance.
 
     Returns None when the verdict is not made only of Store defects (the
     caller's existing path decides it). Otherwise one :class:`BlockRepair`
-    per block: repaired, or not, with the bound capabilities not delivered."""
+    per block: repaired (its exam passed AND ``installer`` installed it,
+    F-3), or not, with the bound capabilities not delivered."""
     defects = _store_only(verdict)
     if not defects:
         return None
@@ -184,6 +210,12 @@ def settle(
             result = _repair_one(repairer, block_id, block_defects)
             attempted = True
         repaired = result.passed is True
+        detail = str(result.detail or "")
+        if repaired:
+            refusal = _install_one(installer, result, block_defects)
+            if refusal is not None:
+                repaired = False
+                detail = "; ".join(d for d in (detail, refusal) if d)
         out.append(
             BlockRepair(
                 block_id=block_id,
@@ -194,7 +226,7 @@ def settle(
                 exam_score=result.exam_score,
                 not_delivered=() if repaired else capabilities_of(plan_capabilities, block_id),
                 reason="" if repaired else REPAIR_FAILED_REASON,
-                detail=str(result.detail or ""),
+                detail=detail,
             )
         )
     return tuple(out)
@@ -207,3 +239,19 @@ def grade_with_section(
     out = dict(grade or {})
     out[GRADE_SECTION] = [r.row() for r in repairs]
     return out
+
+
+def regrade_settles(verdict: Any, repairs: Sequence[BlockRepair]) -> bool:
+    """F-3: does the re-grade taken after the repairs settle the run?
+
+    Yes when it is certified, or when everything it still has open is a
+    Store defect (as :func:`settle` reads one) of a block whose repair
+    failed, so its capabilities are already marked not delivered. A defect
+    left in a block reported repaired, or anything else open, is no."""
+    if getattr(verdict, "ok", False) is True:
+        return True
+    failed = {r.block_id for r in repairs if not r.repaired}
+    left = _store_only(verdict)
+    if not left:
+        return False
+    return all(d.block_id in failed for d in left)
