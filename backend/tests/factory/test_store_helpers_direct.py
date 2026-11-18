@@ -54,6 +54,14 @@ def _store(tmp_path: Path, key: bytes | None = KEY, build_id: str = "b-1") -> so
 # --- store_override -------------------------------------------------------
 
 
+@pytest.mark.parametrize("key", [None, b""])
+def test_write_proof_without_a_key_is_refused_and_writes_nothing(tmp_path: Path, key: bytes | None) -> None:
+    store = _store(tmp_path, key=key)
+    with pytest.raises(so.OverrideError, match=f"{so.PROOF_KEY_ENV} is not set"):
+        write_proof(store, ExamProof("e1", "blk", "h1", True))
+    assert not store.root.exists() or list(store.root.iterdir()) == []
+
+
 @pytest.mark.parametrize("exc", [OSError("/secret/path"), PermissionError("/x")])
 def test_unusable_reason_names_the_error_type_and_no_path(exc: BaseException) -> None:
     reason = unusable_reason(exc)
@@ -61,22 +69,23 @@ def test_unusable_reason_names_the_error_type_and_no_path(exc: BaseException) ->
     assert "/" not in reason
 
 
-def test_signature_is_a_digest_without_a_key_and_an_hmac_with_one() -> None:
-    payload = {"b": 1, "a": "x"}
+@pytest.mark.parametrize("payload", [{"b": 1, "a": "x"}, {"exam_id": "e2", "passed": False}])
+def test_signature_is_a_digest_without_a_key_and_an_hmac_with_one(payload: dict) -> None:
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     assert _signature(None, payload) == "digest:" + hashlib.sha256(body).hexdigest()
     assert _signature(KEY, payload) == hmac.new(KEY, body, hashlib.sha256).hexdigest()
     assert _signature(KEY, payload) != _signature(b"other", payload)
 
 
-def test_read_signed_returns_the_payload_of_a_record_this_build_signed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("examined", ["h1", "sha256:other"])
+def test_read_signed_returns_the_payload_of_a_record_this_build_signed(tmp_path: Path, examined: str) -> None:
     store = _store(tmp_path)
-    record_vendored(store, {"blk": "h1"})
-    got = _read_signed(store, so.VENDORED_RECORD, so.VENDORED_KIND)
-    assert got is not None and got["blocks"] == {"blk": "h1"}
-    assert _read_signed(store, so.VENDORED_RECORD, so.EXAM_KIND) is None
+    path = write_proof(store, ExamProof("e1", "blk", examined, True))
+    got = _read_signed(store, path.name, so.EXAM_KIND)
+    assert got is not None and got["examined_hash"] == examined
+    assert _read_signed(store, path.name, "another_kind") is None
     other = so.ProofStore(root=store.root, build_id="b-2", key=KEY)
-    assert _read_signed(other, so.VENDORED_RECORD, so.VENDORED_KIND) is None
+    assert _read_signed(other, path.name, so.EXAM_KIND) is None
 
 
 @pytest.mark.parametrize("payload", [["a", "list"], "text"])
@@ -85,17 +94,17 @@ def test_read_signed_refuses_a_signed_payload_that_is_not_a_mapping(tmp_path: Pa
     store.root.mkdir(parents=True, exist_ok=True)
     body = {"payload": payload, "signature": _signature(KEY, payload)}  # type: ignore[arg-type]
     (store.root / "odd.json").write_text(json.dumps(body), encoding="utf-8")
-    assert _read_signed(store, "odd.json", so.VENDORED_KIND) is None
+    assert _read_signed(store, "odd.json", so.EXAM_KIND) is None
 
 
 def test_read_signed_refuses_a_forged_signature_and_a_missing_file(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    path = record_vendored(store, {"blk": "h1"})
+    path = write_proof(store, ExamProof("e1", "blk", "h1", True))
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["signature"] = "0" * 64
     path.write_text(json.dumps(raw), encoding="utf-8")
-    assert _read_signed(store, so.VENDORED_RECORD, so.VENDORED_KIND) is None
-    assert _read_signed(store, "absent.json", so.VENDORED_KIND) is None
+    assert _read_signed(store, path.name, so.EXAM_KIND) is None
+    assert _read_signed(store, "absent.json", so.EXAM_KIND) is None
 
 
 def test_proof_refusal_accepts_only_a_passing_proof_of_these_bytes() -> None:
@@ -106,6 +115,16 @@ def test_proof_refusal_accepts_only_a_passing_proof_of_these_bytes() -> None:
     failed = ExamProof(exam_id="e1", block_id="blk", examined_hash="h1", passed=False)
     assert "does not show it passing" in (proof_refusal(failed, "blk", "h1") or "")
     assert "does not show it passing" in (proof_refusal(good, "other", "h1") or "")
+
+
+def test_read_signed_reads_the_vendored_record_only_as_its_own_kind(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    path = record_vendored(store, {"blk": "h1"})
+    got = _read_signed(store, path.name, so.VENDORED_KIND)
+    assert got is not None and got["blocks"] == {"blk": "h1"}
+    assert _read_signed(store, path.name, so.EXAM_KIND) is None
+    other = so.ProofStore(root=store.root, build_id="b-2", key=KEY)
+    assert _read_signed(other, path.name, so.VENDORED_KIND) is None
 
 
 def test_vendored_payload_is_none_without_a_store_and_the_record_with_one(tmp_path: Path) -> None:
