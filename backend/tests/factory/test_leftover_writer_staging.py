@@ -67,13 +67,9 @@ def _resume_notes(runner: RoleRunner) -> list:
     ]
 
 
-_TORN = {"app/models.py": "# torn
-"}
-_NARRATED = {"app/models.py": "# step 3 of 17
-", "docs/writer_progress.log": "STEP 3: models
-"}
-_SILENT_LOG = {"app/models.py": "# torn
-", "docs/writer_progress.log": ""}
+_TORN = {"app/models.py": "# torn\n"}
+_NARRATED = {"app/models.py": "# step 3 of 17\n", "docs/writer_progress.log": "STEP 3: models\n"}
+_SILENT_LOG = {"app/models.py": "# torn\n", "docs/writer_progress.log": ""}
 
 
 @pytest.mark.parametrize(
