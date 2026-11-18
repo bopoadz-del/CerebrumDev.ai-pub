@@ -41,7 +41,8 @@ after its dots (``(".sub." + x, __name__)``). ``PKG`` is a constant only
 when the module binds it ONCE in its whole text -- function bodies (a
 ``global`` declaration counts as a binding), the main guard, imports, loop
 and ``except`` targets included -- to a string literal or an import of such
-a constant; a module that calls ``globals()`` / ``vars()`` has none, and no
+a constant; a module that calls ``globals()`` / ``vars()`` or holds a
+``from x import *`` (which can re-bind any name) has none, and no
 name any product module stores as an attribute (``mod.PKG = ...``,
 ``setattr(x, "PKG", ...)``) is one. Python can load only the product
 modules whose name starts with that prefix, so the walk loads each of them,
@@ -63,6 +64,9 @@ this record must account for them):
     this way may be dead in every real configuration.
   * a constant rebound through a ``setattr`` with a computed name, or by
     replacing the module in ``sys.modules``, is not seen.
+  * a constant rebound by a write through a module's ``__dict__``
+    (``mod.__dict__["PKG"] = ...``), by ``exec`` / ``eval`` of text, or by a
+    module reload (``importlib.reload``) is not seen.
 
 A script token in a packaging file counts only in a RUN position: the
 first non-flag word after a Python interpreter on the same line
@@ -564,6 +568,8 @@ class _Walk:
         mod = self.mods.get(module)
         if mod is None or depth > 25 or mod.stores.get(name, 0) != 1 or name in self._attr_stores():
             return None
+        if mod.stores.get("*"):
+            return None  # ``from x import *`` can re-bind any name: no constants
         if name in mod.consts:
             return mod.consts[name]
         binding = mod.bindings.get(name)

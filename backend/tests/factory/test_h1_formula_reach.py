@@ -822,6 +822,11 @@ def _undecided_by_import(record: dict) -> None:
         (_IMP + "from app import settings\nfrom app.settings import PKG\n\n\ndef _switch():\n    settings.PKG = 'app'\n", None),
         (_IMP + "try:\n    from app.settings import PKG\nexcept ImportError:\n    PKG = 'app'\n", None),
         (_IMP + "from os import sep as PKG\n", None),
+        (_IMP + "PKG = 'app.actions'\nPKG += ''\n", None),
+        (_IMP + "PKG = 'app.actions'\nfor PKG in ['app']:\n    pass\n", None),
+        (_IMP + "PKG = 'app.actions'\nwith open(__file__) as PKG:\n    pass\n", None),
+        (_IMP + "PKG = 'app.actions'\ntry:\n    pass\nexcept ImportError as PKG:\n    pass\n", None),
+        (_IMP + "PKG = 'app.actions'\ndel PKG\n", None),
     ],
 )
 def test_a_name_bound_more_than_once_anywhere_is_not_a_constant(tmp_path, imports, settings):
@@ -834,6 +839,34 @@ def test_a_name_bound_more_than_once_anywhere_is_not_a_constant(tmp_path, import
     if settings is not None:
         files["app/settings.py"] = settings
     _undecided_by_import(_record(tmp_path, files))
+
+
+@pytest.mark.parametrize(
+    ("imports", "settings", "decided"),
+    [
+        (_IMP + "PKG = 'app.actions'\n", None, True),
+        (_IMP + "PKG = 'app.actions'\nfrom app.other import *\n", None, False),
+        (_IMP + "from app.settings import PKG\n", "PKG = 'app.actions'\n", True),
+        (_IMP + "from app.settings import PKG\n", "PKG = 'app.actions'\nfrom app.other import *\n", False),
+    ],
+)
+def test_a_module_with_a_star_import_has_no_constants(tmp_path, imports, settings, decided):
+    """Grader 09:19Z: ``from x import *`` can re-bind any name in the module
+    that runs it, so a name bound once there is not a constant -- in the
+    module using it or in the module it is imported from. The same module
+    without the star import keeps its constant."""
+    body = "    return importlib.import_module(f'{PKG}.{cfg}').handle(x)\n"
+    files = {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, imports)}
+    if settings is not None:
+        files["app/settings.py"] = settings
+    record = _record(tmp_path, files)
+    if decided:
+        assert record["status"] == "analysed"
+        assert record["reached"] == ["app.formulas:alpha"]
+        assert record["unreached"] == ["app.formulas:beta"]
+        assert record["undecided"] == []
+    else:
+        _undecided_by_import(record)
 
 
 @pytest.mark.parametrize("call", ["'.' + name, __name__", "'.' + name, package=__name__", "f'.{name}', 'app.actions'"])
