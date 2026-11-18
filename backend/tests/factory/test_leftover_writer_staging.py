@@ -67,25 +67,27 @@ def _resume_notes(runner: RoleRunner) -> list:
     ]
 
 
-def test_a_leftover_without_a_progress_log_is_wiped(tmp_path):
-    seen, runner = _phase_start(tmp_path, {"app/models.py": "# torn\n"})
-    assert seen["stale_model"] is False, "a dead pass's file reached the next writer"
-    assert not runner.state.get("writer_resumed")
-    assert _resume_notes(runner) == []
+_TORN = {"app/models.py": "# torn
+"}
+_NARRATED = {"app/models.py": "# step 3 of 17
+", "docs/writer_progress.log": "STEP 3: models
+"}
+_SILENT_LOG = {"app/models.py": "# torn
+", "docs/writer_progress.log": ""}
 
 
-def test_a_leftover_with_a_progress_log_is_resumed_not_wiped(tmp_path):
-    seen, runner = _phase_start(
-        tmp_path,
-        {"app/models.py": "# step 3 of 17\n", "docs/writer_progress.log": "STEP 3: models\n"},
-    )
-    assert seen["stale_model"] is True, "the interrupted pass's files were thrown away"
-    assert runner.state.get("writer_resumed") is True
-    assert len(_resume_notes(runner)) == 1
-
-
-def test_no_leftover_means_no_resume(tmp_path):
-    seen, runner = _phase_start(tmp_path, None)
-    assert seen["stale_model"] is False
-    assert not runner.state.get("writer_resumed")
-    assert _resume_notes(runner) == []
+@pytest.mark.parametrize(
+    "leftover, kept",
+    [
+        (_TORN, False),  # no progress log: wiped
+        (_SILENT_LOG, False),  # an empty log narrates nothing: wiped
+        (_NARRATED, True),  # an interrupted narrated pass: resumed, files kept
+        (None, False),  # no leftover at all: nothing to resume
+    ],
+    ids=["no-log", "empty-log", "narrated", "no-leftover"],
+)
+def test_a_leftover_is_resumed_only_when_its_pass_narrated(tmp_path, leftover, kept):
+    seen, runner = _phase_start(tmp_path, leftover)
+    assert seen["stale_model"] is kept, "wrong leftover handling at WRITER phase start"
+    assert bool(runner.state.get("writer_resumed")) is kept
+    assert len(_resume_notes(runner)) == (1 if kept else 0)
