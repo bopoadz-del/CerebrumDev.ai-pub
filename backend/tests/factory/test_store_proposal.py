@@ -660,6 +660,30 @@ def test_a_repair_without_its_proof_is_not_installed_and_nothing_changes(tmp_pat
     assert sp.filed_proposals(tmp_path) == []
 
 
+@pytest.mark.parametrize(
+    "prior",
+    [{}, {"elsewhere": {"override_hash": "1" * 64, "exam_id": "exam:elsewhere:cccc"}}],
+    ids=["empty", "another-block"],
+)
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_refused_install_keeps_the_overrides_the_lock_already_had(tmp_path, case, prior):
+    """A lock that already carries an overrides table (empty, or recording
+    another block) keeps that table, as it was, when this install is refused;
+    the table is not dropped just because this block was not added."""
+    lock, vendored, _ = _product(tmp_path, case)
+    lock[OVERRIDES_KEY] = json.loads(json.dumps(prior))
+    sp.save_lock(tmp_path, lock)
+    _prove(tmp_path, case, passed=False)
+    saved = _saved_lock(tmp_path)
+
+    why = _install(tmp_path, lock, case)
+
+    assert why and case["block"] in why
+    assert lock[OVERRIDES_KEY] == prior
+    assert _saved_lock(tmp_path) == saved
+    assert json.loads(saved.decode("utf-8"))[OVERRIDES_KEY] == prior
+
+
 def _tamper_other_block(root: Path, lock: dict) -> None:
     """A second block whose bytes differ from its lock row and that the
     Factory never recorded, so the lock check refuses the product whatever
