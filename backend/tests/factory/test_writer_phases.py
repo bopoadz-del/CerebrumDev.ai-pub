@@ -581,6 +581,37 @@ def test_runner_hydrates_landed_writer_phases(tmp_path):
     assert WRITER_PHASE_BACKEND not in pending_writer_phases(ctx)
 
 
+@pytest.mark.parametrize(
+    "dirs, expected",
+    [
+        (("alpha", "beta"), ("alpha", "beta")),
+        (("gamma",), ("gamma",)),
+    ],
+)
+def test_restore_workspace_state_rehydrates_vendored_blocks(tmp_path, dirs, expected):
+    """_restore_workspace_state reads the vendored blocks back off disk: only
+    a directory holding block.py counts, and the result follows the input."""
+    bp = load_blueprint(SMOKE)
+    out = tmp_path / "build"
+    vendor = out / "vendor" / "blocks"
+    for name in dirs:
+        (vendor / name).mkdir(parents=True)
+        (vendor / name / "block.py").write_text("# block\n", encoding="utf-8")
+    (vendor / "not_a_block").mkdir(parents=True)
+    runner = RoleRunner(bp, out)
+    runner._restore_workspace_state()
+    assert runner.state.get("vendored_blocks") == expected
+
+
+def test_restore_workspace_state_without_vendor_dir_sets_no_blocks(tmp_path):
+    bp = load_blueprint(SMOKE)
+    out = tmp_path / "build"
+    out.mkdir()
+    runner = RoleRunner(bp, out)
+    runner._restore_workspace_state()
+    assert "vendored_blocks" not in runner.state
+
+
 def test_rag_route_checker_accepts_any_prefix_and_no_bare_mention(tmp_path):
     app = tmp_path / "app"
     app.mkdir()
