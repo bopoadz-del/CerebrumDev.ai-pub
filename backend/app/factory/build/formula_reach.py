@@ -36,15 +36,33 @@ product decorator at import -- is listed and never counted as reached.
 
 A COMPUTED ``import_module`` NAME WITH A LITERAL PRODUCT PREFIX is decided:
 ``"pkg.sub." + x``, ``f"pkg.sub.{x}"``, ``f"{PKG}.{x}"``, ``"%s.%s" % (PKG,
-x)`` (``PKG`` a module-level string constant), a local holding one of those,
-or ``("." + x, __name__)``. Python can load only the product modules whose
-name starts with that prefix, so the walk loads each of them, and an
-attribute used on the result -- the local it is bound to, or the call of a
-helper that returns it -- is resolved in each of them. A discarded result,
+x)``, a local holding one of those, or a relative name with literal text
+after its dots (``(".sub." + x, __name__)``). ``PKG`` is a constant only
+when the module binds it ONCE in its whole text -- function bodies (a
+``global`` declaration counts as a binding), the main guard, imports, loop
+and ``except`` targets included -- to a string literal or an import of such
+a constant; a module that calls ``globals()`` / ``vars()`` has none, and no
+name any product module stores as an attribute (``mod.PKG = ...``,
+``setattr(x, "PKG", ...)``) is one. Python can load only the product
+modules whose name starts with that prefix, so the walk loads each of them,
+and an attribute used on the result -- the local it is bound to, or the
+call of a helper that returns it -- is resolved in each of them. An import
+whose result has no attribute used reaches no function. A discarded result,
 or one only inspected (``hasattr`` / ``callable`` / ``isinstance``), hands
 nothing on. A result passed on bare, ``getattr`` on it with a computed name,
-a module-level binding of it, or a prefix that names no product package
-stays undecided.
+a module-level binding of it, a prefix that names no product package, and a
+relative name whose dots are followed by nothing literal (``"." + x``: the
+computed rest may itself begin with dots and climb above the anchor) stay
+undecided.
+
+KNOWN LIMITS of the computed-import rule (H-4 blockers: a gate built on
+this record must account for them):
+  * OVER-REPORTS REACHED: an attribute used on the result is marked reached
+    in EVERY module under the prefix, though one run loads one of them.
+    This is the direction a gate must not trust: a formula reached only
+    this way may be dead in every real configuration.
+  * a constant rebound through a ``setattr`` with a computed name, or by
+    replacing the module in ``sys.modules``, is not seen.
 
 A script token in a packaging file counts only in a RUN position: the
 first non-flag word after a Python interpreter on the same line
@@ -190,12 +208,28 @@ class _Module:
         self.bindings: Dict[str, Ref] = {}
         self.stars: List[str] = []
         self.main_guard: List[ast.stmt] = []
-        #: Module-level names bound once, to a string literal.
+        #: Module-level names bound ONCE in the whole module (function
+        #: bodies, the main guard and ``global`` declarations included), to
+        #: a string literal. A module that calls ``globals()`` / ``vars()``
+        #: holds none: a write through them is not seen.
         self.consts: Dict[str, str] = {}
-        stores: Dict[str, int] = defaultdict(int)
-        for node in _shallow(tree.body):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-                stores[node.id] += 1
+        self.stores: Dict[str, int] = defaultdict(int)
+        open_globals = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                if not isinstance(node.ctx, ast.Load):
+                    self.stores[node.id] += 1
+                continue
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("globals", "vars"):
+                open_globals = True
+            for field in ("name", "asname", "rest", "names"):
+                value = getattr(node, field, None)
+                for bound in value if isinstance(value, list) else [value]:
+                    if isinstance(bound, str):
+                        self.stores[bound.split(".")[0]] += 1
+        if open_globals:
+            self.stores.clear()  # no name counts as bound once
+        stores = self.stores
         for stmt in tree.body:
             if (
                 isinstance(stmt, ast.Assign)
@@ -329,6 +363,7 @@ class _Walk:
         #: Decided computed-import results whose use is accounted for.
         self.consumed: Set[int] = set()
         self.returns: Dict[Ref, Optional[str]] = {}
+        self.attr_stores: Optional[Set[str]] = None
 
     # -- resolution ---------------------------------------------------------
 
@@ -527,7 +562,7 @@ class _Walk:
 
     def _const(self, module: str, name: str, depth: int = 0) -> Optional[str]:
         mod = self.mods.get(module)
-        if mod is None or depth > 25:
+        if mod is None or depth > 25 or mod.stores.get(name, 0) != 1 or name in self._attr_stores():
             return None
         if name in mod.consts:
             return mod.consts[name]
@@ -535,6 +570,21 @@ class _Walk:
         if binding and binding[0] == "from":
             return self._const(binding[1], binding[2], depth + 1)
         return None
+
+    def _attr_stores(self) -> Set[str]:
+        """Names any product module stores as an attribute (``mod.NAME =``,
+        ``setattr(x, "NAME", ...)``): no such name is a constant."""
+        if self.attr_stores is None:
+            self.attr_stores = set()
+            for mod in self.mods.values():
+                for node in ast.walk(mod.tree):
+                    if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
+                        self.attr_stores.add(node.attr)
+                    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "setattr":
+                        name = _const_str(node.args[1]) if len(node.args) > 1 else None
+                        if name is not None:
+                            self.attr_stores.add(name)
+        return self.attr_stores
 
     def _text(self, node: Optional[ast.AST], ctx: _Ctx) -> Optional[Tuple[str, bool]]:
         """The known start of a string expression: (text, complete)."""
@@ -592,6 +642,8 @@ class _Walk:
             if not anchor:
                 return None
             level = len(text) - len(text.lstrip("."))
+            if not text[level:]:  # the computed rest may add dots and climb
+                return None
             text = anchor.rsplit(".", level - 1)[0] + "." + text[level:]
         package_name = text.rpartition(".")[0]
         if not package_name or not self._is_module(package_name):
