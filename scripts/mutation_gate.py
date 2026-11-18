@@ -231,9 +231,31 @@ def run_tests(repo: Path, tests: Sequence[str], workdir: str, pytest_args: Seque
     return "survived" if proc.returncode == 0 else "killed"
 
 
+def mutant_line(n: int, total: int, path: str, fname: str, kind: str, line: int) -> str:
+    """One progress line naming a mutant: file, function, kind, line, done and left."""
+    return f"mutant {n}/{total}: {path}::{fname} kind={kind} line={line} (done {n - 1}, left {total - n + 1})"
+
+
+def planned_mutants(repo: Path, changed: Sequence[tuple[str, set[int]]]) -> int:
+    """How many mutants the run below will make (same files, functions and kinds)."""
+    total = 0
+    for path, lines in changed:
+        file = repo / path
+        if not file.is_file() or is_test_file(path):
+            continue
+        tree = ast.parse(file.read_text("utf-8"))
+        for fname in dict.fromkeys(f.name for f in functions_touching(tree, lines)):
+            for kind in MUTANTS:
+                fn = next(f for f in functions_touching(copy.deepcopy(tree), lines) if f.name == fname)
+                total += mutate(fn, kind)
+    return total
+
+
 def mutation_gate(repo: Path, base: str, src_roots: Sequence[str], test_roots: Sequence[str], workdir: str, pytest_args: Sequence[str], mapping: dict[str, dict[str, list[str]]] | None = None) -> list[MutantResult]:
     results: list[MutantResult] = []
-    for path, lines in sorted(changed_lines(base, repo, src_roots).items()):
+    changed = sorted(changed_lines(base, repo, src_roots).items())
+    total = planned_mutants(repo, changed)
+    for path, lines in changed:
         file = repo / path
         if not file.is_file() or is_test_file(path):
             continue
@@ -247,6 +269,8 @@ def mutation_gate(repo: Path, base: str, src_roots: Sequence[str], test_roots: S
                 fn = next(f for f in functions_touching(mtree, lines) if f.name == fname)
                 if not mutate(fn, kind):
                     continue
+                progress = mutant_line(len(results) + 1, total, path, fname, kind, fn.lineno)
+                print(f"mutation_gate: {progress}", file=sys.stderr, flush=True)
                 if not wd_rel:
                     results.append(MutantResult(path, fname, kind, "uncovered"))
                     continue
@@ -255,6 +279,8 @@ def mutation_gate(repo: Path, base: str, src_roots: Sequence[str], test_roots: S
                     outcome = run_tests(repo, wd_rel, workdir, pytest_args)
                 finally:
                     file.write_text(original, "utf-8")
+                if outcome == "timeout":
+                    print(f"mutation_gate: TIMEOUT on {progress}", file=sys.stderr, flush=True)
                 results.append(MutantResult(path, fname, kind, outcome))
     return results
 
