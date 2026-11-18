@@ -34,6 +34,40 @@ with a computed name, ``globals()`` / ``vars()`` lookups, an
 ``import_module`` / ``__import__`` of a computed name, a formula handed to a
 product decorator at import -- is listed and never counted as reached.
 
+A COMPUTED ``import_module`` NAME WITH A LITERAL PRODUCT PREFIX is decided:
+``"pkg.sub." + x``, ``f"pkg.sub.{x}"``, ``f"{PKG}.{x}"``, ``"%s.%s" % (PKG,
+x)``, a local holding one of those, or a relative name with literal text
+after its dots (``(".sub." + x, __name__)``). ``PKG`` is a constant only
+when the module binds it ONCE in its whole text -- function bodies (a
+``global`` declaration counts as a binding), the main guard, imports, loop
+and ``except`` targets included -- to a string literal or an import of such
+a constant; a module that calls ``globals()`` / ``vars()`` or holds a
+``from x import *`` (which can re-bind any name) has none, and no
+name any product module stores as an attribute (``mod.PKG = ...``,
+``setattr(x, "PKG", ...)``) is one. Python can load only the product
+modules whose name starts with that prefix, so the walk loads each of them,
+and an attribute used on the result -- the local it is bound to, or the
+call of a helper that returns it -- is resolved in each of them. An import
+whose result has no attribute used reaches no function. A discarded result,
+or one only inspected (``hasattr`` / ``callable`` / ``isinstance``), hands
+nothing on. A result passed on bare, ``getattr`` on it with a computed name,
+a module-level binding of it, a prefix that names no product package, and a
+relative name whose dots are followed by nothing literal (``"." + x``: the
+computed rest may itself begin with dots and climb above the anchor) stay
+undecided.
+
+KNOWN LIMITS of the computed-import rule (H-4 blockers: a gate built on
+this record must account for them):
+  * OVER-REPORTS REACHED: an attribute used on the result is marked reached
+    in EVERY module under the prefix, though one run loads one of them.
+    This is the direction a gate must not trust: a formula reached only
+    this way may be dead in every real configuration.
+  * a constant rebound through a ``setattr`` with a computed name, or by
+    replacing the module in ``sys.modules``, is not seen.
+  * a constant rebound by a write through a module's ``__dict__``
+    (``mod.__dict__["PKG"] = ...``), by ``exec`` / ``eval`` of text, or by a
+    module reload (``importlib.reload``) is not seen.
+
 A script token in a packaging file counts only in a RUN position: the
 first non-flag word after a Python interpreter on the same line
 (``CMD ["python", "app/seed.py"]``), never a copy line naming the file.
@@ -91,6 +125,8 @@ _INTERPRETER = re.compile(r"(?:.*/)?python[\d.]*$")
 #: record is "unknown" ("bound hit"), never a crash of the audit.
 MAX_MODULE_BYTES = 1_000_000
 MAX_AST_DEPTH = 200
+#: Builtins that look at an object without handing it on.
+_INSPECTORS = frozenset({"hasattr", "callable", "isinstance"})
 
 
 def formula_locations() -> Tuple[str, str]:
@@ -130,6 +166,43 @@ def _const_str(node: ast.AST) -> Optional[str]:
     return None
 
 
+def _plain_value(node: ast.AST) -> Optional[ast.AST]:
+    """An f-string part whose text is its value's own text, else None."""
+    if isinstance(node, ast.Constant):
+        return node
+    if isinstance(node, ast.FormattedValue) and node.conversion in (-1, ord("s")) and node.format_spec is None:
+        return node.value
+    return None
+
+
+def _percent_pieces(fmt: str, items: List[ast.expr]) -> List[Optional[ast.AST]]:
+    """``fmt % items`` as text pieces, up to the first directive other than a
+    plain ``%s`` (None there)."""
+    pieces: List[Optional[ast.AST]] = []
+    text: List[str] = []
+    i = used = 0
+    while i < len(fmt):
+        if fmt[i] != "%":
+            text.append(fmt[i])
+            i += 1
+            continue
+        directive = fmt[i + 1 : i + 2]
+        if directive == "%":
+            text.append("%")
+            i += 2
+            continue
+        pieces.append(ast.Constant("".join(text)))
+        text = []
+        if directive != "s" or used >= len(items):
+            pieces.append(None)
+            return pieces
+        pieces.append(items[used])
+        used += 1
+        i += 2
+    pieces.append(ast.Constant("".join(text)))
+    return pieces
+
+
 class _Module:
     def __init__(self, name: str, rel: str, tree: ast.Module, is_pkg: bool) -> None:
         self.name, self.rel, self.tree, self.is_pkg = name, rel, tree, is_pkg
@@ -139,6 +212,38 @@ class _Module:
         self.bindings: Dict[str, Ref] = {}
         self.stars: List[str] = []
         self.main_guard: List[ast.stmt] = []
+        #: Module-level names bound ONCE in the whole module (function
+        #: bodies, the main guard and ``global`` declarations included), to
+        #: a string literal. A module that calls ``globals()`` / ``vars()``
+        #: holds none: a write through them is not seen.
+        self.consts: Dict[str, str] = {}
+        self.stores: Dict[str, int] = defaultdict(int)
+        open_globals = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                if not isinstance(node.ctx, ast.Load):
+                    self.stores[node.id] += 1
+                continue
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("globals", "vars"):
+                open_globals = True
+            for field in ("name", "asname", "rest", "names"):
+                value = getattr(node, field, None)
+                for bound in value if isinstance(value, list) else [value]:
+                    if isinstance(bound, str):
+                        self.stores[bound.split(".")[0]] += 1
+        if open_globals:
+            self.stores.clear()  # no name counts as bound once
+        stores = self.stores
+        for stmt in tree.body:
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and stores[stmt.targets[0].id] == 1
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)
+            ):
+                self.consts[stmt.targets[0].id] = stmt.value.value
         for stmt in tree.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.funcs[stmt.name] = stmt
@@ -211,6 +316,12 @@ class _Ctx:
     ) -> None:
         self.module, self.cls, self.locals, self.top = module, cls, locals_, top
         self.shadowed = shadowed
+        self.func: Optional[Ref] = None
+        #: Function locals bound once: to a string with a known start
+        #: (text, complete), and to the result of a decided computed import
+        #: (its literal prefix).
+        self.prefixes: Dict[str, Tuple[str, bool]] = {}
+        self.modsets: Dict[str, str] = {}
 
 
 def local_names(fn: ast.AST) -> frozenset:
@@ -253,6 +364,10 @@ class _Walk:
         self.via_decorator: Dict[Ref, str] = {}
         self.scripts: Set[str] = set()
         self.queue: Deque[Tuple[str, Any]] = deque()
+        #: Decided computed-import results whose use is accounted for.
+        self.consumed: Set[int] = set()
+        self.returns: Dict[Ref, Optional[str]] = {}
+        self.attr_stores: Optional[Set[str]] = None
 
     # -- resolution ---------------------------------------------------------
 
@@ -411,16 +526,201 @@ class _Walk:
 
     def _walk_function(self, ref: Ref) -> None:
         node = self.mods[ref[1]].funcs[ref[2]]
+        ctx = self._function_ctx(ref)
+        self._signature(node, _Ctx(ref[1], ctx.cls, {}, False))
+        for stmt in node.body:  # type: ignore[attr-defined]
+            self.visit(stmt, ctx)
+
+    def _function_ctx(self, ref: Ref) -> _Ctx:
+        node = self.mods[ref[1]].funcs[ref[2]]
         locals_: Dict[str, Ref] = {}
         stars: List[str] = []
+        stores: Dict[str, int] = defaultdict(int)
+        single: Dict[str, ast.expr] = {}
         for sub in ast.walk(node):
             if isinstance(sub, (ast.Import, ast.ImportFrom)):
                 locals_.update(import_bindings(self.mods[ref[1]], sub, stars))
+            elif isinstance(sub, ast.arg):
+                stores[sub.arg] += 1
+            elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                stores[sub.id] += 1
+            if isinstance(sub, ast.Assign) and len(sub.targets) == 1 and isinstance(sub.targets[0], ast.Name):
+                single[sub.targets[0].id] = sub.value
         cls = ref[2].split(".")[0] if "." in ref[2] else None
-        self._signature(node, _Ctx(ref[1], cls, {}, False))
         ctx = _Ctx(ref[1], cls, locals_, False, local_names(node))
-        for stmt in node.body:  # type: ignore[attr-defined]
-            self.visit(stmt, ctx)
+        ctx.func = ref
+        single = {name: value for name, value in single.items() if stores[name] == 1}
+        for _ in range(2):  # a local may be built from another local
+            for name, value in single.items():
+                text = self._text(value, ctx)
+                if text is not None:
+                    ctx.prefixes[name] = text
+            for name, value in single.items():
+                prefix = self._modset_of(value, ctx)
+                if prefix is not None:
+                    ctx.modsets[name] = prefix
+                    self.consumed.add(id(value))
+        return ctx
+
+    # -- computed imports with a literal product prefix ---------------------
+
+    def _const(self, module: str, name: str, depth: int = 0) -> Optional[str]:
+        mod = self.mods.get(module)
+        if mod is None or depth > 25 or mod.stores.get(name, 0) != 1 or name in self._attr_stores():
+            return None
+        if mod.stores.get("*"):
+            return None  # ``from x import *`` can re-bind any name: no constants
+        if name in mod.consts:
+            return mod.consts[name]
+        binding = mod.bindings.get(name)
+        if binding and binding[0] == "from":
+            return self._const(binding[1], binding[2], depth + 1)
+        return None
+
+    def _attr_stores(self) -> Set[str]:
+        """Names any product module stores as an attribute (``mod.NAME =``,
+        ``setattr(x, "NAME", ...)``): no such name is a constant."""
+        if self.attr_stores is None:
+            self.attr_stores = set()
+            for mod in self.mods.values():
+                for node in ast.walk(mod.tree):
+                    if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
+                        self.attr_stores.add(node.attr)
+                    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "setattr":
+                        name = _const_str(node.args[1]) if len(node.args) > 1 else None
+                        if name is not None:
+                            self.attr_stores.add(name)
+        return self.attr_stores
+
+    def _text(self, node: Optional[ast.AST], ctx: _Ctx) -> Optional[Tuple[str, bool]]:
+        """The known start of a string expression: (text, complete)."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value, True
+        if isinstance(node, ast.Name):
+            if node.id in ctx.prefixes:
+                return ctx.prefixes[node.id]
+            if node.id in ctx.shadowed or node.id in ctx.locals:
+                return None
+            value = self._const(ctx.module, node.id)
+            return None if value is None else (value, True)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self._text(node.left, ctx)
+            if left is None or not left[1]:
+                return left
+            right = self._text(node.right, ctx)
+            return (left[0], False) if right is None else (left[0] + right[0], right[1])
+        if isinstance(node, ast.JoinedStr):
+            return self._joined([_plain_value(v) for v in node.values], ctx)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            fmt = _const_str(node.left)
+            if fmt is None:
+                return None
+            items = list(node.right.elts) if isinstance(node.right, ast.Tuple) else [node.right]
+            return self._joined(_percent_pieces(fmt, items), ctx)
+        return None
+
+    def _joined(self, pieces: List[Optional[ast.AST]], ctx: _Ctx) -> Tuple[str, bool]:
+        out: List[str] = []
+        for piece in pieces:
+            got = self._text(piece, ctx)
+            if got is None:
+                return "".join(out), False
+            out.append(got[0])
+            if not got[1]:
+                return "".join(out), False
+        return "".join(out), True
+
+    def _import_prefix(self, call: ast.Call, ctx: _Ctx) -> Optional[str]:
+        """The literal prefix of a computed ``import_module`` name when it
+        names a product package; else None (undecided)."""
+        got = self._text(call.args[0], ctx) if call.args else None
+        if got is None or got[1]:
+            return None
+        text = got[0]
+        if text.startswith("."):
+            package = call.args[1] if len(call.args) > 1 else next(
+                (k.value for k in call.keywords if k.arg == "package"), None
+            )
+            if isinstance(package, ast.Name) and package.id == "__name__":
+                anchor: Optional[str] = ctx.module
+            else:
+                anchor = _const_str(package) if package is not None else None
+            if not anchor:
+                return None
+            level = len(text) - len(text.lstrip("."))
+            if not text[level:]:  # the computed rest may add dots and climb
+                return None
+            text = anchor.rsplit(".", level - 1)[0] + "." + text[level:]
+        package_name = text.rpartition(".")[0]
+        if not package_name or not self._is_module(package_name):
+            return None
+        return text
+
+    def _candidates(self, prefix: str) -> List[str]:
+        return sorted(m for m in {*self.mods, *self.unparsed} if m.startswith(prefix))
+
+    def _modset_of(self, expr: ast.AST, ctx: _Ctx) -> Optional[str]:
+        """The prefix of the decided computed import ``expr`` evaluates to."""
+        if isinstance(expr, ast.Name):
+            return ctx.modsets.get(expr.id)
+        if not isinstance(expr, ast.Call):
+            return None
+        chain = _as_chain(expr.func)
+        if chain is None:
+            return None
+        full = self.resolve(chain, ctx)[0]
+        if full is None and (chain[1][-1] if chain[1] else chain[0]) == "import_module":
+            return self._import_prefix(expr, ctx)
+        if full and full[0] == "func":
+            return self._returned_modset(full)
+        return None
+
+    def _returned_modset(self, ref: Ref) -> Optional[str]:
+        """The prefix when every value ``ref`` returns, other than None, is
+        the same decided computed import."""
+        if ref in self.returns:
+            return self.returns[ref]
+        self.returns[ref] = None
+        ctx = self._function_ctx(ref)
+        found: Set[Optional[str]] = set()
+        for sub in _shallow(list(self.mods[ref[1]].funcs[ref[2]].body)):  # type: ignore[attr-defined]
+            if isinstance(sub, ast.Return) and sub.value is not None:
+                if not (isinstance(sub.value, ast.Constant) and sub.value.value is None):
+                    found.add(self._modset_of(sub.value, ctx))
+        self.returns[ref] = found.pop() if len(found) == 1 else None
+        return self.returns[ref]
+
+    def _passed_on(self, ctx: _Ctx) -> None:
+        self.dynamic_everything.append(f"import_module(<computed name>) result passed on in {ctx.module}")
+
+    def _modset_use(self, node: ast.AST, ctx: _Ctx) -> bool:
+        """``mod.attr`` / ``helper(x).attr`` on a decided computed import:
+        the attribute is resolved in every module the prefix can load."""
+        attrs: List[str] = []
+        root = node
+        while isinstance(root, ast.Attribute):
+            attrs.insert(0, root.attr)
+            root = root.value
+        prefix = self._modset_of(root, ctx)
+        if prefix is None:
+            return False
+        if isinstance(root, ast.Call):
+            self.consumed.add(id(root))
+            self.visit(root, ctx)
+        if not attrs:
+            self._passed_on(ctx)
+            return True
+        for module in self._candidates(prefix):
+            ref: Optional[Ref] = ("module", module)
+            for name in attrs:
+                nxt = self.attr(ref, name) if ref else None
+                if nxt is None:
+                    ref = ref if ref and ref[0] == "object" else None
+                    break
+                ref = nxt
+            if ref is not None:
+                self.reach(ref)
+        return True
 
     def _signature(self, node: ast.AST, ctx: _Ctx) -> None:
         """A signature's defaults and the calls in its annotations run when
@@ -438,6 +738,21 @@ class _Walk:
                 self.visit(default, ctx)
 
     def visit(self, node: ast.AST, ctx: _Ctx) -> None:
+        if isinstance(node, ast.Return) and node.value is not None and ctx.func is not None:
+            prefix = self._modset_of(node.value, ctx)
+            if prefix is not None and prefix == self._returned_modset(ctx.func):
+                self.consumed.add(id(node.value))
+                if isinstance(node.value, ast.Call):
+                    self.visit(node.value, ctx)
+                return
+        if isinstance(node, ast.Expr) and self._modset_of(node.value, ctx) is not None:
+            self.consumed.add(id(node.value))  # the result is discarded
+        if (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and isinstance(node.ctx, ast.Load)
+            and self._modset_use(node, ctx)
+        ):
+            return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not ctx.top:  # a nested def runs with its parent
                 for child in [*node.decorator_list, *node.body]:
@@ -489,6 +804,8 @@ class _Walk:
         args = [*node.args, *(k.value for k in node.keywords)]
         if chain is None:
             return False
+        if id(node) not in self.consumed and self._modset_of(node, ctx) is not None:
+            self._passed_on(ctx)
         base, attrs = chain
         last = attrs[-1] if attrs else base
         builtin = (
@@ -499,6 +816,12 @@ class _Walk:
         )
         if builtin and base == "getattr" and args:
             return self._getattr(args, ctx)
+        if builtin and base in _INSPECTORS and args and self._modset_of(args[0], ctx) is not None:
+            self.consumed.add(id(args[0]))  # inspected, not passed on
+            for arg in args:
+                if arg is not args[0] or isinstance(arg, ast.Call):
+                    self.visit(arg, ctx)
+            return True
         if builtin and base in ("globals", "vars", "locals"):
             target = self._target_module(args[0], ctx) if args else ctx.module
             if target:
@@ -507,9 +830,14 @@ class _Walk:
                 self.visit(arg, ctx)
             return True
         if last in ("import_module", "__import__") and self.resolve(chain, ctx)[0] is None:
-            name = _const_str(args[0]) if args else None
+            got = self._text(node.args[0], ctx) if node.args else None
+            name = got[0] if got and got[1] else None
+            prefix = self._import_prefix(node, ctx) if last == "import_module" and not name else None
             if name and self._is_module(name):
                 self.reach(("module", name))
+            elif prefix is not None:
+                for module in self._candidates(prefix):
+                    self.load(module)
             elif not name:
                 self.dynamic_everything.append(f"{last}(<computed name>) in {ctx.module}")
             for arg in args[1:]:
@@ -543,6 +871,21 @@ class _Walk:
         return None
 
     def _getattr(self, args: List[ast.expr], ctx: _Ctx) -> bool:
+        prefix = self._modset_of(args[0], ctx)
+        if prefix is not None:
+            self.consumed.add(id(args[0]))
+            if isinstance(args[0], ast.Call):
+                self.visit(args[0], ctx)
+            name = _const_str(args[1]) if len(args) > 1 else None
+            if name is None:
+                self.dynamic_everything.append(f"getattr(<computed name>) on an import_module result in {ctx.module}")
+            for module in self._candidates(prefix) if name is not None else ():
+                found = self.attr(("module", module), name)  # type: ignore[arg-type]
+                if found:
+                    self.reach(found)
+            for arg in args[1:]:
+                self.visit(arg, ctx)
+            return True
         target = self._target_module(args[0], ctx)
         name = _const_str(args[1]) if len(args) > 1 else None
         if target is None:
