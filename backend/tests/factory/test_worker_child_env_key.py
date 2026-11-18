@@ -6,7 +6,7 @@ key is env-only -- it is never passed on argv.
 """
 from __future__ import annotations
 
-from app.factory.build import codewhale_worker
+from app.factory.build import agent_confine, codewhale_worker
 
 _KEYS = ("CODEWHALE_API_KEY", "CEREBRUM_CHAT_LLM_API_KEY", "DEEPSEEK_API_KEY", "CODEWHALE_PROVIDER")
 
@@ -37,7 +37,22 @@ def test_child_env_stamps_the_configured_provider_var(monkeypatch):
     monkeypatch.setenv("CODEWHALE_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-stale")  # a stale provider key
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-valid")
+    # Positive: the resolved key IS stamped into the provider's own var before
+    # confinement, and that var is named to the confinement as the provider key.
+    seen = {}
+    real_scoped = agent_confine.scoped_child_env
+
+    def _record(parent, extras, **kw):
+        seen["extras"] = dict(extras)
+        seen["provider_key"] = kw.get("provider_key")
+        return real_scoped(parent, extras, **kw)
+
+    monkeypatch.setattr(agent_confine, "scoped_child_env", _record)
     env = codewhale_worker._child_env(session_id="sess_x")
+    assert seen["extras"]["OPENROUTER_API_KEY"] == "sk-valid"
+    assert seen["provider_key"] == "OPENROUTER_API_KEY"
+    # Negative: the confinement withholds that var, so the stale key never
+    # reaches the child either.
     assert env.get("OPENROUTER_API_KEY") != "sk-stale"
     assert env["CODEWHALE_API_KEY"] == "sk-valid"
     assert "DEEPSEEK_API_KEY" not in env  # deepseek is not the provider here
