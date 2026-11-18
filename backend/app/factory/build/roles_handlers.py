@@ -4314,6 +4314,12 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     # the Factory's files, never the writer's.
     files_written = len(agent_file_paths(Path(dest)) - files_before)
 
+    # WK-1: the provider and model the run actually reported, recorded on
+    # the build for the grader's independence check.
+    from app.factory.build.writer_prompt import record_writer_run
+
+    record_writer_run(ctx.state, provider=receipt.provider, model=receipt.model)
+
     # E2: the session status must reflect the leg that actually ran —
     # write the worker's own receipt where the Floor monitor reads it,
     # tagged with the seam name.

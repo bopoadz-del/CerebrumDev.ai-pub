@@ -414,16 +414,25 @@ class Replay:
 
 def record_dispatch(runner: Any, supplied: Optional[str] = None) -> Mapping[str, str]:
     """Record a writer dispatch with the production shape: the user's words
-    in ``state['brief']``, the WRITER's compiled brief and rendered prompt."""
+    in ``state['brief']``, the WRITER's compiled brief and rendered prompt,
+    and the writer run its receipt reported (WK-1)."""
     from app.factory.build.authority import BuildRole
     from app.factory.build.roles_handlers import _compiled_writer_brief
-    from app.factory.build.writer_prompt import dispatched_writer_inputs, record_writer_dispatch, render_writer_prompt
+    from app.factory.build.writer_prompt import (
+        dispatched_writer_inputs,
+        record_writer_dispatch,
+        record_writer_run,
+        render_writer_prompt,
+    )
 
     words = str(getattr(runner.blueprint, "summary", "") or "") if supplied is None else supplied
     runner.state["brief"] = words
     brief = _compiled_writer_brief(_role_ctx(runner, BuildRole.WRITER))
     prompt = render_writer_prompt(runner.blueprint, brief=brief)
     record_writer_dispatch(runner.state, supplied=words, brief=brief, prompt=prompt)
+    # WK-1: the writer run the receipt reported. Its model family ("scribe")
+    # differs from the replay grader's ("replay"), so Layer 2 may run.
+    record_writer_run(runner.state, provider="scribewriter", model="scribe-writer-model")
     return dispatched_writer_inputs(runner.state)
 
 

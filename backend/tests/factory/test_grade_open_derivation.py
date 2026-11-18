@@ -17,7 +17,7 @@ import pytest
 import app.factory.build.grader as grader
 import app.factory.build.product_grader.grade_record as gr
 from app.factory.build.product_grader.layer2 import layer2_questions
-from tests.factory.test_a_grader import IDS, READS_INPUT, _bp, _workspace, green_ui, independent_grader  # noqa: F401
+from tests.factory.test_a_grader import IDS, READS_INPUT, WRITER_RUN, _bp, _workspace, green_ui, independent_grader  # noqa: F401
 
 GREEN_FN = {"ok": True, "graded": 5}
 GREEN_UI = {"ok": True, "steps": []}
@@ -43,7 +43,9 @@ def test_an_answered_layer2_fail_blocks_the_in_build_tier_and_reaches_the_writer
     monkeypatch.setattr(grader, "_grader_complete", _answer_all(verdict))
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     bp = _bp(IDS)
-    out = grader.run_grader(plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id="invented-product")
+    out = grader.run_grader(
+        plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id="invented-product", writer_run=WRITER_RUN
+    )
     record = json.loads((ws / "grade.json").read_text("utf-8"))
     texts = [q["text"] for q in layer2_questions(bp)]
     handed = [i for i in out.writer_items if i.startswith("re-run writer on: ")]

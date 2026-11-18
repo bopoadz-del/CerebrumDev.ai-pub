@@ -1932,7 +1932,13 @@ def run_worker_job(
         # the CLI's own stored config.
         api_key = worker_api_key()
         if api_key:
-            argv += ["--provider", worker_provider()]
+            # WK-1b: the configured writer model is NAMED to the CLI, never
+            # left to its own default route. 0.9.13 takes --model as a global
+            # flag too (refused after `exec`). What ran is still read from the
+            # run's receipt, not from this argument.
+            from app.factory.code_cli import deepseek_code_model
+
+            argv += ["--provider", worker_provider(), "--model", deepseek_code_model()]
         # F-S1: the exec STREAM, not the one-line ``--json`` summary (the two
         # flags are mutually exclusive in 0.9.13). The stream's terminal
         # ``metadata`` event carries the same receipt fields; its tool_use /

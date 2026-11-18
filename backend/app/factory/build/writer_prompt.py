@@ -653,3 +653,16 @@ def dispatched_writer_inputs(state: Mapping[str, Any]) -> Dict[str, str]:
             "no writer dispatch was recorded for this build: the grader cannot read what the writer was told"
         )
     return {key: str(record.get(key) or "") for key in ("supplied", "brief", "prompt")}
+
+
+#: The build-state key holding the provider and model the writer's run
+#: actually reported in its receipt (WK-1). The grader's independence check
+#: reads this record, never the writer's configured identity: a configured
+#: model is a declaration, the receipt is what ran.
+WRITER_RUN_STATE_KEY = "writer_run"
+
+
+def record_writer_run(state: Dict[str, Any], *, provider: str, model: str) -> None:
+    """Record the provider and model the writer's run receipt reported, as
+    reported (an empty value stays empty; the grader refuses it)."""
+    state[WRITER_RUN_STATE_KEY] = {"provider": str(provider or "").strip(), "model": str(model or "").strip()}

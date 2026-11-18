@@ -67,6 +67,11 @@ def _passing_l2(blueprint):
     return complete
 
 
+#: The writer run a build records from its run receipt (WK-1): the provider
+#: and model that RAN. Invented, and independent of the grader below.
+WRITER_RUN = {"provider": "writerco", "model": "writer-model-1"}
+
+
 @pytest.fixture()
 def independent_grader(monkeypatch):
     """An independent grader model config (provider/model differ from the
@@ -300,6 +305,94 @@ def test_family_independence_allows_a_different_vendor(monkeypatch, grader_model
     assert grader.independence_refusal(grader.writer_identity(), grader.grader_llm_config()) is None
 
 
+# --- WK-1: independence is checked against the model that RAN ----------------
+
+
+@pytest.mark.parametrize(
+    "run, expected",
+    [
+        ({"provider": "WriterCo", "model": " writer-model-1 "}, "writerco:writer-model-1:"),
+        ({"provider": "otherco", "model": "other/model-2"}, "otherco:other/model-2:"),
+    ],
+)
+def test_recorded_writer_identity_is_the_reported_provider_and_model(run, expected):
+    assert grader.recorded_writer_identity(run) == expected
+
+
+@pytest.mark.parametrize(
+    "run",
+    [None, {}, {"provider": "writerco", "model": ""}, {"provider": " ", "model": "writer-model-1"}, "writerco"],
+)
+def test_recorded_writer_identity_is_none_when_provider_or_model_is_missing(run):
+    assert grader.recorded_writer_identity(run) is None
+
+
+@pytest.mark.parametrize("run", [None, {"provider": "writerco", "model": ""}])
+def test_a_build_with_no_recorded_writer_model_is_refused(monkeypatch, run):
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.graderco.example/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "grader-model-1")
+    refusal = grader.graded_writer_refusal(run, grader.grader_llm_config())
+    assert refusal is not None
+    assert "no writer model was recorded for this build" in refusal
+
+
+@pytest.mark.parametrize("run", [None, WRITER_RUN])
+def test_an_unconfigured_grader_is_refused_before_the_writer_run_is_read(run):
+    refusal = grader.graded_writer_refusal(run, None)
+    assert refusal == grader.independence_refusal("", None)
+    assert "CEREBRUM_GRADER_LLM_*" in refusal
+
+
+@pytest.mark.parametrize("grader_model", ["writer-model-1", "writer/other-model"])
+def test_the_recorded_model_is_refused_when_the_grader_shares_it(monkeypatch, grader_model):
+    """The CONFIGURED writer model is unrelated to the grader; the model that
+    ran is the grader's own vendor. The recorded one decides: refused."""
+    from app.factory import code_cli
+
+    monkeypatch.setenv(code_cli.DEEPSEEK_CODE_MODEL_ENV, "configured-model-9")
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.writerco.example/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, grader_model)
+    cfg = grader.grader_llm_config()
+    assert grader.independence_refusal(grader.writer_identity(), cfg) is None
+    refusal = grader.graded_writer_refusal({"provider": "writerco", "model": "writer-model-1"}, cfg)
+    assert refusal is not None
+    assert "writer" in refusal
+
+
+@pytest.mark.parametrize("ran", [WRITER_RUN, {"provider": "otherco", "model": "other-model-3"}])
+def test_the_recorded_model_passes_when_the_configured_one_would_be_refused(monkeypatch, ran):
+    """The reverse: the grader shares the CONFIGURED writer's vendor, but the
+    model that ran is another vendor's. The recorded one decides: allowed."""
+    from app.factory import code_cli
+
+    monkeypatch.setenv(code_cli.DEEPSEEK_API_KEY_ENV, "writer-key")
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://openrouter.ai/api/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "deepseek/deepseek-v3")
+    cfg = grader.grader_llm_config()
+    assert grader.independence_refusal(grader.writer_identity(), cfg) is not None
+    assert grader.graded_writer_refusal(ran, cfg) is None
+
+
+@pytest.mark.parametrize("product_id", ["invented-product", "invented-product-two"])
+def test_run_grader_without_a_recorded_writer_run_is_not_certified(tmp_path, independent_grader, green_ui, product_id):
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id=product_id)
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert any("no writer model was recorded for this build" in item for item in verdict.ungraded)
+
+
+@pytest.mark.parametrize("provider, model", [("WriterCo ", " writer-model-1"), ("otherco", "")])
+def test_record_writer_run_keeps_what_the_receipt_reported(provider, model):
+    from app.factory.build.writer_prompt import WRITER_RUN_STATE_KEY, record_writer_run
+
+    state: dict = {}
+    record_writer_run(state, provider=provider, model=model)
+    assert state[WRITER_RUN_STATE_KEY] == {"provider": provider.strip(), "model": model.strip()}
+
+
 @pytest.mark.parametrize(
     "model_id, expected",
     [
@@ -500,6 +593,7 @@ def test_certified_when_every_layer_runs_and_is_green(tmp_path, independent_grad
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
+        writer_run=WRITER_RUN,
         compiled_brief={"summary": brief_summary},
     )
     assert verdict.tier == grader.CERTIFIED
@@ -541,7 +635,10 @@ def test_capability_without_a_declared_contract_is_judged_by_testers_one_input_r
 ):
     ws = _workspace(tmp_path, {i: (body if i == gap else READS_INPUT) for i in IDS})
     write_models(ws, IDS, declared=[i for i in IDS if i != gap])
-    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
     assert verdict.tier == (grader.CERTIFIED if certified else grader.NOT_CERTIFIED)
     assert verdict.ungraded == ()
     assert (f"function grade FAIL: {gap}" in verdict.items) is (not certified)
@@ -555,7 +652,10 @@ def test_capability_without_a_declared_contract_is_judged_by_testers_one_input_r
 def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, independent_grader, green_ui, bad_cid):
     ws = _workspace(tmp_path, {i: (CONSTANT if i == bad_cid else READS_INPUT) for i in IDS})
     bp = _bp(IDS)
-    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=bp, workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
     assert f"function grade FAIL: {bad_cid}" in verdict.items
@@ -572,7 +672,10 @@ def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path
 
     monkeypatch.setattr(fg, "grade_functions", boom)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
-    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
     assert any(crash_message in item for item in verdict.items)
@@ -584,7 +687,10 @@ def test_grader_crash_is_an_error_verdict_and_still_writes_a_red_record(tmp_path
 def test_layer2_that_never_answers_is_an_error_verdict(tmp_path, independent_grader, green_ui, monkeypatch, bad_answer):
     monkeypatch.setattr(grader, "_grader_complete", lambda messages: bad_answer)
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
-    verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product")
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
     assert verdict.tier == grader.ERROR
     assert not verdict.ok
     assert any("Layer 2 did not run" in item for item in verdict.items)
@@ -604,6 +710,7 @@ def test_hardwired_brief_literal_is_found_and_quoted_in_the_verdict(tmp_path, in
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
+        writer_run=WRITER_RUN,
         compiled_brief={"summary": brief},
         prompt_text="",
     )
@@ -628,6 +735,7 @@ def test_prompt_leak_is_found_when_the_literal_sits_in_both(tmp_path, independen
         blueprint=bp,
         workspace=ws,
         product_id="invented-product",
+        writer_run=WRITER_RUN,
         compiled_brief={"summary": brief},
         prompt_text=prompt,
     )
@@ -661,9 +769,10 @@ def _fake_pass(ctx):
     """A role that passes instantly; as a writer it records what it was told
     (FG-4), as every real writer path does."""
     from app.factory.build.roles import RoleResult
-    from app.factory.build.writer_prompt import record_writer_dispatch
+    from app.factory.build.writer_prompt import record_writer_dispatch, record_writer_run
 
     record_writer_dispatch(ctx.state, supplied="", brief="invented brief", prompt="invented prompt")
+    record_writer_run(ctx.state, **WRITER_RUN)
     return RoleResult(ok=True, detail="fake pass")
 
 
@@ -800,6 +909,39 @@ def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path
         if e.kind is EventKind.NOTE and (e.payload or {}).get("grader_tier") == grader_mod.CERTIFIED
     ]
     assert graders
+
+
+@pytest.mark.parametrize("ran", [WRITER_RUN, {"provider": "otherco", "model": "other-model-3"}])
+def test_runner_hands_the_grader_the_writer_run_the_build_recorded(smoke_blueprint, tmp_path, monkeypatch, ran):
+    """WK-1: the grader reads the provider and model the writer's run
+    recorded on the build -- exactly that record, never a configured one."""
+    from app.factory.build import grader as grader_mod
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.runner import RoleRunner
+    from app.factory.build.writer_prompt import record_writer_dispatch, record_writer_run
+
+    monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
+    seen: list = []
+
+    def certified(**kwargs):
+        seen.append(kwargs.get("writer_run"))
+        return grader_mod.GraderVerdict(tier=grader_mod.CERTIFIED)
+
+    monkeypatch.setattr(grader_mod, "run_grader", certified)
+    roles = _fake_pass_harness(monkeypatch)
+
+    def writer_that_ran(ctx):
+        from app.factory.build.roles import RoleResult
+
+        record_writer_dispatch(ctx.state, supplied="", brief="invented brief", prompt="invented prompt")
+        record_writer_run(ctx.state, **ran)
+        return RoleResult(ok=True, detail="fake pass")
+
+    roles[BuildRole.WRITER] = writer_that_ran
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    outcome = runner.run()
+    assert outcome.ok, outcome.detail
+    assert seen and all(run == ran for run in seen)
 
 
 def test_runner_grader_is_none_when_the_switch_is_off(smoke_blueprint, tmp_path, monkeypatch):
