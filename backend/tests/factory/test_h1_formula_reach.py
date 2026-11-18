@@ -709,3 +709,90 @@ def test_a_start_script_the_emitter_does_not_declare_is_not_read(tmp_path, elsew
     assert record["status"] == "unknown"
     assert "no entry point found" in record["analysis_error"]
     assert record["reached"] is None
+
+
+# -- H-1d (b): a computed import_module name with a literal product prefix --
+
+#: Handlers under one package: ``handle`` calls alpha, ``unused`` calls beta.
+#: A module outside the package has a ``handle`` that calls beta.
+_HANDLERS = {
+    "app/actions/__init__.py": "",
+    "app/actions/first.py": (
+        "from app import formulas\n\n\ndef handle(x):\n    return formulas.alpha(x)\n\n\n"
+        "def unused(x):\n    return formulas.beta(x)\n"
+    ),
+    "app/other.py": "from app import formulas\n\n\ndef handle(x):\n    return formulas.beta(x)\n",
+    "app/settings.py": "PKG = 'app.actions'\n",
+}
+_IMP = "import importlib\nfrom app import formulas\n"
+
+
+@pytest.mark.parametrize(
+    ("imports", "body"),
+    [
+        (_IMP, "    mod = importlib.import_module('app.actions.' + cfg)\n    return mod.handle(x)\n"),
+        (_IMP, "    return importlib.import_module(f'app.actions.{cfg}').handle(x)\n"),
+        (_IMP + "PKG = 'app.actions'\n", "    return importlib.import_module(f'{PKG}.{cfg}').handle(x)\n"),
+        (_IMP + "from app.settings import PKG\n", "    return importlib.import_module('%s.%s' % (PKG, cfg)).handle(x)\n"),
+        (_IMP, "    name = 'app.actions.' + cfg\n    mod = importlib.import_module(name)\n    return mod.handle(x)\n"),
+        (
+            _IMP + "\n\ndef _module(name):\n    return importlib.import_module('app.actions.' + name)\n",
+            "    return _module(cfg).handle(x)\n",
+        ),
+        (
+            _IMP + "\n\ndef _module(name):\n    try:\n        m = importlib.import_module('app.actions.' + name)\n"
+            "    except ImportError:\n        return None\n    return m\n",
+            "    mod = _module(cfg)\n    if not hasattr(mod, 'handle'):\n        return None\n    return mod.handle(x)\n",
+        ),
+        (_IMP, "    importlib.import_module('app.actions.' + cfg)\n    return getattr(importlib.import_module('app.actions.' + cfg), 'handle')(x)\n"),
+        ("from app.actions import load\n", "    return load(cfg).handle(x)\n"),
+    ],
+)
+def test_a_computed_import_with_a_product_prefix_is_decided(tmp_path, imports, body):
+    """The prefix bounds what can load: the used attribute is reached in the
+    package's modules only, never another function there or a same-named
+    function outside the package."""
+    loader = {
+        "app/actions/__init__.py": (
+            "import importlib\n\n\ndef load(name):\n    return importlib.import_module('.' + name, __name__)\n"
+        )
+    }
+    record = _record(tmp_path, {**_HANDLERS, **loader, **_quotes("x: float, cfg: str = ''", body, imports)})
+    assert record["status"] == "analysed"
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert record["undecided"] == []
+
+
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        ("    return importlib.import_module('plugins.' + cfg).handle(x)\n", "import_module(<computed name>)"),
+        ("    return importlib.import_module(cfg).handle(x)\n", "import_module(<computed name>)"),
+        ("    return str(importlib.import_module('app.actions.' + cfg))\n", "result passed on"),
+        ("    mod = importlib.import_module('app.actions.' + cfg)\n    return str(mod)\n", "result passed on"),
+        ("    mod = importlib.import_module('app.actions.' + cfg)\n    return getattr(mod, cfg)(x)\n", "getattr(<computed name>)"),
+    ],
+)
+def test_a_computed_import_the_prefix_cannot_bound_stays_undecided(tmp_path, body, why):
+    """No product prefix, a result handed on, or a computed attribute on it:
+    nothing is counted reached, and every formula is listed undecided."""
+    record = _record(tmp_path, {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, _IMP)})
+    assert record["status"] == "analysed"
+    assert record["reached"] == []
+    assert [u["formula"] for u in record["undecided"]] == ["app.formulas:alpha", "app.formulas:beta"]
+    assert all(why in u["why"] for u in record["undecided"])
+
+
+@pytest.mark.parametrize("imports", [_IMP + "MOD = 'app.plugin'\n", _IMP + "from app.settings import MOD\n"])
+def test_an_import_module_name_held_in_a_constant_is_literal(tmp_path, imports):
+    files = {
+        **_HANDLERS,
+        "app/settings.py": "MOD = 'app.plugin'\n",
+        "app/plugin.py": "from app import formulas\n\nformulas.alpha(1)\n",
+    }
+    body = "    importlib.import_module(MOD)\n    return x\n"
+    record = _record(tmp_path, {**files, **_quotes("x: float", body, imports)})
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert record["undecided"] == []
