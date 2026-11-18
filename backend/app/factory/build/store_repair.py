@@ -232,6 +232,16 @@ def settle(
     return tuple(out)
 
 
+def outcome_word(repair: BlockRepair, settled: Optional[bool]) -> str:
+    """F-3b: what the block's ledger note says. A repair installed but not
+    yet confirmed by a settling re-grade is "installed", never "repaired"."""
+    if not repair.repaired:
+        return repair.reason
+    if settled is True:
+        return "repaired"
+    return "installed, but the re-grade did not settle the run"
+
+
 def grade_with_section(
     grade: Optional[Mapping[str, Any]], repairs: Sequence[BlockRepair]
 ) -> Dict[str, Any]:

@@ -857,6 +857,11 @@ class RoleRunner:
         skips CLONER would otherwise hand TESTER an empty vendored_blocks
         list and rewrite the suite against nothing.
         """
+        # F-3b: a Store repair install killed midway is settled before the
+        # vendored blocks are read; the ledger hears of it with the plan budget.
+        from app.factory.build.store_proposal import recover_installs
+
+        self._install_recovery = recover_installs(self.workspace)
         vendor = self.workspace / "vendor" / "blocks"
         if vendor.is_dir():
             blocks = tuple(
@@ -1342,18 +1347,9 @@ class RoleRunner:
         )
         if repairs is None:
             return False
-        for repair in repairs:
-            spent = store_repair.repairs_spent(self.ledger.events(), repair.block_id)
-            self.ledger.append(
-                EventKind.NOTE,
-                role=BuildRole.WRITER,
-                detail=(
-                    f"STORE DEFECT {repair.block_id}: "
-                    + ("repaired" if repair.repaired else repair.reason)
-                    + (f" -- not delivered: {', '.join(repair.not_delivered)}" if repair.not_delivered else "")
-                ),
-                payload=repair.note(spent + 1),
-            )
+        # F-3b: the re-grade comes first, so each block's note says
+        # "repaired" only once the re-grade has settled the run.
+        settled: Optional[bool] = None
         final = verdict
         if any(r.repaired for r in repairs):
             try:
@@ -1369,8 +1365,20 @@ class RoleRunner:
                 detail=f"GRADER RE-GRADE after Store repair: {'settled' if settled else 'not settled'}: {why}",
                 payload={"grader_gate": GRADER_GATE, "store_regrade": True, "settled": settled},
             )
-            if not settled:
-                return False
+        for repair in repairs:
+            spent = store_repair.repairs_spent(self.ledger.events(), repair.block_id)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.WRITER,
+                detail=(
+                    f"STORE DEFECT {repair.block_id}: "
+                    + store_repair.outcome_word(repair, settled)
+                    + (f" -- not delivered: {', '.join(repair.not_delivered)}" if repair.not_delivered else "")
+                ),
+                payload={**repair.note(spent + 1), "regrade_settled": settled},
+            )
+        if settled is False:
+            return False
         grade_writer.write_grade_json(
             self.workspace, store_repair.grade_with_section(final.grade, repairs)
         )
@@ -2616,6 +2624,13 @@ class RoleRunner:
                 "hard_ceiling_s": float(self.budget.hard_ceiling_s or 0.0),
             },
         )
+        for line in getattr(self, "_install_recovery", None) or ():
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.CLONER,
+                detail=f"STORE INSTALL RECOVERED {line}",
+                payload={"store_install_recovery": line},
+            )
 
     def _phase_minutes_s(self) -> Dict[str, float]:
         """Per-phase minutes from the ledger (PHASE_STARTED -> terminal ts).

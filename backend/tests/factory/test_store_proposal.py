@@ -800,3 +800,88 @@ def test_a_stale_backup_from_an_earlier_install_is_replaced(tmp_path, case, stal
     assert _install(tmp_path, lock, case) is None
     assert tree_hash(vendored) == tree_hash(staging)
     assert not stale.exists()
+
+
+# -- F-3b: the start-up check settles what a killed install left ---------------
+
+
+class _Killed(BaseException):
+    """The process dying midway: nothing in install_repair catches it."""
+
+
+@pytest.mark.parametrize("stage", ["moved-aside", "half-copied", "copied"])
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_killed_install_is_undone_at_start_up(tmp_path, monkeypatch, case, stage):
+    lock, vendored, staging = _product(tmp_path, case)
+    sp.save_lock(tmp_path, lock)
+    original = tree_hash(vendored)
+    real_copytree, real_verify = sp.shutil.copytree, sp.verify_vendored
+
+    def killed_copy(src, dst, **kw):
+        if stage == "half-copied":
+            Path(dst).mkdir(parents=True)
+            (Path(dst) / "half.py").write_text("PARTIAL = 1\n", encoding="utf-8")
+        raise _Killed()
+
+    def killed_verify(*_a, **_k):
+        raise _Killed()
+
+    if stage == "copied":
+        monkeypatch.setattr(sp, "verify_vendored", killed_verify)
+    else:
+        monkeypatch.setattr(sp.shutil, "copytree", killed_copy)
+    with pytest.raises(_Killed):
+        _install(tmp_path, json.loads(json.dumps(lock)), case)
+    monkeypatch.setattr(sp.shutil, "copytree", real_copytree)
+    monkeypatch.setattr(sp, "verify_vendored", real_verify)
+    assert _backup_of(vendored).is_dir()
+    assert case["block"] in _saved(tmp_path)[OVERRIDES_KEY]
+
+    lines = sp.recover_installs(tmp_path)
+
+    assert lines == [f"{case['block']}: a half-done install was undone; the vendored copy is back"]
+    assert tree_hash(vendored) == original
+    assert not _backup_of(vendored).exists()
+    assert _saved(tmp_path) == json.loads(json.dumps(lock))
+    check = verify_vendored(tmp_path, _saved(tmp_path), proofs=_proofs(tmp_path, case["build"]))
+    assert check.ok and check.unchanged == (case["block"],)
+    assert sp.recover_installs(tmp_path) == []
+    assert _install(tmp_path, _saved(tmp_path), case) is None
+    assert tree_hash(vendored) == tree_hash(staging)
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_finished_install_only_loses_its_leftover_backup(tmp_path, case):
+    lock, vendored, staging = _product(tmp_path, case)
+    assert _install(tmp_path, lock, case) is None
+    saved = _saved_lock(tmp_path)
+    _write(_backup_of(vendored), {"torn.py": "HALF = 1\n"})
+
+    lines = sp.recover_installs(tmp_path)
+
+    assert lines == [f"{case['block']}: the install had finished; its leftover backup was removed"]
+    assert not _backup_of(vendored).exists()
+    assert tree_hash(vendored) == tree_hash(staging)
+    assert _saved_lock(tmp_path) == saved
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: c["block"])
+def test_a_backup_that_is_not_the_recorded_copy_is_left_as_found(tmp_path, case):
+    lock, vendored, _ = _product(tmp_path, case)
+    sp.save_lock(tmp_path, lock)
+    _write(_backup_of(vendored), {"other.py": "OTHER = 1\n"})
+    before = (tree_hash(vendored), tree_hash(_backup_of(vendored)), _saved_lock(tmp_path))
+
+    lines = sp.recover_installs(tmp_path)
+
+    assert lines == [
+        f"{case['block']}: a half-done install was left as found: "
+        "its backup is not the copy the lock records"
+    ]
+    assert (tree_hash(vendored), tree_hash(_backup_of(vendored)), _saved_lock(tmp_path)) == before
+
+
+@pytest.mark.parametrize("layout", [None, {"vendor/blocks/zorblat/block.py": "A = 1\n"}])
+def test_a_product_with_no_backup_has_nothing_to_recover(tmp_path, layout):
+    _write(tmp_path, layout or {})
+    assert sp.recover_installs(tmp_path) == []
