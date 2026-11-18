@@ -17,14 +17,31 @@ from pathlib import Path
 import pytest
 
 from app.factory.build import store_override as so
+from app.factory.build import store_proposal as sp
 from app.factory.build.store_override import (
     ExamProof,
+    OverrideRecord,
+    StoreDefect,
+    _override_refusal,
     _read_signed,
+    _row_value,
     _signature,
+    _vendored_payload,
     open_proof_store,
     proof_refusal,
+    record_vendored,
     unusable_reason,
+    vendored_at,
+    vendored_path,
+    vendored_rows,
     write_proof,
+)
+from app.factory.build.store_proposal import (
+    _defect_rows,
+    _saved_override,
+    _text_lines,
+    _write_rows,
+    proposals_path,
 )
 
 KEY = b"k" * 32
@@ -100,7 +117,155 @@ def test_proof_refusal_accepts_only_a_passing_proof_of_these_bytes() -> None:
     assert "does not show it passing" in (proof_refusal(good, "other", "h1") or "")
 
 
+@pytest.mark.parametrize("blocks", [{"blk": "h1"}, {"a": "h1", "b": "sha256:other"}])
+def test_read_signed_reads_the_vendored_record_only_as_its_own_kind(
+    tmp_path: Path, blocks: dict[str, str]
+) -> None:
+    store = _store(tmp_path)
+    path = record_vendored(store, blocks)
+    got = _read_signed(store, path.name, so.VENDORED_KIND)
+    assert got is not None and got["blocks"] == blocks
+    assert _read_signed(store, path.name, so.EXAM_KIND) is None
+    other = so.ProofStore(root=store.root, build_id="b-2", key=KEY)
+    assert _read_signed(other, path.name, so.VENDORED_KIND) is None
+
+
+@pytest.mark.parametrize("blocks", [{"blk": "h1"}, {"a": "h1", "b": "sha256:other"}])
+def test_vendored_payload_is_none_without_a_store_and_the_record_with_one(
+    tmp_path: Path, blocks: dict[str, str]
+) -> None:
+    assert _vendored_payload(None) is None
+    store = _store(tmp_path)
+    assert _vendored_payload(store) is None
+    record_vendored(store, blocks)
+    got = _vendored_payload(store)
+    assert got is not None and got["blocks"] == blocks
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        {"blk": {"source": "s", "commit": "c1"}},
+        {"a": {"source": "s", "commit": "c1"}, "b": {"path": "vendor/blocks/b", "commit": "c2"}},
+    ],
+)
+def test_vendored_rows_are_empty_without_a_record_and_the_rows_with_one(
+    tmp_path: Path, rows: dict[str, dict[str, str]]
+) -> None:
+    assert vendored_rows(None) == {}
+    store = _store(tmp_path)
+    assert vendored_rows(store) == {}
+    record_vendored(store, {b: "h1" for b in rows}, rows=rows)
+    assert vendored_rows(store) == rows
+
+
+@pytest.mark.parametrize(
+    "path,block,expected",
+    [
+        (vendored_path("blk"), "blk", True),
+        ("./" + vendored_path("blk").replace("/", "\\"), "blk", True),
+        (vendored_path("blk"), "other", False),
+        ("elsewhere/blk", "blk", False),
+    ],
+)
+def test_vendored_at_is_true_only_at_the_blocks_one_path(path: str, block: str, expected: bool) -> None:
+    assert vendored_at(path, block) is expected
+
+
+def test_override_refusal_refuses_no_record_and_a_failed_exam(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert "no override is recorded" in (_override_refusal("blk", "new", "old", None, store) or "")
+    rec = OverrideRecord("blk", "old", "new", "r", "e1", exam_passed=False).to_dict()
+    assert "did not pass" in (_override_refusal("blk", "new", "old", rec, store) or "")
+    unnamed = OverrideRecord("blk", "old", "new", "r", "", exam_passed=True).to_dict()
+    assert "names no exam" in (_override_refusal("blk", "new", "old", unnamed, store) or "")
+
+
+def test_override_refusal_accepts_a_record_whose_exam_the_factory_proved(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rec = OverrideRecord("blk", "old", "new", "r", "e1", exam_passed=True).to_dict()
+    assert "no Factory-held proof" in (_override_refusal("blk", "new", "old", rec, store) or "")
+    write_proof(store, ExamProof(exam_id="e1", block_id="blk", examined_hash="new", passed=True))
+    assert _override_refusal("blk", "new", "old", rec, store) is None
+    assert "replaces a different copy" in (_override_refusal("blk", "new", "other", rec, store) or "")
+    assert "differs from both" in (_override_refusal("blk", "newer", "old", rec, store) or "")
+
+
+@pytest.mark.parametrize(
+    "field_name,value,expected",
+    [
+        ("path", "./vendor\\blocks//blk", "vendor/blocks/blk"),
+        ("path", None, ""),
+        ("commit", "./a\\b", "./a\\b"),
+        ("source", None, ""),
+    ],
+)
+def test_row_value_normalises_only_the_path(field_name: str, value: object, expected: str) -> None:
+    assert _row_value(field_name, value) == expected
+
+
 # --- store_proposal -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data,expected",
+    [(b"one\r\ntwo\n", ["one\n", "two\n"]), (b"solo", ["solo"])],
+)
+def test_text_lines_reads_lf_lines_and_is_empty_without_a_file(
+    tmp_path: Path, data: bytes, expected: list[str]
+) -> None:
+    assert _text_lines(None) == []
+    f = tmp_path / "a.txt"
+    f.write_bytes(data)
+    assert _text_lines(f) == expected
+
+
+def test_text_lines_is_none_for_bytes_that_are_not_text(tmp_path: Path) -> None:
+    f = tmp_path / "b.bin"
+    f.write_bytes(b"\xff\xfe\x00bad")
+    assert _text_lines(f) is None
+
+
+@pytest.mark.parametrize(
+    "defects,expected",
+    [
+        (
+            [StoreDefect("blk", "a.py", "raises", {"x": 1}), StoreDefect("blk", "b.py", "wrong", None)],
+            (
+                {"path": "a.py", "kind": "raises", "failing_input": {"x": 1}},
+                {"path": "b.py", "kind": "wrong", "failing_input": None},
+            ),
+        ),
+        ([], ()),
+    ],
+)
+def test_defect_rows_keep_path_kind_and_input_of_each_defect(
+    defects: list[StoreDefect], expected: tuple[dict, ...]
+) -> None:
+    assert _defect_rows(defects) == expected
+
+
+@pytest.mark.parametrize("rows", [[{"id": "p1"}, {"id": "p2", "b": 2}], [{"id": "q1", "c": [1, 2]}]])
+def test_write_rows_replaces_the_proposals_file_with_one_json_line_per_row(
+    tmp_path: Path, rows: list[dict]
+) -> None:
+    proposals_path(tmp_path).parent.mkdir(parents=True)
+    _write_rows(tmp_path, rows)
+    lines = proposals_path(tmp_path).read_text(encoding="utf-8").splitlines()
+    assert [json.loads(x) for x in lines] == rows
+    _write_rows(tmp_path, [{"id": "p3"}])
+    assert proposals_path(tmp_path).read_text(encoding="utf-8") == '{"id": "p3"}\n'
+
+
+def test_saved_override_is_true_only_for_the_exact_saved_record(tmp_path: Path) -> None:
+    rec = OverrideRecord("blk", "old", "new", "r", "e1", exam_passed=True)
+    assert _saved_override(tmp_path, rec) is False
+    (tmp_path / sp.LOCK_FILE).write_text(
+        json.dumps({so.OVERRIDES_KEY: {"blk": rec.to_dict()}}), encoding="utf-8"
+    )
+    assert _saved_override(tmp_path, rec) is True
+    other = OverrideRecord("blk", "old", "newer", "r", "e1", exam_passed=True)
+    assert _saved_override(tmp_path, other) is False
 
 
 # --- main -----------------------------------------------------------------

@@ -71,13 +71,27 @@ VENDORED_HASH_KEY = "vendored_content_hash"
 REPAIR_FAILED_REASON = "Store block defect, repair failed"
 #: File suffix of one Factory-held exam proof (F-2).
 PROOF_SUFFIX = ".exam.json"
+#: The Factory-held record of the blocks as CLONER vendored them (F-2).
+VENDORED_RECORD = "vendored.json"
 #: The Factory's secret that signs every proof. It is read once, then removed
 #: from the process environment so no child process inherits it.
 PROOF_KEY_ENV = "FACTORY_EXAM_PROOF_KEY"
 #: Where the Factory keeps proofs (default: under the Factory user's home).
 PROOFS_DIR_ENV = "FACTORY_EXAM_PROOFS_DIR"
-#: The record kind of an exam proof.
+#: The lock-row fields the Factory records at CLONER; a later edit is refused.
+LOCK_ROW_FIELDS = ("source", "commit", "path")
+#: The runner's gate name and reason for a refused lock check.
+LOCK_GATE = "vendored_lock"
+LOCK_GATE_REASON = "vendored_lock_refused"
+#: Why the lock check refuses when the Factory's record is not there (a resumed
+#: build whose record is gone, a record from another key, or none kept).
+NO_RECORD = (
+    "no Factory-held record of the vendored blocks for this build: "
+    "the vendored blocks cannot be checked, so the build is refused"
+)
+#: Record kinds: a record of one kind never reads as the other.
 EXAM_KIND = "exam_proof"
+VENDORED_KIND = "vendored_copy"
 
 _KEY_UNREAD: Any = object()
 _process_key: Any = _KEY_UNREAD
@@ -360,6 +374,61 @@ def proof_refusal(proof: Optional[ExamProof], block_id: str, actual: str) -> Opt
     return None
 
 
+def record_vendored(
+    store: ProofStore,
+    hashes: Mapping[str, str],
+    *,
+    rows: Optional[Mapping[str, Mapping[str, str]]] = None,
+) -> Path:
+    """Sign and keep the hash of every block as CLONER vendored it, and the
+    lock row (:data:`LOCK_ROW_FIELDS`) CLONER wrote for it."""
+    payload = {
+        "blocks": dict(hashes),
+        "rows": {k: dict(v) for k, v in (rows or {}).items()},
+    }
+    return _write_signed(store, VENDORED_RECORD, VENDORED_KIND, payload)
+
+
+def _vendored_payload(store: Optional[ProofStore]) -> Optional[Mapping[str, Any]]:
+    if store is None:
+        return None
+    raw = _read_signed(store, VENDORED_RECORD, VENDORED_KIND)
+    if raw is None or not isinstance(raw.get("blocks"), Mapping):
+        return None
+    return raw
+
+
+def vendored_record(store: Optional[ProofStore]) -> Optional[Dict[str, str]]:
+    """The Factory-held hashes of the vendored blocks; None when unproven."""
+    raw = _vendored_payload(store)
+    if raw is None:
+        return None
+    return {str(k): str(v) for k, v in raw["blocks"].items()}
+
+
+def vendored_rows(store: Optional[ProofStore]) -> Dict[str, Dict[str, str]]:
+    """The Factory-held lock rows CLONER wrote, by block ({} when none)."""
+    raw = _vendored_payload(store)
+    rows = raw.get("rows") if raw is not None else None
+    if not isinstance(rows, Mapping):
+        return {}
+    return {
+        str(b): {str(k): str(v) for k, v in row.items()}
+        for b, row in rows.items()
+        if isinstance(row, Mapping)
+    }
+
+
+def vendored_path(block_id: str) -> str:
+    """The one product-relative path a block may be vendored at."""
+    return "/".join(VENDOR_BLOCKS + (block_id,))
+
+
+def vendored_at(path: Any, block_id: str) -> bool:
+    """True when the lock's ``path`` is the one path ``block_id`` may have."""
+    return "/".join(_rel_parts(path)) == vendored_path(block_id)
+
+
 def _rel_parts(path: Any) -> Tuple[str, ...]:
     text = str(path or "").replace("\\", "/")
     return tuple(p for p in text.split("/") if p and p != ".")
@@ -423,9 +492,16 @@ def tree_hash(block_dir: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def record_override(lock: MutableMapping[str, Any], record: OverrideRecord) -> Dict[str, Any]:
+def record_override(
+    lock: MutableMapping[str, Any],
+    record: OverrideRecord,
+    *,
+    vendored_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     """R3: write ``record`` into the lock. Only a passed exam is recorded, and
-    only over a block the lock vendored, replacing the copy it recorded."""
+    only over a block the lock vendored, replacing the copy it recorded.
+    F-2: ``vendored_hash`` is the Factory-held hash of that copy; when given,
+    it is compared instead of the hash claimed in the lock."""
     if not record.exam_passed or not record.exam_id:
         raise OverrideError(
             f"override of {record.block_id!r} not recorded: it did not pass its exam"
@@ -433,7 +509,8 @@ def record_override(lock: MutableMapping[str, Any], record: OverrideRecord) -> D
     entry = (lock.get("blocks") or {}).get(record.block_id)
     if not isinstance(entry, Mapping):
         raise OverrideError(f"override of {record.block_id!r}: the lock vendored no such block")
-    if str(entry.get(VENDORED_HASH_KEY) or "") != record.replaces_hash:
+    replaced = vendored_hash if vendored_hash is not None else entry.get(VENDORED_HASH_KEY)
+    if str(replaced or "") != record.replaces_hash:
         raise OverrideError(
             f"override of {record.block_id!r} does not name the vendored copy it replaces"
         )
@@ -442,46 +519,92 @@ def record_override(lock: MutableMapping[str, Any], record: OverrideRecord) -> D
     return overrides[record.block_id]
 
 
-def _override_refusal(block_id: str, actual: str, recorded: str, raw: Any) -> Optional[str]:
+def _override_refusal(
+    block_id: str, actual: str, recorded: str, raw: Any, proofs: Optional[ProofStore]
+) -> Optional[str]:
     """None when ``raw`` is a valid recorded override for these bytes."""
     if not isinstance(raw, Mapping):
         return f"{block_id}: differs from the vendored Store copy and no override is recorded"
     record = OverrideRecord.from_mapping(raw)
     if not record.exam_passed:
         return f"{block_id}: recorded override did not pass its exam"
+    if not record.exam_id:
+        return f"{block_id}: recorded override names no exam"
     if record.replaces_hash != recorded:
         return f"{block_id}: recorded override replaces a different copy than the one vendored"
     if record.override_hash != actual:
         return f"{block_id}: differs from both the vendored copy and its recorded override"
-    return None
+    return proof_refusal(read_proof(proofs, record.exam_id), block_id, actual)
 
 
-def verify_vendored(root: Path | str, lock: Mapping[str, Any]) -> OverrideCheck:
+def _row_value(field_name: str, value: Any) -> str:
+    """A lock-row value as compared with CLONER's record; spellings of one
+    path are one path."""
+    if field_name == "path":
+        return "/".join(_rel_parts(value))
+    return str(value or "")
+
+
+def verify_vendored(
+    root: Path | str, lock: Mapping[str, Any], *, proofs: Optional[ProofStore]
+) -> OverrideCheck:
     """R3, the lock check: refuse any difference from the vendored Store copy
-    that is not a recorded override which passed its exam."""
+    that is not a recorded override which passed its exam.
+
+    F-2: what the copy was, and whether its exam passed, are read from the
+    Factory-held, signed records in ``proofs``, never from the lock alone. The
+    lock is in the product, where the writer can edit it."""
     root = Path(root)
+    if proofs is not None and is_inside(proofs.root, root):
+        return OverrideCheck(ok=False, refused=("exam proofs are held inside the product tree",))
+    cloned = vendored_record(proofs)
+    if cloned is None:
+        return OverrideCheck(ok=False, refused=(NO_RECORD,))
     entries = lock.get("blocks") or {}
     overrides = lock.get(OVERRIDES_KEY) or {}
     unchanged: List[str] = []
     overridden: List[str] = []
     refused: List[str] = []
+    rows = vendored_rows(proofs)
+    for block_id in sorted(set(cloned) - set(entries)):
+        refused.append(f"{block_id}: the lock no longer names a block the Factory vendored")
     for block_id in sorted(entries):
         entry = entries[block_id]
         if not isinstance(entry, Mapping) or not entry.get("path"):
+            if block_id in cloned:
+                refused.append(f"{block_id}: the lock's row no longer says where it is vendored")
             continue
-        block_dir = root / str(entry["path"])
-        recorded = str(entry.get(VENDORED_HASH_KEY) or "")
+        if not vendored_at(entry["path"], block_id):
+            refused.append(f"{block_id}: not vendored at {vendored_path(block_id)}")
+            continue
+        block_dir = root.joinpath(*VENDOR_BLOCKS, block_id)
+        recorded = cloned.get(block_id, "")
         if not recorded:
-            refused.append(f"{block_id}: no recorded hash of the vendored copy")
+            refused.append(f"{block_id}: the Factory holds no record of vendoring it")
+            continue
+        claimed = entry.get(VENDORED_HASH_KEY)
+        if claimed is not None and str(claimed) != recorded:
+            refused.append(f"{block_id}: the lock's vendored hash is not the copy the Factory cloned")
+            continue
+        edited = sorted(
+            k
+            for k, v in rows.get(block_id, {}).items()
+            if _row_value(k, entry.get(k)) != _row_value(k, v)
+        )
+        if edited:
+            refused.append(f"{block_id}: the lock's row was edited after CLONER ({', '.join(edited)})")
             continue
         if not block_dir.is_dir():
             refused.append(f"{block_id}: vendored copy is missing")
             continue
         actual = tree_hash(block_dir)
         if actual == recorded:
+            if block_id in overrides:
+                refused.append(f"{block_id}: an override is recorded, but the block is the vendored copy")
+                continue
             unchanged.append(block_id)
             continue
-        why = _override_refusal(block_id, actual, recorded, overrides.get(block_id))
+        why = _override_refusal(block_id, actual, recorded, overrides.get(block_id), proofs)
         if why is None:
             overridden.append(block_id)
         else:
