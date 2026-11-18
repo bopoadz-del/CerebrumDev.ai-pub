@@ -115,11 +115,13 @@ def _require_cli(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_deepseek_key_selects_deepseek_and_assumes_no_cli(monkeypatch):
-    """Item 1c: no CLI binary is assumed; the operator names it."""
+@pytest.mark.parametrize("provider_setting", ["", "DeepSeek"])
+def test_deepseek_key_selects_deepseek_and_assumes_no_cli(monkeypatch, provider_setting):
+    """Item 1c: no CLI binary is assumed; the operator names it. The key
+    alone and the key with the table name set give the same answer."""
     monkeypatch.delenv("FACTORY_CODE_CLI", raising=False)
     monkeypatch.delenv("KIMI_CODE_CLI", raising=False)
-    monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
+    monkeypatch.setenv("FACTORY_CODE_PROVIDER", provider_setting)
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
     assert factory_code_provider() == "deepseek"
     assert code_cli_command() == ""
@@ -142,23 +144,25 @@ def test_explicit_kimi_cli_plus_deepseek_key_is_deepseek_backend(monkeypatch):
 
 
 @pytest.mark.parametrize("retired", ["kimi", "moonshot"])
-def test_a_retired_provider_name_is_refused_and_deepseek_stays_selected(
+def test_a_retired_provider_name_fails_closed_with_the_deepseek_key_present(
     monkeypatch, retired
 ):
-    """Item 1c: the retired vendor is never a coder provider. Its name is
-    reported as a setting error and the DeepSeek key still selects DeepSeek."""
+    """Item 1c, inverted by grader #256 bar 5: the retired vendor is never a
+    coder provider, and its name does NOT fall through to the DeepSeek key:
+    no provider is selected and the credential check refuses."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
     monkeypatch.setenv("FACTORY_CODE_PROVIDER", retired)
     monkeypatch.delenv("FACTORY_CODE_CLI", raising=False)
     monkeypatch.delenv("KIMI_CODE_CLI", raising=False)
-    assert factory_code_provider() == "deepseek"
-    assert deepseek_coder_selected() is True
-    assert cli_requires_kimi_credentials() is False
+    assert factory_code_provider() == ""
+    assert deepseek_coder_selected() is False
+    assert cli_requires_kimi_credentials() is True
 
 
-def test_leftover_claude_cli_is_not_the_deepseek_vehicle(monkeypatch):
+@pytest.mark.parametrize("cli", ["claude", "/usr/local/bin/Claude"])
+def test_leftover_claude_cli_is_not_the_deepseek_vehicle(monkeypatch, cli):
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
-    monkeypatch.setenv("FACTORY_CODE_CLI", "claude")
+    monkeypatch.setenv("FACTORY_CODE_CLI", cli)
     monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
     assert factory_code_provider() == "deepseek"
     assert code_cli_command() == ""

@@ -627,3 +627,170 @@ def test_a_table_key_alone_is_reported_configured(monkeypatch, slot):
     assert llm_key_configured() is False
     monkeypatch.setenv(slot, "sk-" + secrets.token_hex(12))
     assert llm_key_configured() is True
+
+
+# -- the retired name anywhere it is carried (grader #256 bar 5, item 3) ------
+#
+# The bare-constant scan above misses identifiers (``kimi_credentials_file``),
+# setting names (``KIMI_CODE_CLI``), file names (``setup_kimi_env.sh``) and
+# prose. This scan reads every text file in the repository -- product code,
+# config, env examples, scripts, generator templates, frontend and docs --
+# and counts, per file, the lines that carry a retired name in any case,
+# plus one for each retired name in the file's own name. Test code is not
+# scanned (it asserts the refusal). Generated and vendored trees are skipped.
+
+_REPO = Path(__file__).resolve().parents[3]
+
+_CARRIES_RETIRED = re.compile("|".join(sorted(_RETIRED)), re.IGNORECASE)
+
+_SKIP_DIRS = frozenset(
+    {
+        ".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
+        ".pytest_cache", ".mypy_cache", ".ruff_cache", "factory_outputs",
+        "test-results", "playwright-report", "coverage", "htmlcov",
+    }
+)
+_SKIP_PATHS = frozenset({"backend/tests", "tests"})
+
+#: Item 1c-2's work list: every file that still carries a retired name, with
+#: its count. A file not listed fails; a count above its entry fails; an
+#: entry whose file no longer carries the name fails until it is removed.
+#: So this list can only shrink. Item 1c-2 empties it.
+_PENDING_1C2_CARRIERS: dict = {
+    ".github/workflows/ci.yml": 4,
+    "AUDIT.md": 1,
+    "Dockerfile": 1,
+    "KNOWN_INCOMPLETE.md": 12,
+    "KNOWN_LIMITATIONS.md": 3,
+    "README.md": 6,
+    "backend/app/core/deployer.py": 1,
+    "backend/app/factory/build/agent_confine.py": 9,
+    "backend/app/factory/build/authorship.py": 2,
+    "backend/app/factory/build/budget_inspect.py": 2,
+    "backend/app/factory/build/coder_session.py": 184,
+    "backend/app/factory/build/coder_session_status.py": 1,
+    "backend/app/factory/build/persist_accept.py": 1,
+    "backend/app/factory/build/probe_set.json": 1,
+    "backend/app/factory/build/rag_surface.py": 1,
+    "backend/app/factory/build/roles_handlers.py": 7,
+    "backend/app/factory/build/writer_brief.py": 1,
+    "backend/app/factory/build/writer_phases.py": 1,
+    "backend/app/factory/code_cli.py": 42,
+    "backend/app/factory/standards/domain_packs/kernel_wave1_trust_spine.md": 1,
+    "backend/app/factory/store_manager.py": 5,
+    "backend/app/routers/delivery_standard.py": 2,
+    "backend/app/workbench/__init__.py": 2,
+    "backend/app/workbench/agent.py": 40,
+    "backend/app/workbench/candidate.py": 2,
+    "backend/app/workbench/flags.py": 2,
+    "backend/app/workbench/router.py": 2,
+    "backend/app/workbench/session.py": 4,
+    "build/stages/S1_root_cause.json": 1,
+    "docs/FREE_TRIAL_READINESS_REPORT.md": 5,
+    "docs/GUARDRAILS.md": 3,
+    "docs/LIVE_TEST_READY.md": 6,
+    "docs/PHASE2_SCOUT_LAW.md": 1,
+    "docs/PRODUCT_DELIVERY_STANDARD.md": 2,
+    "docs/PUBLIC_LAUNCH_READINESS.md": 2,
+    "docs/UNIVERSAL_KERNEL.md": 1,
+    "docs/audits/2026-07-24-platform-sweep-report.md": 7,
+    "docs/audits/REGISTERED_BUT_DEAD_AUDIT.md": 2,
+    "docs/factory/DEEPSEEK_ENV_SETUP.md": 33,
+    "docs/factory/HONEST_STUBS.md": 3,
+    "docs/factory/KIMI_ENV_SETUP.md": 54,
+    "docs/factory/MR_FINANCE_GROUNDING_AND_GATING.md": 3,
+    "docs/factory/SHIPPER_AGENT_TASK.md": 3,
+    "docs/factory/STORE_MANAGER.md": 4,
+    "docs/legal/PRIVACY_POLICY.md": 1,
+    "docs/reports/MARKET_READINESS_AUDIT.md": 1,
+    "docs/resident-engineer/M3-change-request-loop.md": 1,
+    "docs/resident-engineer/M4-build-mode-workbench.md": 2,
+    "docs/resident-engineer/MILESTONE_1_PRODUCT_DNA.md": 1,
+    "docs/resident-engineer/MILESTONE_2_RESIDENT_CORE.md": 1,
+    "docs/resident-engineer/STANDING_ORDERS.md": 4,
+    "docs/runbook.md": 2,
+    "docs/superpowers/specs/2026-07-08-domain-v2-chain-quality-check.md": 1,
+    "frontend/e2e/factory_surfaces.spec.ts": 4,
+    "frontend/e2e/floor_composer_visible.spec.ts": 1,
+    "frontend/e2e/floor_mobile_overflow.spec.ts": 1,
+    "frontend/e2e/floor_upload.spec.ts": 1,
+    "frontend/e2e/production_factory.spec.ts": 1,
+    "frontend/src/__tests__/build-progress.test.ts": 4,
+    "frontend/src/__tests__/floor.test.tsx": 2,
+    "frontend/src/__tests__/platforms.test.tsx": 5,
+    "frontend/src/accountViews.tsx": 1,
+    "frontend/src/api/factory.ts": 3,
+    "frontend/src/buildProgress.ts": 2,
+    "render.yaml": 2,
+    "runtime/engine.py": 6,
+    "scripts/dev_factory_llm.py": 1,
+    "scripts/render_create.py": 1,
+    "scripts/setup_kimi_code_env.sh": 48,
+    "scripts/setup_kimi_env.sh": 3,
+}
+
+
+def _retired_carriers(root: Path) -> dict:
+    found: dict = {}
+
+    def walk(folder: Path) -> None:
+        for path in sorted(folder.iterdir()):
+            rel = path.relative_to(root).as_posix()
+            if path.is_dir():
+                if path.name not in _SKIP_DIRS and rel not in _SKIP_PATHS:
+                    walk(path)
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue  # binary
+            count = sum(1 for line in text.splitlines() if _CARRIES_RETIRED.search(line))
+            count += len(_CARRIES_RETIRED.findall(path.name))
+            if count:
+                found[rel] = count
+
+    walk(root)
+    return found
+
+
+@pytest.mark.parametrize("check", ["no_new_carrier", "pending_only_shrinks"])
+def test_no_file_carries_a_retired_name_outside_the_pending_list(check):
+    found = _retired_carriers(_REPO)
+    if check == "no_new_carrier":
+        grown = {
+            rel: n
+            for rel, n in found.items()
+            if n > _PENDING_1C2_CARRIERS.get(rel, 0)
+        }
+        assert grown == {}, grown
+    else:
+        stale = sorted(set(_PENDING_1C2_CARRIERS) - set(found))
+        assert stale == [], f"no longer carries a retired name, remove: {stale}"
+
+
+@pytest.mark.parametrize(
+    ("rel", "content", "expected"),
+    [
+        ("app/x.py", "path = kimi_credentials_file()\n", 1),
+        ("frontend/src/a.ts", "const v = env.KIMI_CODE_CLI;\nok\nMoonshot\n", 2),
+        ("scripts/setup_kimi_env.sh", "echo ok\n", 1),
+        ("docs/notes.md", "nothing retired here\n", 0),
+    ],
+)
+def test_the_carrier_scan_catches_identifiers_settings_and_file_names(
+    tmp_path, rel, content, expected
+):
+    """Live: an identifier, a setting name, a file name, any case."""
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True)
+    target.write_text(content, encoding="utf-8")
+    assert _retired_carriers(tmp_path) == ({rel: expected} if expected else {})
+
+
+@pytest.mark.parametrize("skipped", ["tests/t.py", "backend/tests/t.py", "node_modules/m.js"])
+def test_the_carrier_scan_skips_test_and_vendored_trees(tmp_path, skipped):
+    target = tmp_path / skipped
+    target.parent.mkdir(parents=True)
+    target.write_text("KIMI_CODE_CLI\n", encoding="utf-8")
+    (tmp_path / "kept.py").write_text("KIMI_CODE_CLI\n", encoding="utf-8")
+    assert _retired_carriers(tmp_path) == {"kept.py": 1}

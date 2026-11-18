@@ -86,17 +86,22 @@ def factory_code_provider() -> str:
     configured:
     * an explicit ``FACTORY_CODE_PROVIDER`` that the table knows wins (the
       table's one alias is normalised);
-    * otherwise ``DEEPSEEK_API_KEY`` selects DeepSeek;
+    * a non-empty ``FACTORY_CODE_PROVIDER`` the table does NOT know selects
+      no provider at all (fail closed): it never falls through to another
+      provider's key, and the credential path refuses it naming the setting
+      (see :func:`code_provider_setting_error`);
+    * otherwise (the setting unset) ``DEEPSEEK_API_KEY`` selects DeepSeek;
     * otherwise a ``claude`` binary is Anthropic-native;
     * otherwise empty. A name outside the table (a retired vendor included)
-      is never returned and never a default: the operator text names the
-      settings to set (see :func:`code_provider_setting_error`).
+      is never returned and never a default.
     """
     from app.core.llm_config import PROVIDER_TABLE, normalise_provider
 
     explicit = normalise_provider(os.getenv(CODE_PROVIDER_ENV, ""))
     if explicit in PROVIDER_TABLE:
         return explicit
+    if explicit:
+        return ""
     if deepseek_api_key():
         return PROVIDER_DEEPSEEK
     cli = (
@@ -124,7 +129,12 @@ def code_provider_setting_error() -> str:
 
 
 def deepseek_coder_selected(command: Optional[str] = None) -> bool:
-    """True when C-BRIEF should authenticate Kimi Code via DeepSeek."""
+    """True when C-BRIEF should authenticate Kimi Code via DeepSeek.
+
+    Never with a ``FACTORY_CODE_PROVIDER`` outside the table: that setting
+    fails closed rather than falling through to the DeepSeek key."""
+    if code_provider_setting_error():
+        return False
     if factory_code_provider() == "deepseek":
         return True
     cli = (command or "").strip()

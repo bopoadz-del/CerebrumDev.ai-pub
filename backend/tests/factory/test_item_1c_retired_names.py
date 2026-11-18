@@ -48,13 +48,37 @@ def test_factory_code_provider_takes_a_table_name(monkeypatch, setting, expected
     assert code_cli.factory_code_provider() == expected
 
 
-@pytest.mark.parametrize("retired", _RETIRED)
-def test_factory_code_provider_never_returns_a_retired_name(monkeypatch, retired):
+@pytest.mark.parametrize("setting", [*_RETIRED, "qwen"])
+def test_a_setting_outside_the_table_fails_closed_with_another_key_present(
+    monkeypatch, setting
+):
+    """Grader #256 bar 5 (inverted on purpose): a non-empty setting outside
+    the table selects NO provider, even with the DeepSeek key and a claude
+    binary present; it never falls through to another provider."""
     _clean(monkeypatch)
-    monkeypatch.setenv("FACTORY_CODE_PROVIDER", retired)
+    monkeypatch.setenv("FACTORY_CODE_PROVIDER", setting)
     assert code_cli.factory_code_provider() == ""
     monkeypatch.setenv("DEEPSEEK_API_KEY", _key())
-    assert code_cli.factory_code_provider() == "deepseek"
+    monkeypatch.setenv("FACTORY_CODE_CLI", "/usr/bin/claude")
+    assert code_cli.factory_code_provider() == ""
+    assert code_cli.deepseek_coder_selected("/usr/bin/claude") is False
+    assert code_cli.deepseek_coder_selected("/opt/coder") is False
+
+
+@pytest.mark.parametrize("setting, expected", [("qwen", False), ("deepseek", True)])
+def test_the_credential_path_refuses_a_setting_outside_the_table(
+    monkeypatch, setting, expected
+):
+    """The same DeepSeek key: a table name passes the credential check, a
+    name outside the table is refused and the operator text names it."""
+    _clean(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", _key())
+    monkeypatch.setenv("FACTORY_CODE_PROVIDER", setting)
+    assert coder_session.cli_credentials_ok("/opt/coder") is expected
+    named = f"FACTORY_CODE_PROVIDER={setting} is not a provider" in (
+        coder_session._table_provider_credentials()
+    )
+    assert named is not expected
 
 
 @pytest.mark.parametrize("cli, expected", [("/usr/bin/claude", "claude"), ("/opt/coder", "")])

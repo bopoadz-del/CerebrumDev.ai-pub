@@ -1219,7 +1219,8 @@ def test_dispatch_cli_other_nonzero_stays_failed(tmp_path, monkeypatch):
     assert result.kept_handler_ids == []
 
 
-def test_dispatch_with_vendor_config_toml_passes_no_vendor_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("vendor_toml", [_usable_kimi_toml, _credentials_only_toml])
+def test_dispatch_with_vendor_config_toml_passes_no_vendor_model(tmp_path, monkeypatch, vendor_toml):
     """A table provider authenticates the CLI; the retired vendor's
     config.toml model is never passed to it (item 1c)."""
     script = _fake_kimi(tmp_path)
@@ -1227,7 +1228,7 @@ def test_dispatch_with_vendor_config_toml_passes_no_vendor_model(tmp_path, monke
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
-    (home / "config.toml").write_text(_usable_kimi_toml(), encoding="utf-8")
+    (home / "config.toml").write_text(vendor_toml(), encoding="utf-8")
     monkeypatch.setenv("KIMI_CODE_HOME", str(home))
     oneshot = []
     monkeypatch.setattr(
@@ -1367,7 +1368,8 @@ def test_approve_and_generate_names_credentials_class_without_takeover(
     assert NAMED_BLOCKER_CLI_CREDS in (state.product_design.last_error or "")
 
 
-def test_dispatch_credentials_only_toml_is_not_a_credential_source(tmp_path, monkeypatch):
+@pytest.mark.parametrize("vendor_toml", [_usable_kimi_toml, _credentials_only_toml])
+def test_dispatch_credentials_only_toml_is_not_a_credential_source(tmp_path, monkeypatch, vendor_toml):
     """A vendor credentials file with no table provider never opens the
     WRITER CLI: it is refused as credentials missing (item 1c)."""
     script = _fake_kimi(tmp_path)
@@ -1376,7 +1378,7 @@ def test_dispatch_credentials_only_toml_is_not_a_credential_source(tmp_path, mon
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
-    (home / "config.toml").write_text(_credentials_only_toml(), encoding="utf-8")
+    (home / "config.toml").write_text(vendor_toml(), encoding="utf-8")
     monkeypatch.setenv("KIMI_CODE_HOME", str(home))
     oneshot = []
     monkeypatch.setattr(
@@ -1410,14 +1412,15 @@ def test_dispatch_credentials_only_toml_is_not_a_credential_source(tmp_path, mon
     assert "falling back to HTTP oneshot" not in log
 
 
-def test_probe_code_cli_reports_a_vendor_file_as_credentials_missing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("vendor_toml", [_usable_kimi_toml, _credentials_only_toml])
+def test_probe_code_cli_reports_a_vendor_file_as_credentials_missing(tmp_path, monkeypatch, vendor_toml):
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
     _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
-    (home / "config.toml").write_text(_credentials_only_toml(), encoding="utf-8")
+    (home / "config.toml").write_text(vendor_toml(), encoding="utf-8")
     monkeypatch.setenv("KIMI_CODE_HOME", str(home))
     probe = probe_code_cli()
     assert probe["available"] is True
@@ -1460,8 +1463,9 @@ def test_start_runner_build_refuses_a_vendor_file_without_a_provider(tmp_path, m
     assert not (tmp_path / "out" / "build_ledger.jsonl").exists()
 
 
+@pytest.mark.parametrize("vendor_toml", [_usable_kimi_toml, _credentials_only_toml])
 def test_approve_and_generate_refuses_a_vendor_file_without_takeover(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, vendor_toml
 ):
     from app.factory import platform_chat_flow
     from app.models.session import ProductDesignState, SessionState
@@ -1472,7 +1476,7 @@ def test_approve_and_generate_refuses_a_vendor_file_without_takeover(
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
-    (home / "config.toml").write_text(_credentials_only_toml(), encoding="utf-8")
+    (home / "config.toml").write_text(vendor_toml(), encoding="utf-8")
     monkeypatch.setenv("KIMI_CODE_HOME", str(home))
     root = Path(__file__).resolve().parents[3]
     from app.factory.blueprint import load_blueprint
