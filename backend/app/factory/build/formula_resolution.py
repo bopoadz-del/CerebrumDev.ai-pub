@@ -242,6 +242,19 @@ def attach_improvised_metadata(
     return {"labelled": labelled, "candidates_added": added}
 
 
+def reach_record(root: Path) -> Dict[str, Any]:
+    """The H-1 reach record for the audit. It is a record, not a gate: the
+    analysis failing in ANY way is recorded as unknown ("analysis crashed:
+    <class>") and never raised, so the errors written beside it (what the
+    writer gate reads) are always written."""
+    from app.factory.build import formula_reach
+
+    try:
+        return formula_reach.formula_reach(root)
+    except Exception as exc:  # noqa: BLE001 -- any failure is recorded, never raised
+        return formula_reach.unknown_record(f"analysis crashed: {type(exc).__name__}", [])
+
+
 def audit_product_formulas(
     product_root: Any,
     kernel_index: Sequence[Mapping[str, Any]],
@@ -263,9 +276,7 @@ def audit_product_formulas(
         store_index,
         _jsonl(root / WRITER_CANDIDATES_REL),
     )
-    from app.factory.build.formula_reach import formula_reach
-
-    record = {"errors": errs, "reach": formula_reach(root)}
+    record = {"errors": errs, "reach": reach_record(root)}
     target = root / FORMULA_FINDINGS_REL
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

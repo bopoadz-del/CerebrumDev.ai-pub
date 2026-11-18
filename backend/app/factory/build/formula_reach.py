@@ -8,7 +8,10 @@ ENTRY POINTS, discovered from the product:
     or ``module:function`` reference, ``-m module`` or a ``path.py`` script
     in a root packaging file (Dockerfile, Procfile, pyproject, compose and
     other config files) that resolves to a product module;
-  * every ``if __name__ == "__main__":`` block (a CLI run as a script);
+  * the ``if __name__ == "__main__":`` block of a module that one of those
+    targets runs as a script (``python app/cli.py``, ``-m pkg`` running
+    ``pkg/__main__``). An imported module's guard never runs, so a guard in
+    a dev script or in a formula module's own demo block is not an entry;
   * every function registered on a LIVE registrar object -- a module-level
     object (``router = APIRouter()``, ``scheduler = Scheduler()``) that a
     function is attached to by a decorator on the object
@@ -29,10 +32,22 @@ with a computed name, ``globals()`` / ``vars()`` lookups, an
 ``import_module`` / ``__import__`` of a computed name, a formula handed to a
 product decorator at import -- is listed and never counted as reached.
 
+A script token in a packaging file counts only in a RUN position: the
+first non-flag word after a Python interpreter on the same line
+(``CMD ["python", "app/seed.py"]``), never a copy line naming the file.
+
+SHADOWING: inside a function, a name the function binds itself (a
+parameter, a loop or ``with`` target, an assignment, an ``except`` name, a
+nested def) hides the module-level name of the same spelling.
+
+A handler's SIGNATURE is walked with its body: defaults and the calls inside
+annotations run at definition (``rate=Depends(fn)``,
+``Annotated[T, Depends(fn)]``) and wire what they name.
+
 THE ANALYSIS'S OWN FAILURE IS NEVER CLEAN: no formula module, a product
-module that does not parse, or no entry point found records
-``status: "unknown"`` with the reason and ``unreached: None`` -- never an
-empty list.
+module that does not parse, a module past the size or nesting bound
+("bound hit"), or no entry point found records ``status: "unknown"`` with
+the reason and ``unreached: None`` -- never an empty list.
 """
 
 from __future__ import annotations
@@ -59,6 +74,12 @@ _RUN_MODULE = re.compile(r"-m[\"'\s,]+([A-Za-z_][\w.]*)")
 _TOKEN_SPLIT = re.compile(r"[\s\"',\[\]()=]+")
 _PACKAGING_SUFFIXES = frozenset({".toml", ".yaml", ".yml", ".cfg", ".ini", ".sh", ".json"})
 _PACKAGING_NAMES = frozenset({"Procfile", "Makefile"})
+#: A Python interpreter word: ``python``, ``python3.11``, ``/usr/bin/python3``.
+_INTERPRETER = re.compile(r"(?:.*/)?python[\d.]*$")
+#: Bounds on what is analysed: a module past either is not walked and the
+#: record is "unknown" ("bound hit"), never a crash of the audit.
+MAX_MODULE_BYTES = 1_000_000
+MAX_AST_DEPTH = 200
 
 
 def formula_locations() -> Tuple[str, str]:
@@ -169,8 +190,37 @@ def _shallow(stmts: List[ast.stmt]):
 
 
 class _Ctx:
-    def __init__(self, module: str, cls: Optional[str], locals_: Dict[str, Ref], top: bool) -> None:
+    def __init__(
+        self,
+        module: str,
+        cls: Optional[str],
+        locals_: Dict[str, Ref],
+        top: bool,
+        shadowed: frozenset = frozenset(),
+    ) -> None:
         self.module, self.cls, self.locals, self.top = module, cls, locals_, top
+        self.shadowed = shadowed
+
+
+def local_names(fn: ast.AST) -> frozenset:
+    """The names a function binds itself (parameters, loop / with /
+    comprehension targets, assignments, ``except`` names, nested defs and
+    classes), less its ``global`` / ``nonlocal`` declarations. Inside the
+    function these hide a module-level name of the same spelling."""
+    names: Set[str] = set()
+    declared: Set[str] = set()
+    for sub in ast.walk(fn):
+        if isinstance(sub, ast.arg):
+            names.add(sub.arg)
+        elif isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+            names.add(sub.id)
+        elif isinstance(sub, (ast.Global, ast.Nonlocal)):
+            declared.update(sub.names)
+        elif isinstance(sub, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and sub.name:
+            names.add(sub.name)
+        elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and sub is not fn:
+            names.add(sub.name)
+    return frozenset(names - declared)
 
 
 class _Walk:
@@ -185,6 +235,7 @@ class _Walk:
         self.dynamic_modules: Dict[str, str] = {}
         self.dynamic_everything: List[str] = []
         self.via_decorator: Dict[Ref, str] = {}
+        self.scripts: Set[str] = set()
         self.queue: Deque[Tuple[str, Any]] = deque()
 
     # -- resolution ---------------------------------------------------------
@@ -232,6 +283,8 @@ class _Walk:
             ref = self.follow(ctx.locals[base])
         elif base in ("self", "cls") and ctx.cls:
             ref = ("class", ctx.module, ctx.cls)
+        elif base in ctx.shadowed:
+            ref = None
         else:
             ref = self.lookup(ctx.module, base)
         if ref is None:
@@ -254,19 +307,25 @@ class _Walk:
                 self.queue.append(("load", name))
 
     def reach(self, ref: Ref) -> None:
-        if ref[0] == "module":
-            self.load(ref[1])
-            return
         self.load(ref[1])
         if ref[0] == "func":
             if ref not in self.reached:
                 self.reached.add(ref)
                 self.queue.append(("func", ref))
+        elif ref[0] == "module":
+            return
         elif ref[0] == "class":
             for qual in self.mods[ref[1]].classes.get(ref[2], []):
                 self.reach(("func", ref[1], qual))
         elif ref[0] == "object":
             self.make_live(ref)
+
+    def script(self, name: str) -> None:
+        """``name`` runs as ``__main__``: its module code, then its main guard."""
+        self.load(name)
+        if self.mods[name].main_guard and name not in self.scripts:
+            self.scripts.add(name)
+            self.queue.append(("guard", name))
 
     def make_live(self, obj: Ref) -> None:
         if obj in self.live:
@@ -340,9 +399,25 @@ class _Walk:
             if isinstance(sub, (ast.Import, ast.ImportFrom)):
                 locals_.update(import_bindings(self.mods[ref[1]], sub, stars))
         cls = ref[2].split(".")[0] if "." in ref[2] else None
-        ctx = _Ctx(ref[1], cls, locals_, False)
+        self._signature(node, _Ctx(ref[1], cls, {}, False))
+        ctx = _Ctx(ref[1], cls, locals_, False, local_names(node))
         for stmt in node.body:  # type: ignore[attr-defined]
             self.visit(stmt, ctx)
+
+    def _signature(self, node: ast.AST, ctx: _Ctx) -> None:
+        """A signature's defaults and the calls in its annotations run when
+        the function is defined, in the enclosing scope (its parameters hide
+        nothing there): what they name is wired to the function."""
+        args: ast.arguments = node.args  # type: ignore[attr-defined]
+        for param in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+            if param is None or param.annotation is None:
+                continue
+            for sub in ast.walk(param.annotation):
+                if isinstance(sub, ast.Call):
+                    self.visit(sub, ctx)
+        for default in [*args.defaults, *args.kw_defaults]:
+            if default is not None:
+                self.visit(default, ctx)
 
     def visit(self, node: ast.AST, ctx: _Ctx) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -398,7 +473,12 @@ class _Walk:
             return False
         base, attrs = chain
         last = attrs[-1] if attrs else base
-        builtin = not attrs and base not in ctx.locals and self.lookup(ctx.module, base) is None
+        builtin = (
+            not attrs
+            and base not in ctx.locals
+            and base not in ctx.shadowed
+            and self.lookup(ctx.module, base) is None
+        )
         if builtin and base == "getattr" and args:
             return self._getattr(args, ctx)
         if builtin and base in ("globals", "vars", "locals"):
@@ -484,21 +564,41 @@ def _product_modules(root: Path) -> Dict[str, Path]:
     return found
 
 
+def _is_packaging(path: Path) -> bool:
+    """A root file that declares how the product runs (not a README)."""
+    return path.is_file() and (
+        path.name in _PACKAGING_NAMES
+        or path.name.startswith("Dockerfile")
+        or path.suffix in _PACKAGING_SUFFIXES
+    )
+
+
+def script_tokens(text: str) -> List[str]:
+    """The tokens of ``text`` in a run position: the first non-flag word
+    after a Python interpreter on the same line. A copy line, a comment or
+    any other line naming a file gives none."""
+    out: List[str] = []
+    for line in text.splitlines():
+        after_python = False
+        for token in filter(None, _TOKEN_SPLIT.split(line)):
+            if after_python and not token.startswith("-"):
+                out.append(token)
+            if _INTERPRETER.match(token):
+                after_python = True
+            elif not token.startswith("-"):
+                after_python = False
+    return out
+
+
 def _declared_targets(
     root: Path, modules: Dict[str, _Module], files: Dict[Path, str]
 ) -> List[Tuple[str, str, Optional[str]]]:
     """(kind, module, attribute) for each target a root packaging file names.
-    A script counts only when a token names one of the product's own module
-    files (``files``: resolved path -> module name)."""
+    A script counts only when a token in a run position names one of the
+    product's own module files (``files``: resolved path -> module name)."""
     out: List[Tuple[str, str, Optional[str]]] = []
     for path in sorted(root.iterdir()):
-        if not path.is_file():
-            continue
-        if not (
-            path.name in _PACKAGING_NAMES
-            or path.name.startswith("Dockerfile")
-            or path.suffix in _PACKAGING_SUFFIXES
-        ):
+        if not _is_packaging(path):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -510,9 +610,7 @@ def _declared_targets(
         for module in _RUN_MODULE.findall(text):
             if module in modules:
                 out.append(("run", module, None))
-        for token in _TOKEN_SPLIT.split(text):
-            if not token or token.startswith("-"):
-                continue
+        for token in script_tokens(text):
             try:
                 name = files.get((root / token).resolve())
             except (OSError, ValueError):
@@ -522,7 +620,35 @@ def _declared_targets(
     return sorted(set(out), key=lambda t: (t[0], t[1], t[2] or ""))
 
 
-def _unknown(reason: str, formula_modules: List[str]) -> Dict[str, Any]:
+def _depth(tree: ast.AST) -> int:
+    """The deepest nesting in ``tree``, measured without recursion."""
+    deepest, stack = 0, [(tree, 1)]
+    while stack:
+        node, depth = stack.pop()
+        deepest = max(deepest, depth)
+        stack.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+    return deepest
+
+
+def parse_bounded(path: Path) -> Tuple[Optional[ast.Module], Optional[str]]:
+    """(tree, None), or (None, "bound hit: ...") for a module past the size
+    or nesting bound, or one the parser runs out of recursion or memory on.
+    Other parse failures raise to the caller ("does not parse")."""
+    size = path.stat().st_size
+    if size > MAX_MODULE_BYTES:
+        return None, f"bound hit: {size} bytes, limit {MAX_MODULE_BYTES}"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (RecursionError, MemoryError) as exc:
+        return None, f"bound hit: {type(exc).__name__} while parsing"
+    depth = _depth(tree)
+    if depth > MAX_AST_DEPTH:
+        return None, f"bound hit: nesting {depth}, limit {MAX_AST_DEPTH}"
+    return tree, None
+
+
+def unknown_record(reason: str, formula_modules: List[str]) -> Dict[str, Any]:
+    """The record of an analysis that could not decide: never clean."""
     return {
         "status": "unknown",
         "analysis_error": reason,
@@ -546,22 +672,28 @@ def formula_reach(product_root: Any) -> Dict[str, Any]:
     )
     formula_rels = [paths[n].relative_to(root).as_posix() for n in formula_names]
     if not formula_names:
-        return _unknown(
+        return unknown_record(
             f"no formula module: neither {module_rel} nor a module under {package_rel}/ exists",
             [],
         )
     modules: Dict[str, _Module] = {}
     broken: List[str] = []
+    bounded: List[str] = []
     for name, path in paths.items():
         rel = path.relative_to(root).as_posix()
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree, bound = parse_bounded(path)
         except (OSError, SyntaxError, ValueError, UnicodeDecodeError) as exc:
             broken.append(f"{rel} ({type(exc).__name__})")
             continue
+        if tree is None:
+            bounded.append(f"{rel} ({bound})")
+            continue
         modules[name] = _Module(name, rel, tree, path.name == "__init__.py")
     if broken:
-        return _unknown(f"product module does not parse: {', '.join(sorted(broken))}", formula_rels)
+        return unknown_record(f"product module does not parse: {', '.join(sorted(broken))}", formula_rels)
+    if bounded:
+        return unknown_record(f"bound hit: {', '.join(sorted(bounded))}", formula_rels)
 
     walk = _Walk(modules)
     entries: List[str] = []
@@ -572,24 +704,19 @@ def formula_reach(product_root: Any) -> Dict[str, Any]:
             entries.append(f"run {module}")
             for name in (module, f"{module}.__main__"):
                 if name in modules:
-                    walk.load(name)
+                    walk.script(name)
         else:
             ref = walk.lookup(module, attr or "")
             if ref:
                 entries.append(f"target {module}:{attr}")
                 walk.reach(ref)
-    for name, mod in sorted(modules.items()):
-        if mod.main_guard:
-            entries.append(f"main guard {name}")
-            walk.load(name)
-            walk.queue.append(("guard", name))
     walk.run()
+    entries += [f"main guard {name}" for name in sorted(walk.scripts)]
     for obj in sorted(walk.live):
         entries += [f"registered on {obj[1]}:{obj[2]}: {f[1]}:{f[2]}" for f in sorted(walk.registered[obj])]
     if not entries:
-        return _unknown(
-            "no entry point found: no server or CLI target in the root packaging files, "
-            "no main guard",
+        return unknown_record(
+            "no entry point found: no server or CLI target in the root packaging files",
             formula_rels,
         )
 
