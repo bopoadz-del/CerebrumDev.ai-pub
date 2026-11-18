@@ -6,8 +6,11 @@ and their exact result asserted: the staging tree and the agent's root list.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 
 import pytest
+
+from app.factory.build.coder_session import agent_rw_extras
 
 from app.factory.build.authority import BuildRole
 from app.factory.build.runner import (
@@ -38,3 +41,21 @@ def test_agent_rw_roots_for_is_the_product_and_the_writers_staging(tmp_path, pro
     staging = product.parent / f".{product.name}.staging-writer"
     assert agent_rw_roots_for(product) == (product, staging)
     assert agent_rw_roots_for(str(product)) == (product, staging)
+
+
+# -- agent_rw_extras ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("as_str", [False, True])
+def test_agent_rw_extras_grants_the_destination_and_the_workspace(tmp_path, as_str):
+    dest, tree = tmp_path / "product", tmp_path / "tree"
+    ws = SimpleNamespace(
+        destination=str(dest) if as_str else dest, workspace=str(tree) if as_str else tree
+    )
+    assert agent_rw_extras(ws) == [dest, tree]
+
+
+@pytest.mark.parametrize("workspace", [None, SimpleNamespace(destination=7), SimpleNamespace(workspace=None)])
+def test_agent_rw_extras_grants_nothing_that_is_not_a_path(workspace):
+    assert agent_rw_extras(workspace) == []
+
