@@ -68,6 +68,10 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
     fr = _fr()
 
     class Receipt:
+        # WK-1: the receipt names the provider and model that ran.
+        provider = "kf7provider"
+        model = "kf7-writer-model"
+
         def to_dict(self):
             return {}
 

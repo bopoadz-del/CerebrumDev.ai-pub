@@ -430,8 +430,9 @@ def record_dispatch(runner: Any, supplied: Optional[str] = None) -> Mapping[str,
     brief = _compiled_writer_brief(_role_ctx(runner, BuildRole.WRITER))
     prompt = render_writer_prompt(runner.blueprint, brief=brief)
     record_writer_dispatch(runner.state, supplied=words, brief=brief, prompt=prompt)
-    # WK-1: the writer run the receipt reported, independent of the replay grader.
-    record_writer_run(runner.state, provider="replaywriter", model="replay-writer-model")
+    # WK-1: the writer run the receipt reported. Its model family ("scribe")
+    # differs from the replay grader's ("replay"), so Layer 2 may run.
+    record_writer_run(runner.state, provider="scribewriter", model="scribe-writer-model")
     return dispatched_writer_inputs(runner.state)
 
 

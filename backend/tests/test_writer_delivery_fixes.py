@@ -23,6 +23,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest import mock
 
+from app.factory import code_cli
 from app.factory.build import codewhale_worker
 from app.factory.build.authority import BuildRole
 from app.factory.build.roles_handlers import run_tester
@@ -70,6 +71,7 @@ def test_worker_argv_puts_provider_before_exec_and_key_in_env(tmp_path):
     with mock.patch.object(codewhale_worker, "worker_cli_path", return_value="codewhale"), \
          mock.patch.object(codewhale_worker, "worker_api_key", return_value="sk-test"), \
          mock.patch.object(codewhale_worker, "worker_provider", return_value="deepseek"), \
+         mock.patch.object(code_cli, "deepseek_code_model", return_value="configured-writer-model"), \
          mock.patch.object(codewhale_worker.subprocess, "Popen", side_effect=fake_popen):
         receipt = codewhale_worker.run_worker_job(
             prompt, tmp_path / "checkout", tenant_store=tenant_store
@@ -101,6 +103,9 @@ def test_worker_argv_puts_provider_before_exec_and_key_in_env(tmp_path):
         "codewhale",
         "--provider",
         "deepseek",
+        # WK-1b: the configured writer model is named, before `exec`.
+        "--model",
+        "configured-writer-model",
         "exec",
         "--auto",
         "--output-format",

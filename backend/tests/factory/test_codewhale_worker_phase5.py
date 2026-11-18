@@ -293,6 +293,45 @@ def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_pat
     assert captured["env"]["DEEPSEEK_API_KEY"] == "sk-deepseek-test"
 
 
+@pytest.mark.parametrize("configured", ["model-alpha-1", "other-vendor/model-beta"])
+def test_headless_dispatch_names_the_configured_writer_model(monkeypatch, tmp_path, configured):
+    """WK-1b: the worker is started with the CONFIGURED writer model named
+    (``--model``), never left to the CLI's own default route; 0.9.13 takes
+    it as a global flag, so it must precede ``exec`` like ``--provider``."""
+    import io
+    import subprocess
+
+    from app.factory.build import codewhale_worker as worker_mod
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            self.stdout = io.StringIO('{"status": "completed", "termination_reason": "resolved"}\n')
+            self.returncode = 0
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 9
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/usr/local/bin/codewhale")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+    monkeypatch.delenv("CODEWHALE_PROVIDER", raising=False)
+    from app.factory import code_cli
+
+    monkeypatch.setattr(code_cli, "deepseek_code_model", lambda: configured)
+
+    run_worker_job("build it", tmp_path, tenant_store=_binding("d3m"))
+    argv = captured["argv"]
+    assert argv.index("--model") < argv.index("exec")
+    assert argv[argv.index("--model") + 1] == configured
+
+
 def test_no_env_key_falls_back_to_cli_config(monkeypatch, tmp_path):
     import io
     import subprocess
