@@ -11,6 +11,7 @@ refused at the door with the reason; the post-deploy smoke reads it."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -220,6 +221,26 @@ def test_ready_stays_ready_when_builds_cannot_start_and_says_why(
     assert body["details"]["builds"]["available"] is False
     assert expected in body["details"]["builds"]["reason"]
     assert str(tmp_path) not in str(body["details"]["builds"])
+
+
+@pytest.mark.parametrize("env", ["production", "prod"])
+def test_ready_is_not_ready_in_production_when_drive_tokens_are_unencrypted(
+    tmp_path, monkeypatch, env
+):
+    """The builds detail is informational: /ready's own production rule (Drive
+    configured, no encryption key) still answers 503 beside it."""
+    _layout(tmp_path, monkeypatch, tmp_path / "storage" / "exam_proofs")
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("ENV", env)
+    monkeypatch.setenv("CEREBRUM_DEV_API_KEY", "master-for-ready")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "drive-client")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "drive-secret")
+    monkeypatch.delenv("DATA_ENCRYPTION_KEY", raising=False)
+    res = asyncio.run(main.ready())
+    body = json.loads(res.body)
+    assert res.status_code == 503 and body["status"] == "not_ready"
+    assert body["checks"]["data_encryption"] is False
+    assert body["details"]["builds"] == {"available": True, "reason": ""}
 
 
 # -- a build start -----------------------------------------------------------

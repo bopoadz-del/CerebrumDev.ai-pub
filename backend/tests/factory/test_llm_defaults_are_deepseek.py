@@ -57,10 +57,13 @@ def test_the_named_defaults_are_deepseek_and_the_fallback_host_is_openrouter():
         assert not _retired_in(getattr(llm_config, name)), f"{name} names a retired provider"
 
 
-def test_a_key_with_no_base_url_resolves_to_deepseek_not_the_retired_host():
+def test_a_key_with_no_base_url_resolves_to_deepseek_not_the_retired_host(monkeypatch):
     """The exact live shape: a scoped key set, its BASE_URL not set."""
-    assert llm_config._kimi_base_url("CEREBRUM_CHAT") == llm_config.DEEPSEEK_BASE_URL
-    assert llm_config._kimi_model("CEREBRUM_CHAT") == llm_config.DEFAULT_PRIMARY_MODEL
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-scoped-key")
+    cfg = llm_config.get_llm_config()
+    assert cfg["provider"] == "deepseek"
+    assert cfg["base_url"] == llm_config.DEEPSEEK_BASE_URL
+    assert cfg["model"] == llm_config.DEFAULT_PRIMARY_MODEL
 
 
 def test_the_prefix_walk_that_caused_the_live_failure_no_longer_reaches_moonshot(
@@ -96,27 +99,30 @@ def test_an_empty_environment_never_produces_a_retired_endpoint():
 
 
 def test_the_default_follows_an_explicit_naming_of_the_provider(monkeypatch):
-    """The first cut of this fix defaulted everything to DeepSeek unconditionally,
-    which mirrored the very bug it fixed: an operator with only KIMI_API_KEY set
-    would have that key POSTed to DeepSeek and 401'd. The default follows the
-    credential that is actually present."""
+    """WK-2: the retired vendor's key no longer moves the default host. It is
+    not read at all, so it is neither a credential nor a default-chooser."""
     assert llm_config._default_base_url() == llm_config.DEEPSEEK_BASE_URL
     assert llm_config._default_model() == "deepseek-chat"
 
-    monkeypatch.setenv("KIMI_API_KEY", "sk-a-moonshot-key")
-    assert llm_config._default_base_url() == llm_config.MOONSHOT_BASE_URL
-    assert llm_config._default_model() == "kimi-k2.7-code", (
-        "the model must belong to the host the key is sent to"
-    )
+    monkeypatch.setenv("KIMI_API_KEY", "sk-a-retired-key")
+    assert llm_config._default_base_url() == llm_config.DEEPSEEK_BASE_URL
+    assert llm_config._default_model() == "deepseek-chat"
+    cfg = llm_config.get_factory_llm_config()
+    assert cfg["provider"] == "" and cfg["api_key"] == ""
+    assert "no provider credentials are present" in cfg["error"]
 
 
 def test_llm_provider_kimi_also_counts_as_asking_for_it(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    assert llm_config._default_base_url() == llm_config.MOONSHOT_BASE_URL
-    monkeypatch.setenv("LLM_PROVIDER", "moonshot")
-    assert llm_config._default_base_url() == llm_config.MOONSHOT_BASE_URL
+    """WK-2: naming a retired provider is refused, with the setting named --
+    it never routes anywhere."""
+    for retired in ("kimi", "moonshot"):
+        monkeypatch.setenv("LLM_PROVIDER", retired)
+        cfg = llm_config.get_factory_llm_config()
+        assert cfg["provider"] == "" and cfg["base_url"] == ""
+        assert f"LLM_PROVIDER={retired} is not in the provider table" in cfg["error"]
     monkeypatch.setenv("LLM_PROVIDER", "deepseek")
-    assert llm_config._default_base_url() == llm_config.DEEPSEEK_BASE_URL
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", "sk-named")
+    assert llm_config.get_factory_llm_config()["base_url"] == llm_config.DEEPSEEK_BASE_URL
 
 
 def test_the_fail_closed_message_names_the_variable_for_the_chosen_provider(monkeypatch):
@@ -126,20 +132,25 @@ def test_the_fail_closed_message_names_the_variable_for_the_chosen_provider(monk
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-cli-only")
     error = get_factory_llm_config().get("error") or ""
+    assert "LLM_PROVIDER" in error
     assert "CEREBRUM_FACTORY_LLM_API_KEY" in error
-    assert "DEEPSEEK_API_KEY is the coding CLI's credential" in error
-    assert "requires KIMI_API_KEY" not in error
+    assert "KIMI_API_KEY" not in error
 
     monkeypatch.setenv("LLM_PROVIDER", "kimi")
     error = get_factory_llm_config().get("error") or ""
-    assert "KIMI_API_KEY" in error, "asked for it by name, so name their variable"
+    assert "LLM_PROVIDER=kimi is not in the provider table" in error
+    assert "KIMI_API_KEY" not in error, "a retired name is refused, not given a key to buy"
 
 
 def test_a_legacy_kimi_env_var_is_still_honoured_when_somebody_sets_it(monkeypatch):
-    """Reading it is not the defect -- silently DEFAULTING to it was. Ignoring a
-    value an operator configured would be a defect of its own."""
+    """WK-2 retired this ON PURPOSE: the retired vendor's base-URL setting is no
+    longer read, so it cannot steer a key to that host. The operator's own
+    CEREBRUM_*_LLM_BASE_URL is the setting that moves the host."""
     monkeypatch.setenv("KIMI_BASE_URL", "https://someone-set-this.test/v1")
-    assert llm_config._kimi_base_url("CEREBRUM_CHAT") == "https://someone-set-this.test/v1"
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-scoped-key")
+    cfg = llm_config.get_llm_config()
+    assert cfg["base_url"] == llm_config.DEEPSEEK_BASE_URL
+    assert "someone-set-this" not in str(cfg)
 
 
 def test_no_retired_default_survives_anywhere_in_the_module():

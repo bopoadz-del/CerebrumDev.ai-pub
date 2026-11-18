@@ -25,7 +25,7 @@ from app.core.llm_config import (
     get_factory_fallback_leg,
 )
 
-FAKE_KIMI = "sk-kimi-not-real"
+FAKE_PRIMARY = "sk-primary-not-real"
 FAKE_OPENROUTER = "sk-or-v1-not-real"
 
 
@@ -35,7 +35,7 @@ def _names_no_retired_credential(error) -> None:
     Moonshot is no longer the primary and OpenRouter is the fallback, so an
     operator who follows "set KIMI_API_KEY" out of this message buys a key on
     the wrong host. These two tests used to assert that exact string, which
-    made the stale instruction the thing under test. ``KIMI_MOCK`` stays
+    made the stale instruction the thing under test. ``CEREBRUM_LLM_MOCK`` stays
     admissible: it is an env var this code still reads, not a credential to buy.
     """
     message = str(error)
@@ -117,18 +117,18 @@ def test_a_paid_model_is_allowed_when_it_is(monkeypatch):
 
 
 @pytest.fixture
-def kimi_env(monkeypatch):
+def primary_env(monkeypatch):
     for var in ("LLM_TEMPERATURE", "CEREBRUM_FACTORY_LLM_MODEL", "CEREBRUM_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
-    monkeypatch.setenv("KIMI_MODEL", "primary-model")
-    monkeypatch.setenv("KIMI_FALLBACK_MODEL", "vendor-fallback-model")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_PRIMARY)
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_MODEL", "primary-model")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_FALLBACK_MODEL", "vendor-fallback-model")
     monkeypatch.setattr("time.sleep", lambda s: None)
 
 
 def test_the_cross_provider_leg_answers_when_both_kimi_models_fail(
-    monkeypatch, kimi_env
+    monkeypatch, primary_env
 ):
     """The out-of-credit case: both Kimi legs fail identically, GLM answers."""
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
@@ -155,7 +155,7 @@ def test_the_cross_provider_leg_answers_when_both_kimi_models_fail(
     ], "the vendor's own fallback must be tried before crossing providers"
 
 
-def test_the_leg_carries_its_own_key_not_the_primary_s(monkeypatch, kimi_env):
+def test_the_leg_carries_its_own_key_not_the_primary_s(monkeypatch, primary_env):
     """Credentials travel with the leg. Leaking either key to the other host
     would hand a live secret to a third party."""
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
@@ -174,12 +174,12 @@ def test_the_leg_carries_its_own_key_not_the_primary_s(monkeypatch, kimi_env):
     openrouter = [p for p in posts if "openrouter" in p["url"]]
 
     assert moonshot and openrouter
-    assert all(p["auth"] == f"Bearer {FAKE_KIMI}" for p in moonshot)
+    assert all(p["auth"] == f"Bearer {FAKE_PRIMARY}" for p in moonshot)
     assert all(p["auth"] == f"Bearer {FAKE_OPENROUTER}" for p in openrouter)
-    assert FAKE_KIMI not in str(openrouter)
+    assert FAKE_PRIMARY not in str(openrouter)
 
 
-def test_the_leg_is_not_touched_when_the_primary_answers(monkeypatch, kimi_env):
+def test_the_leg_is_not_touched_when_the_primary_answers(monkeypatch, primary_env):
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
     posts = []
 
@@ -198,7 +198,7 @@ def test_the_leg_is_not_touched_when_the_primary_answers(monkeypatch, kimi_env):
     )
 
 
-def test_a_misconfigured_leg_does_not_run_and_says_why(monkeypatch, kimi_env, caplog):
+def test_a_misconfigured_leg_does_not_run_and_says_why(monkeypatch, primary_env, caplog):
     """Armed but refused (paid slug) is not the same as absent -- the reason
     has to reach the log, or the leg looks like it silently did not exist."""
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
@@ -219,7 +219,7 @@ def test_a_misconfigured_leg_does_not_run_and_says_why(monkeypatch, kimi_env, ca
     assert "not armed" in caplog.text
 
 
-def test_every_failed_leg_is_named_in_the_error(monkeypatch, kimi_env):
+def test_every_failed_leg_is_named_in_the_error(monkeypatch, primary_env):
     """coder_failures is often the only record anyone sees."""
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
 
@@ -258,7 +258,7 @@ def _throttled(retry_after="5"):
     return httpx.HTTPStatusError("429", request=None, response=_R())
 
 
-def test_a_free_leg_waits_out_a_429_and_succeeds(monkeypatch, kimi_env):
+def test_a_free_leg_waits_out_a_429_and_succeeds(monkeypatch, primary_env):
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
     slept, calls = [], []
     monkeypatch.setattr(coder, "_retry_after_s", lambda exc: 5.0)
@@ -281,7 +281,7 @@ def test_a_free_leg_waits_out_a_429_and_succeeds(monkeypatch, kimi_env):
     assert 5.0 in slept, "the server's Retry-After was ignored"
 
 
-def test_a_paid_leg_does_not_retry_a_429(monkeypatch, kimi_env):
+def test_a_paid_leg_does_not_retry_a_429(monkeypatch, primary_env):
     """The no-money-on-the-same-answer rule still holds where it costs money."""
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
     monkeypatch.setenv("FACTORY_LLM_FALLBACK_MODEL", "minimax/minimax-m3")
@@ -305,7 +305,7 @@ def test_a_paid_leg_does_not_retry_a_429(monkeypatch, kimi_env):
     )
 
 
-def test_a_non_429_status_is_still_not_retried(monkeypatch, kimi_env):
+def test_a_non_429_status_is_still_not_retried(monkeypatch, primary_env):
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_OPENROUTER)
     monkeypatch.setattr("time.sleep", lambda s: None)
     calls = []
@@ -348,13 +348,11 @@ def test_a_hostile_retry_after_cannot_stall_the_build():
 def no_credentials(monkeypatch):
     for var in (
         "LLM_PROVIDER",
-        "KIMI_API_KEY",
         "CEREBRUM_LLM_API_KEY",
         "CEREBRUM_FACTORY_LLM_API_KEY",
         "CEREBRUM_CHAT_LLM_API_KEY",
         "ANTHROPIC_API_KEY",
         "CLAUDE_API_KEY",
-        "KIMI_MOCK",
         "CEREBRUM_LLM_MOCK",
         "LLM_TEMPERATURE",
     ):

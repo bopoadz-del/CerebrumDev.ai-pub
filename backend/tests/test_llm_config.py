@@ -26,7 +26,6 @@ def _clear_env():
         "KIMI_API_KEY",
         "KIMI_BASE_URL",
         "KIMI_MODEL",
-        "KIMI_MOCK",
         "CEREBRUM_LLM_MOCK",
         "CEREBRUM_CHAT_LLM_API_KEY",
         "CEREBRUM_CHAT_LLM_BASE_URL",
@@ -66,51 +65,50 @@ def _clear_env():
 
 
 def test_explicit_moonshot_aliases_to_kimi():
+    """WK-2: the retired alias is no longer an alias. It is refused by name,
+    with the settings to set, and no endpoint is resolved (no call)."""
     os.environ["LLM_PROVIDER"] = "moonshot"
-    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-moon"
-    os.environ["CEREBRUM_LLM_MODEL"] = "moonshot-v1-32k"
-    cfg = get_llm_config()
-    assert cfg["provider"] == "kimi"
-    assert cfg["api_key"] == "sk-moon"
-    assert cfg["model"] == "moonshot-v1-32k"
+    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared"
+    for cfg in (get_llm_config(), get_factory_llm_config()):
+        assert cfg["provider"] == ""
+        assert cfg["api_key"] == "" and cfg["base_url"] == ""
+        assert "LLM_PROVIDER=moonshot is not in the provider table" in cfg["error"]
+        assert cfg["config_error"] is True
 
 
 def test_explicit_kimi():
+    """WK-2: the retired name is refused, even with a key set."""
     os.environ["LLM_PROVIDER"] = "kimi"
-    os.environ["KIMI_API_KEY"] = "sk-kimi"
-    os.environ["KIMI_MODEL"] = "kimi-k2"
-    cfg = get_llm_config()
-    assert cfg["provider"] == "kimi"
-    assert cfg["api_key"] == "sk-kimi"
-    assert cfg["model"] == "kimi-k2"
+    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared"
+    for cfg in (get_llm_config(), get_factory_llm_config()):
+        assert cfg["provider"] == ""
+        assert cfg["api_key"] == ""
+        assert "LLM_PROVIDER=kimi is not in the provider table" in cfg["error"]
 
 
 def test_factory_llm_rejects_an_unsupported_provider():
-    """Behaviour unchanged; only the message names the supported set.
-
-    Was `test_factory_llm_kimi_only_rejects_qwen`, asserting the error said
-    "Kimi-only". Claude support makes that string false, so the assertion moved
-    to what actually matters: an unknown provider is still refused, still with
-    an empty provider and an error, and the message says what IS allowed.
-    """
+    """An unknown provider is refused with an empty provider and an error,
+    and the message names what IS allowed: the table's primary names."""
     os.environ["LLM_PROVIDER"] = "qwen"
     cfg = get_factory_llm_config()
     assert cfg["provider"] == ""
     error = cfg.get("error", "")
     assert "qwen" in error
-    assert "cursor" in error and "kimi" in error and "claude" in error
+    assert "cursor" in error and "deepseek" in error and "claude" in error
+    assert "kimi" not in error.lower()
 
 
 def test_factory_llm_mock():
-    os.environ["KIMI_MOCK"] = "1"
+    """The mock switch with no key: mock intent kept, no provider resolved."""
+    os.environ["CEREBRUM_LLM_MOCK"] = "1"
     cfg = get_factory_llm_config()
-    assert cfg["provider"] == "kimi"
+    assert cfg["provider"] == ""
     assert cfg["mock"] is True
 
 
 def test_kimi_mock_does_not_activate_live_kit_provider():
     """Kit chat must stay offline when only mock flags are set (no API key)."""
-    os.environ["KIMI_MOCK"] = "1"
+    os.environ["CEREBRUM_LLM_MOCK"] = "1"
     cfg = get_llm_config()
     assert cfg["provider"] == ""
     assert cfg["mock"] is True
@@ -123,16 +121,16 @@ def test_no_provider():
 
 
 def test_chat_and_factory_use_separate_models():
-    """Chat and Factory architect can point at different Kimi models."""
+    """Chat and Factory architect can point at different models."""
     os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared"
-    os.environ["CEREBRUM_CHAT_LLM_MODEL"] = "kimi-k2.7"
-    os.environ["CEREBRUM_FACTORY_LLM_MODEL"] = "kimi-k2.7-code"
+    os.environ["CEREBRUM_CHAT_LLM_MODEL"] = "chat-model"
+    os.environ["CEREBRUM_FACTORY_LLM_MODEL"] = "code-model"
     chat_cfg = get_llm_config()
     factory_cfg = get_factory_llm_config()
-    assert chat_cfg["model"] == "kimi-k2.7"
-    assert factory_cfg["model"] == "kimi-k2.7-code"
-    assert chat_cfg["provider"] == "kimi"
-    assert factory_cfg["provider"] == "kimi"
+    assert chat_cfg["model"] == "chat-model"
+    assert factory_cfg["model"] == "code-model"
+    assert chat_cfg["provider"] == "deepseek"
+    assert factory_cfg["provider"] == "deepseek"
 
 
 def test_chat_and_factory_fallback_to_shared_vars():
@@ -148,25 +146,28 @@ def test_chat_and_factory_fallback_to_shared_vars():
 def test_openrouter_base_does_not_steal_primary_when_moonshot_key_exists():
     """A leftover OpenRouter base_url must not hijack Floor chat.
 
-    Live failure: CEREBRUM_LLM_API_KEY (Kimi) was healthy, /ready said
-    llm_configured, but CEREBRUM_LLM_BASE_URL=openrouter.ai sent suggestions
-    through a 401 OPENROUTER_API_KEY.
+    Live failure: the shared key was healthy, /ready said llm_configured, but
+    CEREBRUM_LLM_BASE_URL=openrouter.ai sent suggestions through a 401
+    OPENROUTER_API_KEY. The vendor's own key keeps the default (deepseek) host.
     """
+    from app.core.llm_config import DEEPSEEK_BASE_URL
+
     os.environ["CEREBRUM_LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
     os.environ["CEREBRUM_LLM_MODEL"] = "minimax/minimax-m3:free"
     os.environ["OPENROUTER_API_KEY"] = "sk-or-test"
-    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-moonshot-shared"
-    os.environ["KIMI_API_KEY"] = "sk-moonshot-kimi"
+    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared"
+    os.environ["LLM_PROVIDER"] = "deepseek"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-native"
 
     chat_cfg = get_llm_config()
     factory_cfg = get_factory_llm_config()
 
-    assert chat_cfg["provider"] == "kimi"
-    assert factory_cfg["provider"] == "kimi"
-    assert chat_cfg["base_url"] == "https://api.moonshot.ai/v1"
-    assert factory_cfg["base_url"] == "https://api.moonshot.ai/v1"
-    assert chat_cfg["api_key"] == "sk-moonshot-kimi"
-    assert factory_cfg["api_key"] == "sk-moonshot-kimi"
+    assert chat_cfg["provider"] == "deepseek"
+    assert factory_cfg["provider"] == "deepseek"
+    assert chat_cfg["base_url"] == DEEPSEEK_BASE_URL
+    assert factory_cfg["base_url"] == DEEPSEEK_BASE_URL
+    assert chat_cfg["api_key"] == "sk-native"
+    assert factory_cfg["api_key"] == "sk-native"
     assert "openrouter" not in chat_cfg["model"]
     assert "/" not in chat_cfg["model"]
     assert "error" not in factory_cfg
@@ -187,48 +188,55 @@ def test_cerebrum_chat_scoped_key_wins_over_leftover_kimi():
 
 
 def test_moonshot_base_still_uses_kimi_keys_when_openrouter_key_present():
-    """Default Moonshot host must keep using Moonshot credentials."""
-    os.environ["KIMI_API_KEY"] = "sk-moonshot-kimi"
-    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-moonshot-shared"
+    """The default host keeps the shared credential when an OpenRouter key
+    is also present (the fallback key never becomes the primary's)."""
+    from app.core.llm_config import DEEPSEEK_BASE_URL
+
+    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared"
     os.environ["OPENROUTER_API_KEY"] = "sk-or-test"
 
     chat_cfg = get_llm_config()
     factory_cfg = get_factory_llm_config()
 
-    assert chat_cfg["provider"] == "kimi"
-    assert factory_cfg["provider"] == "kimi"
-    assert chat_cfg["api_key"] == "sk-moonshot-kimi"
-    assert factory_cfg["api_key"] == "sk-moonshot-kimi"
-    assert chat_cfg["base_url"] == "https://api.moonshot.ai/v1"
-    assert factory_cfg["base_url"] == "https://api.moonshot.ai/v1"
+    assert chat_cfg["provider"] == "deepseek"
+    assert factory_cfg["provider"] == "deepseek"
+    assert chat_cfg["api_key"] == "sk-shared"
+    assert factory_cfg["api_key"] == "sk-shared"
+    assert chat_cfg["base_url"] == DEEPSEEK_BASE_URL
+    assert factory_cfg["base_url"] == DEEPSEEK_BASE_URL
 
 
 def test_openrouter_base_without_openrouter_key_uses_moonshot_primary():
-    """Moonshot credentials stay on Moonshot even when the base_url is OpenRouter."""
+    """The shared credential stays on the default host even when the base_url
+    is OpenRouter and no OpenRouter key is set: the vendor's own key
+    (DEEPSEEK_API_KEY) owns the default host."""
+    from app.core.llm_config import DEEPSEEK_BASE_URL
+
     os.environ["CEREBRUM_LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
-    os.environ["KIMI_API_KEY"] = "sk-moonshot-kimi"
-    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-moonshot-shared"
+    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared"
+    os.environ["LLM_PROVIDER"] = "deepseek"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-native"
 
     chat_cfg = get_llm_config()
     factory_cfg = get_factory_llm_config()
 
-    assert chat_cfg["api_key"] == "sk-moonshot-kimi"
-    assert factory_cfg["api_key"] == "sk-moonshot-kimi"
-    assert chat_cfg["base_url"] == "https://api.moonshot.ai/v1"
-    assert factory_cfg["base_url"] == "https://api.moonshot.ai/v1"
+    assert chat_cfg["api_key"] == "sk-native"
+    assert factory_cfg["api_key"] == "sk-native"
+    assert chat_cfg["base_url"] == DEEPSEEK_BASE_URL
+    assert factory_cfg["base_url"] == DEEPSEEK_BASE_URL
     assert "error" not in factory_cfg
 
 
 def test_openrouter_key_alone_activates_chat_when_base_is_openrouter():
-    """Floor chat must not require a Moonshot key just to talk to OpenRouter."""
+    """Floor chat must not require the default host's key to talk to OpenRouter."""
     os.environ["CEREBRUM_LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
     os.environ["OPENROUTER_API_KEY"] = "sk-or-test"
 
     chat_cfg = get_llm_config()
     factory_cfg = get_factory_llm_config()
 
-    assert chat_cfg["provider"] == "kimi"
-    assert factory_cfg["provider"] == "kimi"
+    assert chat_cfg["provider"] == "deepseek"
+    assert factory_cfg["provider"] == "deepseek"
     assert chat_cfg["api_key"] == "sk-or-test"
     assert factory_cfg["api_key"] == "sk-or-test"
 
@@ -247,16 +255,19 @@ def test_openrouter_only_uses_factory_fallback_key_when_no_moonshot_key():
 
 
 def test_moonshot_key_plus_fallback_key_keeps_openrouter_off_primary():
+    from app.core.llm_config import DEEPSEEK_BASE_URL
+
     os.environ["CEREBRUM_LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
     os.environ["FACTORY_LLM_FALLBACK_API_KEY"] = "sk-or-fallback"
-    os.environ["KIMI_API_KEY"] = "sk-moonshot-kimi"
+    os.environ["LLM_PROVIDER"] = "deepseek"
+    os.environ["DEEPSEEK_API_KEY"] = "sk-native"
 
     chat_cfg = get_llm_config()
     factory_cfg = get_factory_llm_config()
 
-    assert chat_cfg["api_key"] == "sk-moonshot-kimi"
-    assert factory_cfg["api_key"] == "sk-moonshot-kimi"
-    assert chat_cfg["base_url"] == "https://api.moonshot.ai/v1"
+    assert chat_cfg["api_key"] == "sk-native"
+    assert factory_cfg["api_key"] == "sk-native"
+    assert chat_cfg["base_url"] == DEEPSEEK_BASE_URL
 
 
 def test_claude_primary_skips_openrouter_base_when_anthropic_key_exists():
@@ -341,16 +352,19 @@ def test_llm_provider_cursor_prefers_cerebrum_chat_over_leftover_kimi():
 
 
 def test_llm_provider_cursor_without_chat_key_falls_back_to_leftover_moonshot():
-    """No CEREBRUM_CHAT_* — leftover Moonshot, never invent Cursor completions."""
+    """No CEREBRUM_CHAT_*: the shared slot on the default host, never Cursor
+    completions."""
+    from app.core.llm_config import DEEPSEEK_BASE_URL
+
     os.environ["LLM_PROVIDER"] = "cursor"
     os.environ["CURSOR_API_KEY"] = "crsr-ba-only"
-    os.environ["KIMI_API_KEY"] = "sk-moonshot-leftover"
+    os.environ["CEREBRUM_LLM_API_KEY"] = "sk-shared-leftover"
 
     chat_cfg = get_llm_config()
     assert chat_cfg["provider"] == "cursor"
-    assert chat_cfg["api_key"] == "sk-moonshot-leftover"
+    assert chat_cfg["api_key"] == "sk-shared-leftover"
     assert "api.cursor.com" not in chat_cfg["base_url"]
-    assert "moonshot" in chat_cfg["base_url"]
+    assert chat_cfg["base_url"] == DEEPSEEK_BASE_URL
 
 
 def test_llm_provider_cursor_without_http_key_errors_and_names_chat_keys():
@@ -375,7 +389,7 @@ def test_llm_provider_cursor_cerebrum_chat_moonshot_key():
     os.environ["CEREBRUM_CHAT_LLM_BASE_URL"] = "https://api.moonshot.ai/v1"
     os.environ.pop("CEREBRUM_LLM_MOCK", None)
     os.environ.pop("CURSOR_MOCK", None)
-    os.environ.pop("KIMI_MOCK", None)
+    os.environ.pop("CEREBRUM_LLM_MOCK", None)
     os.environ.pop("CURSOR_API_KEY", None)
 
     chat_cfg = get_llm_config()
@@ -417,16 +431,18 @@ def test_explicit_cursor_keeps_provider_when_mock_and_no_key():
 
 
 def test_unknown_provider_still_uses_cerebrum_chat_key():
-    """A weird LLM_PROVIDER alias must not ignore a live chat key."""
+    """WK-2 removed this rescue ON PURPOSE: an LLM_PROVIDER outside the table
+    used to fall through to the chat key; now it is a config error naming the
+    setting, and no endpoint is resolved, even with a live chat key set."""
     os.environ["LLM_PROVIDER"] = "cursor-ba"
     os.environ["CEREBRUM_CHAT_LLM_API_KEY"] = "sk-test"
-    os.environ["CEREBRUM_CHAT_LLM_BASE_URL"] = "https://api.moonshot.ai/v1"
+    os.environ["CEREBRUM_CHAT_LLM_BASE_URL"] = "https://chat.example.test/v1"
 
     cfg = get_llm_config()
-    assert cfg["api_key"] == "sk-test"
-    assert cfg["base_url"] == "https://api.moonshot.ai/v1"
-    assert cfg["provider"] != ""
-    assert "api.cursor.com" not in cfg["base_url"]
+    assert cfg["provider"] == ""
+    assert cfg["api_key"] == "" and cfg["base_url"] == ""
+    assert "LLM_PROVIDER=cursor-ba is not in the provider table" in cfg["error"]
+    assert cfg["config_error"] is True
 
 
 def test_deepseek_key_does_not_arm_chat_or_factory_llm():

@@ -44,7 +44,12 @@ from .core.request_limits import BodySizeLimitMiddleware
 from .core import backup_scheduler
 from .core.auth import require_api_key, require_master_key, verify_production_auth
 from .core.cors_policy import cors_allow_origins
-from .core.llm_config import _truthy, env_key_present, llm_ready_details
+from .core.llm_config import (
+    env_key_present,
+    llm_mock_enabled,
+    llm_ready_details,
+    validate_provider_at_boot,
+)
 from .core.metrics import HttpMetricsMiddleware, metrics_response
 from .core.billing import FeatureGateDenied, require_entitled
 from .core.support_contact import support_email
@@ -100,7 +105,7 @@ def llm_key_configured() -> bool:
 
     ``LLM_PROVIDER`` is a routing choice, not a key. render.yaml pins
     ``LLM_PROVIDER=cursor``, so treating it as configured made ``/ready``
-    report ``llm_configured: true`` on a keyless box. ``KIMI_MOCK`` is a
+    report ``llm_configured: true`` on a keyless box. ``CEREBRUM_LLM_MOCK`` is a
     mock and is reported separately as ``llm_mock``.
 
     Cursor-family keys count whenever present (Factory coding / BA).
@@ -114,7 +119,6 @@ def llm_key_configured() -> bool:
     return any(
         env_key_present(name)
         for name in (
-            "KIMI_API_KEY",
             "CEREBRUM_LLM_API_KEY",
             "CEREBRUM_CHAT_LLM_API_KEY",
             "CEREBRUM_FACTORY_LLM_API_KEY",
@@ -195,6 +199,10 @@ class ProductionHttpSurfaceMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Arm in-process nightly backup (+ stale factory_outputs sweep)."""
+    # WK-2: a wrong provider setting fails the START, naming the setting --
+    # not the first model call, and not hidden behind a fallback leg. Not
+    # wrapped: this one is meant to stop boot.
+    validate_provider_at_boot()
     # F-1c BAR 1: install the REAL per-tenant retrieval engine at host boot —
     # no off-by-default seam. The provider builds a RetrievalEngine from the
     # configured semantic embedder + a per-tenant Chroma collection. Whether an
@@ -508,7 +516,7 @@ async def health():
 async def ready():
     storage = _probe_storage()
     blocks = _probe_blocks()
-    # KIMI_MOCK is a mock, not a configured LLM — reported separately.
+    # CEREBRUM_LLM_MOCK is a mock, not a configured LLM — reported separately.
     # LLM_PROVIDER is a routing choice, not evidence a key exists.
     llm_configured = llm_key_configured()
     checks = {
@@ -517,7 +525,7 @@ async def ready():
         "llm_configured": llm_configured,
         # Same helper as llm_config: only 1/true/yes/on. bool(os.getenv)
         # treated "0" and "false" as mock.
-        "llm_mock": _truthy("KIMI_MOCK"),
+        "llm_mock": llm_mock_enabled(),
         "api_key_configured": bool(os.getenv("CEREBRUM_DEV_API_KEY"))
         or os.getenv("ENV", "development") != "production",
     }

@@ -1,0 +1,916 @@
+"""H-1 (advisor 02:16Z, grader 02:25Z): formula reach FROM the product's
+entry points, on invented products written to disk.
+
+Every product here is invented for the test. The record is read through
+``formula_reach`` and through the writer's audit (``audit_product_formulas``),
+the path a real build takes.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from app.factory.build import formula_resolution
+from app.factory.build.formula_reach import formula_reach
+
+_SERVER = {
+    "Dockerfile": 'FROM python:3.11-slim\nCMD ["uvicorn", "app.main:app", "--port", "8000"]\n'
+}
+_FORMULAS = {
+    "app/formulas.py": "def alpha(x):\n    return x * 2\n\n\ndef beta(x):\n    return x + 1\n"
+}
+_MAIN = {
+    "app/__init__.py": "",
+    "app/routers/__init__.py": "",
+    "app/main.py": (
+        "from fastapi import FastAPI\n"
+        "from app.routers import quotes\n\n"
+        "app = FastAPI()\n"
+        "app.include_router(quotes.router)\n"
+    ),
+}
+
+
+def _route(body: str, imports: str = "from app import formulas\n") -> dict:
+    return {
+        "app/routers/quotes.py": (
+            "from fastapi import APIRouter\n"
+            + imports
+            + "\nrouter = APIRouter()\n\n\n"
+            + '@router.get("/quote")\n'
+            + "def quote(x: float, cfg=None):\n"
+            + body
+        )
+    }
+
+
+def _write(root: Path, files: dict) -> Path:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return root
+
+
+_OLD_ROUTER = (
+    "from fastapi import APIRouter\nfrom app import formulas\n\n"
+    "router = APIRouter()\n\n\ndef helper():\n    return 0\n\n\n"
+    "@router.get('/old')\ndef old_route():\n    return formulas.beta(1)\n"
+)
+
+_CASES = {
+    "direct_call_from_a_route": (
+        _route("    return {'v': formulas.alpha(x)}\n"),
+        ["app.formulas:alpha"],
+        ["app.formulas:beta"],
+    ),
+    "through_a_helper": (
+        {
+            **_route("    return {'v': price(x)}\n", "from app.services import price\n"),
+            "app/services.py": (
+                "from app import formulas\n\n\ndef price(x):\n    return formulas.beta(x)\n"
+            ),
+        },
+        ["app.formulas:beta"],
+        ["app.formulas:alpha"],
+    ),
+    "through_a_re_export": (
+        {
+            **_route("    return {'v': beta(x)}\n", "from app.calc import beta\n"),
+            "app/calc/__init__.py": "from app.formulas import beta\n\n__all__ = ['beta']\n",
+        },
+        ["app.formulas:beta"],
+        ["app.formulas:alpha"],
+    ),
+    "passed_on_not_called": (
+        _route("    return {'v': list(map(formulas.alpha, [x]))}\n"),
+        ["app.formulas:alpha"],
+        ["app.formulas:beta"],
+    ),
+    "imported_but_never_called_from_an_entry": (
+        {
+            **_route("    return {'v': x}\n", "from app.formulas import alpha, beta\n"),
+            "app/services.py": (
+                "from app.formulas import alpha\n\n\ndef unused():\n    return alpha(1)\n"
+            ),
+        },
+        [],
+        ["app.formulas:alpha", "app.formulas:beta"],
+    ),
+    "named_only_in_a_dead_module": (
+        {
+            **_route("    return {'v': formulas.alpha(x)}\n"),
+            "app/legacy.py": "from app.formulas import beta\n\n\ndef old():\n    return beta(1)\n",
+            "app/routers/old.py": _OLD_ROUTER,
+        },
+        ["app.formulas:alpha"],
+        ["app.formulas:beta"],
+    ),
+    "a_route_module_imported_but_its_router_never_included": (
+        {
+            **_route(
+                "    return {'v': formulas.alpha(x) + old.helper()}\n",
+                "from app import formulas\nfrom app.routers import old\n",
+            ),
+            "app/routers/old.py": _OLD_ROUTER,
+        },
+        ["app.formulas:alpha"],
+        ["app.formulas:beta"],
+    ),
+    "a_name_collision_with_an_unrelated_attribute": (
+        _route("    beta = 3\n    return {'v': formulas.alpha(x) + cfg.beta + beta}\n"),
+        ["app.formulas:alpha"],
+        ["app.formulas:beta"],
+    ),
+    "all_wired": (
+        _route("    return {'v': formulas.alpha(x) + formulas.beta(x)}\n"),
+        ["app.formulas:alpha", "app.formulas:beta"],
+        [],
+    ),
+    "a_formula_calling_a_formula": (
+        {
+            **_route("    return {'v': formulas.alpha(x)}\n"),
+            "app/formulas.py": (
+                "def alpha(x):\n    return beta(x) * 2\n\n\ndef beta(x):\n    return x + 1\n"
+            ),
+        },
+        ["app.formulas:alpha", "app.formulas:beta"],
+        [],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_CASES))
+def test_reach_is_walked_from_the_entry_points(tmp_path, case):
+    files, reached, unreached = _CASES[case]
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **files})
+    record = formula_reach(root)
+    assert record["status"] == "analysed", record
+    assert record["analysis_error"] is None
+    assert record["reached"] == reached
+    assert record["unreached"] == unreached
+    assert record["undecided"] == []
+    assert "target app.main:app" in record["entry_points"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    return {'v': getattr(formulas, cfg)(x)}\n",
+        "    return {'v': vars(formulas)[cfg](x)}\n",
+    ],
+)
+def test_string_dispatch_is_undecided_never_reached(tmp_path, body):
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **_route(body)})
+    record = formula_reach(root)
+    assert record["status"] == "analysed"
+    assert record["reached"] == []
+    assert record["unreached"] == []
+    assert [u["formula"] for u in record["undecided"]] == [
+        "app.formulas:alpha",
+        "app.formulas:beta",
+    ]
+    assert all("app.routers.quotes" in u["why"] for u in record["undecided"])
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"), [("'alpha'", ["app.formulas:alpha"]), ("'gamma'", [])]
+)
+def test_getattr_with_a_literal_name_is_decided(tmp_path, name, expected):
+    body = f"    return {{'v': getattr(formulas, {name}, None)}}\n"
+    record = formula_reach(_write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **_route(body)}))
+    assert record["reached"] == expected
+    assert record["undecided"] == []
+
+
+@pytest.mark.parametrize(
+    ("files", "error"),
+    [
+        (
+            {"app/formulas.py": "def alpha(:\n    pass\n"},
+            "formula module does not parse: app/formulas.py",
+        ),
+        ({"app/formulas.py": None}, "no formula module"),
+        ({"Dockerfile": None, "app/main.py": "app = object()\n"}, "no entry point found"),
+        (
+            {
+                "app/services.py": "def broken(:\n",
+                **_route("    return formulas.alpha(x)\n", "from app import formulas, services\n"),
+            },
+            "product module does not parse and reached code loads it: app/services.py",
+        ),
+        (
+            {"app/services.py": "def broken(:\n", "Procfile": "worker: python -m app.services\n"},
+            "product module does not parse and reached code loads it: app/services.py",
+        ),
+    ],
+)
+def test_the_analysis_failing_is_unknown_never_clean(tmp_path, files, error):
+    """Corrects #257's first slice, which pinned a missing or unparseable
+    formula module as an empty (clean) list."""
+    merged = {**_SERVER, **_MAIN, **_FORMULAS, **_route("    return formulas.alpha(x)\n")}
+    merged.update(files)
+    root = _write(tmp_path, {k: v for k, v in merged.items() if v is not None})
+    record = formula_reach(root)
+    assert record["status"] == "unknown"
+    assert error in record["analysis_error"]
+    assert record["unreached"] is None and record["reached"] is None
+
+
+@pytest.mark.parametrize(
+    ("files", "entry"),
+    [
+        (
+            {
+                "Procfile": "cli: python app/cli.py\n",
+                "app/cli.py": (
+                    "from app import formulas\n\n"
+                    "if __name__ == '__main__':\n    print(formulas.beta(1))\n"
+                ),
+            },
+            "main guard app.cli",
+        ),
+        (
+            {
+                "pyproject.toml": '[project.scripts]\nquote = "app.cli:main"\n',
+                "app/cli.py": "from app import formulas\n\n\ndef main():\n    print(formulas.beta(1))\n",
+            },
+            "target app.cli:main",
+        ),
+        (
+            {
+                "Procfile": "worker: python -m app.worker\n",
+                "app/worker/__init__.py": "",
+                "app/worker/__main__.py": "from app.formulas import beta\n\nbeta(2)\n",
+            },
+            "run app.worker",
+        ),
+        (
+            {
+                "Procfile": "release: python ./app/seed.py --once\n",
+                "app/seed.py": "from app.formulas import beta\n\nbeta(3)\n",
+            },
+            "run app.seed",
+        ),
+    ],
+)
+def test_a_cli_entry_is_discovered_from_packaging_or_a_main_guard(tmp_path, files, entry):
+    root = _write(tmp_path, {**_FORMULAS, "app/__init__.py": "", **files})
+    record = formula_reach(root)
+    assert record["status"] == "analysed", record
+    assert entry in record["entry_points"]
+    assert record["reached"] == ["app.formulas:beta"]
+    assert record["unreached"] == ["app.formulas:alpha"]
+
+
+@pytest.mark.parametrize(("started", "expected"), [(True, ["app.formulas:beta"]), (False, [])])
+def test_a_scheduled_job_is_an_entry_once_the_product_starts_its_scheduler(
+    tmp_path, started, expected
+):
+    jobs = (
+        "from apscheduler.schedulers.background import BackgroundScheduler\n"
+        "from app import formulas\n\nscheduler = BackgroundScheduler()\n\n\n"
+        "@scheduler.scheduled_job('interval', hours=24)\ndef nightly():\n    formulas.beta(1)\n"
+    )
+    main = (
+        _MAIN["app/main.py"]
+        + "from app import jobs\n"
+        + ("jobs.scheduler.start()\n" if started else "")
+    )
+    files = {
+        **_SERVER,
+        **_MAIN,
+        **_FORMULAS,
+        **_route("    return x\n"),
+        "app/jobs.py": jobs,
+        "app/main.py": main,
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["reached"] == expected
+
+
+@pytest.mark.parametrize(
+    ("location", "imports", "call", "label"),
+    [
+        (
+            "app/formulas/rates.py",
+            "from app.formulas import rates\n",
+            "rates.beta(x)",
+            "app.formulas.rates:beta",
+        ),
+        (
+            "app/formulas/__init__.py",
+            "from app import formulas\n",
+            "formulas.beta(x)",
+            "app.formulas:beta",
+        ),
+    ],
+)
+def test_formulas_are_found_where_the_emitter_puts_them(tmp_path, location, imports, call, label):
+    files = {
+        **_SERVER,
+        **_MAIN,
+        **_route(f"    return {call}\n", imports),
+        location: "def beta(x):\n    return x\n\n\ndef unused(x):\n    return x\n",
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "analysed", record
+    assert location in record["formula_modules"]
+    assert record["reached"] == [label]
+    assert record["unreached"] == [label.replace(":beta", ":unused")]
+
+
+@pytest.mark.parametrize(("wired", "unreached"), [(True, []), (False, ["app.formulas:beta"])])
+def test_the_writer_audit_records_the_reach(tmp_path, wired, unreached):
+    body = (
+        "    return formulas.alpha(x) + formulas.beta(x)\n"
+        if wired
+        else "    return formulas.alpha(x)\n"
+    )
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **_route(body)})
+    assert formula_resolution.audit_product_formulas(root, [], []) == []
+    rec = json.loads((root / formula_resolution.FORMULA_FINDINGS_REL).read_text(encoding="utf-8"))
+    assert rec["errors"] == []
+    assert rec["reach"]["status"] == "analysed"
+    assert rec["reach"]["unreached"] == unreached
+
+
+# --- grader 03:25Z / advisor 03:17Z on #257 ----------------------------------
+
+
+def _quotes(signature: str, body: str, imports: str = "from app import formulas\n") -> dict:
+    """The route module with a chosen handler signature and body."""
+    return {
+        "app/routers/quotes.py": (
+            "from typing import Annotated\n"
+            "from fastapi import APIRouter, Depends\n"
+            + imports
+            + "\nrouter = APIRouter()\n\n\n"
+            + '@router.get("/quote")\n'
+            + f"def quote({signature}):\n"
+            + body
+        )
+    }
+
+
+def _record(tmp_path, files: dict) -> dict:
+    return formula_reach(_write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **files}))
+
+
+@pytest.mark.parametrize("crash", [RuntimeError("walker bug"), RecursionError()])
+def test_a_walker_that_raises_is_recorded_unknown_and_the_errors_file_is_still_written(
+    tmp_path, monkeypatch, crash
+):
+    """(1) The recorder never raises out of the writer audit."""
+    from app.factory.build import formula_reach as fr
+
+    def boom(self):
+        raise crash
+
+    monkeypatch.setattr(fr._Walk, "run", boom)
+    files = {**_SERVER, **_MAIN, **_FORMULAS, **_route("    return formulas.alpha(x)\n")}
+    root = _write(tmp_path, files)
+    assert formula_resolution.audit_product_formulas(root, [], []) == []
+    rec = json.loads((root / formula_resolution.FORMULA_FINDINGS_REL).read_text(encoding="utf-8"))
+    assert rec["errors"] == []
+    assert rec["reach"]["status"] == "unknown"
+    assert rec["reach"]["analysis_error"] == f"analysis crashed: {type(crash).__name__}"
+    assert rec["reach"]["reached"] is None and rec["reach"]["unreached"] is None
+
+
+@pytest.mark.parametrize(
+    ("source", "why"),
+    [
+        ("X = " + "1 + " * 3000 + "1\n", "RecursionError while parsing"),
+        ("X = " + "-" * 500 + "1\n", "nesting 503, limit 200"),
+    ],
+)
+def test_a_deeply_nested_module_is_a_bound_hit_not_a_crash(tmp_path, source, why):
+    files = {**_SERVER, **_MAIN, **_FORMULAS, **_route("    return formulas.alpha(x)\n")}
+    root = _write(tmp_path, {**files, "app/services.py": source})
+    record = formula_reach(root)
+    assert record["status"] == "unknown"
+    assert record["analysis_error"] == f"bound hit: app/services.py (bound hit: {why})"
+    assert record["reached"] is None and record["unreached"] is None
+    assert formula_resolution.audit_product_formulas(root, [], []) == []
+    rec = json.loads((root / formula_resolution.FORMULA_FINDINGS_REL).read_text(encoding="utf-8"))
+    assert rec["reach"]["status"] == "unknown"
+    assert "bound hit" in rec["reach"]["analysis_error"]
+
+
+@pytest.mark.parametrize(("limit", "status"), [(40, "unknown"), (10_000, "analysed")])
+def test_a_module_past_the_size_bound_is_not_read(tmp_path, monkeypatch, limit, status):
+    from app.factory.build import formula_reach as fr
+
+    monkeypatch.setattr(fr, "MAX_MODULE_BYTES", limit)
+    record = _record(tmp_path, _route("    return formulas.alpha(x)\n"))
+    assert record["status"] == status
+    assert ("bytes, limit 40" in (record["analysis_error"] or "")) is (status == "unknown")
+
+
+@pytest.mark.parametrize(
+    ("signature", "body", "reached"),
+    [
+        ("beta: float", "    return {'v': alpha(beta)}\n", ["app.formulas:alpha"]),
+        (
+            "x: float",
+            "    for beta in [x]:\n        x = alpha(beta)\n    return x\n",
+            ["app.formulas:alpha"],
+        ),
+        ("x: float", "    beta = alpha\n    return beta(x)\n", ["app.formulas:alpha"]),
+        (
+            "x: float",
+            "    return {'v': alpha(x) + beta(x)}\n",
+            ["app.formulas:alpha", "app.formulas:beta"],
+        ),
+    ],
+)
+def test_a_parameter_loop_variable_or_local_hides_the_imported_name(
+    tmp_path, signature, body, reached
+):
+    """(2i) A name the handler binds itself is not the imported formula."""
+    files = _quotes(signature, body, "from app.formulas import alpha, beta\n")
+    record = _record(tmp_path, files)
+    assert record["status"] == "analysed", record
+    assert record["reached"] == reached
+
+
+_DEMO = "\n\nif __name__ == '__main__':\n    print(beta(1))\n"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"app/formulas.py": _FORMULAS["app/formulas.py"] + _DEMO},
+        {"app/devtool.py": "from app.formulas import beta\n" + _DEMO},
+    ],
+)
+def test_a_main_guard_no_target_runs_is_not_an_entry(tmp_path, extra):
+    """(2ii) A dev script's or the formula module's own demo block."""
+    record = _record(tmp_path, {**_route("    return formulas.alpha(x)\n"), **extra})
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert not [e for e in record["entry_points"] if e.startswith("main guard")]
+
+
+@pytest.mark.parametrize(
+    ("line", "reached"),
+    [
+        ("COPY app/seed.py /srv/seed.py\n", []),
+        ('RUN ["python3", "-u", "app/seed.py"]\n', ["app.formulas:beta"]),
+    ],
+)
+def test_a_packaging_token_counts_only_in_a_run_position(tmp_path, line, reached):
+    """(2iii) A copy line naming a product file is not a run of it."""
+    dockerfile = "FROM python:3.11-slim\n" + line + 'CMD ["uvicorn", "app.main:app"]\n'
+    files = {
+        **_route("    return x\n"),
+        "Dockerfile": dockerfile,
+        "app/seed.py": "from app.formulas import beta\n\nbeta(3)\n",
+    }
+    assert _record(tmp_path, files)["reached"] == reached
+
+
+@pytest.mark.parametrize("name", ["README.md", "NOTES.txt"])
+def test_a_run_line_outside_a_packaging_file_is_not_an_entry(tmp_path, name):
+    files = {
+        **_route("    return x\n"),
+        name: "Run the seed: python app/seed.py\n",
+        "app/seed.py": "from app.formulas import beta\n\nbeta(3)\n",
+    }
+    record = _record(tmp_path, files)
+    assert record["reached"] == []
+    assert "run app.seed" not in record["entry_points"]
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "x: float, rate=Depends(formulas.beta)",
+        "x: Annotated[float, Depends(formulas.beta)]",
+    ],
+)
+def test_a_dependency_in_the_handler_signature_is_walked(tmp_path, signature):
+    """(3) The idiomatic wiring: a dependency declared in the signature."""
+    record = _record(tmp_path, _quotes(signature, "    return x\n"))
+    assert record["reached"] == ["app.formulas:beta"]
+    assert record["unreached"] == ["app.formulas:alpha"]
+
+
+@pytest.mark.parametrize(
+    ("imports", "call"),
+    [
+        ("import app.formulas as f\n", "f.beta(x)"),
+        ("import app.formulas\n", "app.formulas.beta(x)"),
+    ],
+)
+def test_a_plain_import_statement_binds_its_module(tmp_path, imports, call):
+    record = _record(tmp_path, _quotes("x: float", f"    return {call}\n", imports))
+    assert record["reached"] == ["app.formulas:beta"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    from app.formulas import beta\n    return beta(x)\n",
+        "    from app import formulas as local\n    return local.beta(x)\n",
+    ],
+)
+def test_an_import_inside_the_handler_resolves_there(tmp_path, body):
+    record = _record(tmp_path, _quotes("x: float", body, ""))
+    assert record["reached"] == ["app.formulas:beta"]
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "def other():\n    from app.formulas import beta\n    return beta\n",
+        "class Other:\n    def m(self):\n        from app.formulas import beta\n        return beta\n",
+    ],
+)
+def test_an_import_inside_one_function_binds_nothing_for_another(tmp_path, other):
+    files = _quotes("x: float", "    return {'v': beta(x)}\n", "")
+    files["app/routers/quotes.py"] += "\n\n" + other
+    record = _record(tmp_path, files)
+    assert record["status"] == "analysed", record
+    assert record["reached"] == []
+
+
+@pytest.mark.parametrize("test", ["DEBUG", "os.environ.get('X')"])
+def test_a_module_level_if_that_is_not_a_main_guard_runs_at_import(tmp_path, test):
+    files = _route("    return x\n")
+    files["app/routers/quotes.py"] = (
+        f"import os\n\nDEBUG = False\n\nif {test}:\n    pass\n\n" + files["app/routers/quotes.py"]
+    )
+    record = _record(tmp_path, files)
+    assert record["status"] == "analysed", record
+    assert record["entry_points"] == [
+        "registered on app.routers.quotes:router: app.routers.quotes:quote",
+        "target app.main:app",
+    ]
+
+
+@pytest.mark.parametrize(
+    "closing", ["a.router.include_router(b.router)\n", "b.router.include_router(a.router)\n"]
+)
+def test_routers_that_include_each_other_end(tmp_path, closing):
+    files = {
+        **_route("    return x\n"),
+        "app/main.py": (
+            "from fastapi import FastAPI\nfrom app.routers import a, b\n\n"
+            "app = FastAPI()\napp.include_router(a.router)\n"
+            "a.router.include_router(b.router)\n" + closing
+        ),
+        "app/routers/a.py": "from fastapi import APIRouter\n\nrouter = APIRouter()\n",
+        "app/routers/b.py": (
+            "from fastapi import APIRouter\nfrom app import formulas\n\nrouter = APIRouter()\n\n\n"
+            "@router.get('/b')\ndef b_route():\n    return formulas.beta(1)\n"
+        ),
+    }
+    record = _record(tmp_path, files)
+    assert record["reached"] == ["app.formulas:beta"]
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    [
+        '@router.get("/quote", dependencies=[Depends(formulas.beta)])',
+        "@router.get(formulas.beta())",
+    ],
+)
+def test_the_arguments_of_a_route_decorator_are_walked(tmp_path, decorator):
+    files = _quotes("x: float", "    return x\n")
+    route = files["app/routers/quotes.py"]
+    files["app/routers/quotes.py"] = route.replace('@router.get("/quote")', decorator)
+    assert _record(tmp_path, files)["reached"] == ["app.formulas:beta"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    return getattr(cfg, formulas.beta(x))\n",
+        "    return getattr(formulas.beta(x), 'real')\n",
+    ],
+)
+def test_getattr_on_something_not_a_module_still_walks_its_arguments(tmp_path, body):
+    record = _record(tmp_path, _quotes("x: float, cfg=None", body))
+    assert record["reached"] == ["app.formulas:beta"]
+    assert record["undecided"] == []
+
+
+@pytest.mark.parametrize(
+    ("prefix", "encoding"),
+    [
+        (b"\xef\xbb\xbf", "utf-8"),
+        (b"# -*- coding: latin-1 -*-\n", "latin-1"),
+        (b"# coding: cp1252\n", "cp1252"),
+    ],
+)
+def test_a_module_is_read_the_way_python_reads_it(tmp_path, prefix, encoding):
+    """H-1c (a): a byte-order mark or a declared encoding is honoured; the
+    product is analysed, not unknown."""
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_route("    return formulas.alpha(x)\n")})
+    body = "NOTE = 'café'\n\n\ndef alpha(x):\n    return x * 2\n\n\ndef beta(x):\n    return x + 1\n"
+    (root / "app/formulas.py").write_bytes(prefix + body.encode(encoding))
+    record = formula_reach(root)
+    assert record["status"] == "analysed", record
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert record["unparsed"] == []
+
+
+@pytest.mark.parametrize(
+    ("files", "unparsed"),
+    [
+        ({"app/scratch.py": b"def broken(:\n"}, ["app/scratch.py (SyntaxError)"]),
+        (
+            {"app/old/__init__.py": b"", "app/old/a.py": b"x = (\n", "app/old/b.py": b"\xff\xfe = 1\n"},
+            ["app/old/a.py (SyntaxError)", "app/old/b.py (SyntaxError)"],
+        ),
+    ],
+)
+def test_an_unparsed_module_nothing_reached_loads_keeps_reach_decidable(tmp_path, files, unparsed):
+    """H-1c (b): a module no reached code imports and no target runs never
+    runs from an entry point, so it is listed, not a reason for unknown."""
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **_route("    return formulas.beta(x)\n")})
+    for rel, data in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    record = formula_reach(root)
+    assert record["status"] == "analysed", record
+    assert record["reached"] == ["app.formulas:beta"]
+    assert record["unreached"] == ["app.formulas:alpha"]
+    assert record["unparsed"] == unparsed
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "from app import formulas\nfrom app.old import a\n",
+        "from app import formulas\nimport importlib\nimportlib.import_module('app.old.a')\n",
+    ],
+)
+def test_an_unparsed_module_reached_code_loads_is_unknown(tmp_path, imports):
+    """H-1c (b): a reached import of a module that does not parse leaves
+    reach undecidable: what that module would call is unknown."""
+    files = {
+        **_SERVER, **_MAIN, **_FORMULAS,
+        **_route("    return formulas.beta(x)\n", imports),
+        "app/old/__init__.py": "",
+        "app/old/a.py": "x = (\n",
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "unknown"
+    assert "reached code loads it: app/old/a.py (SyntaxError)" in record["analysis_error"]
+    assert record["unreached"] is None
+
+
+_SH_DOCKERFILE = 'FROM python:3.11-slim\nENTRYPOINT ["sh", "/app/scripts/entrypoint.sh"]\n'
+
+
+@pytest.mark.parametrize(("call", "label"), [("alpha", "app.formulas:alpha"), ("beta", "app.formulas:beta")])
+def test_the_start_command_is_read_from_the_entrypoint_the_emitter_declares(tmp_path, call, label):
+    """H-1d (a): the Dockerfile runs the emitter's entrypoint through sh; the
+    served app is named inside that script, written by the emitter itself."""
+    from app.factory.build import data_lifecycle
+    from app.factory.build.formula_reach import entry_contract_path
+
+    assert entry_contract_path() == data_lifecycle.ENTRYPOINT_PATH
+    files = {
+        **_MAIN,
+        **_FORMULAS,
+        **_route(f"    return formulas.{call}(x)\n"),
+        "Dockerfile": _SH_DOCKERFILE,
+        data_lifecycle.ENTRYPOINT_PATH: data_lifecycle.render_entrypoint(),
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "analysed", record
+    assert f"target {data_lifecycle.SERVE_TARGET}" in record["entry_points"]
+    assert record["reached"] == [label]
+
+
+@pytest.mark.parametrize("elsewhere", ["scripts/start.sh", "deploy/entrypoint.sh"])
+def test_a_start_script_the_emitter_does_not_declare_is_not_read(tmp_path, elsewhere):
+    """The rule is the emitter's contract, not any shell file: the same
+    script at another path gives no entry point, so the record stays unknown."""
+    from app.factory.build import data_lifecycle
+
+    files = {
+        **_MAIN,
+        **_FORMULAS,
+        **_route("    return formulas.alpha(x)\n"),
+        "Dockerfile": _SH_DOCKERFILE,
+        elsewhere: data_lifecycle.render_entrypoint(),
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "unknown"
+    assert "no entry point found" in record["analysis_error"]
+    assert record["reached"] is None
+
+
+# -- H-1d (b): a computed import_module name with a literal product prefix --
+
+#: Handlers under one package: ``handle`` calls alpha, ``unused`` calls beta.
+#: A module outside the package has a ``handle`` that calls beta.
+_HANDLERS = {
+    "app/actions/__init__.py": "",
+    "app/actions/first.py": (
+        "from app import formulas\n\n\ndef handle(x):\n    return formulas.alpha(x)\n\n\n"
+        "def unused(x):\n    return formulas.beta(x)\n"
+    ),
+    "app/other.py": "from app import formulas\n\n\ndef handle(x):\n    return formulas.beta(x)\n",
+    "app/settings.py": "PKG = 'app.actions'\n",
+}
+_IMP = "import importlib\nfrom app import formulas\n"
+
+
+@pytest.mark.parametrize(
+    ("imports", "body"),
+    [
+        (_IMP, "    mod = importlib.import_module('app.actions.' + cfg)\n    return mod.handle(x)\n"),
+        (_IMP, "    return importlib.import_module(f'app.actions.{cfg}').handle(x)\n"),
+        (_IMP + "PKG = 'app.actions'\n", "    return importlib.import_module(f'{PKG}.{cfg}').handle(x)\n"),
+        (_IMP + "from app.settings import PKG\n", "    return importlib.import_module('%s.%s' % (PKG, cfg)).handle(x)\n"),
+        (_IMP, "    name = 'app.actions.' + cfg\n    mod = importlib.import_module(name)\n    return mod.handle(x)\n"),
+        (
+            _IMP + "\n\ndef _module(name):\n    return importlib.import_module('app.actions.' + name)\n",
+            "    return _module(cfg).handle(x)\n",
+        ),
+        (
+            _IMP + "\n\ndef _module(name):\n    try:\n        m = importlib.import_module('app.actions.' + name)\n"
+            "    except ImportError:\n        return None\n    return m\n",
+            "    mod = _module(cfg)\n    if not hasattr(mod, 'handle'):\n        return None\n    return mod.handle(x)\n",
+        ),
+        (_IMP, "    importlib.import_module('app.actions.' + cfg)\n    return getattr(importlib.import_module('app.actions.' + cfg), 'handle')(x)\n"),
+        ("from app.actions import load\n", "    return load(cfg).handle(x)\n"),
+    ],
+)
+def test_a_computed_import_with_a_product_prefix_is_decided(tmp_path, imports, body):
+    """The prefix bounds what can load: the used attribute is reached in the
+    package's modules only, never another function there or a same-named
+    function outside the package."""
+    loader = {
+        "app/actions/__init__.py": (
+            "import importlib\n\n\ndef load(name):\n    return importlib.import_module('..actions.' + name, __name__)\n"
+        )
+    }
+    record = _record(tmp_path, {**_HANDLERS, **loader, **_quotes("x: float, cfg: str = ''", body, imports)})
+    assert record["status"] == "analysed"
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert record["undecided"] == []
+
+
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        ("    return importlib.import_module('plugins.' + cfg).handle(x)\n", "import_module(<computed name>)"),
+        ("    return importlib.import_module(cfg).handle(x)\n", "import_module(<computed name>)"),
+        ("    return str(importlib.import_module('app.actions.' + cfg))\n", "result passed on"),
+        ("    mod = importlib.import_module('app.actions.' + cfg)\n    return str(mod)\n", "result passed on"),
+        ("    mod = importlib.import_module('app.actions.' + cfg)\n    return getattr(mod, cfg)(x)\n", "getattr(<computed name>)"),
+    ],
+)
+def test_a_computed_import_the_prefix_cannot_bound_stays_undecided(tmp_path, body, why):
+    """No product prefix, a result handed on, or a computed attribute on it:
+    nothing is counted reached, and every formula is listed undecided."""
+    record = _record(tmp_path, {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, _IMP)})
+    assert record["status"] == "analysed"
+    assert record["reached"] == []
+    assert [u["formula"] for u in record["undecided"]] == ["app.formulas:alpha", "app.formulas:beta"]
+    assert all(why in u["why"] for u in record["undecided"])
+
+
+@pytest.mark.parametrize("imports", [_IMP + "MOD = 'app.plugin'\n", _IMP + "from app.settings import MOD\n"])
+def test_an_import_module_name_held_in_a_constant_is_literal(tmp_path, imports):
+    files = {
+        **_HANDLERS,
+        "app/settings.py": "MOD = 'app.plugin'\n",
+        "app/plugin.py": "from app import formulas\n\nformulas.alpha(1)\n",
+    }
+    body = "    importlib.import_module(MOD)\n    return x\n"
+    record = _record(tmp_path, {**files, **_quotes("x: float", body, imports)})
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert record["undecided"] == []
+
+
+#: The loader in ``app.actions``; its ``import_module`` arguments are filled in.
+_DOT_LOADER = "import importlib\n\n\ndef load(name):\n    return importlib.import_module({})\n"
+
+
+def _undecided_by_import(record: dict) -> None:
+    assert record["status"] == "analysed"
+    assert record["reached"] == []
+    assert [u["formula"] for u in record["undecided"]] == ["app.formulas:alpha", "app.formulas:beta"]
+    assert all("import_module(<computed name>)" in u["why"] for u in record["undecided"])
+
+
+@pytest.mark.parametrize(
+    ("imports", "settings"),
+    [
+        (_IMP + "PKG = 'app.actions'\n\n\ndef _switch():\n    global PKG\n    PKG = 'app'\n", None),
+        (_IMP + "PKG = 'app.actions'\n\nif __name__ == '__main__':\n    PKG = 'app'\n", None),
+        (_IMP + "PKG = 'app.actions'\nglobals().update(PKG='app')\n", None),
+        (
+            _IMP + "from app.settings import PKG\n",
+            "PKG = 'app.actions'\n\n\ndef use(name):\n    global PKG\n    PKG = name\n",
+        ),
+        (_IMP + "from app import settings\nfrom app.settings import PKG\n\n\ndef _switch():\n    settings.PKG = 'app'\n", None),
+        (_IMP + "try:\n    from app.settings import PKG\nexcept ImportError:\n    PKG = 'app'\n", None),
+        (_IMP + "from os import sep as PKG\n", None),
+        (_IMP + "PKG = 'app.actions'\nPKG += ''\n", None),
+        (_IMP + "PKG = 'app.actions'\nfor PKG in ['app']:\n    pass\n", None),
+        (_IMP + "PKG = 'app.actions'\nwith open(__file__) as PKG:\n    pass\n", None),
+        (_IMP + "PKG = 'app.actions'\ntry:\n    pass\nexcept ImportError as PKG:\n    pass\n", None),
+        (_IMP + "PKG = 'app.actions'\ndel PKG\n", None),
+    ],
+)
+def test_a_name_bound_more_than_once_anywhere_is_not_a_constant(tmp_path, imports, settings):
+    """Gap 1 (grader 08:40Z): a second binding inside a function (``global``),
+    in the main guard, through ``globals()``, as an attribute from another
+    module, or an import from outside the product: the prefix is unknown, so
+    the import stays undecided."""
+    body = "    return importlib.import_module(f'{PKG}.{cfg}').handle(x)\n"
+    files = {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, imports)}
+    if settings is not None:
+        files["app/settings.py"] = settings
+    _undecided_by_import(_record(tmp_path, files))
+
+
+@pytest.mark.parametrize(
+    ("imports", "settings", "decided"),
+    [
+        (_IMP + "PKG = 'app.actions'\n", None, True),
+        (_IMP + "PKG = 'app.actions'\nfrom app.other import *\n", None, False),
+        (_IMP + "from app.settings import PKG\n", "PKG = 'app.actions'\n", True),
+        (_IMP + "from app.settings import PKG\n", "PKG = 'app.actions'\nfrom app.other import *\n", False),
+    ],
+)
+def test_a_module_with_a_star_import_has_no_constants(tmp_path, imports, settings, decided):
+    """Grader 09:19Z: ``from x import *`` can re-bind any name in the module
+    that runs it, so a name bound once there is not a constant -- in the
+    module using it or in the module it is imported from. The same module
+    without the star import keeps its constant."""
+    body = "    return importlib.import_module(f'{PKG}.{cfg}').handle(x)\n"
+    files = {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, imports)}
+    if settings is not None:
+        files["app/settings.py"] = settings
+    record = _record(tmp_path, files)
+    if decided:
+        assert record["status"] == "analysed"
+        assert record["reached"] == ["app.formulas:alpha"]
+        assert record["unreached"] == ["app.formulas:beta"]
+        assert record["undecided"] == []
+    else:
+        _undecided_by_import(record)
+
+
+@pytest.mark.parametrize("call", ["'.' + name, __name__", "'.' + name, package=__name__", "f'.{name}', 'app.actions'"])
+def test_a_relative_name_with_nothing_literal_after_its_dots_is_undecided(tmp_path, call):
+    """Gap 2 (grader 08:40Z): ``"." + x`` climbs above the anchor when x
+    itself begins with a dot, so its prefix bounds nothing."""
+    loader = {"app/actions/__init__.py": _DOT_LOADER.format(call)}
+    body = "    return load(cfg).handle(x)\n"
+    imports = "from app.actions import load\n"
+    _undecided_by_import(_record(tmp_path, {**_HANDLERS, **loader, **_quotes("x: float, cfg: str = ''", body, imports)}))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    importlib.import_module('app.actions.' + cfg)\n    return x\n",
+        "    mod = importlib.import_module(f'app.actions.{cfg}')\n    return x\n",
+    ],
+)
+def test_a_decided_import_with_no_attribute_used_reaches_nothing(tmp_path, body):
+    """The prefix's modules load (their import-time code runs), but no
+    function in them is reached."""
+    record = _record(tmp_path, {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, _IMP)})
+    assert record["status"] == "analysed"
+    assert record["reached"] == []
+    assert record["unreached"] == ["app.formulas:alpha", "app.formulas:beta"]
+    assert record["undecided"] == []
+
+
+@pytest.mark.parametrize(
+    "returns",
+    [
+        "    if tries:\n        return _module(name, tries - 1)\n"
+        "    return importlib.import_module('app.actions.' + name)\n",
+        "    if not tries:\n        return importlib.import_module('app.actions.' + name)\n"
+        "    return _module(name, tries - 1)\n",
+    ],
+)
+def test_a_helper_that_returns_its_own_call_is_walked_once(tmp_path, returns):
+    """A recursive helper: its returns are not one decided import, so the
+    result is handed on (undecided), and the walk ends."""
+    helper = _IMP + "\n\ndef _module(name, tries=1):\n" + returns
+    body = "    return _module(cfg).handle(x)\n"
+    record = _record(tmp_path, {**_HANDLERS, **_quotes("x: float, cfg: str = ''", body, helper)})
+    assert record["status"] == "analysed"
+    assert record["reached"] == []
+    assert any("result passed on" in u["why"] for u in record["undecided"])

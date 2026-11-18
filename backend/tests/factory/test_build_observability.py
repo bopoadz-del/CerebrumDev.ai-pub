@@ -316,10 +316,10 @@ def test_a_read_timeout_is_not_retried(monkeypatch):
     monkeypatch.setattr(
         "app.factory.product_architect.get_factory_llm_config",
         lambda: {
-            "provider": "kimi",
+            "provider": "deepseek",
             "model": "primary",
             "fallback_model": "fallback",
-            "base_url": "https://api.moonshot.ai/v1",
+            "base_url": "https://api.deepseek.com/v1",
             "api_key": "test-key-not-real",
         },
     )

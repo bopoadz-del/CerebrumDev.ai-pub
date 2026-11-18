@@ -41,10 +41,8 @@ def _no_paid_calls(monkeypatch):
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "0")
     monkeypatch.delenv("FACTORY_AUTO_PILOT", raising=False)
     for var in (
-        "KIMI_API_KEY",
         "CEREBRUM_LLM_API_KEY",
         "CEREBRUM_FACTORY_LLM_API_KEY",
-        "KIMI_MOCK",
         "CEREBRUM_LLM_MOCK",
     ):
         monkeypatch.delenv(var, raising=False)

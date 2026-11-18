@@ -59,7 +59,6 @@ def session(monkeypatch):
 def test_chat_llm_off_without_key(monkeypatch):
     monkeypatch.delenv(platform_chat_llm.CHAT_LLM_ENV, raising=False)
     for var in (
-        "KIMI_API_KEY",
         "CEREBRUM_LLM_API_KEY",
         "CEREBRUM_FACTORY_LLM_API_KEY",
         "CEREBRUM_CHAT_LLM_API_KEY",
@@ -71,7 +70,7 @@ def test_chat_llm_off_without_key(monkeypatch):
 
 def test_chat_llm_on_when_key_present(monkeypatch):
     monkeypatch.delenv(platform_chat_llm.CHAT_LLM_ENV, raising=False)
-    monkeypatch.setenv("KIMI_API_KEY", "sk-test-not-used")
+    monkeypatch.setenv("CEREBRUM_LLM_API_KEY", "sk-test-not-used")
     assert platform_chat_llm.chat_llm_enabled() is True
 
 

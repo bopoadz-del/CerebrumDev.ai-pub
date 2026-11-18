@@ -787,17 +787,17 @@ def test_a_transient_connect_error_is_retried_not_templated(monkeypatch):
     monkeypatch.setattr(
         "app.factory.product_architect.get_factory_llm_config",
         lambda: {
-            "provider": "kimi",
-            "model": "kimi-k2.7-code-highspeed",
-            "fallback_model": "moonshot-v1-8k",
-            "base_url": "https://api.moonshot.ai/v1",
+            "provider": "deepseek",
+            "model": "primary-model",
+            "fallback_model": "fallback-model",
+            "base_url": "https://api.deepseek.com/v1",
             "api_key": "test-key-not-real",
         },
     )
 
     out, model_used = coder._llm_code_call([{"role": "user", "content": "u"}])
     assert out == 'return {"ok": True}'
-    assert model_used == "kimi-k2.7-code-highspeed", "the answering leg was misreported"
+    assert model_used == "primary-model", "the answering leg was misreported"
     assert len(attempts) == 3, "the transient failures were not retried"
 
 
@@ -827,10 +827,10 @@ def test_an_http_status_error_is_not_retried(monkeypatch):
     monkeypatch.setattr(
         "app.factory.product_architect.get_factory_llm_config",
         lambda: {
-            "provider": "kimi",
+            "provider": "deepseek",
             "model": "primary-model",
             "fallback_model": "fallback-model",
-            "base_url": "https://api.moonshot.ai/v1",
+            "base_url": "https://api.deepseek.com/v1",
             "api_key": "test-key-not-real",
         },
     )

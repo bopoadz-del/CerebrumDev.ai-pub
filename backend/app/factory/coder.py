@@ -48,21 +48,16 @@ from .code_cli import (  # noqa: F401 — re-export the public FACTORY_CODE_CLI 
     DEFAULT_DEEPSEEK_MODEL,
     LEGACY_CODE_CLI_ENV,
     ClaudePrintPromptEmpty,
-    KimiPromptEmpty,
     claude_print_argv,
     claude_print_log_argv,
     claude_print_prompt,
     code_cli_command,
-    kimi_prompt_argv,
-    kimi_prompt_log_argv,
-    kimi_prompt_text,
     deepseek_api_key,
     deepseek_cli_environ,
     deepseek_coder_selected,
     deepseek_code_model,
     factory_code_provider,
     is_claude_code_cli,
-    is_kimi_code_cli,
 )
 from .llm_watchdog import (
     attempt_wall_s,
@@ -118,10 +113,7 @@ logger = logging.getLogger("cerebrumdev.factory.coder")
 
 CODER_ENABLED_ENV = "FACTORY_CODER_ENABLED"
 
-#: Provider-agnostic name for the agentic coding CLI. ``KIMI_CODE_CLI`` stays
-#: honoured so existing deployments keep working unchanged; point
-#: FACTORY_CODE_CLI at Kimi Code (DeepSeek V4 Pro OpenAI-compat, or
-#: historical Moonshot). Claude Code is not the DeepSeek vehicle.
+#: Provider-agnostic name for the agentic coding CLI: ``FACTORY_CODE_CLI``.
 #: The seam is "run this command, read its result". Selection + DeepSeek
 #: subprocess env live in ``app.factory.code_cli`` (re-exported above).
 
@@ -261,7 +253,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 #: models: they spend the budget on reasoning tokens and return
 #: finish_reason="length" with empty content, which surfaced as a
 #: CoderError and silently dropped that artifact to the template path
-#: (observed once per five routes on a live kimi-k2.7-code build).
+#: (observed once per five routes on a live reasoning-model build).
 #: Override with FACTORY_CODER_MAX_TOKENS.
 def _call_timeout_s() -> float:
     """Per-attempt ceiling for one coder HTTP request.
@@ -350,7 +342,7 @@ def _llm_code_call(messages: List[Dict[str, str]]) -> tuple[str, str]:
     Returns ``(text, model_used)`` -- the model that ACTUALLY answered, not
     the one that was configured. Those differ whenever a fallback leg runs,
     and the difference is stamped into every emitted module as CODER_MODEL.
-    Before this returned two values, a handler written by moonshot-v1-8k was
+    Before this returned two values, a handler written by the fallback model was
     stamped with the primary's name: provenance that names the wrong author
     is worse than none, because it is trusted.
 
@@ -379,13 +371,19 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
     deadline_mono = _attempt_deadline.get()
     if deadline_mono is None:
         deadline_mono = _wall_time.monotonic() + _attempt_wall_s()
-    from app.core.llm_config import get_factory_fallback_leg
+    from app.core.llm_config import HTTP_CALL_PROVIDERS, get_factory_fallback_leg
 
     from .product_architect import get_factory_llm_config
 
     cfg = get_factory_llm_config()
     if cfg.get("mock"):
         raise CoderError("LLM mock mode — coder has no model to call")
+
+    if cfg.get("config_error"):
+        # A WRONG setting (a name outside the provider table, or two vendors'
+        # keys with no name) is raised here, before any leg: running the
+        # fallback leg alone would hide the error behind a working answer.
+        raise CoderError(str(cfg["error"]))
 
     cross = get_factory_fallback_leg()
     if cross and cross.get("error"):
@@ -423,13 +421,7 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
         )
 
     provider = cfg.get("provider")
-    if primary_usable and provider not in (
-        "moonshot",
-        "kimi",
-        "claude",
-        "cursor",
-        "openrouter",
-    ):
+    if primary_usable and provider not in HTTP_CALL_PROVIDERS:
         raise CoderError(f"unsupported coder provider: {provider!r}")
 
     #: A leg is a whole endpoint -- provider, base_url, key -- not just a
@@ -471,7 +463,7 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
             "max_tokens": code_max_tokens(),
         }
         # Send a temperature ONLY when one was configured. This hardcoded 0.2
-        # made the coder unusable on every reasoning model: kimi-k2.x and k3
+        # made the coder unusable on every reasoning model: they
         # answer 400 "invalid temperature: only 1 is allowed for this model",
         # so the factory silently fell back to templates on exactly the models
         # capable enough to write working code. llm_config._llm_temperature()
@@ -602,7 +594,7 @@ def _llm_code_call_impl(messages: List[Dict[str, str]]) -> tuple[str, str]:
 
         # Leg 2: a different vendor entirely, reached only when the primary
         # vendor's own fallback also failed. That ordering matters: an
-        # out-of-credit or rate-limited Moonshot account fails BOTH its models
+        # out-of-credit or rate-limited vendor account fails BOTH its models
         # identically, so a same-vendor fallback is no fallback at all for the
         # failure that actually happens most.
         if cross:

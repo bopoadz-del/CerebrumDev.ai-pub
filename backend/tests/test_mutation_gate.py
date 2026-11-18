@@ -272,3 +272,37 @@ def test_source_is_restored_when_the_run_raises(tmp_path, monkeypatch, exc):
     with pytest.raises(exc):
         mg.mutation_gate(repo, "HEAD~1", ["src"], ["tests"], ".", [])
     assert (repo / "src" / "pkg" / "calc.py").read_text("utf-8") == FN
+
+
+@pytest.mark.parametrize("n,total,want", [(1, 3, "(done 0, left 3)"), (3, 3, "(done 2, left 1)")])
+def test_mutant_line_names_the_mutant_and_counts(n, total, want):
+    line = mg.mutant_line(n, total, "src/pkg/calc.py", "fee", "drop_rule", 1)
+    assert line == f"mutant {n}/{total}: src/pkg/calc.py::fee kind=drop_rule line=1 {want}"
+
+
+@pytest.mark.parametrize("tests", [STRONG, WEAK])
+def test_each_mutant_prints_one_start_line_and_the_plan_matches(tmp_path, capsys, tests):
+    repo = _repo(tmp_path, tests)
+    results = mg.mutation_gate(repo, "HEAD~1", ["src"], ["tests"], ".", [])
+    err = [ln for ln in capsys.readouterr().err.splitlines() if ln.startswith("mutation_gate: mutant ")]
+    total = len(results)
+    assert total == mg.planned_mutants(repo, sorted(mg.changed_lines("HEAD~1", repo, ["src"]).items()))
+    assert [ln.split(":", 2)[1].strip() for ln in err] == [f"mutant {i}/{total}" for i in range(1, total + 1)]
+    assert {ln.split("kind=")[1].split()[0] for ln in err} == {r.mutant for r in results}
+
+
+@pytest.mark.parametrize("hung", [1, 2])
+def test_a_timeout_prints_the_mutant_it_was_running(tmp_path, monkeypatch, capsys, hung):
+    repo = _repo(tmp_path, STRONG)
+    calls = []
+
+    def fake_run(*a, **k):
+        calls.append(1)
+        return "timeout" if len(calls) == hung else "killed"
+
+    monkeypatch.setattr(mg, "run_tests", fake_run)
+    results = mg.mutation_gate(repo, "HEAD~1", ["src"], ["tests"], ".", [])
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.startswith("mutation_gate: TIMEOUT on ")]
+    r = results[hung - 1]
+    assert r.outcome == "timeout" and [r.outcome for r in results].count("timeout") == 1
+    assert len(lines) == 1 and lines[0].startswith(f"mutation_gate: TIMEOUT on mutant {hung}/{len(results)}: {r.path}::{r.function} kind={r.mutant} line=")

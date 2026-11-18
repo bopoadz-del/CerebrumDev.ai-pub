@@ -24,7 +24,7 @@ import pytest
 
 import app.factory.coder as coder
 
-FAKE_KIMI = "sk-kimi-not-a-real-key"
+FAKE_KEY = "sk-primary-not-a-real-key"
 FAKE_CLAUDE = "sk-ant-not-a-real-key"
 
 
@@ -58,7 +58,6 @@ def _clear(monkeypatch):
         "LLM_TEMPERATURE",
         "CEREBRUM_FACTORY_LLM_MODEL",
         "CEREBRUM_LLM_MODEL",
-        "KIMI_MODEL",
         "ANTHROPIC_MODEL",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -67,13 +66,13 @@ def _clear(monkeypatch):
 def test_no_temperature_is_sent_when_none_is_configured(monkeypatch, sent):
     """The reasoning-model case. A 0.2 here is a hard 400."""
     _clear(monkeypatch)
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_KEY)
 
     coder._llm_code_call([{"role": "user", "content": "hi"}])
 
     assert "temperature" not in sent["json"], (
-        "a temperature was sent with none configured — kimi-k2.x/k3 reject "
+        "a temperature was sent with none configured — reasoning models reject "
         "any value but 1 and the coder falls back to templates"
     )
     assert sent["json"]["max_tokens"] == coder.code_max_tokens()
@@ -96,8 +95,8 @@ def test_the_completion_budget_is_configurable_and_generous(monkeypatch, sent):
 def test_an_empty_completion_says_why(monkeypatch):
     """A bare "empty completion" costs a live debugging run to interpret."""
     _clear(monkeypatch)
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_KEY)
 
     class _Empty:
         def raise_for_status(self):
@@ -125,8 +124,8 @@ def test_an_empty_completion_says_why(monkeypatch):
 def test_an_explicit_temperature_is_still_honoured(monkeypatch, sent):
     """Omitting by default must not mean the setting is ignored."""
     _clear(monkeypatch)
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_KEY)
     monkeypatch.setenv("LLM_TEMPERATURE", "0.4")
 
     coder._llm_code_call([{"role": "user", "content": "hi"}])
@@ -160,39 +159,36 @@ def test_the_anthropic_path_honours_an_explicit_temperature(monkeypatch, sent):
 
 
 def test_the_factory_fallback_model_is_one_that_exists(monkeypatch):
-    """kimi-k2.5-code answered 404 'Not found the model'.
+    """A fallback model the endpoint does not serve answered 404.
 
     A fallback that cannot resolve means a primary failure surfaces as two
-    errors instead of one retry, and the retry leg was never real.
+    errors instead of one retry, and the retry leg was never real. With no
+    fallback configured, the default is the provider table's own default
+    model for the default host.
     """
-    from app.core.llm_config import get_factory_llm_config
+    from app.core.llm_config import (
+        DEEPSEEK_BASE_URL,
+        DEFAULT_FALLBACK_MODEL,
+        get_factory_llm_config,
+    )
 
     for var in ("LLM_PROVIDER", "CEREBRUM_FACTORY_LLM_FALLBACK_MODEL",
-                "KIMI_FALLBACK_MODEL", "CEREBRUM_LLM_FALLBACK_MODEL"):
+                "CEREBRUM_LLM_FALLBACK_MODEL", "CEREBRUM_LLM_BASE_URL",
+                "CEREBRUM_FACTORY_LLM_BASE_URL", "ANTHROPIC_API_KEY",
+                "CLAUDE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_KEY)
 
-    fallback = get_factory_llm_config()["fallback_model"]
-    assert fallback != "kimi-k2.5-code", "that model does not exist on the API"
-    # Models the endpoint actually serves, as listed by GET /v1/models.
-    assert fallback in {
-        "kimi-k2.5",
-        "kimi-k2.6",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k3",
-        "moonshot-v1-8k",
-        "moonshot-v1-32k",
-        "moonshot-v1-128k",
-        "moonshot-v1-auto",
-    }, fallback
+    cfg = get_factory_llm_config()
+    assert cfg["base_url"] == DEEPSEEK_BASE_URL
+    assert cfg["fallback_model"] == DEFAULT_FALLBACK_MODEL
 
 
 def test_the_fallback_leg_is_actually_tried(monkeypatch):
     """Primary fails, fallback answers -- one retry, not two errors."""
     _clear(monkeypatch)
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
-    monkeypatch.setenv("KIMI_API_KEY", FAKE_KIMI)
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("CEREBRUM_FACTORY_LLM_API_KEY", FAKE_KEY)
     monkeypatch.setenv("CEREBRUM_FACTORY_LLM_MODEL", "primary-model")
     monkeypatch.setenv("CEREBRUM_FACTORY_LLM_FALLBACK_MODEL", "fallback-model")
 

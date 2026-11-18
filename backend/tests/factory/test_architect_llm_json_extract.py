@@ -63,16 +63,14 @@ def test_extract_json_first_object_and_fences():
 
 
 def _openrouter_factory_env(monkeypatch) -> None:
-    monkeypatch.setenv("LLM_PROVIDER", "kimi")
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("CEREBRUM_FACTORY_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("CEREBRUM_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("CEREBRUM_FACTORY_LLM_MODEL", "openrouter/free")
     monkeypatch.setenv("CEREBRUM_FACTORY_LLM_FALLBACK_MODEL", "openrouter/free")
-    monkeypatch.delenv("KIMI_API_KEY", raising=False)
     monkeypatch.delenv("CEREBRUM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("CEREBRUM_FACTORY_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("KIMI_MOCK", raising=False)
     monkeypatch.delenv("CEREBRUM_LLM_MOCK", raising=False)
 
 
