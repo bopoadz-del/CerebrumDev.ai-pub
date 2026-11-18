@@ -131,6 +131,16 @@ def test_the_probe_checks_the_gates_own_root_list(tmp_path, monkeypatch, extra_n
     assert seen and seen[0].parent == builds
 
 
+@pytest.mark.parametrize("name", ["prod", "nested/prod"])
+def test_the_root_list_is_the_one_the_build_runner_holds(tmp_path, name):
+    workspace = tmp_path / name
+    roots = runner.agent_rw_roots_for(workspace)
+    built = runner.RoleRunner.agent_rw_roots(SimpleNamespace(workspace=workspace))
+    assert built == roots
+    assert workspace in roots
+    assert runner.role_staging_dir(workspace, runner.BuildRole.WRITER) in roots
+
+
 # -- the cache ---------------------------------------------------------------
 
 
