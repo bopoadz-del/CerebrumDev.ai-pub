@@ -318,25 +318,21 @@ def cli_unavailable_detail(command: Optional[str] = None) -> str:
     """Named-class operator text. Names the env, not a dashboard click."""
     from app.factory.coder import (
         CODE_CLI_ENV,
-        DEEPSEEK_API_KEY_ENV,
         LEGACY_CODE_CLI_ENV,
         code_cli_command,
-        factory_code_provider,
     )
 
-    cli = (command or code_cli_command()).strip() or "kimi"
-    provider = factory_code_provider()
-    creds = (
-        f"{DEEPSEEK_API_KEY_ENV} (Kimi Code → DeepSeek V4 Pro OpenAI-compat)"
-        if provider == "deepseek"
-        else "KIMI_CODE_API_KEY writes ~/.kimi-code/config.toml "
-        "(Moonshot). DeepSeek uses DEEPSEEK_API_KEY under kimi, not Claude Code"
+    cli = (command or code_cli_command()).strip()
+    where = (
+        f"{cli!r} is not an executable on this host"
+        if cli
+        else f"no coding CLI is set (neither {CODE_CLI_ENV} nor {LEGACY_CODE_CLI_ENV})"
     )
     return (
-        f"{NAMED_BLOCKER_CLI}: {cli!r} is not an executable on this host. "
+        f"{NAMED_BLOCKER_CLI}: {where}. "
         f"Set {CODE_CLI_ENV} (wins) or {LEGACY_CODE_CLI_ENV} to the agentic "
-        "coder binary (`kimi`, or an absolute path) and provide "
-        f"CLI credentials ({creds}). HTTP oneshot is not a FACTORY_CODE_CLI "
+        "coder binary (a PATH name or an absolute path) and provide "
+        f"CLI credentials ({_table_provider_credentials()}). HTTP oneshot is not a FACTORY_CODE_CLI "
         f"session; set {BRIEF_HTTP_ONESHOT_ENV}=1 only for CI. "
         f"{OWNER_GATED_CLI_LOG}."
     )
@@ -355,25 +351,33 @@ def credentials_file_present() -> bool:
 
 
 def cli_requires_kimi_credentials(command: Optional[str] = None) -> bool:
-    """Moonshot Kimi Code authenticates via config.toml.
-
-    Credentials are expected when the resolved command is kimi (default
-    name, ``KIMI_CODE_CLI``, or a path whose basename contains ``kimi``)
-    and DeepSeek is **not** the selected coder. DeepSeek under kimi uses
-    ``DEEPSEEK_API_KEY`` (boot writes ``[providers.deepseek]``).
+    """True when the CLI would have to authenticate OUTSIDE the shared
+    provider table: DeepSeek is not the selected coder and no table provider
+    is configured for it. That is refused (owner rule F-K1: the retired
+    vendor's own config file is never a credential source), so
+    :func:`cli_credentials_ok` is False whenever this is True. The name is
+    kept for the probe field that reports it.
     """
-    from app.factory.coder import code_cli_command, deepseek_coder_selected
+    from app.factory.coder import deepseek_coder_selected, factory_code_provider
 
     if deepseek_coder_selected(command):
         return False
-    cli = (command or code_cli_command()).strip()
-    names = [Path(cli).name.lower()] if cli else []
-    resolved = resolve_code_cli(cli) if cli else resolve_code_cli()
-    if resolved:
-        names.append(Path(resolved).name.lower())
-    from app.factory.code_cli import is_kimi_code_cli
+    return not factory_code_provider()
 
-    return any(is_kimi_code_cli(name) for name in names)
+
+def _table_provider_credentials() -> str:
+    """Operator text: how to give the coding CLI credentials from the shared
+    provider table. Names settings only, never a value."""
+    from app.core.llm_config import PROVIDER_TABLE
+    from app.factory.code_cli import code_provider_setting_error
+    from app.factory.coder import CODE_PROVIDER_ENV, DEEPSEEK_API_KEY_ENV
+
+    text = (
+        f"{DEEPSEEK_API_KEY_ENV} for DeepSeek, or {CODE_PROVIDER_ENV} set to one "
+        f"of {', '.join(sorted(PROVIDER_TABLE))} with that provider's key"
+    )
+    refused = code_provider_setting_error()
+    return f"{text}; {refused}" if refused else text
 
 
 def cli_requires_deepseek_credentials(command: Optional[str] = None) -> bool:
@@ -388,9 +392,7 @@ def cli_credentials_ok(command: Optional[str] = None) -> bool:
         from app.factory.coder import deepseek_api_key
 
         return bool(deepseek_api_key())
-    if not cli_requires_kimi_credentials(command):
-        return True
-    return credentials_file_present()
+    return not cli_requires_kimi_credentials(command)
 
 
 def read_kimi_config_text() -> str:
@@ -796,7 +798,7 @@ def cli_no_model_detail(command: Optional[str] = None) -> str:
         code_cli_command,
     )
 
-    cli = (command or code_cli_command()).strip() or "kimi"
+    cli = (command or code_cli_command()).strip()
     if cli_requires_deepseek_credentials(command):
         return (
             f"{NAMED_BLOCKER_CLI_NO_MODEL}: {cli!r} is an executable on this "
@@ -809,16 +811,12 @@ def cli_no_model_detail(command: Optional[str] = None) -> str:
             f"for CI. A templated pilot zip is not a ≥2h CLI session. "
             f"{OWNER_GATED_CLI_LOG}."
         )
-    dest = kimi_credentials_file()
     return (
         f"{NAMED_BLOCKER_CLI_NO_MODEL}: {cli!r} is an executable on this host "
-        f"and {dest} is present (credentials_file_present=true) but has no "
-        "usable default_model / [models] entry. Headless Floor cannot run "
-        "`kimi` /login. Set KIMI_CODE_API_KEY so boot writes default_model "
-        f"(KIMI_CODE_MODEL, default {DEFAULT_KIMI_CODE_MODEL} / Moonshot API) "
-        f"and [models.\"{DEFAULT_KIMI_CODE_MODEL}\"]. {CODE_CLI_ENV} / "
-        "CEREBRUM_LLM_API_KEY do not configure the Kimi Code model. HTTP "
-        "oneshot is not a FACTORY_CODE_CLI session; set "
+        "but no coding model is configured for it. Give it a provider from "
+        f"the shared table ({_table_provider_credentials()}); "
+        f"{CODE_CLI_ENV} / CEREBRUM_LLM_API_KEY do not configure the coding "
+        "model. HTTP oneshot is not a FACTORY_CODE_CLI session; set "
         f"{BRIEF_HTTP_ONESHOT_ENV}=1 only for CI. A templated pilot zip is "
         f"not a ≥2h CLI session. {OWNER_GATED_CLI_LOG}."
     )
@@ -833,7 +831,7 @@ def cli_credentials_missing_detail(command: Optional[str] = None) -> str:
         code_cli_command,
     )
 
-    cli = (command or code_cli_command()).strip() or "kimi"
+    cli = (command or code_cli_command()).strip()
     if cli_requires_deepseek_credentials(command):
         return (
             f"{NAMED_BLOCKER_CLI_CREDS}: {cli!r} is an executable on this host "
@@ -848,14 +846,12 @@ def cli_credentials_missing_detail(command: Optional[str] = None) -> str:
             "vehicle. HTTP oneshot is not a FACTORY_CODE_CLI session; set "
             f"{BRIEF_HTTP_ONESHOT_ENV}=1 only for CI. {OWNER_GATED_CLI_LOG}."
         )
-    dest = kimi_credentials_file()
     return (
         f"{NAMED_BLOCKER_CLI_CREDS}: {cli!r} is an executable on this host but "
-        f"{dest} is missing (credentials_file_present=false). "
-        "Set KIMI_CODE_API_KEY so boot writes [providers.kimi] and "
-        "default_model (KIMI_CODE_MODEL, default kimi-k3 / Moonshot API) into that file "
-        f"(or place the file yourself). {CODE_CLI_ENV} / CEREBRUM_LLM_API_KEY "
-        "do not authenticate the Kimi Code CLI. HTTP oneshot is not a "
+        "no provider from the shared table is configured for it "
+        f"({_table_provider_credentials()}). A CLI's own config file is not a "
+        f"credential source. {CODE_CLI_ENV} / CEREBRUM_LLM_API_KEY "
+        "do not authenticate the coding CLI. HTTP oneshot is not a "
         f"FACTORY_CODE_CLI session; set {BRIEF_HTTP_ONESHOT_ENV}=1 only for CI. "
         f"{OWNER_GATED_CLI_LOG}."
     )
@@ -1255,9 +1251,9 @@ def _config_providers(text: str) -> frozenset:
 
 
 def config_has_kimi_provider(text: str) -> bool:
-    from app.factory.code_cli import DEFAULT_KIMI_CLI
-
-    return DEFAULT_KIMI_CLI in _config_providers(text)
+    """True when ``text`` declares the provider table :func:`_provider_block`
+    writes: the writer is the one source of that table's name."""
+    return bool(_config_providers(_provider_block("", "")) & _config_providers(text))
 
 
 def config_has_deepseek_provider(text: str) -> bool:
@@ -1704,6 +1700,7 @@ def _wire_deepseek_cli_credentials() -> Dict[str, Any]:
     from app.factory.coder import (
         DEEPSEEK_API_KEY_ENV,
         DEFAULT_DEEPSEEK_MODEL,
+        code_cli_command,
         deepseek_api_key,
         deepseek_cli_environ,
         deepseek_code_model,
@@ -1741,17 +1738,17 @@ def _wire_deepseek_cli_credentials() -> Dict[str, Any]:
     if not selected:
         logger.info(
             "DEEPSEEK_API_KEY present but FACTORY_CODE_PROVIDER=%s — "
-            "not switching default_model off Moonshot",
+            "not switching the CLI's default_model to DeepSeek",
             provider,
         )
         return {
             "ok": True,
             "wrote": False,
             "mutated": False,
-            "reason": "deepseek key present but FACTORY_CODE_PROVIDER=kimi",
+            "reason": f"deepseek key present but FACTORY_CODE_PROVIDER={provider}",
             "provider": provider,
             "model": model,
-            "cli": "kimi",
+            "cli": code_cli_command(),
             "subprocess_env_keys": sorted(env),
         }
     dest = kimi_credentials_file()
@@ -1779,7 +1776,7 @@ def _wire_deepseek_cli_credentials() -> Dict[str, Any]:
         "reason": "deepseek wired",
         "provider": "deepseek",
         "model": model,
-        "cli": "kimi",
+        "cli": code_cli_command(),
         "path": str(dest),
         "subprocess_env_keys": sorted(env),
     }
@@ -1804,7 +1801,9 @@ def _merge_cli_credential_result(
         out["reason"] = deepseek.get("reason") or out.get("reason")
         out["provider"] = "deepseek"
     elif out.get("ok"):
-        out.setdefault("provider", "kimi")
+        from app.factory.coder import factory_code_provider
+
+        out.setdefault("provider", factory_code_provider())
     return out
 
 
