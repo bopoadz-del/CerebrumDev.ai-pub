@@ -18,7 +18,6 @@ vertical is read off the Store's own manifests (``domain_id`` /
 
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -37,7 +36,8 @@ WRITER_CANDIDATES_REL = "app/formulas/new_domain_candidates.jsonl"
 #: The Factory's record of this pass's formula findings (rework reads it).
 FORMULA_FINDINGS_REL = ".factory/writer_formula_findings.json"
 #: The product module the writer puts its formula functions in (named to it
-#: in the prompt).
+#: in the prompt). With the formula package (the parent of
+#: WRITER_DEFINITIONS_REL) this is where the H-1 reach record looks.
 FORMULAS_MODULE_REL = "app/formulas.py"
 
 
@@ -242,64 +242,6 @@ def attach_improvised_metadata(
     return {"labelled": labelled, "candidates_added": added}
 
 
-def _top_functions(tree: ast.Module) -> Dict[str, ast.AST]:
-    return {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not node.name.startswith("_")
-    }
-
-
-def _names_used(node: ast.AST) -> set:
-    """Every name ``node`` loads, reads as an attribute or imports."""
-    used: set = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Name):
-            used.add(sub.id)
-        elif isinstance(sub, ast.Attribute):
-            used.add(sub.attr)
-        elif isinstance(sub, ast.ImportFrom):
-            used |= {alias.name for alias in sub.names}
-    return used
-
-
-def unreached_formulas(product_root: Any) -> List[str]:
-    """H-1 static reach check: the public formula functions in
-    FORMULAS_MODULE_REL that no product code outside the formula module and
-    its tests uses, directly or through another formula that is used.
-
-    A formula that ships and that no route can reach is the unwired case the
-    writer-harness audit found nothing catching. This is a record, read
-    statically: a function reached only through ``getattr`` is listed too.
-    Empty when the product has no formula module or the module does not
-    parse -- absence stays absence.
-    """
-    root = Path(product_root)
-    module = root / FORMULAS_MODULE_REL
-    try:
-        tree = ast.parse(module.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, ValueError):
-        return []
-    funcs = _top_functions(tree)
-    used: set = set()
-    for path in sorted((root / "app").rglob("*.py")):
-        if path == module or "tests" in path.relative_to(root).parts:
-            continue
-        try:
-            used |= _names_used(ast.parse(path.read_text(encoding="utf-8")))
-        except (OSError, SyntaxError, ValueError):
-            continue
-    reached = {name for name in funcs if name in used}
-    frontier = sorted(reached)
-    while frontier:
-        for name in _names_used(funcs[frontier.pop()]) & set(funcs):
-            if name not in reached:
-                reached.add(name)
-                frontier.append(name)
-    return sorted(set(funcs) - reached)
-
-
 def audit_product_formulas(
     product_root: Any,
     kernel_index: Sequence[Mapping[str, Any]],
@@ -311,7 +253,7 @@ def audit_product_formulas(
     improvised label + Store candidate by construction (0555Z), runs
     :func:`writer_formula_errors`, and writes the findings to
     FORMULA_FINDINGS_REL (an empty list on a clean pass), with the H-1
-    reach record (:func:`unreached_formulas`) beside it.
+    reach record (:func:`formula_reach.formula_reach`) beside it.
     """
     root = Path(product_root)
     attach_improvised_metadata(root, kernel_index, store_index)
@@ -321,7 +263,9 @@ def audit_product_formulas(
         store_index,
         _jsonl(root / WRITER_CANDIDATES_REL),
     )
-    record = {"errors": errs, "unreached": unreached_formulas(root)}
+    from app.factory.build.formula_reach import formula_reach
+
+    record = {"errors": errs, "reach": formula_reach(root)}
     target = root / FORMULA_FINDINGS_REL
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
