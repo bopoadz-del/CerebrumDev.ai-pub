@@ -333,19 +333,53 @@ def worker_cli_path() -> Optional[str]:
     return shutil.which("codewhale")
 
 
-def worker_provider() -> str:
-    """Model provider for the headless CLI. DeepSeek by default (the CLI's
-    production provider); an operator override from the admin page wins over
-    the env, and the env over the default."""
+#: The worker's provider settings, in the order they win, and the name the
+#: provider falls back to when neither is set.
+WORKER_PROVIDER_ENV = "CODEWHALE_PROVIDER"
+WORKER_PROVIDER_ADMIN_SETTING = "admin setting coder_provider"
+WORKER_PROVIDER_DEFAULT = "deepseek"
+#: A worker provider setting outside the shared provider table: the job is
+#: refused before the CLI starts, naming the setting.
+WORKER_PROVIDER_REFUSED = "worker_provider_refused"
+
+
+def _worker_provider_setting() -> Tuple[str, str]:
+    """``(setting name, value)`` that chooses the headless CLI's provider: an
+    operator override from the admin page wins over the env, and the env
+    over the default. The value is as typed; it is not yet checked."""
     try:
         from app.core.runtime_settings import CODER_PROVIDER, get as _rt_get
 
         override = _rt_get(CODER_PROVIDER)
         if override:
-            return override
+            return WORKER_PROVIDER_ADMIN_SETTING, override
     except Exception:  # noqa: BLE001 — settings never break provider resolution
         pass
-    return os.getenv("CODEWHALE_PROVIDER", "deepseek").strip() or "deepseek"
+    env = os.getenv(WORKER_PROVIDER_ENV, "").strip()
+    if env:
+        return WORKER_PROVIDER_ENV, env
+    return "", WORKER_PROVIDER_DEFAULT
+
+
+def worker_provider() -> str:
+    """Model provider for the headless CLI: a name in the ONE shared provider
+    table (:data:`app.core.llm_config.PROVIDER_TABLE`, its one alias
+    normalised), or empty. A setting outside the table selects NO provider
+    (it never falls through to the env or the default); the job is refused
+    by :func:`worker_provider_setting_error`, the same helper the code-CLI
+    path refuses through."""
+    from app.core.llm_config import PROVIDER_TABLE, normalise_provider
+
+    name = normalise_provider(_worker_provider_setting()[1])
+    return name if name in PROVIDER_TABLE else ""
+
+
+def worker_provider_setting_error() -> str:
+    """Plain text naming the worker provider setting that is outside the
+    shared table, or empty when the provider is a table name."""
+    from app.factory.code_cli import provider_setting_refusal
+
+    return provider_setting_refusal(*_worker_provider_setting())
 
 
 def worker_api_key() -> str:
@@ -1115,8 +1149,9 @@ def _child_env(session_id: Optional[str], cli_home: Optional[str] = None) -> Dic
     resolved_key = worker_api_key()
     if resolved_key:
         extras["CODEWHALE_API_KEY"] = resolved_key
-        provider_var = f"{worker_provider().upper()}_API_KEY"
-        if provider_var.replace("_", "").isalnum():
+        provider = worker_provider()
+        provider_var = f"{provider.upper()}_API_KEY"
+        if provider and provider_var.replace("_", "").isalnum():
             extras[provider_var] = resolved_key
             provider_key = provider_var
     sid = str(session_id or "").strip()
@@ -1862,6 +1897,9 @@ def run_worker_job(
             f"{WORKER_CLI_MISSING}: codewhale executable not found — the "
             "worker cannot run headless"
         )
+    refused = worker_provider_setting_error()
+    if refused:
+        raise WorkerError(f"{WORKER_PROVIDER_REFUSED}: {refused}")
     # F-S2c: a session that runs under a slot its caller already holds (the
     # writer's own held slot, or a specialist child of it) is handed that
     # scope instead of taking a second job slot of its own.

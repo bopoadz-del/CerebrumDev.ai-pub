@@ -27,13 +27,18 @@ def test_child_env_stamps_the_configured_provider_var(monkeypatch):
     # Second generic red-first input: a NON-default provider. The stamped var is
     # derived from worker_provider() (<PROVIDER>_API_KEY), not hard-coded to
     # deepseek -- CODEWHALE_PROVIDER drives it. Red on pre-fix code (no stamp).
-    for key in (*_KEYS, "ACME_API_KEY"):
+    # Item 1c-3: the provider must be a name in the shared provider table, so
+    # the non-default input is a table name (a name outside the table now
+    # selects no provider; see test_worker_provider_table_1c3.py). The child
+    # confinement withholds that provider's own key var (agent_confine
+    # _DENIED); the CLI's own CODEWHALE_API_KEY carries the resolved key.
+    for key in (*_KEYS, "OPENROUTER_API_KEY"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("CODEWHALE_PROVIDER", "acme")
-    monkeypatch.setenv("ACME_API_KEY", "sk-stale")  # a stale provider key
+    monkeypatch.setenv("CODEWHALE_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-stale")  # a stale provider key
     monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-valid")
     env = codewhale_worker._child_env(session_id="sess_x")
-    assert env["ACME_API_KEY"] == "sk-valid"
+    assert env.get("OPENROUTER_API_KEY") != "sk-stale"
     assert env["CODEWHALE_API_KEY"] == "sk-valid"
     assert "DEEPSEEK_API_KEY" not in env  # deepseek is not the provider here
 
