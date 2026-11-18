@@ -191,11 +191,21 @@ def test_getattr_with_a_literal_name_is_decided(tmp_path, name, expected):
     [
         (
             {"app/formulas.py": "def alpha(:\n    pass\n"},
-            "product module does not parse: app/formulas.py",
+            "formula module does not parse: app/formulas.py",
         ),
         ({"app/formulas.py": None}, "no formula module"),
         ({"Dockerfile": None, "app/main.py": "app = object()\n"}, "no entry point found"),
-        ({"app/services.py": "def broken(:\n"}, "product module does not parse: app/services.py"),
+        (
+            {
+                "app/services.py": "def broken(:\n",
+                **_route("    return formulas.alpha(x)\n", "from app import formulas, services\n"),
+            },
+            "product module does not parse and reached code loads it: app/services.py",
+        ),
+        (
+            {"app/services.py": "def broken(:\n", "Procfile": "worker: python -m app.services\n"},
+            "product module does not parse and reached code loads it: app/services.py",
+        ),
     ],
 )
 def test_the_analysis_failing_is_unknown_never_clean(tmp_path, files, error):
@@ -589,3 +599,70 @@ def test_getattr_on_something_not_a_module_still_walks_its_arguments(tmp_path, b
     record = _record(tmp_path, _quotes("x: float, cfg=None", body))
     assert record["reached"] == ["app.formulas:beta"]
     assert record["undecided"] == []
+
+
+@pytest.mark.parametrize(
+    ("prefix", "encoding"),
+    [
+        (b"\xef\xbb\xbf", "utf-8"),
+        (b"# -*- coding: latin-1 -*-\n", "latin-1"),
+        (b"# coding: cp1252\n", "cp1252"),
+    ],
+)
+def test_a_module_is_read_the_way_python_reads_it(tmp_path, prefix, encoding):
+    """H-1c (a): a byte-order mark or a declared encoding is honoured; the
+    product is analysed, not unknown."""
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_route("    return formulas.alpha(x)\n")})
+    body = "NOTE = 'café'\n\n\ndef alpha(x):\n    return x * 2\n\n\ndef beta(x):\n    return x + 1\n"
+    (root / "app/formulas.py").write_bytes(prefix + body.encode(encoding))
+    record = formula_reach(root)
+    assert record["status"] == "analysed", record
+    assert record["reached"] == ["app.formulas:alpha"]
+    assert record["unreached"] == ["app.formulas:beta"]
+    assert record["unparsed"] == []
+
+
+@pytest.mark.parametrize(
+    ("files", "unparsed"),
+    [
+        ({"app/scratch.py": b"def broken(:\n"}, ["app/scratch.py (SyntaxError)"]),
+        (
+            {"app/old/__init__.py": b"", "app/old/a.py": b"x = (\n", "app/old/b.py": b"\xff\xfe = 1\n"},
+            ["app/old/a.py (SyntaxError)", "app/old/b.py (SyntaxError)"],
+        ),
+    ],
+)
+def test_an_unparsed_module_nothing_reached_loads_keeps_reach_decidable(tmp_path, files, unparsed):
+    """H-1c (b): a module no reached code imports and no target runs never
+    runs from an entry point, so it is listed, not a reason for unknown."""
+    root = _write(tmp_path, {**_SERVER, **_MAIN, **_FORMULAS, **_route("    return formulas.beta(x)\n")})
+    for rel, data in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    record = formula_reach(root)
+    assert record["status"] == "analysed", record
+    assert record["reached"] == ["app.formulas:beta"]
+    assert record["unreached"] == ["app.formulas:alpha"]
+    assert record["unparsed"] == unparsed
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "from app import formulas\nfrom app.old import a\n",
+        "from app import formulas\nimport importlib\nimportlib.import_module('app.old.a')\n",
+    ],
+)
+def test_an_unparsed_module_reached_code_loads_is_unknown(tmp_path, imports):
+    """H-1c (b): a reached import of a module that does not parse leaves
+    reach undecidable: what that module would call is unknown."""
+    files = {
+        **_SERVER, **_MAIN, **_FORMULAS,
+        **_route("    return formulas.beta(x)\n", imports),
+        "app/old/__init__.py": "",
+        "app/old/a.py": "x = (\n",
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "unknown"
+    assert "reached code loads it: app/old/a.py (SyntaxError)" in record["analysis_error"]
+    assert record["unreached"] is None
