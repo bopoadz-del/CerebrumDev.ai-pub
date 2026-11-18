@@ -666,3 +666,13 @@ def record_writer_run(state: Dict[str, Any], *, provider: str, model: str) -> No
     """Record the provider and model the writer's run receipt reported, as
     reported (an empty value stays empty; the grader refuses it)."""
     state[WRITER_RUN_STATE_KEY] = {"provider": str(provider or "").strip(), "model": str(model or "").strip()}
+
+
+def clear_writer_run(state: Dict[str, Any]) -> None:
+    """Drop the recorded writer run before a writer pass is launched.
+
+    A pass that fails before its receipt is read must not leave the earlier
+    pass's record standing as the identity the grader checks: with no record
+    the grader refuses the build (WK-1), it never grades a stale one.
+    """
+    state.pop(WRITER_RUN_STATE_KEY, None)

@@ -762,3 +762,93 @@ def test_dns_probe_records_every_failure_shape(monkeypatch, tmp_path, patch, nee
     result = _dns_probe(tmp_path, {"PATH": "/usr/bin"})
     assert "_probe_error" in result
     assert needle in result["_probe_error"]
+
+
+@pytest.mark.parametrize(
+    "first_model, failure",
+    [("pass-one-model", "worker_exec_failed: nope"), ("other/pass-one", "worker_exec_failed: exit 9")],
+)
+def test_a_failed_second_pass_leaves_no_run_record(tmp_path, monkeypatch, first_model, failure):
+    """WK-1c: the run record is cleared before each writer launch. A rework
+    pass that fails must not leave the first pass's record standing as the
+    identity the grader checks."""
+    from app.factory.build.writer_prompt import WRITER_RUN_STATE_KEY
+
+    ctx = _ctx(tmp_path)
+    _plant_authored_handler(tmp_path / "build")
+    runs = {"n": 0}
+
+    def first_ok_then_fail(prompt, dest, **kwargs):
+        runs["n"] += 1
+        if runs["n"] > 1:
+            raise WorkerError(failure)
+        return _receipt(tools=[{"tool": "write", "path": "app/actions/cap.py"}], model=first_model)
+
+    monkeypatch.setattr("app.factory.build.codewhale_worker.run_worker_job", first_ok_then_fail)
+    assert _run_writer_via_codewhale_worker(ctx).ok is True
+    assert ctx.state[WRITER_RUN_STATE_KEY]["model"] == first_model
+
+    with pytest.raises(RoleError):
+        _run_writer_via_codewhale_worker(ctx)
+    assert WRITER_RUN_STATE_KEY not in ctx.state
+
+
+@pytest.mark.parametrize(
+    "requested, ran",
+    [("requested-model-a", "routed-model-b"), ("vendor/requested-c", "vendor/fallback-d")],
+)
+def test_the_receipt_model_is_recorded_when_it_differs_from_the_requested_one(
+    tmp_path, monkeypatch, requested, ran
+):
+    """WK-1: the worker is started with the configured model named, and the
+    build records the model the run's receipt reported -- not the one asked
+    for -- when the two differ."""
+    import io
+    import json as _json
+
+    from app.factory import code_cli
+    from app.factory.build import codewhale_worker
+    from app.factory.build.tenant_bind import bind_tenant_store
+    from app.factory.build.writer_prompt import WRITER_RUN_STATE_KEY
+
+    ctx = _ctx(tmp_path)
+    ctx.state["tenant_store"] = bind_tenant_store("acct-receipt-model")
+    _plant_authored_handler(tmp_path / "build")
+    argv_seen = {}
+
+    class _Proc:
+        def __init__(self, argv):
+            summary = {
+                "status": "completed",
+                "termination_reason": "resolved",
+                "provider": "writerco",
+                "model": ran,
+                "tools": [{"tool": "write", "path": "app/actions/cap.py"}],
+            }
+            self.stdout = io.StringIO(_json.dumps(summary) + "\n")
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 9
+
+    def fake_popen(argv, **kwargs):
+        # Only the writer CLI's own start; later spawns of the pass are not it.
+        if list(argv)[:1] == ["codewhale"]:
+            argv_seen.setdefault("argv", list(argv))
+        return _Proc(argv)
+
+    monkeypatch.setattr(codewhale_worker, "worker_cli_path", lambda: "codewhale")
+    monkeypatch.setattr(codewhale_worker, "worker_api_key", lambda: "sk-test")
+    monkeypatch.setattr(codewhale_worker, "worker_provider", lambda: "writerco")
+    monkeypatch.setattr(code_cli, "deepseek_code_model", lambda: requested)
+    monkeypatch.setattr(codewhale_worker.subprocess, "Popen", fake_popen)
+
+    _run_writer_via_codewhale_worker(ctx)
+
+    argv = argv_seen["argv"]
+    assert argv[argv.index("--model") + 1] == requested
+    assert ctx.state[WRITER_RUN_STATE_KEY] == {"provider": "writerco", "model": ran}
