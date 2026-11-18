@@ -1453,3 +1453,42 @@ def test_the_cloner_records_the_store_knowledge_schema(tmp_path, n_packs):
     record = result.notes["knowledge_schema"]
     assert record["recorded"] is True
     assert (record["packs"], record["formulas"]) == (n_packs, n_packs)
+
+
+def _clone_ids(tmp_path: Path, store: Path, block_ids, lock_ids=(), state=None):
+    """Run the CLONER on ``block_ids`` with a lock generated for ``lock_ids``."""
+    from app.factory.blocks_lock import generate_lock
+
+    ws = RoleWorkspace(BuildRole.CLONER, tmp_path / "build")
+    ctx = RoleContext(
+        role=BuildRole.CLONER,
+        workspace=ws,
+        blueprint=None,
+        plan=None,
+        blocks_root=store,
+        blocks_lock=generate_lock(store, consumed_ids=tuple(lock_ids)),
+        state={"resolved_blocks": tuple(block_ids)} if state is None else state,
+    )
+    return ws, run_cloner(ctx)
+
+
+@pytest.mark.parametrize("state", [{"resolved_blocks": ()}, {}])
+def test_a_plan_with_no_blocks_vendors_nothing_and_writes_no_lockfile(tmp_path, state):
+    """No resolved blocks (empty or absent): CLONER says so and invents no empty lockfile."""
+    store = _faux_store(tmp_path)
+    ws, result = _clone_ids(tmp_path, store, block_ids=(), state=state)
+    assert result.ok, result.detail
+    assert result.detail == "no blocks to vendor"
+    assert tuple(result.vendored_blocks) == ()
+    assert not (ws.destination / "blocks.lock.json").exists()
+    assert "lock" not in (result.notes or {})
+
+
+@pytest.mark.parametrize("ghost", ["ghost_block", "never_registered"])
+def test_a_block_the_store_has_no_source_for_is_refused_by_name(tmp_path, ghost):
+    """A resolved block with no Store source fails CLONER and is named; nothing is invented."""
+    store = _faux_store(tmp_path)
+    with pytest.raises(RoleError, match="no source found") as err:
+        _clone_ids(tmp_path, store, block_ids=("greeting", ghost), lock_ids=("greeting",))
+    assert ghost in str(err.value)
+    assert "greeting" not in str(err.value).split("do not invent:")[-1]
