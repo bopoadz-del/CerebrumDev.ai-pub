@@ -4063,10 +4063,13 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
         locked_blocks=image_locked_entries(product_tree),
         dispatched_specialists=dispatched_specialists() if fanout_on else (),
     )
-    from app.factory.build.writer_prompt import record_writer_dispatch
+    from app.factory.build.writer_prompt import clear_writer_run, record_writer_dispatch
 
     # FG-4: what the writer is told, recorded here for the grader.
     record_writer_dispatch(ctx.state, supplied=str(ctx.state.get("brief") or ""), brief=brief, prompt=prompt)
+    # WK-1c: no earlier pass's run record survives into this pass; only this
+    # pass's receipt, read below, records what ran.
+    clear_writer_run(ctx.state)
     # The Factory-owned files are read-only for the pass (factory_owned.lock);
     # their modes come back however the pass ends.
     owned_modes: Dict[str, int] = {}

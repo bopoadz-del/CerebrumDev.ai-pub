@@ -1296,7 +1296,7 @@ export function Floor({
           )}
           {(liveCoderBuild?.not_delivered?.length ?? 0) > 0 && (
             <p className="coder-not-delivered-line" data-testid="floor-not-delivered-line">
-              Not delivered:{' '}
+              Not delivered (Store-block repair failures):{' '}
               {liveCoderBuild!
                 .not_delivered!.map(
                   (row) => `${row.capabilities.join(', ')} (Store block ${row.block_id}: ${row.reason || 'repair failed'})`,

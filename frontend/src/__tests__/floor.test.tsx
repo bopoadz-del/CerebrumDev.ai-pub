@@ -1599,7 +1599,9 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_not_delivered" goPlatforms={() => {}} />)
 
     const line = await screen.findByTestId('floor-not-delivered-line')
-    expect(line).toHaveTextContent('Not delivered: cap_one, cap_two (Store block blk_a: repair failed its exam)')
+    expect(line).toHaveTextContent(
+      'Not delivered (Store-block repair failures): cap_one, cap_two (Store block blk_a: repair failed its exam)',
+    )
   })
 
   it('shows no not-delivered line when nothing is marked', async () => {

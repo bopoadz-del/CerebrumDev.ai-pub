@@ -105,3 +105,35 @@ class _E:
 )
 def test_only_store_defect_notes_are_read(payload):
     assert not_delivered([_E(payload), _E(None)]) == []
+
+
+@pytest.mark.parametrize(
+    "session_id, block_id, caps",
+    [("sess_nd_http_a", "blk_a", ("cap_one", "cap_two")), ("sess_nd_http_b", "blk_b", ("cap_three",))],
+)
+def test_the_not_delivered_key_reaches_the_build_status_route(tmp_path, monkeypatch, session_id, block_id, caps):
+    """The HTTP route the Floor polls carries the same rows build_status reads."""
+    from fastapi.testclient import TestClient
+
+    from app.core.auth import DEV_LOCAL_TENANT
+    from app.core.session_store import create_session, get_session, update_session
+    from app.main import app
+
+    monkeypatch.setenv("ENV", "test")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    out = tmp_path / "out"
+    out.mkdir()
+    ledger = _ledger(out)
+    ledger.append(EventKind.NOTE, payload=_failed(block_id, caps).note(1))
+    create_session(session_id, DEV_LOCAL_TENANT)
+    state = get_session(session_id)
+    state.product_design.generation = {"output_dir": str(out), "product_id": "p"}
+    update_session(session_id, state)
+
+    res = TestClient(app).get(f"/v1/sessions/{session_id}/product/build-status")
+
+    assert res.status_code == 200, res.text
+    assert res.json()["build"]["not_delivered"] == [
+        {"block_id": block_id, "capabilities": list(caps), "reason": REPAIR_FAILED_REASON}
+    ]
