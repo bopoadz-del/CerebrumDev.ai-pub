@@ -405,13 +405,10 @@ _APP = Path(__file__).resolve().parents[2] / "app"
 #: one alias, and the retired vendor's names.
 _VOCAB = frozenset(PROVIDER_TABLE) | {"anthropic", "kimi", "moonshot"}
 
-#: Second lists that exist on the base branch and are removed by the next PR
-#: (item 1c: the coding-CLI vehicle and the admin coder picker). Each entry
-#: must STILL trip the scan, so this set can only shrink.
-_PENDING_1C = {
-    ("factory/code_cli.py", "factory_code_provider"),
-    ("routers/admin_ops.py", "<module>"),
-}
+#: Second lists still pending removal. Item 1c (the coding-CLI vehicle and
+#: the admin coder picker) emptied it; each entry must STILL trip the scan,
+#: so this set can only shrink and stays empty.
+_PENDING_1C: set = set()
 
 
 def _enclosing(tree: ast.AST) -> dict:
@@ -544,21 +541,11 @@ def test_the_app_start_runs_the_boot_validation_first(monkeypatch, name):
 #: The retired vendor's names (the same two the table refuses above).
 _RETIRED = frozenset({"kimi", "moonshot"})
 
-#: Bare retired-name constants that exist on the base branch inside the
-#: item-1c files (the coding-CLI vehicle, its session wiring and the admin
-#: coder picker). Each entry must STILL trip the scan, so this set can only
-#: shrink; item 1c empties it.
-_PENDING_1C_RETIRED = {
-    ("factory/build/coder_session.py", "cli_unavailable_detail"),
-    ("factory/build/coder_session.py", "cli_no_model_detail"),
-    ("factory/build/coder_session.py", "cli_credentials_missing_detail"),
-    ("factory/build/coder_session.py", "_wire_deepseek_cli_credentials"),
-    ("factory/build/coder_session.py", "_merge_cli_credential_result"),
-    ("factory/code_cli.py", "<module>"),
-    ("factory/code_cli.py", "is_kimi_code_cli"),
-    ("factory/code_cli.py", "factory_code_provider"),
-    ("routers/admin_ops.py", "<module>"),
-}
+#: Bare retired-name constants still pending removal. Item 1c (the
+#: coding-CLI vehicle, its session wiring and the admin coder picker) emptied
+#: it; each entry must STILL trip the scan, so this set can only shrink and
+#: stays empty.
+_PENDING_1C_RETIRED: set = set()
 
 
 def _retired_constants(root: Path) -> set:

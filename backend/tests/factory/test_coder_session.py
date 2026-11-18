@@ -1064,12 +1064,24 @@ def _require_cli(monkeypatch) -> None:
     monkeypatch.delenv("FACTORY_BRIEF_DISPATCH", raising=False)
     for name in CURSOR_KEY_ENVS:
         monkeypatch.delenv(name, raising=False)
+    # Item 1c: a CLI authenticates only through a provider in the shared
+    # table, so the fake CLI is given one (not DeepSeek: no key here).
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("FACTORY_CODE_PROVIDER", "openrouter")
+
+
+def _no_table_provider(monkeypatch) -> None:
+    """No provider from the shared table and no DeepSeek key: the CLI would
+    have to authenticate outside the table, which is refused."""
+    monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
 
 def test_dispatch_kimi_without_config_toml_fail_closed(tmp_path, monkeypatch):
     """Binary on PATH + no config.toml must not open a WRITER CLI session."""
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "no-kimi-home"))
     monkeypatch.delenv("KIMI_CODE_API_KEY", raising=False)
@@ -1093,7 +1105,7 @@ def test_dispatch_kimi_without_config_toml_fail_closed(tmp_path, monkeypatch):
     assert result.via == "unavailable"
     assert result.blocker == NAMED_BLOCKER_CLI_CREDS
     assert NAMED_BLOCKER_CLI_CREDS in result.detail
-    assert "credentials_file_present=false" in result.detail
+    assert "FACTORY_CODE_PROVIDER" in result.detail
     assert oneshot == []
     assert ran == [], "missing credentials must not start FACTORY_CODE_CLI"
     receipt = json.loads(
@@ -1207,7 +1219,9 @@ def test_dispatch_cli_other_nonzero_stays_failed(tmp_path, monkeypatch):
     assert result.kept_handler_ids == []
 
 
-def test_dispatch_kimi_with_config_toml_credentials_ok(tmp_path, monkeypatch):
+def test_dispatch_with_vendor_config_toml_passes_no_vendor_model(tmp_path, monkeypatch):
+    """A table provider authenticates the CLI; the retired vendor's
+    config.toml model is never passed to it (item 1c)."""
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
@@ -1232,13 +1246,14 @@ def test_dispatch_kimi_with_config_toml_credentials_ok(tmp_path, monkeypatch):
     assert cli_credentials_ok() is True
     assert cli_default_model_ok() is True
     log = read_log_tail(tmp_path / "build")
-    assert "--model" in log
-    assert DEFAULT_KIMI_CODE_MODEL in log
+    assert "--model" not in log
+    assert DEFAULT_KIMI_CODE_MODEL not in log
 
 
 def test_probe_code_cli_reports_credentials_missing(tmp_path, monkeypatch):
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "empty-kimi-home"))
     probe = probe_code_cli()
@@ -1308,6 +1323,7 @@ def test_start_runner_build_refuses_when_credentials_missing(tmp_path, monkeypat
 
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "no-kimi-home"))
     root = Path(__file__).resolve().parents[3]
@@ -1325,6 +1341,7 @@ def test_approve_and_generate_names_credentials_class_without_takeover(
 
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "no-kimi-home"))
     root = Path(__file__).resolve().parents[3]
@@ -1350,10 +1367,12 @@ def test_approve_and_generate_names_credentials_class_without_takeover(
     assert NAMED_BLOCKER_CLI_CREDS in (state.product_design.last_error or "")
 
 
-def test_dispatch_credentials_only_toml_is_no_model_preflight(tmp_path, monkeypatch):
-    """Live shape: file present, no default_model — never open WRITER CLI."""
+def test_dispatch_credentials_only_toml_is_not_a_credential_source(tmp_path, monkeypatch):
+    """A vendor credentials file with no table provider never opens the
+    WRITER CLI: it is refused as credentials missing (item 1c)."""
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
@@ -1377,23 +1396,24 @@ def test_dispatch_credentials_only_toml_is_no_model_preflight(tmp_path, monkeypa
     result = dispatch_compiled_brief(ctx, compiled)
     assert result.ok is False
     assert result.via == "unavailable"
-    assert result.blocker == NAMED_BLOCKER_CLI_NO_MODEL
-    assert "credentials_file_present=true" in result.detail
-    assert "default_model" in result.detail
+    assert result.blocker == NAMED_BLOCKER_CLI_CREDS
+    assert "FACTORY_CODE_PROVIDER" in result.detail
+    assert "config file is not a credential source" in result.detail
     assert oneshot == []
-    assert ran == [], "NO_MODEL preflight must not start FACTORY_CODE_CLI"
+    assert ran == [], "credentials preflight must not start FACTORY_CODE_CLI"
     receipt = json.loads(
         (tmp_path / "build" / "docs" / "coder_receipt.json").read_text(encoding="utf-8")
     )
-    assert receipt["blocker"] == NAMED_BLOCKER_CLI_NO_MODEL
+    assert receipt["blocker"] == NAMED_BLOCKER_CLI_CREDS
     log = read_log_tail(tmp_path / "build")
-    assert NAMED_BLOCKER_CLI_NO_MODEL in log
+    assert NAMED_BLOCKER_CLI_CREDS in log
     assert "falling back to HTTP oneshot" not in log
 
 
-def test_probe_code_cli_reports_no_model_when_default_missing(tmp_path, monkeypatch):
+def test_probe_code_cli_reports_a_vendor_file_as_credentials_missing(tmp_path, monkeypatch):
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
@@ -1402,31 +1422,32 @@ def test_probe_code_cli_reports_no_model_when_default_missing(tmp_path, monkeypa
     probe = probe_code_cli()
     assert probe["available"] is True
     assert probe["credentials_file_present"] is True
-    assert probe["default_model_configured"] is False
-    assert probe["blocker"] == NAMED_BLOCKER_CLI_NO_MODEL
-    assert NAMED_BLOCKER_CLI_NO_MODEL in probe["error"]
+    assert probe["requires_kimi_credentials"] is True
+    assert probe["blocker"] == NAMED_BLOCKER_CLI_CREDS
+    assert NAMED_BLOCKER_CLI_CREDS in probe["error"]
 
 
-def test_raise_if_cli_session_unready_names_no_model(tmp_path, monkeypatch):
+def test_raise_if_cli_session_unready_refuses_a_vendor_file(tmp_path, monkeypatch):
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
     (home / "config.toml").write_text(_credentials_only_toml(), encoding="utf-8")
     monkeypatch.setenv("KIMI_CODE_HOME", str(home))
-    assert cli_credentials_ok() is True
-    assert cli_default_model_ok() is False
-    with pytest.raises(CodeCliNoModelConfigured, match=NAMED_BLOCKER_CLI_NO_MODEL):
+    assert cli_credentials_ok() is False
+    with pytest.raises(CodeCliCredentialsMissing, match=NAMED_BLOCKER_CLI_CREDS):
         raise_if_cli_session_unready()
 
 
-def test_start_runner_build_refuses_when_default_model_missing(tmp_path, monkeypatch):
+def test_start_runner_build_refuses_a_vendor_file_without_a_provider(tmp_path, monkeypatch):
     from app.factory.build_jobs import start_runner_build
     from app.factory.blueprint import load_blueprint
 
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
@@ -1434,12 +1455,12 @@ def test_start_runner_build_refuses_when_default_model_missing(tmp_path, monkeyp
     monkeypatch.setenv("KIMI_CODE_HOME", str(home))
     root = Path(__file__).resolve().parents[3]
     bp = load_blueprint(root / "blueprints/examples/runner_smoke.yaml")
-    with pytest.raises(CodeCliNoModelConfigured, match=NAMED_BLOCKER_CLI_NO_MODEL):
+    with pytest.raises(CodeCliCredentialsMissing, match=NAMED_BLOCKER_CLI_CREDS):
         start_runner_build(bp, tmp_path / "out")
     assert not (tmp_path / "out" / "build_ledger.jsonl").exists()
 
 
-def test_approve_and_generate_names_no_model_class_without_takeover(
+def test_approve_and_generate_refuses_a_vendor_file_without_takeover(
     tmp_path, monkeypatch
 ):
     from app.factory import platform_chat_flow
@@ -1447,6 +1468,7 @@ def test_approve_and_generate_names_no_model_class_without_takeover(
 
     script = _fake_kimi(tmp_path)
     _require_cli(monkeypatch)
+    _no_table_provider(monkeypatch)
     monkeypatch.setenv("FACTORY_CODE_CLI", str(script))
     home = tmp_path / "kimi-home"
     home.mkdir()
@@ -1467,12 +1489,12 @@ def test_approve_and_generate_names_no_model_class_without_takeover(
     result = platform_chat_flow.approve_and_generate(state, output_root=tmp_path)
     assert result["ok"] is False
     assert result["sse"] == "error"
-    assert result["blocker"] == NAMED_BLOCKER_CLI_NO_MODEL
-    assert NAMED_BLOCKER_CLI_NO_MODEL in result["summary"]
+    assert result["blocker"] == NAMED_BLOCKER_CLI_CREDS
+    assert NAMED_BLOCKER_CLI_CREDS in result["summary"]
     assert "never opened" in result["summary"]
     assert "taken over" not in result["summary"].lower()
     assert state.product_design.generation is None
-    assert NAMED_BLOCKER_CLI_NO_MODEL in (state.product_design.last_error or "")
+    assert NAMED_BLOCKER_CLI_CREDS in (state.product_design.last_error or "")
 
 
 def test_run_writer_raises_on_no_model_when_inventory_gaps(tmp_path, monkeypatch):

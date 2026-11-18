@@ -26,11 +26,16 @@ DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DEEPSEEK_CODE_MODEL_ENV = "DEEPSEEK_CODE_MODEL"
 DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
 
-DEFAULT_KIMI_CLI = "kimi"
+#: No coding CLI is assumed. The operator names the binary in
+#: ``FACTORY_CODE_CLI`` (or the legacy ``KIMI_CODE_CLI``); with neither set the
+#: command is empty and the operator text names those settings. The retired
+#: vendor is never a default (owner rule F-K1), and the production writer is
+#: the CodeWhale worker, not this seam.
+DEFAULT_CODE_CLI = ""
 #: The config.toml provider table for DeepSeek under Kimi Code.
 PROVIDER_DEEPSEEK = "deepseek"
-#: DeepSeek's vehicle is Kimi Code CLI — never Claude Code.
-DEFAULT_DEEPSEEK_CLI = "kimi"
+#: The DeepSeek vehicle has no default either: the same empty command.
+DEFAULT_DEEPSEEK_CLI = DEFAULT_CODE_CLI
 
 #: DeepSeek model id the headless CodeWhale CLI actually serves. ``v4-pro``
 #: was the previous default and it hung every coder call (live 2026-10-02:
@@ -69,10 +74,6 @@ def is_claude_code_cli(command: Optional[str] = None) -> bool:
     return "claude" in _cli_basename(command or "")
 
 
-def is_kimi_code_cli(command: Optional[str] = None) -> bool:
-    return "kimi" in _cli_basename(command or "")
-
-
 def deepseek_api_key() -> str:
     return os.getenv(DEEPSEEK_API_KEY_ENV, "").strip()
 
@@ -80,29 +81,46 @@ def deepseek_api_key() -> str:
 def factory_code_provider() -> str:
     """Who authenticates FACTORY_CODE_CLI. Not the Floor chat LLM.
 
-    Explicit ``FACTORY_CODE_PROVIDER`` wins. Otherwise:
-    * ``DEEPSEEK_API_KEY`` (or provider=deepseek) selects DeepSeek under
-      Kimi Code CLI — even when ``FACTORY_CODE_CLI=kimi``.
-    * ``FACTORY_CODE_PROVIDER=kimi`` keeps the historical Moonshot path
-      even when a DeepSeek key is also set.
-    * a leftover ``claude`` binary without DeepSeek is Anthropic-native
-      (unused for Factory DeepSeek coding).
-    * otherwise Kimi (historical default).
+    Every answer is a name in the shared provider table
+    (:data:`app.core.llm_config.PROVIDER_TABLE`), or empty when none is
+    configured:
+    * an explicit ``FACTORY_CODE_PROVIDER`` that the table knows wins (the
+      table's one alias is normalised);
+    * otherwise ``DEEPSEEK_API_KEY`` selects DeepSeek;
+    * otherwise a ``claude`` binary is Anthropic-native;
+    * otherwise empty. A name outside the table (a retired vendor included)
+      is never returned and never a default: the operator text names the
+      settings to set (see :func:`code_provider_setting_error`).
     """
-    explicit = os.getenv(CODE_PROVIDER_ENV, "").strip().lower()
-    if explicit == "moonshot":
-        return "kimi"
-    if explicit in {"deepseek", "kimi", "claude"}:
+    from app.core.llm_config import PROVIDER_TABLE, normalise_provider
+
+    explicit = normalise_provider(os.getenv(CODE_PROVIDER_ENV, ""))
+    if explicit in PROVIDER_TABLE:
         return explicit
     if deepseek_api_key():
-        return "deepseek"
+        return PROVIDER_DEEPSEEK
     cli = (
         os.getenv(CODE_CLI_ENV, "").strip()
         or os.getenv(LEGACY_CODE_CLI_ENV, "").strip()
     )
     if cli and is_claude_code_cli(cli):
         return "claude"
-    return "kimi"
+    return ""
+
+
+def code_provider_setting_error() -> str:
+    """Plain text when ``FACTORY_CODE_PROVIDER`` names a provider the shared
+    table does not know; empty when it is unset or a table name. Names the
+    setting and the accepted names, never a secret."""
+    from app.core.llm_config import PROVIDER_TABLE, normalise_provider
+
+    raw = os.getenv(CODE_PROVIDER_ENV, "").strip()
+    if not raw or normalise_provider(raw) in PROVIDER_TABLE:
+        return ""
+    return (
+        f"{CODE_PROVIDER_ENV}={raw} is not a provider in the shared table; "
+        f"set it to one of {', '.join(sorted(PROVIDER_TABLE))} or unset it"
+    )
 
 
 def deepseek_coder_selected(command: Optional[str] = None) -> bool:
@@ -110,14 +128,12 @@ def deepseek_coder_selected(command: Optional[str] = None) -> bool:
     if factory_code_provider() == "deepseek":
         return True
     cli = (command or "").strip()
-    if cli and is_kimi_code_cli(cli):
-        return False
     if cli and is_claude_code_cli(cli) and (
         deepseek_api_key()
         or os.getenv(CODE_PROVIDER_ENV, "").strip().lower() == "deepseek"
     ):
         # Leftover Claude binary name — still DeepSeek-selected, but
-        # ``code_cli_command`` remaps the vehicle to kimi.
+        # ``code_cli_command`` does not hand DeepSeek to Claude Code.
         return True
     return False
 
@@ -125,22 +141,21 @@ def deepseek_coder_selected(command: Optional[str] = None) -> bool:
 def code_cli_command(default: Optional[str] = None) -> str:
     """The agentic coder CLI to invoke. FACTORY_CODE_CLI wins, then legacy.
 
-    When neither CLI name is set, DeepSeek V4 Pro defaults to ``kimi``.
-    Leftover ``FACTORY_CODE_CLI=claude`` while DeepSeek is selected is
-    remapped to ``kimi`` (Claude Code is not the DeepSeek vehicle).
+    With neither set the command is ``default`` when given, else empty: no
+    binary is assumed. A leftover ``FACTORY_CODE_CLI=claude`` while DeepSeek
+    is selected is not used either (Claude Code is not the DeepSeek vehicle),
+    so the command is empty and the operator text names the setting.
     """
     explicit = os.getenv(CODE_CLI_ENV, "").strip() or os.getenv(
         LEGACY_CODE_CLI_ENV, ""
     ).strip()
     if explicit:
-        if factory_code_provider() == "deepseek" and is_claude_code_cli(explicit):
+        if factory_code_provider() == PROVIDER_DEEPSEEK and is_claude_code_cli(explicit):
             return DEFAULT_DEEPSEEK_CLI
         return explicit
     if default is not None:
         return default
-    if factory_code_provider() == "deepseek":
-        return DEFAULT_DEEPSEEK_CLI
-    return DEFAULT_KIMI_CLI
+    return DEFAULT_CODE_CLI
 
 
 def normalize_deepseek_model(model: str) -> str:

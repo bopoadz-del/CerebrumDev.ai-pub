@@ -13,9 +13,9 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.auth import Principal, require_master_key
@@ -25,10 +25,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-#: Providers the headless coder CLI is known to accept. The model is free text
-#: (the operator names the exact id their provider serves), but the provider is
-#: a short known set so the picker can offer it.
-KNOWN_PROVIDERS = ("deepseek", "openrouter", "anthropic", "kimi")
+def _provider_options() -> List[str]:
+    """The picker's provider options: the shared provider table's names
+    (WK-2), never a second list. The model is free text (the operator names
+    the exact id their provider serves)."""
+    from app.core.llm_config import PROVIDER_TABLE
+
+    return sorted(PROVIDER_TABLE)
+
+
+def _provider_refusal(value: str) -> str:
+    """Empty when ``value`` is blank (clears the override) or a table name
+    (its alias included); otherwise the plain reason it is refused."""
+    from app.core.llm_config import PROVIDER_TABLE, normalise_provider
+
+    if not value.strip() or normalise_provider(value) in PROVIDER_TABLE:
+        return ""
+    return (
+        f"provider {value.strip()!r} is not in the shared provider table; "
+        f"choose one of {', '.join(_provider_options())}"
+    )
 
 
 class CoderModelBody(BaseModel):
@@ -51,7 +67,7 @@ def get_coder_model(_admin: Principal = Depends(require_master_key)) -> Dict[str
         "ok": True,
         "effective": _effective(),
         "overrides": overrides,
-        "provider_options": list(KNOWN_PROVIDERS),
+        "provider_options": _provider_options(),
         "note": "model is the exact id your provider serves; API keys stay in the deploy env",
     }
 
@@ -62,6 +78,9 @@ def set_coder_model(
 ) -> Dict[str, Any]:
     """Set (or clear, with a blank value) the coder model and/or provider. Takes
     effect on the NEXT build — no redeploy. A blank field clears that override."""
+    refusal = _provider_refusal(body.provider) if body.provider is not None else ""
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
     changed = []
     if body.model is not None:
         runtime_settings.set_value(runtime_settings.CODER_MODEL, body.model)

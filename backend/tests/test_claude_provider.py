@@ -322,7 +322,7 @@ def test_code_cli_prefers_the_provider_agnostic_name(monkeypatch):
     monkeypatch.delenv("KIMI_CODE_CLI", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
-    assert code_cli_command() == "kimi"
+    assert code_cli_command() == ""  # item 1c: no binary is assumed
 
     # Backwards compatibility: existing deployments keep working untouched.
     monkeypatch.setenv("KIMI_CODE_CLI", "/opt/kimi")
@@ -333,7 +333,7 @@ def test_code_cli_prefers_the_provider_agnostic_name(monkeypatch):
     assert code_cli_command() == "/usr/bin/claude"
 
 
-def test_code_cli_defaults_to_kimi_when_deepseek_key_present(monkeypatch):
+def test_code_cli_has_no_default_when_deepseek_key_present(monkeypatch):
     from app.factory.coder import code_cli_command, factory_code_provider
 
     monkeypatch.delenv("FACTORY_CODE_CLI", raising=False)
@@ -341,12 +341,13 @@ def test_code_cli_defaults_to_kimi_when_deepseek_key_present(monkeypatch):
     monkeypatch.delenv("FACTORY_CODE_PROVIDER", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", _GENERATED_KEY_1)
     assert factory_code_provider() == "deepseek"
-    assert code_cli_command() == "kimi"
-    monkeypatch.setenv("FACTORY_CODE_CLI", "kimi")
-    assert code_cli_command() == "kimi"
+    assert code_cli_command() == ""
+    monkeypatch.setenv("FACTORY_CODE_CLI", "/opt/coder")
+    assert code_cli_command() == "/opt/coder"
     assert factory_code_provider() == "deepseek"
+    # A retired provider name is never selected; the key still decides.
     monkeypatch.setenv("FACTORY_CODE_PROVIDER", "kimi")
-    assert factory_code_provider() == "kimi"
+    assert factory_code_provider() == "deepseek"
 
 
 def test_supported_providers_include_cursor():
