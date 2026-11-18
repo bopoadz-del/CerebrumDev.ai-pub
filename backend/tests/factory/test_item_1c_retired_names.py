@@ -155,6 +155,37 @@ def test_cli_requires_kimi_credentials_means_outside_the_table(
 
 
 @pytest.mark.parametrize(
+    "setting",
+    ["", *sorted(PROVIDER_TABLE), "anthropic", "DeepSeek", " deepseek ", "kimi", "qwen"],
+)
+@pytest.mark.parametrize("key", [False, True])
+@pytest.mark.parametrize("env_cli", ["", "/usr/bin/claude", "/opt/coder"])
+def test_deepseek_selected_always_implies_a_table_provider(
+    monkeypatch, setting, key, env_cli
+):
+    """The behaviour CI-M-a's ``drop_rule`` survivor is judged against: for
+    every input, DeepSeek selected implies a non-empty table provider, so
+    ``cli_requires_kimi_credentials`` equals ``not selected and not provider``
+    and equals ``not provider`` alone. Both forms are pinned, over every
+    table name, unknown names, key present or absent, and claude or other
+    commands (argument and setting)."""
+    _clean(monkeypatch)
+    if setting:
+        monkeypatch.setenv("FACTORY_CODE_PROVIDER", setting)
+    if key:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", _key())
+    if env_cli:
+        monkeypatch.setenv("FACTORY_CODE_CLI", env_cli)
+    for command in (None, "", "/usr/bin/claude", "/opt/coder"):
+        selected = code_cli.deepseek_coder_selected(command)
+        provider = code_cli.factory_code_provider()
+        assert not selected or provider, (setting, key, env_cli, command)
+        required = coder_session.cli_requires_kimi_credentials(command)
+        assert required is (not selected and not provider)
+        assert required is (not provider)
+
+
+@pytest.mark.parametrize(
     "provider, key, expected",
     [("", False, False), ("claude", False, True), ("deepseek", False, False), ("deepseek", True, True)],
 )

@@ -643,19 +643,30 @@ _REPO = Path(__file__).resolve().parents[3]
 
 _CARRIES_RETIRED = re.compile("|".join(sorted(_RETIRED)), re.IGNORECASE)
 
-_SKIP_DIRS = frozenset(
+#: Tool caches are skipped by name wherever a tool writes them: no source
+#: file lives inside one.
+_SKIP_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
+#: Everything else is skipped only at the path where it is generated or
+#: vendored (``.gitignore`` and the frontend/backend tool configs), never by
+#: a bare directory name: a ``dist``, ``coverage`` or ``venv`` folder anywhere
+#: else in the tree is scanned.
+_SKIP_PATHS = frozenset(
     {
-        ".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
-        ".pytest_cache", ".mypy_cache", ".ruff_cache", "factory_outputs",
-        "test-results", "playwright-report", "coverage", "htmlcov",
+        "backend/tests", "tests",  # test code asserts the refusal
+        ".git", "factory_outputs",
+        "venv", ".venv", "backend/venv", "backend/.venv", "backend/.venv-factory",
+        "backend/htmlcov", "htmlcov",
+        "node_modules", "frontend/node_modules", "frontend/dist",
+        "frontend/coverage", "frontend/test-results", "frontend/playwright-report",
     }
 )
-_SKIP_PATHS = frozenset({"backend/tests", "tests"})
 
 #: Item 1c-2's work list: every file that still carries a retired name, with
-#: its count. A file not listed fails; a count above its entry fails; an
-#: entry whose file no longer carries the name fails until it is removed.
-#: So this list can only shrink. Item 1c-2 empties it.
+#: its exact count. The scan must find exactly this map: a file not listed,
+#: a count above OR below its entry, and an entry whose file no longer
+#: carries the name all fail. A dropped count must be lowered here in the
+#: same change, so no entry keeps slack a file could regrow into. Item 1c-2
+#: empties it.
 _PENDING_1C2_CARRIERS: dict = {
     ".github/workflows/ci.yml": 4,
     "AUDIT.md": 1,
@@ -753,19 +764,42 @@ def _retired_carriers(root: Path) -> dict:
     return found
 
 
-@pytest.mark.parametrize("check", ["no_new_carrier", "pending_only_shrinks"])
-def test_no_file_carries_a_retired_name_outside_the_pending_list(check):
-    found = _retired_carriers(_REPO)
-    if check == "no_new_carrier":
-        grown = {
-            rel: n
-            for rel, n in found.items()
-            if n > _PENDING_1C2_CARRIERS.get(rel, 0)
-        }
-        assert grown == {}, grown
+def _carrier_drift(found: dict, pending: dict) -> dict:
+    """Every file whose found count differs from its pending entry, either way."""
+    return {
+        rel: {"found": found.get(rel, 0), "pending": pending.get(rel, 0)}
+        for rel in sorted(set(found) | set(pending))
+        if found.get(rel, 0) != pending.get(rel, 0)
+    }
+
+
+@pytest.mark.parametrize("tree", ["this_repository", "a_clean_tree"])
+def test_the_retired_name_carriers_equal_the_pending_list(tmp_path, tree):
+    """This repository must carry exactly the pending map; a tree with no
+    carrier must carry exactly the empty map (where item 1c-2 ends)."""
+    if tree == "this_repository":
+        root, pending = _REPO, _PENDING_1C2_CARRIERS
     else:
-        stale = sorted(set(_PENDING_1C2_CARRIERS) - set(found))
-        assert stale == [], f"no longer carries a retired name, remove: {stale}"
+        (tmp_path / "a.py").write_text("provider = 'deepseek'\n", encoding="utf-8")
+        root, pending = tmp_path, {}
+    drift = _carrier_drift(_retired_carriers(root), pending)
+    assert drift == {}, f"set each entry to the found count (0 = remove it): {drift}"
+
+
+@pytest.mark.parametrize(
+    ("pending", "expected"),
+    [
+        ({"a.py": 2}, {}),
+        ({"a.py": 3}, {"a.py": {"found": 2, "pending": 3}}),  # a count that dropped
+        ({"a.py": 1}, {"a.py": {"found": 2, "pending": 1}}),  # a count that grew
+        ({}, {"a.py": {"found": 2, "pending": 0}}),  # a new carrier
+        ({"a.py": 2, "b.md": 1}, {"b.md": {"found": 0, "pending": 1}}),  # stale entry
+    ],
+)
+def test_a_count_that_moves_either_way_is_drift(tmp_path, pending, expected):
+    """A dropped count fails like a grown one: no slack is left to regrow into."""
+    (tmp_path / "a.py").write_text("KIMI_CODE_CLI\nMOONSHOT\n", encoding="utf-8")
+    assert _carrier_drift(_retired_carriers(tmp_path), pending) == expected
 
 
 @pytest.mark.parametrize(
@@ -787,10 +821,33 @@ def test_the_carrier_scan_catches_identifiers_settings_and_file_names(
     assert _retired_carriers(tmp_path) == ({rel: expected} if expected else {})
 
 
-@pytest.mark.parametrize("skipped", ["tests/t.py", "backend/tests/t.py", "node_modules/m.js"])
+@pytest.mark.parametrize(
+    "skipped",
+    [
+        "tests/t.py",
+        "backend/tests/t.py",
+        "frontend/node_modules/m.js",
+        "frontend/dist/a.js",
+        "frontend/coverage/c.json",
+        "backend/venv/lib/v.py",
+        "backend/app/__pycache__/x.py",
+    ],
+)
 def test_the_carrier_scan_skips_test_and_vendored_trees(tmp_path, skipped):
     target = tmp_path / skipped
     target.parent.mkdir(parents=True)
     target.write_text("KIMI_CODE_CLI\n", encoding="utf-8")
     (tmp_path / "kept.py").write_text("KIMI_CODE_CLI\n", encoding="utf-8")
     assert _retired_carriers(tmp_path) == {"kept.py": 1}
+
+
+@pytest.mark.parametrize(
+    "scanned",
+    ["backend/app/dist/d.py", "docs/coverage/c.md", "scripts/venv/v.sh", "frontend/src/dist/a.ts"],
+)
+def test_a_generated_dir_name_elsewhere_in_the_tree_is_scanned(tmp_path, scanned):
+    """The skip is anchored to the generated path, not to the directory name."""
+    target = tmp_path / scanned
+    target.parent.mkdir(parents=True)
+    target.write_text("KIMI_CODE_CLI\n", encoding="utf-8")
+    assert _retired_carriers(tmp_path) == {scanned: 1}
