@@ -1297,3 +1297,29 @@ def test_zero_written_stays_no_authorship_not_thin_floor(tmp_path, monkeypatch):
     assert blocker
     assert NAMED_BLOCKER_CLI_NO_AUTHORSHIP in blocker
     assert NAMED_BLOCKER_CLI_THIN_AUTHORSHIP not in blocker
+
+
+@pytest.mark.parametrize("provider", ["", "deepseek"])
+def test_a_selected_deepseek_coder_never_needs_outside_credentials(monkeypatch, provider):
+    """The rule's first conjunct on its own: whenever DeepSeek is the selected
+    coder, no credential outside the provider table is required, whatever the
+    provider lookup answers (the collaborators are stubbed so each conjunct is
+    tested apart from the other)."""
+    import app.factory.coder as coder
+
+    monkeypatch.setattr(coder, "deepseek_coder_selected", lambda command=None: True)
+    monkeypatch.setattr(coder, "factory_code_provider", lambda: provider)
+    assert cli_requires_kimi_credentials() is False
+
+
+@pytest.mark.parametrize("provider, expected", [("", True), ("anthropic", False)])
+def test_without_deepseek_only_a_missing_table_provider_needs_outside_credentials(
+    monkeypatch, provider, expected
+):
+    """The second conjunct: DeepSeek not selected, so the answer is exactly
+    whether the shared table configures no provider."""
+    import app.factory.coder as coder
+
+    monkeypatch.setattr(coder, "deepseek_coder_selected", lambda command=None: False)
+    monkeypatch.setattr(coder, "factory_code_provider", lambda: provider)
+    assert cli_requires_kimi_credentials() is expected
