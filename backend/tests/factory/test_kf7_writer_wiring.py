@@ -121,7 +121,7 @@ def test_writer_run_flags_bad_formulas_it_authored(monkeypatch, tmp_path, defs, 
     findings = tmp_path / fr.FORMULA_FINDINGS_REL
     assert findings.is_file(), "the writer run recorded no formula findings"
     rec = json.loads(findings.read_text(encoding="utf-8"))
-    assert rec == {"errors": expect}
+    assert rec == {"errors": expect, "unreached": []}
     assert [n for n in notes if n.startswith("writer formula: ")] == [f"writer formula: {e}" for e in expect]
     # X9: every formula note is tagged with the literal stage name
     assert [st for m, st in stages if m.startswith("writer formula: ")] == ["formula-resolution"] * len(expect)

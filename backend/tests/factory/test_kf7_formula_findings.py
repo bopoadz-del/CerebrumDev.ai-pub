@@ -169,7 +169,7 @@ def test_n10_a_tree_without_formula_files_is_clean_not_a_crash(tmp_path, write, 
         raise AssertionError(f"missing formula files crashed the audit: {type(exc).__name__}") from None
     assert got == expect
     rec = json.loads((tmp_path / _fr().FORMULA_FINDINGS_REL).read_text(encoding="utf-8"))
-    assert rec == {"errors": expect}
+    assert rec == {"errors": expect, "unreached": []}
 
 
 # --- #91 repair: G2 0059Z survivors N11, R5 (own file) ----------------------
@@ -224,7 +224,7 @@ def test_r6_findings_land_at_the_literal_path(tmp_path, lines, expect):
     assert _fr().audit_product_formulas(tmp_path, [], []) == expect
     literal = tmp_path / ".factory" / "writer_formula_findings.json"
     assert literal.is_file(), "findings not written to .factory/writer_formula_findings.json"
-    assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": expect}
+    assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": expect, "unreached": []}
     assert _fr().FORMULA_FINDINGS_REL == ".factory/writer_formula_findings.json"
 
 
@@ -266,7 +266,7 @@ def test_x3_findings_recorded_whether_or_not_factory_dir_exists(tmp_path, pre_ma
     assert raised is None, f"audit_product_formulas raised {raised} on a fresh tree"
     assert got == []
     literal = tmp_path / ".factory" / "writer_formula_findings.json"
-    assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": []}
+    assert json.loads(literal.read_text(encoding="utf-8")) == {"errors": [], "unreached": []}
 
 
 # --- Y2 (G2 #99 a263faf): a covered row gets exactly the one coverage error ---
