@@ -7,7 +7,9 @@ ENTRY POINTS, discovered from the product:
   * the server / CLI targets its packaging declares -- a ``module:object``
     or ``module:function`` reference, ``-m module`` or a ``path.py`` script
     in a root packaging file (Dockerfile, Procfile, pyproject, compose and
-    other config files) that resolves to a product module;
+    other config files) or in the deploy entrypoint the Factory's emitter
+    declares (``data_lifecycle.ENTRYPOINT_PATH``), that resolves to a
+    product module;
   * the ``if __name__ == "__main__":`` block of a module that one of those
     targets runs as a script (``python app/cli.py``, ``-m pkg`` running
     ``pkg/__main__``). An imported module's guard never runs, so a guard in
@@ -580,6 +582,23 @@ def _product_modules(root: Path) -> Dict[str, Path]:
     return found
 
 
+def entry_contract_path() -> str:
+    """Where the Factory's emitter declares how a product starts: the deploy
+    entrypoint it writes (its pre-serve steps, then the served app). The
+    product's Dockerfile runs that script through ``sh``, so its run lines
+    are the product's own start command."""
+    from app.factory.build.data_lifecycle import ENTRYPOINT_PATH
+
+    return ENTRYPOINT_PATH
+
+
+def _packaging_files(root: Path) -> List[Path]:
+    """The root packaging files, then the emitter's declared entrypoint (a
+    product without it gives an unreadable path, which the reader skips)."""
+    found = [path for path in sorted(root.iterdir()) if _is_packaging(path)]
+    return [*found, root / entry_contract_path()]
+
+
 def _is_packaging(path: Path) -> bool:
     """A root file that declares how the product runs (not a README)."""
     return path.is_file() and (
@@ -613,9 +632,7 @@ def _declared_targets(
     A script counts only when a token in a run position names one of the
     product's own module files (``files``: resolved path -> module name)."""
     out: List[Tuple[str, str, Optional[str]]] = []
-    for path in sorted(root.iterdir()):
-        if not _is_packaging(path):
-            continue
+    for path in _packaging_files(root):
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -741,7 +758,7 @@ def formula_reach(product_root: Any) -> Dict[str, Any]:
         entries += [f"registered on {obj[1]}:{obj[2]}: {f[1]}:{f[2]}" for f in sorted(walk.registered[obj])]
     if not entries:
         return unknown_record(
-            "no entry point found: no server or CLI target in the root packaging files",
+            "no entry point found: no server or CLI target in the root packaging files or the declared entrypoint",
             formula_rels,
         )
 

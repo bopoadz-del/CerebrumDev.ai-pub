@@ -666,3 +666,46 @@ def test_an_unparsed_module_reached_code_loads_is_unknown(tmp_path, imports):
     assert record["status"] == "unknown"
     assert "reached code loads it: app/old/a.py (SyntaxError)" in record["analysis_error"]
     assert record["unreached"] is None
+
+
+_SH_DOCKERFILE = 'FROM python:3.11-slim\nENTRYPOINT ["sh", "/app/scripts/entrypoint.sh"]\n'
+
+
+@pytest.mark.parametrize(("call", "label"), [("alpha", "app.formulas:alpha"), ("beta", "app.formulas:beta")])
+def test_the_start_command_is_read_from_the_entrypoint_the_emitter_declares(tmp_path, call, label):
+    """H-1d (a): the Dockerfile runs the emitter's entrypoint through sh; the
+    served app is named inside that script, written by the emitter itself."""
+    from app.factory.build import data_lifecycle
+    from app.factory.build.formula_reach import entry_contract_path
+
+    assert entry_contract_path() == data_lifecycle.ENTRYPOINT_PATH
+    files = {
+        **_MAIN,
+        **_FORMULAS,
+        **_route(f"    return formulas.{call}(x)\n"),
+        "Dockerfile": _SH_DOCKERFILE,
+        data_lifecycle.ENTRYPOINT_PATH: data_lifecycle.render_entrypoint(),
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "analysed", record
+    assert f"target {data_lifecycle.SERVE_TARGET}" in record["entry_points"]
+    assert record["reached"] == [label]
+
+
+@pytest.mark.parametrize("elsewhere", ["scripts/start.sh", "deploy/entrypoint.sh"])
+def test_a_start_script_the_emitter_does_not_declare_is_not_read(tmp_path, elsewhere):
+    """The rule is the emitter's contract, not any shell file: the same
+    script at another path gives no entry point, so the record stays unknown."""
+    from app.factory.build import data_lifecycle
+
+    files = {
+        **_MAIN,
+        **_FORMULAS,
+        **_route("    return formulas.alpha(x)\n"),
+        "Dockerfile": _SH_DOCKERFILE,
+        elsewhere: data_lifecycle.render_entrypoint(),
+    }
+    record = formula_reach(_write(tmp_path, files))
+    assert record["status"] == "unknown"
+    assert "no entry point found" in record["analysis_error"]
+    assert record["reached"] is None
