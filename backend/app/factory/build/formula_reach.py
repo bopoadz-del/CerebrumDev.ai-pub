@@ -44,10 +44,18 @@ A handler's SIGNATURE is walked with its body: defaults and the calls inside
 annotations run at definition (``rate=Depends(fn)``,
 ``Annotated[T, Depends(fn)]``) and wire what they name.
 
-THE ANALYSIS'S OWN FAILURE IS NEVER CLEAN: no formula module, a product
-module that does not parse, a module past the size or nesting bound
-("bound hit"), or no entry point found records ``status: "unknown"`` with
-the reason and ``unreached: None`` -- never an empty list.
+THE ANALYSIS'S OWN FAILURE IS NEVER CLEAN: no formula module, a formula
+module that does not parse, a product module that does not parse and that
+reached code imports or a packaging target runs, a module past the size or
+nesting bound ("bound hit"), or no entry point found records
+``status: "unknown"`` with the reason and ``unreached: None`` -- never an
+empty list.
+
+A module is read the way Python reads it (``tokenize.open``: the byte-order
+mark and a declared ``coding:`` line are honoured). A module that still does
+not parse is listed in ``unparsed``; when nothing reached imports it and no
+target runs it, its code never runs from an entry point, so it can neither
+call a formula nor register a handler, and reach stays decidable.
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import tokenize
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
@@ -224,9 +233,14 @@ def local_names(fn: ast.AST) -> frozenset:
 
 
 class _Walk:
-    def __init__(self, modules: Dict[str, _Module]) -> None:
+    def __init__(self, modules: Dict[str, _Module], unparsed: Set[str] = frozenset()) -> None:
         self.mods = modules
-        self.packages = {".".join(m.split(".")[:i]) for m in modules for i in range(1, m.count(".") + 1)}
+        #: Modules that do not parse, and those of them a reached import,
+        #: a run target or a literal dynamic import loads.
+        self.unparsed = set(unparsed)
+        self.unparsed_loaded: Set[str] = set()
+        named = [*modules, *self.unparsed]
+        self.packages = {".".join(m.split(".")[:i]) for m in named for i in range(1, m.count(".") + 1)}
         self.loaded: Set[str] = set()
         self.reached: Set[Ref] = set()
         self.live: Set[Ref] = set()
@@ -241,7 +255,7 @@ class _Walk:
     # -- resolution ---------------------------------------------------------
 
     def _is_module(self, name: str) -> bool:
-        return name in self.mods or name in self.packages
+        return name in self.mods or name in self.unparsed or name in self.packages
 
     def lookup(self, module: str, name: str, depth: int = 0) -> Optional[Ref]:
         mod = self.mods.get(module)
@@ -302,6 +316,8 @@ class _Walk:
         parts = module.split(".")
         for i in range(1, len(parts) + 1):
             name = ".".join(parts[:i])
+            if name in self.unparsed:
+                self.unparsed_loaded.add(name)
             if name in self.mods and name not in self.loaded:
                 self.loaded.add(name)
                 self.queue.append(("load", name))
@@ -591,7 +607,7 @@ def script_tokens(text: str) -> List[str]:
 
 
 def _declared_targets(
-    root: Path, modules: Dict[str, _Module], files: Dict[Path, str]
+    root: Path, modules: Set[str], files: Dict[Path, str]
 ) -> List[Tuple[str, str, Optional[str]]]:
     """(kind, module, attribute) for each target a root packaging file names.
     A script counts only when a token in a run position names one of the
@@ -638,7 +654,9 @@ def parse_bounded(path: Path) -> Tuple[Optional[ast.Module], Optional[str]]:
     if size > MAX_MODULE_BYTES:
         return None, f"bound hit: {size} bytes, limit {MAX_MODULE_BYTES}"
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        with tokenize.open(path) as fh:  # BOM and coding line, as Python reads it
+            source = fh.read()
+        tree = ast.parse(source)
     except (RecursionError, MemoryError) as exc:
         return None, f"bound hit: {type(exc).__name__} while parsing"
     depth = _depth(tree)
@@ -677,28 +695,29 @@ def formula_reach(product_root: Any) -> Dict[str, Any]:
             [],
         )
     modules: Dict[str, _Module] = {}
-    broken: List[str] = []
+    broken: Dict[str, str] = {}
     bounded: List[str] = []
     for name, path in paths.items():
         rel = path.relative_to(root).as_posix()
         try:
             tree, bound = parse_bounded(path)
         except (OSError, SyntaxError, ValueError, UnicodeDecodeError) as exc:
-            broken.append(f"{rel} ({type(exc).__name__})")
+            broken[name] = f"{rel} ({type(exc).__name__})"
             continue
         if tree is None:
             bounded.append(f"{rel} ({bound})")
             continue
         modules[name] = _Module(name, rel, tree, path.name == "__init__.py")
-    if broken:
-        return unknown_record(f"product module does not parse: {', '.join(sorted(broken))}", formula_rels)
+    broken_formulas = sorted(broken[n] for n in formula_names if n in broken)
+    if broken_formulas:
+        return unknown_record(f"formula module does not parse: {', '.join(broken_formulas)}", formula_rels)
     if bounded:
         return unknown_record(f"bound hit: {', '.join(sorted(bounded))}", formula_rels)
 
-    walk = _Walk(modules)
+    walk = _Walk(modules, set(broken))
     entries: List[str] = []
     files = {path.resolve(): name for name, path in paths.items()}
-    for kind, module, attr in _declared_targets(root, modules, files):
+    for kind, module, attr in _declared_targets(root, {*modules, *broken}, files):
         walk.load(module)
         if kind == "run":
             entries.append(f"run {module}")
@@ -711,6 +730,12 @@ def formula_reach(product_root: Any) -> Dict[str, Any]:
                 entries.append(f"target {module}:{attr}")
                 walk.reach(ref)
     walk.run()
+    if walk.unparsed_loaded:
+        loaded = sorted(broken[n] for n in walk.unparsed_loaded)
+        return unknown_record(
+            f"product module does not parse and reached code loads it: {', '.join(loaded)}",
+            formula_rels,
+        )
     entries += [f"main guard {name}" for name in sorted(walk.scripts)]
     for obj in sorted(walk.live):
         entries += [f"registered on {obj[1]}:{obj[2]}: {f[1]}:{f[2]}" for f in sorted(walk.registered[obj])]
@@ -747,4 +772,5 @@ def formula_reach(product_root: Any) -> Dict[str, Any]:
         "reached": reached,
         "unreached": unreached,
         "undecided": undecided,
+        "unparsed": sorted(broken.values()),
     }
