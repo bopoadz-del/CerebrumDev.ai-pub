@@ -64,6 +64,16 @@ def render_md(grade: Mapping[str, Any]) -> str:
         lines.append(f"  - `{u.get('capability_id')}`: UNGRADED; {u.get('detail')}")
     lines.append(f"- UI steps passed: {sum(1 for s in steps if s.get('passed') is True)}/{len(steps)}")
     lines += [f"  - FAIL: {name}" for name in ui.get("failing") or []]
+    na = [
+        str(s.get("name") or "")
+        for s in (ui.get("not_applicable") or [])
+        if isinstance(s, Mapping) and str(s.get("name") or "")
+    ]
+    if na:
+        lines.append("- UI steps not applicable: " + ", ".join(na))
+    note = ui.get("brief_note")
+    if isinstance(note, str) and note.strip():
+        lines.append(f"- UI brief: {note.strip()}")
     lines += ["", f"## Layer 2 (separate grader context): {'ran' if l2.get('ran') is True else 'did not run'}"]
     for v in l2.get("verdicts") or []:
         lines.append(f"- {_shown_verdict(v)}: {v.get('question')} -- evidence: \"{v.get('evidence') or ''}\"")

@@ -109,7 +109,10 @@ def green_ui(monkeypatch):
         def to_dict(self):
             return {"ok": True, "ran": True, "failing": [], "steps": []}
 
-    monkeypatch.setattr(grader, "_grade_ui", lambda blueprint, root, gradroot, base_url: (_GreenUi(), True, ""))
+    monkeypatch.setattr(
+        grader, "_grade_ui",
+        lambda blueprint, root, gradroot, base_url, brief=None: (_GreenUi(), True, ""),
+    )
     return fake_grade_ui
 
 
@@ -617,7 +620,7 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
 
     class _UiGrader:
         @staticmethod
-        def grade_ui(blueprint, workdir, *, base_url):
+        def grade_ui(blueprint, workdir, *, base_url, brief=None):
             recorded["base_url"] = base_url
             return _Ui()
 

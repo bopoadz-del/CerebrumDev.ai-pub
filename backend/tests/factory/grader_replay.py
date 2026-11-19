@@ -376,7 +376,7 @@ def ui_from_report(report: Optional[Mapping[str, Any]], not_run_reason: str = ""
     ``report`` is None -- the grader's own not-run shape with the reason."""
     from app.factory.build import grader
 
-    def grade_ui(blueprint, root, gradroot, base_url):
+    def grade_ui(blueprint, root, gradroot, base_url, brief=None):
         if report is None:
             reason = not_run_reason or "UI run did not happen"
             return grader._UiNotRun(reason), False, reason

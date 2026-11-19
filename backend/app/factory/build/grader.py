@@ -907,6 +907,8 @@ def _grade_ui(
     root: Path,
     gradroot: Path,
     base_url: Optional[str],
+    *,
+    brief: Any = None,
 ) -> Tuple[Any, bool, str]:
     """The UI layer, honestly: it runs when the product boots and the
     playwright toolchain exists; otherwise it is recorded as NOT RUN -- a
@@ -939,7 +941,7 @@ def _grade_ui(
             ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
             return ui, False, ui_not_run
         if base_url:
-            ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url)
+            ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url, brief=brief)
         else:
             ui = ui_grader.UiGrade(
                 [], [ui_not_run or "UI run did not happen: no base URL for the rendered product"]
@@ -1047,7 +1049,15 @@ def run_grader(
         )
 
     # --- Layer 1 UI -------------------------------------------------------
-    ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url)
+    # Steps come from the customer's brief. The Factory contract compiled
+    # beside it is not the brief: brief_for_steps drops it. None (nothing
+    # readable) keeps every step.
+    from app.factory.build.product_grader import ui_grader as _ui_steps
+
+    ui_brief = _ui_steps.brief_for_steps(
+        blueprint, supplied=supplied_text, compiled=compiled_brief
+    )
+    ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url, brief=ui_brief)
     # A function the grade did not run is a gap the Factory owes: quoted as
     # ungraded, not a FAIL.
     ungraded: List[str] = [
