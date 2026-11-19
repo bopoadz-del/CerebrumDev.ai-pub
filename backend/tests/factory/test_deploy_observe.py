@@ -113,7 +113,7 @@ def built(tmp_path_factory):
     # 0.5: without a coding agent the WRITER refuses (writer_no_output);
     # stub a deterministic agent so the S11 build still goes green.
     with _stub_coder_with_fallback_specs():
-        outcome = RoleRunner(load_blueprint(SMOKE), out).run()
+        outcome = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
     return out
 

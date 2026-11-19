@@ -351,7 +351,7 @@ def test_the_writer_receives_typed_ids_and_the_ledger_round_trips_them(
 
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = writer
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.detail
 

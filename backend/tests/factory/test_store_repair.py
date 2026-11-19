@@ -426,7 +426,7 @@ def _runner(smoke_blueprint, tmp_path, monkeypatch, verdicts, repairer, installe
     roles = _fake_pass_harness(monkeypatch)
     writes: list = []
     roles[BuildRole.WRITER] = _counting_writer(writes)
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.store_repairer = repairer
     runner.store_installer = installer
     queue = list(verdicts(runner))

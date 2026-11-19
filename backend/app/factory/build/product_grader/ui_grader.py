@@ -134,10 +134,10 @@ def brief_for_steps(
     The Factory contract is not a brief. None means no complete customer
     brief was given (callers then keep the full step list).
     """
-    del blueprint
+    del blueprint, compiled
     from app.factory.build.customer_brief import stage_quote
 
-    return stage_quote(supplied) or stage_quote(compiled)
+    return stage_quote(supplied)
 
 
 def _unreadable_block() -> UiGrade:

@@ -137,10 +137,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     rel = [str(Path(t).relative_to(a.workdir)) for t in selected]
     print(f"targeted pytest: {len(rel)} touched file(s) -> {', '.join(rel)}")
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "-rfs", *a.pytest_arg, *rel],
-        cwd=repo / a.workdir,
-    ).returncode
+    # pytest 9 parses a directory conftest's fixtures only when that directory
+    # is collected as a Directory. One process given files from a directory
+    # and from its parent collects the parent and then drops the child's
+    # still-pending fixtures (green_product_grade on tests/factory/conftest.py
+    # disappeared that way). One process per directory collects each directory.
+    groups: dict[str, list[str]] = {}
+    for path in rel:
+        groups.setdefault(str(Path(path).parent), []).append(path)
+    code = 0
+    for directory in sorted(groups):
+        paths = groups[directory]
+        print(f"targeted pytest: {directory} ({len(paths)} file(s))")
+        rc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-rfs", *a.pytest_arg, *paths],
+            cwd=repo / a.workdir,
+        ).returncode
+        if rc:
+            code = rc
+    return code
 
 
 if __name__ == "__main__":

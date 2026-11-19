@@ -40,7 +40,7 @@ def built(tmp_path_factory):
     os.environ["FACTORY_CODER_ENABLED"] = "0"
     out = tmp_path_factory.mktemp("agentmig") / "build"
     with stub_coder_patches():
-        outcome = RoleRunner(load_blueprint(SMOKE), out).run()
+        outcome = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
     return out
 

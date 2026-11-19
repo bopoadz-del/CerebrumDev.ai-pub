@@ -331,7 +331,7 @@ def _runner(tmp_path):
     from app.factory.build.runner import RoleRunner
 
     smoke = Path(__file__).resolve().parents[3] / "blueprints/examples/runner_smoke.yaml"
-    return RoleRunner(load_blueprint(smoke), tmp_path / "build")
+    return RoleRunner(load_blueprint(smoke), tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
 
 def test_an_interrupted_codewhale_pass_is_resumable_only_with_its_log(tmp_path, monkeypatch):

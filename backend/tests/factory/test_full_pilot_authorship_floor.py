@@ -551,8 +551,7 @@ def test_role_runner_persists_blueprint_so_n_required_survives(tmp_path):
     out.mkdir()
     runner = RoleRunner(
         load_blueprint(root / "blueprints/lettings/residential_lettings.v1.yaml"),
-        out,
-    )
+        out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.state.get("n_required") == 4
     assert n_required_capabilities_from(workspace=out) == 4
     assert (out / "docs" / "blueprint" / "product_blueprint.json").is_file()

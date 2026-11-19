@@ -350,8 +350,7 @@ def test_auto_pilot_refuses_code_cycle_success_lie(tmp_path):
     runner = RoleRunner(
         load_blueprint(SMOKE),
         tmp_path / "build",
-        auto_pilot=True,
-    )
+        auto_pilot=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock()
     runner.cycle = "code"
     outcome = runner._finish(
@@ -465,8 +464,7 @@ def test_pilot_success_closing_inspect_matches_ledger(tmp_path):
     runner = RoleRunner(
         load_blueprint(SMOKE),
         tmp_path / "build",
-        auto_pilot=False,
-    )
+        auto_pilot=False, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock()
     runner.cycle = "pilot"
     runner.state["brief_dispatch"] = {

@@ -147,3 +147,51 @@ def stage_quotes(raw: Any) -> Mapping[str, str]:
     if text is None:
         return {}
     return {stage: text for stage in STAGES}
+
+
+def customer_words(raw: str) -> str:
+    """The customer's ask when ``raw`` is a customer brief; otherwise ``raw``.
+
+    A feature list shows the words. The runner still receives the whole record.
+    """
+    record, _problems = read_brief(raw)
+    if record is None:
+        return raw
+    return record.ask
+
+
+def file_types_of(names: Sequence[Any]) -> List[str]:
+    """The type of each uploaded file, taken from the name the session stored.
+
+    The type is that name's own suffix. Nothing here is a list of types to
+    search for in the customer's words.
+    """
+    found: List[str] = []
+    for name in names:
+        leaf = str(name).replace("\\", "/").strip().rsplit("/", 1)[-1]
+        dot = leaf.rfind(".")
+        if dot <= 0 or dot == len(leaf) - 1:
+            continue
+        suffix = leaf[dot + 1:].strip().lower()
+        if not suffix or suffix in found:
+            continue
+        found.append(suffix)
+    return found
+
+
+def emit_brief(ask: str, source_files: Optional[Sequence[Any]] = None) -> str:
+    """``customer_brief.v1`` as text.
+
+    ``ask`` is the customer's words, unchanged. ``documents.uploads`` is true
+    when the session stored a file, and ``documents.file_types`` are those
+    files' own suffixes. No file stored means uploads false and an empty list.
+    """
+    names = [item for item in (source_files or []) if str(item).strip()]
+    body = {
+        "ask": ask if isinstance(ask, str) else str(ask),
+        "documents": {
+            "file_types": file_types_of(names),
+            "uploads": bool(names),
+        },
+    }
+    return json.dumps(body, ensure_ascii=False, sort_keys=True)

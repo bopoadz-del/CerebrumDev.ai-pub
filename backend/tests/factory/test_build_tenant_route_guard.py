@@ -594,8 +594,7 @@ def test_start_runner_build_refuses_cross_tenant_at_the_call_site(tmp_path, monk
             load_blueprint(smoke),
             tmp_path / "out",
             tenant_identity="acct_a",
-            quota_account_id="acct_b",
-        )
+            quota_account_id="acct_b", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
 
 # --- dev-principal build is tenant-checked too (ORDERS_0630Z #1(b)) ---------

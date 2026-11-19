@@ -441,7 +441,12 @@ def draft_from_chat(state: Any, message: str) -> Dict[str, Any]:
     # not the chat stream.
     pd.brief_diag = _brief_diag
     bp = draft_blueprint_from_brief(brief_for_draft, vertical_hint=getattr(pd, "vertical", None))
-    pd.brief = brief_for_draft
+    # The runner, the writer, the tester and the grader read customer_brief.v1.
+    # ask is the customer's words. documents comes from the session's uploads.
+    # The digest above stays with the drafter; it is not the brief.
+    from app.factory.build.customer_brief import emit_brief
+
+    pd.brief = emit_brief(message, getattr(state, "source_files", None))
     pd.blueprint = bp.model_dump(mode="json")
     pd.plan = None
     pd.blueprint_approved = False

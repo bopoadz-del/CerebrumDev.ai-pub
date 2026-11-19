@@ -94,7 +94,9 @@ def chat_turns_from_session(state: Any) -> List[Dict[str, Any]]:
             }
         )
     if not turns and brief.strip():
-        turns.append({"turn": 1, "role": "user", "text": brief.strip()})
+        from app.factory.build.customer_brief import customer_words
+
+        turns.append({"turn": 1, "role": "user", "text": customer_words(brief.strip())})
     return turns
 
 
@@ -107,12 +109,15 @@ def intake_from_product_blueprint(
     domain_pack: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """COLLECTOR fill: ProductBlueprint + chat provenance → intake_blueprint.v1."""
+    from app.factory.build.customer_brief import customer_words
+
     turns = list(chat_turns or [])
-    if not turns and brief.strip():
-        turns = [{"turn": 1, "role": "user", "text": brief.strip()}]
+    words = customer_words(brief.strip()) if brief.strip() else ""
+    if not turns and words:
+        turns = [{"turn": 1, "role": "user", "text": words}]
     user = _first_user_turn(turns)
     turn = _turn_no(user, 1 if turns else 0)
-    text = _turn_text(user) or brief or str(getattr(blueprint, "summary", "") or "")
+    text = _turn_text(user) or words or str(getattr(blueprint, "summary", "") or "")
     pack = dict(domain_pack or {})
 
     caps: List[Dict[str, Any]] = []

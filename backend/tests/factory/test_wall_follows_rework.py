@@ -169,8 +169,7 @@ def _runner(tmp_path, clock, *, wall, phase, ceiling, writer_seconds):
             phase_wall_clock_s=phase,
             hard_ceiling_s=ceiling,
         ),
-        clock=clock,
-    )
+        clock=clock, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     calls = {"writer": 0}
 
     def fake_phase(role, work_list):

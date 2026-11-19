@@ -39,8 +39,7 @@ def _armed(blueprint, tmp_path, *, wall, ceiling):
     runner = RoleRunner(
         blueprint,
         tmp_path / "w",
-        budget=BuildBudget(wall_clock_s=wall, hard_ceiling_s=ceiling),
-    )
+        budget=BuildBudget(wall_clock_s=wall, hard_ceiling_s=ceiling), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock()
     runner._deadline = runner._run_started + wall
     runner._deadline_box["at"] = runner._deadline

@@ -60,7 +60,7 @@ def test_a_floor_resume_keeps_the_rounds_already_spent(tmp_path: Path, monkeypat
     ledger.append(EventKind.RUN_FAILED, role=BuildRole.TESTER, detail="tester broke on glimfen")
     assert _rounds(ledger) == spent
 
-    resumed = start_runner_build(_blueprint(), out)
+    resumed = start_runner_build(_blueprint(), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
     assert resumed["fresh_workspace"] is False and Path(resumed["output_dir"]) == out
     assert _rounds(BuildLedger(out / "build_ledger.jsonl")) == spent

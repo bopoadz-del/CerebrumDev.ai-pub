@@ -61,7 +61,7 @@ def test_note_is_a_noop_without_a_progress_sink():
 def test_a_build_records_intra_phase_progress(tmp_path, stub_coder):
     """The WRITER must say what it is doing while it does it."""
     out = tmp_path / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.run().ok
 
     notes = [
@@ -88,7 +88,7 @@ def test_progress_notes_do_not_disturb_the_verdict_readers(tmp_path, stub_coder)
     """NOTE is not a verdict. completed_roles / terminal_event / succeeded
     must read exactly as they did before progress existed."""
     out = tmp_path / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok
 
@@ -427,7 +427,7 @@ def test_the_artifact_declares_the_dependency_its_release_gate_needs(
     ModuleNotFoundError. It now ships requirements-dev.txt and the gate says
     what to install instead of dying."""
     out = tmp_path / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.run().ok
 
     dev = out / "requirements-dev.txt"
@@ -447,7 +447,7 @@ def test_runner_readme_installs_dev_deps_before_pytest(tmp_path, stub_coder):
     """README 'Run it' must not tell a stranger to pytest after only
     requirements.txt — pytest lives in requirements-dev.txt on the runner path."""
     out = tmp_path / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.run().ok
 
     readme = (out / "README.md").read_text(encoding="utf-8")
@@ -496,8 +496,7 @@ def test_phase_wall_clock_caps_the_writer_deadline(tmp_path, stub_coder):
         load_blueprint(SMOKE),
         tmp_path / "build",
         roles=roles,
-        budget=BuildBudget(wall_clock_s=7200.0, phase_wall_clock_s=30.0),
-    )
+        budget=BuildBudget(wall_clock_s=7200.0, phase_wall_clock_s=30.0), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.detail
     assert seen["deadline"] is not None

@@ -400,12 +400,51 @@ def fail_orphaned_model_call(
     return result
 
 
+def load_brief_for_workspace(
+    output_dir: Path | str,
+    *,
+    storage_root: Optional[Path] = None,
+) -> str:
+    """The customer brief stored on the session that started this workspace.
+
+    Empty when the session recorded none. The resume passes that string
+    through; it does not invent one.
+    """
+    session_id = session_id_from_output(output_dir)
+    if not session_id:
+        return ""
+    roots: List[Path] = []
+    if storage_root is not None:
+        roots.append(Path(storage_root) / "sessions")
+    roots.append(_storage_sessions_root())
+    for root in roots:
+        path = root / session_id / "state.json"
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        brief = str(((data or {}).get("product_design") or {}).get("brief") or "")
+        if brief.strip():
+            return brief.strip()
+    try:
+        from app.core.session_persistence import load_session_state
+
+        state = load_session_state(session_id)
+    except Exception:  # noqa: BLE001
+        state = None
+    pd = getattr(state, "product_design", None)
+    return str(getattr(pd, "brief", "") or "").strip()
+
+
 def resume_orphaned_model_call(
     output_dir: Path | str,
     blueprint: Any,
     *,
     tenant_identity: Optional[str],
     cycle: Optional[str] = None,
+    brief: str = "",
 ) -> Dict[str, Any]:
     """Re-enter RoleRunner at interrupted WRITER (gated C-BRIEF, not micro-fixer).
 
@@ -444,7 +483,11 @@ def resume_orphaned_model_call(
         _write_crash_marker(out, text)
         return fail_orphaned_model_call(out, detail=text)
     result = start_runner_build(
-        blueprint, out, cycle=cycle, tenant_identity=str(tenant_identity).strip()
+        blueprint,
+        out,
+        cycle=cycle,
+        tenant_identity=str(tenant_identity).strip(),
+        brief=str(brief or "").strip(),
     )
     logger.info(
         "resumed orphaned WRITER at %s already_running=%s",
@@ -512,8 +555,11 @@ def recover_orphaned_model_calls(
     else:
         try:
             tenant = load_tenant_for_workspace(chosen, storage_root=storage_root)
+            brief = load_brief_for_workspace(chosen, storage_root=storage_root)
             results.append(
-                resume_orphaned_model_call(chosen, blueprint, tenant_identity=tenant)
+                resume_orphaned_model_call(
+                    chosen, blueprint, tenant_identity=tenant, brief=brief
+                )
             )
         except CodeCliUnavailable as exc:
             results.append(fail_orphaned_model_call(chosen, detail=str(exc)))

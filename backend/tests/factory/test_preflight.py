@@ -148,7 +148,7 @@ def test_canonical_fingerprint_ignores_timestamps():
 def test_role_runner_records_preflight_before_roles(tmp_path, stub_coder):
     assert build_engine() == RUNNER
     out = tmp_path / "built"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.to_dict()
     preflight = runner.state["preflight"]
@@ -240,7 +240,7 @@ def test_failed_kernel_ownership_aborts_before_collector(tmp_path, monkeypatch):
         "app.factory.build.preflight.inspect_kernel_ownership", _broken
     )
     out = tmp_path / "aborted"
-    outcome = RoleRunner(load_blueprint(SMOKE), out).run()
+    outcome = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok is False
     assert outcome.outcome is Outcome.FAILED_GATE
     assert "preflight" in outcome.detail.lower()

@@ -99,8 +99,7 @@ def test_resume_skips_already_landed_capabilities(blueprint, tmp_path):
         blueprint,
         out,
         roles=roles,
-        budget=BuildBudget(wall_clock_s=600, phase_wall_clock_s=0),
-    )
+        budget=BuildBudget(wall_clock_s=600, phase_wall_clock_s=0), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     with pytest.raises(_Killed, match=first):
         first_runner.run()
 
@@ -117,8 +116,7 @@ def test_resume_skips_already_landed_capabilities(blueprint, tmp_path):
         blueprint,
         out,
         roles=roles,
-        budget=BuildBudget(wall_clock_s=600, phase_wall_clock_s=0),
-    )
+        budget=BuildBudget(wall_clock_s=600, phase_wall_clock_s=0), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     second_runner.run()
 
     assert first not in seen, (

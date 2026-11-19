@@ -292,8 +292,7 @@ def test_runner_hard_stops_at_stage_1_without_progress(tmp_path):
             max_rework=1, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
         ),
         clock=clock,
-        auto_pilot=True,
-    )
+        auto_pilot=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok is False
     assert outcome.outcome.value == "FAILED_BUDGET_SPENT"
@@ -386,8 +385,7 @@ def test_runner_enforces_the_plan_wall_even_when_inspect_sees_agent_work(tmp_pat
             max_rework=max_rework, wall_clock_s=STAGE_1_S, phase_wall_clock_s=5400
         ),
         clock=clock,
-        auto_pilot=True,
-    )
+        auto_pilot=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok is False
     assert outcome.outcome.value == "FAILED_GATE"
@@ -632,8 +630,7 @@ def test_runner_inflight_cli_stage_1_fails_the_plan_wall(tmp_path, max_rework):
             max_rework=max_rework, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
         ),
         clock=clock,
-        auto_pilot=True,
-    )
+        auto_pilot=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok is False
     assert outcome.outcome.value == "FAILED_GATE"
@@ -783,8 +780,7 @@ def test_stage_1_extend_does_not_slash_7200s_cli_watchdog(tmp_path, monkeypatch)
             max_rework=1, wall_clock_s=STAGE_1_S, phase_wall_clock_s=STAGE_1_S
         ),
         clock=clock,
-        auto_pilot=True,
-    )
+        auto_pilot=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.run()
     extends = [
         e

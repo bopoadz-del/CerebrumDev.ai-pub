@@ -37,7 +37,7 @@ def _no_paid_calls(monkeypatch):
 
 def test_nothing_is_recorded_as_unpinned(tmp_path, stub_coder):
     out = tmp_path / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.run().ok
 
     lock = json.loads((out / "blocks.lock.json").read_text(encoding="utf-8"))
@@ -57,7 +57,7 @@ def test_nothing_is_recorded_as_unpinned(tmp_path, stub_coder):
 def test_the_ledger_carries_the_revision_for_the_registrar(tmp_path, stub_coder):
     """iter_ledgers() is how the registrar answers its question."""
     out = tmp_path / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), out)
+    runner = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.run().ok
 
     events = [e for e in runner.ledger.events() if e.kind is EventKind.CLONE]

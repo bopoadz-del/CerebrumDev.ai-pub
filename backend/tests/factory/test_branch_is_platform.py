@@ -177,8 +177,7 @@ def _inline_runner(monkeypatch, ran):
         RoleRunner(
             blueprint, output_dir, roles=roles, blocks_root=blocks_root,
             budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=600),
-            inputs_hash=inputs_hash,
-        ).run()
+            inputs_hash=inputs_hash, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     class _Inline:
         def __init__(self, target=None, args=(), kwargs=None, name=None, daemon=None):
@@ -439,7 +438,7 @@ def test_every_passed_phase_is_pushed_to_the_platform_branch(tmp_path, monkeypat
     )
     roles = {r: (lambda ctx, r=r: RoleResult(ok=True, detail=f"{r.value} ok")) for r in BuildRole}
     RoleRunner(bp, out, roles=roles,
-               budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=600)).run()
+               budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=600), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert pushes, "no phase reached the branch of record"
     assert {p for p, _m in pushes} == {pid}
     notes = [e for e in BuildLedger(out / "build_ledger.jsonl").events()

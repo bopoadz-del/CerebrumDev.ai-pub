@@ -138,7 +138,7 @@ def test_writer_takes_the_coder_entry_point_when_keyed(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.factory.coder.generate_from_compiled_brief", fake_oneshot)
     out = tmp_path / "build"
-    outcome = RoleRunner(load_blueprint(SMOKE), out).run()
+    outcome = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
     assert calls, "keyed path must dispatch the compiled brief once"
     assert len(calls) == 1

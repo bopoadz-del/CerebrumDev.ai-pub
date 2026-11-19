@@ -871,7 +871,7 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
         return _fake_pass(ctx)
 
     roles[BuildRole.WRITER] = recording_writer
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert not outcome.ok
     assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 1 round(s)")
@@ -926,7 +926,7 @@ def test_runner_spends_no_writer_round_on_rows_the_factory_owes(smoke_blueprint,
         return _fake_pass(ctx)
 
     roles[BuildRole.WRITER] = recording_writer
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert not outcome.ok
     assert outcome.detail.startswith("GRADER: NOT_CERTIFIED -- FACTORY_FAULT (no writer round)")
@@ -951,7 +951,7 @@ def test_runner_proceeds_when_the_verdict_is_certified(smoke_blueprint, tmp_path
         grader_mod, "run_grader", lambda **kwargs: grader_mod.GraderVerdict(tier=grader_mod.CERTIFIED)
     )
     roles = _fake_pass_harness(monkeypatch)
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.detail
     # the run started its ledger: the first event is RUN_STARTED (pins
@@ -992,7 +992,7 @@ def test_runner_hands_the_grader_the_writer_run_the_build_recorded(smoke_bluepri
         return RoleResult(ok=True, detail="fake pass")
 
     roles[BuildRole.WRITER] = writer_that_ran
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.detail
     assert seen and all(run == ran for run in seen)
@@ -1004,6 +1004,6 @@ def test_runner_grader_is_none_when_the_switch_is_off(smoke_blueprint, tmp_path,
     workspace = tmp_path / "w"
     workspace.mkdir()
     _red_product(workspace)
-    runner = RoleRunner(smoke_blueprint, workspace)
+    runner = RoleRunner(smoke_blueprint, workspace, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     monkeypatch.setenv(grader.DISABLE_ENV, "0")
     assert runner._writer_grader() is None

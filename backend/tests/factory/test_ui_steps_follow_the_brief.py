@@ -91,36 +91,48 @@ def _runner(tmp_path, brief):
 # --- documents field ---------------------------------------------------------
 
 
-def test_a_document_brief_keeps_and_grades_every_document_step(tmp_path):
-    assert DOCUMENT_KINDS <= _kinds(DOC)
-    assert [s.name for s in ug.ui_plan(BP, DOC)] == [s.name for s in ug.ui_plan(BP)]
-    assert ug._question(BP, DOC) == ug._question(BP)
-    assert "attached document" in ug.render_spec(BP, DOC)
-    names = [s.name for s in ug.ui_plan(BP, DOC)]
-    failed = ug.parse_report(_report(names, failed={"attach:pdf"}), BP, DOC)
+@pytest.mark.parametrize("raw", [
+    DOC,
+    _brief("List the rows and attach the sheets.", True, ["xlsx", "pdf"]),
+])
+def test_a_document_brief_keeps_and_grades_every_document_step(tmp_path, raw):
+    assert DOCUMENT_KINDS <= _kinds(raw)
+    assert [s.name for s in ug.ui_plan(BP, raw)] == [s.name for s in ug.ui_plan(BP)]
+    assert ug._question(BP, raw) == ug._question(BP)
+    assert "attached document" in ug.render_spec(BP, raw)
+    names = [s.name for s in ug.ui_plan(BP, raw)]
+    failed = ug.parse_report(_report(names, failed={"attach:pdf"}), BP, raw)
     assert not failed.ok and "attach:pdf" in failed.failing
-    fx = ug.write_fixtures(BP, tmp_path / "fx", DOC)
+    fx = ug.write_fixtures(BP, tmp_path / "fx", raw)
     assert fx["pdf"].is_file() and fx["xlsx"].is_file()
 
 
-def test_a_brief_with_no_documents_does_not_run_those_steps(tmp_path):
-    assert not (_kinds(PLAIN) & DOCUMENT_KINDS)
-    assert {"load", "bind", "honest_error", "screen", "route"} <= _kinds(PLAIN)
-    assert ug._question(BP, PLAIN) == ""
-    assert "attached document" not in ug.render_spec(BP, PLAIN)
-    assert ug.write_fixtures(BP, tmp_path / "fx", PLAIN) == {}
-    names = [s.name for s in ug.ui_plan(BP, PLAIN)]
-    grade = ug.parse_report(_report(names), BP, PLAIN)
+@pytest.mark.parametrize("raw", [
+    PLAIN,
+    _brief("List the rows.", False, []),
+])
+def test_a_brief_with_no_documents_does_not_run_those_steps(tmp_path, raw):
+    assert not (_kinds(raw) & DOCUMENT_KINDS)
+    assert {"load", "bind", "honest_error", "screen", "route"} <= _kinds(raw)
+    assert ug._question(BP, raw) == ""
+    assert "attached document" not in ug.render_spec(BP, raw)
+    assert ug.write_fixtures(BP, tmp_path / "fx", raw) == {}
+    names = [s.name for s in ug.ui_plan(BP, raw)]
+    grade = ug.parse_report(_report(names), BP, raw)
     assert grade.ok
     assert {s["kind"] for s in grade.not_applicable} == DOCUMENT_KINDS
     assert all(s.get("passed") is not True and s["status"] == ug.NOT_APPLICABLE for s in grade.not_applicable)
-    missed = ug.parse_report(_report(names, failed={"load:/"}), BP, PLAIN)
+    missed = ug.parse_report(_report(names, failed={"load:/"}), BP, raw)
     assert not missed.ok and missed.failing == ["load:/"]
 
 
-def test_prose_that_mentions_a_file_does_not_select_document_steps():
-    assert ug.ui_plan(BP, "upload a PDF and cite the spreadsheet") == []
-    grade = ug.parse_report({}, BP, "upload a PDF")
+@pytest.mark.parametrize("prose", [
+    "upload a PDF and cite the spreadsheet",
+    "please attach the xlsx",
+])
+def test_prose_that_mentions_a_file_does_not_select_document_steps(prose):
+    assert ug.ui_plan(BP, prose) == []
+    grade = ug.parse_report({}, BP, prose)
     assert grade.failing == [ug.BRIEF_UNREADABLE]
     assert not grade.steps
 
@@ -152,6 +164,11 @@ def test_writer_grader_and_tester_quote_the_brief_verbatim(raw):
 @pytest.mark.parametrize("raw,missing", [
     ("this is not the brief format", ["unreadable"]),
     (json.dumps({"ask": "Count the items."}), ["documents"]),
+    (json.dumps({"documents": {"uploads": False, "file_types": []}}), ["ask"]),
+    (
+        json.dumps({"ask": "Count the items.", "documents": {"uploads": True, "file_types": []}}),
+        ["documents.file_types"],
+    ),
 ])
 def test_an_unreadable_or_incomplete_brief_starts_nothing(tmp_path, raw, missing):
     record, problems = read_brief(raw)
@@ -170,10 +187,38 @@ def test_an_unreadable_or_incomplete_brief_starts_nothing(tmp_path, raw, missing
     assert started == []
 
 
-def test_a_complete_brief_names_its_required_fields():
-    record, problems = read_brief(DOC)
+@pytest.mark.parametrize("raw, uploads", [(DOC, True), (PLAIN, False)])
+def test_a_complete_brief_names_its_required_fields(raw, uploads):
+    record, problems = read_brief(raw)
     assert problems == []
-    assert record is not None and record.uploads is True
+    assert record is not None and record.uploads is uploads
     assert set(REQUIRED_FIELDS) <= {"ask", "documents"}
-    plain, _ = read_brief(PLAIN)
-    assert plain is not None and plain.uploads is False
+
+
+_ABSENT = object()
+
+
+def _open(tmp_path, brief=_ABSENT):
+    """A runner. ``_ABSENT`` leaves the brief parameter off."""
+    plan = ProductPlan(product_id="sample", capabilities=[], fail_closed=True)
+    kwargs = dict(
+        plan=plan,
+        blocks_root=tmp_path / "blocks",
+        inputs_hash="inputs",
+        budget=__import__(
+            "app.factory.build.runner", fromlist=["BuildBudget"]
+        ).BuildBudget(max_rework=0, wall_clock_s=30),
+    )
+    if brief is not _ABSENT:
+        kwargs["brief"] = brief
+    return RoleRunner(BP, tmp_path / "absent", **kwargs)
+
+
+@pytest.mark.parametrize("how", ["empty", "absent"])
+def test_an_empty_or_absent_brief_starts_nothing(tmp_path, how):
+    runner = _open(tmp_path, "" if how == "empty" else _ABSENT)
+    outcome = runner.run()
+    assert outcome.outcome is Outcome.FAILED_GATE
+    assert outcome.detail == "brief incomplete/unreadable: missing brief"
+    started = [e.role for e in runner.ledger.events() if e.kind is EventKind.PHASE_STARTED]
+    assert started == []

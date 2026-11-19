@@ -47,18 +47,37 @@ def test_uploaded_docs_digest_labels_by_filename_or_is_empty(chunks, names, has_
     ],
 )
 def test_draft_from_chat_folds_uploads_and_is_byte_identical_without_them(
-    chunks, names, augmented
+    monkeypatch, chunks, names, augmented
 ):
+    # The drafter still sees the upload digest. The brief the runner stores
+    # is customer_brief.v1: the customer's words as ask, documents from the
+    # session's file names.
+    from app.factory.build.customer_brief import read_brief
+
+    seen: dict = {}
+    real = pcf.draft_blueprint_from_brief
+
+    def _spy(text, **kwargs):
+        seen["text"] = text
+        return real(text, **kwargs)
+
+    monkeypatch.setattr(pcf, "draft_blueprint_from_brief", _spy)
     msg = "Build a contracts administration platform for a civil works project"
     s = _state(chunks, names)
     draft_from_chat(s, msg)
-    brief = s.product_design.brief
+    record, problems = read_brief(s.product_design.brief)
+    assert problems == []
+    assert record is not None and record.ask == msg
+    assert seen["text"].startswith(msg)
     if augmented:
-        assert brief.startswith(msg)
-        assert "document:boq.xlsx" in brief
-        assert "Accepted Contract Amount is SAR 39,098,392.98." in brief
+        assert "document:boq.xlsx" in seen["text"]
+        assert "Accepted Contract Amount is SAR 39,098,392.98." in seen["text"]
+        assert record.uploads is True
+        assert record.file_types == ("xlsx",)
     else:
-        assert brief == msg  # byte-identical with no uploaded documents
+        assert seen["text"] == msg
+        assert record.uploads is False
+        assert record.file_types == ()
 
 
 @pytest.mark.parametrize(

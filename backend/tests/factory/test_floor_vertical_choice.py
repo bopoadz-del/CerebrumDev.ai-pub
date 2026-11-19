@@ -107,6 +107,6 @@ def test_a_build_with_no_choice_completes_with_no_domain_kit(tmp_path, stub_code
 
     bp = draft_blueprint_from_brief(PROSE_NAMING_A_VERTICAL, vertical_hint=None, use_llm=False)
     assert bp.vertical == "product"
-    outcome = RoleRunner(bp, tmp_path / "build").run()
+    outcome = RoleRunner(bp, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.detail
     assert kit_for_vertical(bp, store_root=_store(tmp_path)) is None

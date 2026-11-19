@@ -138,7 +138,7 @@ def test_the_writer_uses_the_coding_agent_when_one_is_configured(
     )
 
     out = tmp_path / "build"
-    outcome = RoleRunner(blueprint, out).run()
+    outcome = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
 
     assert len(calls) == 1, "one compiled-brief dispatch, not one shot per capability"
@@ -167,7 +167,7 @@ def test_writer_halts_when_cli_missing_without_oneshot(
         "app.factory.coder.generate_from_compiled_brief",
         lambda **kw: oneshot.append(kw) or _oneshot_payload(),
     )
-    outcome = RoleRunner(blueprint, tmp_path / "build").run()
+    outcome = RoleRunner(blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok is False
     assert NAMED_BLOCKER_CLI in (outcome.detail or "")
     assert oneshot == []
@@ -202,7 +202,7 @@ def test_writer_records_creds_miss_and_keeps_empty_gap_reuse(
         lambda **kw: oneshot.append(kw) or _oneshot_payload(),
     )
     out = tmp_path / "build"
-    outcome = RoleRunner(blueprint, out).run()
+    outcome = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert oneshot == [], "credentials miss must not enable HTTP oneshot"
     receipt = out / "docs" / "coder_receipt.json"
     assert receipt.is_file()
@@ -235,7 +235,7 @@ def test_a_coder_failure_with_no_artifacts_refuses_with_writer_no_output(
     monkeypatch.setattr("app.factory.coder.generate_from_compiled_brief", failing_oneshot)
 
     out = tmp_path / "build"
-    runner = RoleRunner(blueprint, out)
+    runner = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok is False
@@ -265,7 +265,7 @@ def test_the_coder_is_not_called_when_disabled(blueprint, tmp_path, monkeypatch)
     )
 
     out = tmp_path / "build"
-    outcome = RoleRunner(blueprint, out).run()
+    outcome = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok is False
     assert "writer_no_output" in outcome.detail
     assert called == []
@@ -294,7 +294,7 @@ def test_rework_findings_are_handed_to_the_coder(blueprint, tmp_path, monkeypatc
 
     runner = RoleRunner(
         blueprint, tmp_path / "build", roles=roles, budget=BuildBudget(max_rework=1)
-    )
+    , brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.run()
 
     # First writer pass has no findings; the rework pass carries the gate's

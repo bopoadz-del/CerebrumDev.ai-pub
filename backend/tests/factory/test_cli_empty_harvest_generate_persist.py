@@ -176,8 +176,7 @@ def test_empty_harvest_generate_persist_still_refuses_thin_success(
     runner = RoleRunner(
         load_blueprint(root / "blueprints/examples/runner_smoke.yaml"),
         out,
-        ledger=ledger,
-    )
+        ledger=ledger, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock() - (STAGE_1_S + 30.0)
     runner.state["brief_dispatch"] = state["brief_dispatch"]
     outcome = runner._finish(

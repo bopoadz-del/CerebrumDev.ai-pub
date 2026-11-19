@@ -3,7 +3,7 @@
 Live 2026-10-07 22:04Z (5dd46d47): Fargate retired the backend task while
 the vineyard build sess_d023c15b78a041cd was in WRITER. Boot recovery found
 the orphan and resumed it -- with no tenant. At boot there is no request and
-no principal, and the resume called ``start_runner_build(blueprint, out)``
+no principal, and the resume called ``start_runner_build(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')``
 with no identity, so ``bind_tenant_store(None)`` returned None and the
 worker refused: "WRITER failed: codewhale_worker_failed:
 no_authenticated_tenant". The build died as a WRITER failure it never had.

@@ -154,7 +154,7 @@ def test_the_driver_names_the_capability_the_suite_asks_for(tmp_path):
     from app.factory.build.runner import RoleRunner
 
     root_dir = Path(__file__).resolve().parents[3]
-    runner = RoleRunner(load_blueprint(root_dir / "blueprints/examples/runner_smoke.yaml"), tmp_path / "build")
+    runner = RoleRunner(load_blueprint(root_dir / "blueprints/examples/runner_smoke.yaml"), tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     ws = Path(runner.workspace)
     (ws / "app").mkdir(parents=True, exist_ok=True)
     (ws / "app" / "__init__.py").write_text("", encoding="utf-8")

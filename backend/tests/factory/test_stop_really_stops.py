@@ -301,7 +301,7 @@ def test_stop_at_any_stage_ends_the_build_as_stopped_by_owner(
 
     if stage is not None:
         roles[stage] = pressing_stop(roles[stage])
-    runner = RoleRunner(load_blueprint(SMOKE), out, roles=roles)
+    runner = RoleRunner(load_blueprint(SMOKE), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert (outcome.outcome is Outcome.STOPPED_BY_OWNER) == (stage is not None)
@@ -336,7 +336,7 @@ def test_a_stop_between_stages_starts_no_further_phase(
         return result
 
     roles[first] = pressing
-    runner = RoleRunner(load_blueprint(SMOKE), out, roles=roles)
+    runner = RoleRunner(load_blueprint(SMOKE), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert (outcome.outcome is Outcome.STOPPED_BY_OWNER) == stopped
     assert _phases_started(runner) == ([first] if stopped else list(BUILD_PHASES))
@@ -486,7 +486,7 @@ def test_a_new_build_resets_the_control_and_a_refused_one_does_not(
         ledger.start_run(product_id="owner-stop-demo", inputs_hash="abc123")
         ledger.append(EventKind.PHASE_STARTED, role="COLLECTOR", detail="in flight")
     write_control(out, "stop", by="owner-account")
-    start_runner_build(_bp(), out)
+    start_runner_build(_bp(), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert read_control(out) == expected
 
 
@@ -536,5 +536,5 @@ def test_a_new_build_runs_a_known_cycle_only(tmp_path, monkeypatch, cycle, expec
     monkeypatch.setattr("threading.Thread.start", lambda self: None)
     out = tmp_path / "product"
     out.mkdir()
-    started = start_runner_build(_bp(), out, cycle=cycle)
+    started = start_runner_build(_bp(), out, cycle=cycle, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert started["cycle"] == expected

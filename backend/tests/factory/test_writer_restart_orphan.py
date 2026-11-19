@@ -170,7 +170,7 @@ def test_start_runner_build_resumes_orphaned_writer(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.factory.build_jobs._run", _hold)
     try:
-        result = start_runner_build(bp, out)
+        result = start_runner_build(bp, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
         assert result["already_running"] is False
         assert result["output_dir"] == str(out)
         assert result.get("fresh_workspace") is False

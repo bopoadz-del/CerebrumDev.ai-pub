@@ -148,7 +148,12 @@ def test_draft_resets_previous_design():
     # second draft replaces the first, approval flag reset
     assert state.product_design.blueprint_approved is False
     assert state.product_design.generation is None
-    assert state.product_design.brief == "create a platform for clinics"
+    from app.factory.build.customer_brief import read_brief
+
+    record, problems = read_brief(state.product_design.brief)
+    assert problems == []
+    assert record is not None and record.ask == "create a platform for clinics"
+    assert record.uploads is False
 
 
 # --- F-4a (H1): the chat-flow draft surfaces the golden OFFER -----------------

@@ -22,7 +22,7 @@ def test_role_runner_vendors_kernel_and_routes_through_execute_action(
     tmp_path, stub_coder
 ):
     out = tmp_path / "build"
-    outcome = RoleRunner(load_blueprint(SMOKE), out).run()
+    outcome = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
 
     runtime = out / "app" / "cerebrum_product_kernel" / "contract" / "runtime.py"

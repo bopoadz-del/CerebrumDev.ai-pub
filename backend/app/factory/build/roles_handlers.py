@@ -6154,6 +6154,29 @@ def _constraints_of(spec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def quote_for_tester(brief: Any) -> str:
+    """The tester's prompt: the customer brief, verbatim.
+
+    Empty when ``brief`` is not a complete customer brief. The same text the
+    writer and the grader quote.
+    """
+    from app.factory.build.customer_brief import stage_quote
+
+    return stage_quote(brief) or ""
+
+
+def smoke_header(quote: str) -> List[str]:
+    """The opening of the suite the tester writes.
+
+    When the run carries a customer brief, that brief is a line of the suite.
+    The line's value is the brief, byte for byte.
+    """
+    lines = ['"""The platform runs, and it runs without the store."""']
+    if quote:
+        lines.append("TESTER_PROMPT = " + json.dumps(quote))
+    return lines
+
+
 def run_tester(ctx: RoleContext) -> RoleResult:
     """Acceptance inspector: write the code-phase suite. tests/ only.
 
@@ -6179,10 +6202,8 @@ def run_tester(ctx: RoleContext) -> RoleResult:
     Re-emit the suite from the current specs so ``pytest -m pilot`` matches
     the workspace under test.
     """
-    from app.factory.build.customer_brief import stage_quote
-
-    quoted = stage_quote(ctx.state.get("brief"))
-    if quoted is not None:
+    quoted = quote_for_tester(ctx.state.get("brief"))
+    if quoted:
         ctx.state["tester_prompt"] = quoted
         ctx.state["customer_brief_quote"] = quoted
     # The roster the route suite asserts comes from the same role contracts
@@ -6256,7 +6277,7 @@ def run_tester(ctx: RoleContext) -> RoleResult:
 
     # -- capability + offline dispatch ------------------------------------
     smoke = [
-        '"""The platform runs, and it runs without the store."""',
+        *smoke_header(quoted),
         "",
         "import os",
         "",

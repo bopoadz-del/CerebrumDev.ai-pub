@@ -106,7 +106,7 @@ def _start_capturing(monkeypatch, bp, out):
         seen["inputs_hash"] = args[-1] if args else kwargs.get("inputs_hash")
 
     monkeypatch.setattr("app.factory.build_jobs._run", _record)
-    result = start_runner_build(bp, out)
+    result = start_runner_build(bp, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     import time
 
     for _ in range(100):
@@ -146,7 +146,7 @@ def test_the_runner_never_rehashes_the_blueprint_it_was_given(tmp_path):
 
     bp = load_blueprint(SMOKE)
     approved = blueprint_hash(bp)
-    runner = RoleRunner(bp, tmp_path / "ws", inputs_hash=approved)
+    runner = RoleRunner(bp, tmp_path / "ws", inputs_hash=approved, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.blueprint.capabilities[0].description += " -- touched mid-build"
     assert runner.inputs_hash == approved
 

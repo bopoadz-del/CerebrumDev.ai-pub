@@ -178,7 +178,7 @@ def test_pack_renders_through_delivery_standard():
 
 def test_role_runner_emits_domain_pack(tmp_path: Path, stub_coder):
     out = tmp_path / "build"
-    outcome = RoleRunner(load_blueprint(SMOKE), out).run()
+    outcome = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
     pack_path = out / PACK_REL
     assert pack_path.is_file()

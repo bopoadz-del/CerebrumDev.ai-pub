@@ -176,6 +176,16 @@ def _brief_text(blueprint: Mapping[str, Any], compiled_brief: Any) -> str:
     return ""
 
 
+def shown_customer_brief(supplied: Any) -> str:
+    """The brief Layer 2 is shown: the customer brief, verbatim, or empty.
+
+    A blueprint and a compiled Factory contract are not substituted for it.
+    """
+    from app.factory.build.customer_brief import stage_quote
+
+    return stage_quote(supplied) or ""
+
+
 def _tokens(text: str) -> List[str]:
     """Whitespace tokens with trailing punctuation stripped -- the structural
     tokenization the derivations read; no vocabulary decides anything here."""
@@ -1003,14 +1013,9 @@ def run_grader(
     blueprint = _as_mapping(blueprint)
     gradroot = Path(grader_root) if grader_root else root.parent / (root.name + ".grader")
     brief = _brief_text(blueprint, compiled_brief)
-    from app.factory.build.customer_brief import stage_quote as _stage_quote
-
-    # The grader prompt quotes the customer brief verbatim when one was given.
-    # A blueprint or a Factory contract is not substituted for it.
-    _quoted = _stage_quote(supplied_text)
-    if _quoted is None:
-        _quoted = _stage_quote(compiled_brief)
-    shown_brief = _quoted if _quoted is not None else brief
+    # Layer 2 is shown the customer brief verbatim. A blueprint or a Factory
+    # contract is not substituted when that brief is missing.
+    shown_brief = shown_customer_brief(supplied_text)
     vertical = str(blueprint.get("vertical") or "")
     cids = [
         str(cap.get("id") or "")

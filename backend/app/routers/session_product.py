@@ -891,7 +891,13 @@ def draft_product(
                 store_blueprint(_bp_key, bp.model_dump(mode="json"))
         if body.delivery_format in ("zip", "github_repo"):
             bp.delivery_format = body.delivery_format
-        state.product_design.brief = body.brief
+        from app.factory.build.customer_brief import emit_brief
+
+        # body.brief stays the customer's words. What the runner receives is
+        # customer_brief.v1: that ask, plus documents from this session's uploads.
+        state.product_design.brief = emit_brief(
+            body.brief, getattr(state, "source_files", None)
+        )
         state.product_design.blueprint = bp.model_dump(mode="json")
         from app.factory.locale_choice import apply_locale_choice
 

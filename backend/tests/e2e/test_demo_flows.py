@@ -102,7 +102,11 @@ def test_d3_runner_is_the_production_artifact(tmp_path, monkeypatch, stub_coder)
 
     blueprint = draft_blueprint_from_brief("Build a warehouse operations platform")
     out = tmp_path / "warehouse-runner"
-    result = generate_product(blueprint, out)
+    result = generate_product(
+        blueprint,
+        out,
+        brief='{"ask": "Build a warehouse operations platform", "documents": {"file_types": [], "uploads": false}}',
+    )
     assert isinstance(result, dict)
 
     # The build is a background job; wait for its verdict off the ledger.

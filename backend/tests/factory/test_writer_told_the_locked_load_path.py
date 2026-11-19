@@ -203,7 +203,7 @@ def _runner(tmp_path):
     from app.factory.build.runner import RoleRunner
 
     root = Path(__file__).resolve().parents[3]
-    return RoleRunner(load_blueprint(root / "blueprints/examples/runner_smoke.yaml"), tmp_path / "build")
+    return RoleRunner(load_blueprint(root / "blueprints/examples/runner_smoke.yaml"), tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
 
 def _touched(tmp_path: Path, rel: str):

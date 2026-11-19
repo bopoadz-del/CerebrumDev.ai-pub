@@ -473,7 +473,7 @@ def test_the_base_set_ships_into_a_product_via_role_runner_vendor(
 
     smoke = REPO / "blueprints" / "examples" / "runner_smoke.yaml"
     out = tmp_path / "build"
-    outcome = RoleRunner(load_blueprint(smoke), out).run()
+    outcome = RoleRunner(load_blueprint(smoke), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
 
     formulas = out / "app" / "cerebrum_product_kernel" / "formulas"

@@ -762,10 +762,10 @@ class RoleRunner:
         from app.factory.build.store_override import take_proof_key
 
         take_proof_key()
-        # The user's own words from the Floor chat — the WRITER's BRIEF
-        # section. Threaded from the session at generate/resume time.
-        if str(brief or "").strip():
-            self.state["brief"] = str(brief).strip()
+        # The brief this run was started with, including an empty one.
+        # An empty or absent brief is not a reason to proceed: the gate
+        # below stops the run. Callers that have a brief pass it here.
+        self.state["brief"] = str(brief or "").strip()
         from app.factory.build.authorship import n_required_capabilities_from
 
         n_required = n_required_capabilities_from(
@@ -836,13 +836,16 @@ class RoleRunner:
         """Before the writer: a customer brief that cannot be read, or that
         omits a required field, stops the run. No writer, grader or tester.
 
-        A run that was not given a customer brief is unchanged. Blueprint
-        text and the Factory contract are not consulted.
+        An empty or absent brief is the same stop, reported as a missing
+        brief. Blueprint text and the Factory contract are not consulted.
+        None means the brief is a complete customer_brief.v1 and the run
+        proceeds.
         """
+        from app.factory.build.customer_brief import format_report, read_brief, stage_quotes
+
         raw = self.state.get("brief")
         if not isinstance(raw, str) or not raw.strip():
-            return None
-        from app.factory.build.customer_brief import format_report, read_brief, stage_quotes
+            return format_report(["missing brief"])
 
         record, problems = read_brief(raw)
         if record is None:

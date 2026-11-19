@@ -91,7 +91,7 @@ def test_end_to_end_build_reaches_success_with_every_gate_passed(
     the green build therefore runs a stubbed coding agent so the WRITER
     phase produces real agent-authored artifacts.
     """
-    runner = RoleRunner(blueprint, tmp_path / "build", budget=BuildBudget(max_rework=2))
+    runner = RoleRunner(blueprint, tmp_path / "build", budget=BuildBudget(max_rework=2), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.to_dict()
@@ -123,7 +123,7 @@ def test_zero_agent_artifacts_fails_with_writer_no_output(blueprint, tmp_path):
     """
     runner = RoleRunner(
         blueprint, tmp_path / "build", budget=BuildBudget(max_rework=2)
-    )
+    , brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok is False
@@ -190,7 +190,7 @@ def test_generated_platform_makes_no_store_callback(blueprint, tmp_path, stub_co
     and docstrings may name a client; code may not.
     """
     out = tmp_path / "build"
-    RoleRunner(blueprint, out).run()
+    RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     offenders = []
     for path in out.rglob("*.py"):
@@ -219,7 +219,7 @@ def test_the_generated_platform_suite_really_runs_in_a_subprocess(
     class of bug that already shipped once here.
     """
     out = tmp_path / "build"
-    runner = RoleRunner(blueprint, out)
+    runner = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.subprocess_runner is None, "this test must use the real runner"
     outcome = runner.run()
     assert outcome.ok
@@ -249,7 +249,7 @@ def test_the_artifact_is_a_platform_not_a_parts_list(blueprint, tmp_path, stub_c
     stores nothing, and exposes nothing.
     """
     out = tmp_path / "build"
-    assert RoleRunner(blueprint, out).run().ok
+    assert RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
 
     for rel in (
         "app/models.py",
@@ -332,7 +332,7 @@ def test_the_platform_suite_exercises_the_surface_it_does_not_just_import(
 ):
     """An import-only suite passes on a platform whose storage is broken."""
     out = tmp_path / "build"
-    assert RoleRunner(blueprint, out).run().ok
+    assert RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
 
     models_test = (out / "tests" / "test_models.py").read_text(encoding="utf-8")
     assert "store.save(" in models_test and "store.get(" in models_test
@@ -424,7 +424,7 @@ def test_rework_budget_exhaustion_fails_the_run(blueprint, tmp_path, stub_coder,
 
     runner = RoleRunner(
         blueprint, tmp_path / "build", roles=roles, budget=BuildBudget(max_rework=2)
-    )
+    , brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert not outcome.ok
@@ -458,7 +458,7 @@ def test_the_same_failure_twice_stops_before_the_budget_runs_out(blueprint, tmp_
 
     runner = RoleRunner(
         blueprint, tmp_path / "build", roles=roles, budget=BuildBudget(max_rework=3)
-    )
+    , brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert not outcome.ok
@@ -478,8 +478,7 @@ def test_wall_clock_budget_exhaustion_fails_the_run(blueprint, tmp_path, stub_co
         blueprint,
         tmp_path / "build",
         budget=BuildBudget(wall_clock_s=100.0),
-        clock=lambda: next(ticks),
-    )
+        clock=lambda: next(ticks), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.outcome is Outcome.FAILED_TIME_BUDGET
@@ -499,7 +498,7 @@ def test_a_failed_non_tester_gate_is_terminal(blueprint, tmp_path, stub_coder):
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.CLONER] = empty_cloner
 
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.outcome is Outcome.FAILED_GATE
@@ -517,7 +516,7 @@ def test_a_role_that_raises_ends_the_run(blueprint, tmp_path):
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.COLLECTOR] = broken_collector
 
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.outcome is Outcome.FAILED_ROLE_ERROR
@@ -543,7 +542,7 @@ def test_a_role_writing_outside_its_lane_fails_the_build(
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.TESTER] = overreaching_tester
 
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.outcome is Outcome.FAILED_AUTHORITY
@@ -565,7 +564,7 @@ def test_the_writer_cannot_edit_the_tests_that_judge_it(blueprint, tmp_path):
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = self_grading_writer
 
-    outcome = RoleRunner(blueprint, tmp_path / "build", roles=roles).run()
+    outcome = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.outcome is Outcome.FAILED_AUTHORITY
     assert outcome.failed_phase is BuildRole.WRITER
 
@@ -591,7 +590,7 @@ def test_resume_picks_up_where_the_kill_happened(blueprint, tmp_path, stub_coder
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = dying_writer
 
-    first = RoleRunner(blueprint, out, roles=roles)
+    first = RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     with pytest.raises(_Boom):
         first.run()
 
@@ -600,7 +599,7 @@ def test_resume_picks_up_where_the_kill_happened(blueprint, tmp_path, stub_coder
     assert ledger.completed_roles() == {BuildRole.COLLECTOR, BuildRole.CLONER}
     assert ledger.resume_point() is BuildRole.WRITER
 
-    second = RoleRunner(blueprint, out, budget=BuildBudget(max_rework=2))
+    second = RoleRunner(blueprint, out, budget=BuildBudget(max_rework=2), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = second.run()
 
     assert outcome.ok, outcome.to_dict()
@@ -617,11 +616,11 @@ def test_resume_against_a_changed_blueprint_is_refused(
     blueprint, tmp_path, stub_coder
 ):
     out = tmp_path / "build"
-    RoleRunner(blueprint, out).run()
+    RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     other = load_blueprint(ROOT / "blueprints/examples/basic_product.yaml")
     with pytest.raises(LedgerError, match="cannot resume"):
-        RoleRunner(other, out).run()
+        RoleRunner(other, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
 
 # -- determinism ---------------------------------------------------------
@@ -648,8 +647,8 @@ def test_two_runs_produce_an_identical_artifact(blueprint, tmp_path, stub_coder)
     stub.
     """
     a, b = tmp_path / "a", tmp_path / "b"
-    assert RoleRunner(blueprint, a).run().ok
-    assert RoleRunner(blueprint, b).run().ok
+    assert RoleRunner(blueprint, a, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
+    assert RoleRunner(blueprint, b, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
 
     tree_a, tree_b = _tree(a), _tree(b)
     assert set(tree_a) == set(tree_b)
@@ -721,8 +720,8 @@ def test_coder_nondeterminism_is_confined_to_the_handlers(
     )
 
     a, b = tmp_path / "a", tmp_path / "b"
-    assert RoleRunner(blueprint, a).run().ok
-    assert RoleRunner(blueprint, b).run().ok
+    assert RoleRunner(blueprint, a, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
+    assert RoleRunner(blueprint, b, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     tree_a, tree_b = _tree(a), _tree(b)
 
     assert set(tree_a) == set(tree_b)
@@ -807,7 +806,7 @@ def test_tester_judges_the_factorys_current_harness_not_what_the_writer_left(
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = writer_leaves_a_stale_harness
     roles[BuildRole.TESTER] = tester_records_the_harness
-    RoleRunner(blueprint, tmp_path / "build", roles=roles).run()
+    RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     assert "harness" in seen, "TESTER never ran"
     assert seen["harness"] != stale

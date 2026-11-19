@@ -53,8 +53,7 @@ def test_extend_wall_lifts_phase_box_when_wall_already_at_ceiling(blueprint, tmp
             wall_clock_s=CEILING_S,
             phase_wall_clock_s=1500.0,
             hard_ceiling_s=CEILING_S,
-        ),
-    )
+        ), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = 0.0
     runner._deadline = 1500.0
     runner._deadline_box["at"] = 1500.0
@@ -130,8 +129,7 @@ def test_cli_outliving_phase_wall_extends_logs_and_continues(blueprint, tmp_path
             phase_wall_clock_s=PHASE_WALL_S,
             hard_ceiling_s=CEILING_S,
         ),
-        clock=clock,
-    )
+        clock=clock, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert continued["ok"] is True

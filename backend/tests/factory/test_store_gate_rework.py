@@ -117,8 +117,7 @@ def _run(blueprint, tmp_path, monkeypatch, script, *, max_rework=2):
         blueprint,
         tmp_path / "build",
         roles=roles,
-        budget=BuildBudget(max_rework=max_rework),
-    )
+        budget=BuildBudget(max_rework=max_rework), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     return runner, runner.run(), writer_calls
 
 
@@ -315,7 +314,7 @@ def test_a_product_owned_store_gate_failure_reopens_the_writer(blueprint, tmp_pa
                or RoleResult(ok=True, detail="stub"))
         for role in BUILD_PHASES
     }
-    again = RoleRunner(blueprint, tmp_path / "build", roles=roles, budget=BuildBudget(max_rework=2))
+    again = RoleRunner(blueprint, tmp_path / "build", roles=roles, budget=BuildBudget(max_rework=2), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     again.run()
     assert seen and seen[0] == tuple(decision.work_list)
 
@@ -352,7 +351,7 @@ def test_the_writer_starts_with_the_gates_own_harness(blueprint, tmp_path, monke
 
     monkeypatch.setattr(roles_handlers, "writer_uses_codewhale", lambda env=None: True)
     monkeypatch.setattr(roles_handlers, "_run_writer_via_codewhale_worker", codewhale_writer)
-    RoleRunner(blueprint, tmp_path / "build").run()
+    RoleRunner(blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert seen.get("text") == _harness_text(blueprint)
 
 

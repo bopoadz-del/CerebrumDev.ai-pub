@@ -127,4 +127,4 @@ def test_runner_engine_refuses_an_injected_survey_plan(tmp_path):
     bp = _blueprint(tmp_path)
     survey = CapabilityPlanner(None, None).survey(bp)
     with pytest.raises(DualRegistryError):
-        RoleRunner(bp, workspace=tmp_path / "ws", plan=survey)
+        RoleRunner(bp, workspace=tmp_path / "ws", plan=survey, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')

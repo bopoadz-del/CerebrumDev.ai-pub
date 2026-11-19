@@ -64,7 +64,7 @@ def test_cloner_pass_runs_writer_straight_through(tmp_path):
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = writer
     out = tmp_path / "build"
-    outcome = RoleRunner(_bp(), out, roles=roles).run()
+    outcome = RoleRunner(_bp(), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     # WRITER ran in the same pass that finished CLONER.
     assert writer_calls == [True]
@@ -85,7 +85,7 @@ def test_build_status_can_never_park_a_run_as_waiting(tmp_path):
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = lambda _ctx: RoleResult(ok=True, detail="writer ran")
     out = tmp_path / "build"
-    RoleRunner(_bp(), out, roles=roles).run()
+    RoleRunner(_bp(), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     status = build_status(out)
     assert status["state"] != "waiting"
@@ -132,7 +132,7 @@ def test_docker_unavailable_hands_off_to_n3(monkeypatch, tmp_path):
     roles[BuildRole.WRITER] = lambda _ctx: RoleResult(ok=True, detail="writer ran")
 
     out = tmp_path / "build"
-    outcome = RoleRunner(_bp(), out, roles=roles).run()
+    outcome = RoleRunner(_bp(), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     assert outcome.outcome is Outcome.HANDOFF_TO_N3, outcome
     assert pushed, "the workspace was never pushed to cerebrum-builds"
@@ -170,7 +170,7 @@ def test_docker_unavailable_without_n3_armed_stays_a_named_gate_failure(
     roles[BuildRole.WRITER] = lambda _ctx: RoleResult(ok=True, detail="writer ran")
 
     out = tmp_path / "build"
-    outcome = RoleRunner(_bp(), out, roles=roles).run()
+    outcome = RoleRunner(_bp(), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     assert outcome.outcome is Outcome.FAILED_GATE, outcome
     assert "docker" in outcome.detail
