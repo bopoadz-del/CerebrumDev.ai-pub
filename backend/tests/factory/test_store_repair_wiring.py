@@ -559,3 +559,318 @@ def test_the_build_job_arms_the_runner_before_it_runs(tmp_path, monkeypatch, val
     build_jobs._run(load_blueprint(SMOKE), tmp_path / "out", tmp_path / "store")
 
     assert seen == [(armed, armed)]
+
+
+# -- the follow-up the grader required before the setting is on (00:59Z) -----
+# (1) the worker's own files (its brief above all) never reach the exam, the
+# installed block or the proposal; (2) settling depends on the re-grade;
+# (3) the worker writes only inside the staged copy.
+
+_BLOCK_FILES = {"block.json": "{}", "block.py": "WIDTH = 2\n"}
+
+
+def _staged(tmp_path, extra=None):
+    staging = tmp_path / "repair" / "a block"
+    for rel, text in {**_BLOCK_FILES, **(extra or {})}.items():
+        (staging / rel).parent.mkdir(parents=True, exist_ok=True)
+        (staging / rel).write_text(text, encoding="utf-8")
+    return staging
+
+
+def _tree(root):
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+
+
+def _worker_files(staging, brief="the repair brief"):
+    """What ``run_worker_job`` writes into its directory for itself."""
+    from app.factory.build.codewhale_worker import WORKER_CLI_HOME_DIR
+
+    (staging / "docs").mkdir(exist_ok=True)
+    (staging / "docs" / "writer_prompt.txt").write_text(brief, encoding="utf-8")
+    (staging / "docs" / "writer_argv.json").write_text("[]", encoding="utf-8")
+    (staging / "docs" / "writer_progress.jsonl").write_text("{}\n", encoding="utf-8")
+    (staging / "docs" / "writer_progress.log").write_text("step\n", encoding="utf-8")
+    (staging / WORKER_CLI_HOME_DIR / "policy").mkdir(parents=True)
+    (staging / WORKER_CLI_HOME_DIR / "policy" / "plugin.py").write_text("", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "added, kept",
+    [
+        ("helper.py", ["helper.py"]),
+        ("lib/helper.py", ["lib", "lib/helper.py"]),
+    ],
+)
+def test_the_worker_files_are_stripped_and_the_repair_kept(tmp_path, added, kept):
+    from app.factory.build import store_repair_wiring as w
+    from app.factory.build.codewhale_worker import WORKER_CLI_HOME_DIR
+
+    staging = _staged(tmp_path)
+    before = w._entries(staging)
+    _worker_files(staging)
+    (staging / "block.py").write_text("WIDTH = 3\n", encoding="utf-8")
+    (staging / added).parent.mkdir(parents=True, exist_ok=True)
+    (staging / added).write_text("def aid():\n    return 1\n", encoding="utf-8")
+
+    removed = w.strip_worker_files(staging, before)
+
+    assert _tree(staging) == sorted(["block.json", "block.py", *kept])
+    assert (staging / "block.py").read_text(encoding="utf-8") == "WIDTH = 3\n"
+    assert removed == [
+        WORKER_CLI_HOME_DIR,
+        "docs/writer_argv.json",
+        "docs/writer_progress.jsonl",
+        "docs/writer_progress.log",
+        "docs/writer_prompt.txt",
+        "docs",
+    ]
+
+
+@pytest.mark.parametrize("had", ["docs/writer_prompt.txt", "docs/writer_progress.log"])
+def test_a_folder_or_file_the_block_already_had_is_kept(tmp_path, had):
+    from app.factory.build import store_repair_wiring as w
+
+    own = {had: "kept as the block wrote it", "docs/usage.md": "use"}
+    staging = _staged(tmp_path, own)
+    before = w._entries(staging)
+    (staging / "docs" / "writer_argv.json").write_text("[]", encoding="utf-8")
+
+    assert w.strip_worker_files(staging, before) == ["docs/writer_argv.json"]
+    assert _tree(staging) == sorted(["block.json", "block.py", "docs", "docs/usage.md", had])
+    assert (staging / had).read_text(encoding="utf-8") == own[had]
+
+
+@pytest.mark.parametrize(
+    "note, kept",
+    [
+        ("docs/notes.md", ["docs/notes.md"]),
+        ("docs/sub/notes.md", ["docs/sub", "docs/sub/notes.md"]),
+    ],
+)
+def test_a_folder_the_repair_also_wrote_into_is_kept(tmp_path, note, kept):
+    from app.factory.build import store_repair_wiring as w
+
+    staging = _staged(tmp_path)
+    before = w._entries(staging)
+    _worker_files(staging)
+    (staging / note).parent.mkdir(parents=True, exist_ok=True)
+    (staging / note).write_text("why", encoding="utf-8")
+
+    removed = w.strip_worker_files(staging, before)
+
+    assert "docs" not in removed
+    assert _tree(staging) == sorted(["block.json", "block.py", "docs", *kept])
+
+
+@pytest.mark.parametrize(
+    "rel, own",
+    [
+        ("docs/writer_prompt.txt", True),
+        ("docs/writer_argv.json", True),
+        ("docs/writer_progress.jsonl", True),
+        (".codewhale-home", True),
+        ("docs/writer_prompt.md", False),
+        ("lib/writer_progress.jsonl", False),
+        ("docs/sub/writer_progress.jsonl", False),
+        ("docs/progress.jsonl", False),
+        (".codewhale-home/policy", False),
+        ("block.py", False),
+    ],
+)
+def test_only_the_workers_own_paths_count_as_its_own(rel, own):
+    from app.factory.build import store_repair_wiring as w
+
+    assert w._worker_own(rel) is own
+
+
+class _NullSlot:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("wall_left", [60.0, None], ids=["wall-bounded", "no-wall"])
+def test_the_real_worker_job_writes_only_in_the_staged_copy_and_leaves_none_of_its_files(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    wall_left,
+):
+    """The real ``run_worker_job``, stopped at the CLI spawn: it writes its
+    brief and argv audit into the staged copy, is confined to that copy
+    alone, and the repair writer removes its files even though the job
+    raised."""
+    import subprocess
+
+    from app.factory.build import agent_confine, codewhale_worker
+    from app.factory.build import store_repair_wiring as w
+    from app.factory.build.runner import RoleRunner
+
+    class _Stop(Exception):
+        pass
+
+    seen: dict = {}
+
+    def confine(cwd, cli):
+        seen["cwd"] = cwd
+        seen["written"] = _tree(staging)
+        return {}
+
+    def popen(argv, **kw):
+        seen["popen_cwd"] = kw.get("cwd")
+        raise _Stop()
+
+    import pathlib
+
+    opened = pathlib.Path.open
+
+    def no_progress_log(self, *a, **k):
+        # The job's progress log stays open when its spawn raises, and an
+        # open file cannot be removed on Windows; the log is not under test.
+        if self.name.startswith("writer_progress"):
+            raise OSError("not under test")
+        return opened(self, *a, **k)
+
+    # Built before Popen is stopped: constructing the runner may list the
+    # blocks checkout with git, which is not the spawn under test.
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    monkeypatch.setattr(runner, "_grantable_wall_left", lambda: wall_left)
+    monkeypatch.setattr(pathlib.Path, "open", no_progress_log)
+    monkeypatch.delenv("CODWHALE_HOME", raising=False)
+    monkeypatch.setattr(codewhale_worker, "worker_cli_path", lambda: str(tmp_path / "cw"))
+    monkeypatch.setattr(codewhale_worker, "_require_bound_tenant", lambda t: None)
+    monkeypatch.setattr(codewhale_worker, "worker_job_slot", lambda *a, **k: _NullSlot())
+    monkeypatch.setattr(codewhale_worker, "_dns_probe", lambda *a, **k: {})
+    monkeypatch.setattr(agent_confine, "confinement_popen_kwargs", confine)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    staging = _staged(tmp_path)
+
+    with pytest.raises(_Stop):
+        w.worker_writer(runner)("a block", staging, {"block_id": "a block"})
+
+    assert "docs/writer_prompt.txt" in seen["written"]
+    assert seen["cwd"] == staging and seen["popen_cwd"] == str(staging)
+    assert agent_confine.narrow_rw_roots(seen["cwd"]) == [str(staging.resolve())]
+    assert _tree(staging) == sorted(_BLOCK_FILES)
+
+
+def _brief_writer(source):
+    """A worker that writes its own dispatch files (the brief among them),
+    as the real one does, and the repair."""
+
+    def worker(staging):
+        _worker_files(staging, brief="REPAIR BRIEF: " + _CLAUSE)
+        (staging / "block.py").write_text(source, encoding="utf-8")
+        return "receipt"
+
+    return worker
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_on_the_installed_block_and_the_proposal_carry_no_worker_file(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+):
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build.store_repair_exam import REPAIR_DIR
+
+    runner, holder = _armed_build(
+        smoke_blueprint, tmp_path, monkeypatch, index, _brief_writer(_REPAIRS[index])
+    )
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws, block = runner.workspace, holder["block"]
+    vendored = ws / "vendor" / "blocks" / block
+    staging = ws / REPAIR_DIR / block
+    assert _tree(vendored) == ["block.json", "block.py"]
+    assert [p for p in _tree(staging) if "__pycache__" not in p] == ["block.json", "block.py"]
+    saved = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    assert saved[so.OVERRIDES_KEY][block]["override_hash"] == so.tree_hash(vendored)
+    (proposal,) = sp.filed_proposals(ws)
+    assert "block.py" in proposal["patch"]
+    for needle in ("writer_prompt", "writer_argv", "writer_progress", ".codewhale-home", "REPAIR BRIEF"):
+        assert needle not in proposal["patch"]
+
+
+def _regrade_notes(runner):
+    from app.factory.build.ledger import EventKind
+
+    return [
+        e
+        for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and (e.payload or {}).get("store_regrade") is True
+    ]
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_on_an_installed_repair_does_not_settle_without_a_regrade_that_does(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+):
+    """The repair passes its exam and is installed, but the grader graded
+    again still finds the block's defect: the build is not settled, and the
+    block is never called repaired."""
+    from app.factory.build import store_proposal as sp
+
+    runner, holder = _armed_build(
+        smoke_blueprint, tmp_path, monkeypatch, index, _writes(_REPAIRS[index]), regrade=False
+    )
+    outcome = runner.run()
+
+    assert not outcome.ok
+    assert "FACTORY_FAULT" in outcome.detail
+    assert len(holder["jobs"]) == 1
+    assert [r["block_id"] for r in sp.filed_proposals(runner.workspace)] == [holder["block"]]
+    (regrade,) = _regrade_notes(runner)
+    assert regrade.payload["settled"] is False
+    notes = _repair_notes(runner)
+    assert notes and all(n.payload["regrade_settled"] is False for n in notes)
+    assert all(not n.detail.endswith(": repaired") for n in notes)
+    assert "installed, but the re-grade did not settle the run" in notes[0].detail
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_on_a_strip_that_raises_fails_the_exam_closed(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+):
+    """The worker writes a repair that would pass, and its own files (the
+    brief among them); then removing those files raises. The repair is not
+    examined, the unstripped tree is never installed or proposed, the Store
+    copy stays and the block's capabilities are not delivered."""
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build import store_repair_wiring as w
+
+    def strip_fails(staging, before):
+        raise OSError("the strip could not remove a file")
+
+    monkeypatch.setattr(w, "strip_worker_files", strip_fails)
+    runner, holder = _armed_build(
+        smoke_blueprint, tmp_path, monkeypatch, index, _brief_writer(_REPAIRS[index]), regrade=False
+    )
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws, block = runner.workspace, holder["block"]
+    assert len(holder["jobs"]) == 1
+    vendored = ws / "vendor" / "blocks" / block
+    assert _tree(vendored) == ["block.json", "block.py"]
+    assert (vendored / "block.py").read_text(encoding="utf-8") == _VENDORED
+    saved = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    assert so.OVERRIDES_KEY not in saved
+    assert sp.filed_proposals(ws) == []
+    row = _store_row(runner)
+    assert (row["repaired"], tuple(row["not_delivered"])) == (False, holder["bound"])
+    (note,) = _repair_notes(runner)
+    assert "repair crashed: OSError: the strip could not remove a file" in note.payload["detail"]

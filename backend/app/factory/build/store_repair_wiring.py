@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -149,10 +150,55 @@ def repair_prompt(handback: Mapping[str, Any]) -> str:
     )
 
 
+def _worker_own(rel: str) -> bool:
+    """Is ``rel`` (posix, relative to the job's directory) a file or folder
+    the coding worker itself writes there at dispatch: its brief, its argv
+    audit, its progress logs, its CLI home? None of them is the block's."""
+    from app.factory.build.codewhale_worker import DISPATCH_AUDIT_FILES, WORKER_CLI_HOME_DIR
+
+    folder, _, name = rel.rpartition("/")
+    if rel == WORKER_CLI_HOME_DIR or rel in DISPATCH_AUDIT_FILES:
+        return True
+    return folder == "docs" and name.startswith("writer_progress")
+
+
+def _entries(root: Path) -> frozenset:
+    return frozenset(p.relative_to(root).as_posix() for p in root.rglob("*"))
+
+
+def strip_worker_files(staging: Path, before: Iterable[str]) -> List[str]:
+    """Remove from ``staging`` what the worker wrote there for itself (see
+    :func:`_worker_own`) and was not in the block before the job, so the
+    repair brief never reaches the exam, the installed block or the
+    proposal. A folder the worker made for them only goes too. Returns
+    what was removed."""
+    had = frozenset(before)
+    removed: List[str] = []
+    for rel in sorted(r for r in _entries(staging) - had if _worker_own(r)):
+        path = staging / rel
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        removed.append(rel)
+    for rel in sorted({r.rpartition("/")[0] for r in removed} - had - {""}):
+        folder = staging / rel
+        if not any(folder.iterdir()):
+            folder.rmdir()
+            removed.append(rel)
+    return removed
+
+
 def worker_writer(runner: Any) -> Callable[[str, Path, Dict[str, Any]], Any]:
     """The exam's ``writer``: one headless coding-worker job on the staged
     copy, under this build's tenant and session, bounded by the build's wall
-    still left. No wall left: the repair is not attempted (it fails, named)."""
+    still left. No wall left: the repair is not attempted (it fails, named).
+
+    The job's directory is the staged copy, and its write confinement is that
+    directory alone (``codewhale_worker.run_worker_job`` spawns the CLI with
+    ``agent_confine.confinement_popen_kwargs(cwd, cli)``, whose read-write
+    root is ``narrow_rw_roots(cwd)``). The worker's own dispatch files are
+    removed from the staged copy when the job ends, however it ends."""
 
     def write(block_id: str, staging: Path, handback: Dict[str, Any]) -> Any:
         from app.factory.build.codewhale_worker import run_worker_job, worker_timeout_s
@@ -161,14 +207,18 @@ def worker_writer(runner: Any) -> Callable[[str, Path, Dict[str, Any]], Any]:
         if left is not None and left <= 0:
             raise RuntimeError(f"no build wall left to repair {block_id}")
         timeout = worker_timeout_s() if left is None else min(worker_timeout_s(), left)
-        return run_worker_job(
-            repair_prompt(handback),
-            staging,
-            tenant_store=runner.state.get("tenant_store"),
-            timeout_s=timeout,
-            session_id=str(runner.state.get("session_id") or "") or None,
-            product_id=runner.workspace.name,
-        )
+        before = _entries(staging)
+        try:
+            return run_worker_job(
+                repair_prompt(handback),
+                staging,
+                tenant_store=runner.state.get("tenant_store"),
+                timeout_s=timeout,
+                session_id=str(runner.state.get("session_id") or "") or None,
+                product_id=runner.workspace.name,
+            )
+        finally:
+            strip_worker_files(staging, before)
 
     return write
 
