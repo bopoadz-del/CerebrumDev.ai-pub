@@ -10,12 +10,14 @@ attach a real PDF and XLSX; parsed status appears; a cited answer with a
 number renders; an invalid request is answered honestly with 422/503 (never
 a 200); every declared route returns 200 and renders with no console errors.
 
-Which of those steps run is read from the brief. A step kind declares the
-subject it grades (``KIND_SUBJECT``); the step runs only when the brief
-contains that subject. A kind with no subject is the product surface the
-blueprint declares and always runs. A step the brief does not contain is
-not run and is reported not applicable — never passed, never a failure.
-A brief that cannot be read keeps every step, and the grade says so.
+Which of those steps run is read from the customer brief. A step kind
+declares the subject it grades (``KIND_SUBJECT``); the step runs only when
+the brief contains that subject. A kind with no subject is the product
+surface the blueprint declares and always runs. A step the brief does not
+contain is not run and is reported not applicable — never passed, never a
+failure. A customer brief that cannot be read stops the UI grade: nothing
+runs, and the grade reports ``brief unreadable``. Blueprint text is not a
+brief. The Factory contract on its own is not a brief.
 
 No base URL, no Playwright, or no report = the UI run did not happen = FAIL.
 A skipped UI run is never a pass.
@@ -51,9 +53,9 @@ STEP_KINDS = ("load", "bind", "attach_pdf", "attach_xlsx", "parsed", "cited_answ
 #: Not a pass and not a failure: the brief does not contain this step.
 NOT_APPLICABLE = "not_applicable"
 
-#: Said on the grade when no customer brief could be read. Every step is
-#: kept — a missing brief must not silently drop a check.
-BRIEF_UNREADABLE_NOTE = "brief could not be read; every UI step was kept"
+#: The UI grade stops with this block when the customer brief cannot be
+#: read. Nothing is run, and nothing is passed.
+BRIEF_UNREADABLE = "brief unreadable"
 
 _UNSET: Any = object()
 
@@ -89,9 +91,6 @@ _CUSTOMER_HEADINGS = ("USER BRIEF", "CAPABILITIES")
 #: contract, with no customer section, is not a brief.
 _CONTRACT_HEADING = "CUT 1 — STEP 0 INVENTORY + STOP"
 
-#: Blueprint fields that are the customer's own ask. Identity fields are not
-#: among them: a product's name is not the brief.
-_NARRATIVE_FIELDS = ("description", "narrative", "notes", "summary")
 
 
 @dataclass(frozen=True)
@@ -249,46 +248,14 @@ def _brief_chunks(brief: Any) -> List[str]:
     return []
 
 
-def _read_brief(brief: Any) -> Tuple[Optional[str], str]:
-    """``(customer text, note)``. Text is None when the brief cannot be read;
-    the note is what the grade says, and every step is then kept."""
-    chunks = _brief_chunks(brief)
-    if not chunks:
-        return None, BRIEF_UNREADABLE_NOTE
+def _customer_chunks(brief: Any) -> List[str]:
+    """Deduped customer text in ``brief``. Empty when it cannot be read.
+    ``_UNSET`` is not a brief; callers that omit the argument do not ask."""
     seen: List[str] = []
-    for chunk in chunks:
+    for chunk in _brief_chunks(brief):
         if chunk not in seen:
             seen.append(chunk)
-    return "\n".join(seen), ""
-
-
-def _cap_asks(cap: Any) -> List[str]:
-    if isinstance(cap, Mapping):
-        description = cap.get("description")
-        requirements = cap.get("requirements") or []
-    else:
-        description = getattr(cap, "description", None)
-        requirements = getattr(cap, "requirements", None) or []
-    out: List[str] = []
-    if isinstance(description, str) and description.strip():
-        out.append(description.strip())
-    for req in requirements:
-        if isinstance(req, str) and req.strip():
-            out.append(req.strip())
-    return out
-
-
-def _blueprint_chunks(blueprint: Any) -> List[str]:
-    bp = _as_mapping(blueprint)
-    chunks: List[str] = []
-    for key in _NARRATIVE_FIELDS:
-        value = bp.get(key)
-        if isinstance(value, str):
-            chunks.extend(_customer_from_text(value))
-    for cap in bp.get("capabilities") or []:
-        for ask in _cap_asks(cap):
-            chunks.extend(_customer_from_text(ask))
-    return chunks
+    return seen
 
 
 def brief_for_steps(
@@ -298,18 +265,24 @@ def brief_for_steps(
     compiled: Any = None,
 ) -> Optional[str]:
     """The customer brief UI steps are derived from, or None when it cannot
-    be read (the grade then keeps every step and says so).
+    be read. None blocks the UI grade.
 
-    The supplied brief, the blueprint's own narrative and capability asks,
-    and a compiled brief's customer sections. The Factory contract compiled
-    beside them is not the brief.
+    Only the supplied brief and the customer sections of a compiled brief.
+    ``blueprint`` is not a brief: its summary and capability text do not
+    stand in. The Factory contract, with no customer section, is not a brief.
     """
-    chunks = _brief_chunks(supplied) + _blueprint_chunks(blueprint) + _brief_chunks(compiled)
+    del blueprint
+    chunks = _customer_chunks(supplied) + _customer_chunks(compiled)
     seen: List[str] = []
     for chunk in chunks:
         if chunk not in seen:
             seen.append(chunk)
     return "\n".join(seen) if seen else None
+
+
+def _unreadable_block() -> UiGrade:
+    """The UI grade stopped. No step ran, and none is passed."""
+    return UiGrade([], [BRIEF_UNREADABLE], brief_note=BRIEF_UNREADABLE)
 
 
 def _candidate_steps(blueprint: Mapping[str, Any]) -> List[UiStep]:
@@ -331,12 +304,9 @@ def _candidate_steps(blueprint: Mapping[str, Any]) -> List[UiStep]:
     return steps
 
 
-def _step_applies(kind: str, text: Optional[str]) -> bool:
-    """True when this kind runs. No readable brief → every kind (strict).
-    A kind with no subject is the product surface and always runs. Any other
-    kind runs only when the brief contains its subject."""
-    if text is None:
-        return True
+def _step_applies(kind: str, text: str) -> bool:
+    """A kind with no subject is the product surface and always runs. Any
+    other kind runs only when the brief contains its subject."""
     subject = KIND_SUBJECT.get(kind)
     if not subject:
         return True
@@ -346,18 +316,28 @@ def _step_applies(kind: str, text: Optional[str]) -> bool:
 def _split_plan(
     blueprint: Mapping[str, Any], brief: Any
 ) -> Tuple[List[UiStep], List[UiStep], str]:
-    text, note = _read_brief(brief)
+    """``(run, not_applicable, block)``.
+
+    No brief argument: every candidate step runs (callers that only have a
+    blueprint). An explicit brief with no customer text blocks: nothing runs.
+    A readable brief runs the steps whose subject it contains.
+    """
+    if brief is _UNSET:
+        return _candidate_steps(blueprint), [], ""
+    chunks = _customer_chunks(brief)
+    if not chunks:
+        return [], [], BRIEF_UNREADABLE
+    text = "\n".join(chunks)
     run: List[UiStep] = []
     skip: List[UiStep] = []
     for step in _candidate_steps(blueprint):
         (run if _step_applies(step.kind, text) else skip).append(step)
-    return run, skip, note if text is None else ""
+    return run, skip, ""
 
 
 def ui_plan(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> List[UiStep]:
-    """The steps that will be run. A brief that cannot be read returns every
-    step; a step whose subject the brief does not contain is left out."""
-    run, _skip, _note = _split_plan(blueprint, brief)
+    """The steps that will be run. An unreadable brief runs none."""
+    run, _skip, _block = _split_plan(blueprint, brief)
     return run
 
 
@@ -533,16 +513,18 @@ def parse_report(
     """Playwright JSON reporter -> UiGrade. A planned step absent from the
     report is a failed step (a skipped step is not a passed one). A step the
     brief does not contain is not applicable: it was not run, it is not
-    passed, and it is not a failure. A brief that cannot be read keeps every
-    step and says so."""
+    passed, and it is not a failure. A brief that cannot be read is a block:
+    no step is graded."""
+    run, skip, block = _split_plan(blueprint, brief)
+    if block:
+        return _unreadable_block()
     seen = report_outcomes(report)
-    run, skip, note = _split_plan(blueprint, brief)
     steps = [
         {"name": st.name, "kind": st.kind, "target": st.target, "passed": seen.get(st.name, False)}
         for st in run
     ]
     errors = [] if seen else ["playwright report has no results"]
-    return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip], brief_note=note)
+    return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
 
 
 def _tail(text: Any) -> str:
@@ -631,6 +613,9 @@ def grade_ui(
     run: Any = subprocess.run,
     brief: Any = _UNSET,
 ) -> UiGrade:
+    _run, _skip, block = _split_plan(blueprint, brief)
+    if block:
+        return _unreadable_block()
     if not base_url:
         return UiGrade([], ["UI run did not happen: no base URL for the rendered product"])
     if run is subprocess.run:

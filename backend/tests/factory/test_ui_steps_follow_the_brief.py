@@ -129,21 +129,26 @@ def test_a_whole_token_decides_not_a_substring():
     assert not (_kinds(brief) & DOCUMENT_KINDS)
 
 
-# --- unreadable brief: strict, and said --------------------------------------
+# --- unreadable brief: the grade stops ----------------------------------------
 
 
 @pytest.mark.parametrize("brief", [None, "", "   ", 0, {"summary": ""}, {"notes": 4}])
-def test_an_unreadable_brief_keeps_every_step_and_says_so(brief):
-    assert _plan_names(brief) == _plan_names(ug._UNSET)
-    assert DOCUMENT_KINDS <= _kinds(brief)
-    names = _plan_names(brief)
-    grade = ug.parse_report(_report(names), BP, brief)
-    assert grade.ok
-    assert grade.not_applicable == []
-    assert grade.brief_note == ug.BRIEF_UNREADABLE_NOTE
-    missing = ug.parse_report(_report(names[1:]), BP, brief)
-    assert not missing.ok
-    assert names[0] in missing.failing
+def test_an_unreadable_brief_blocks_the_ui_grade(brief, tmp_path):
+    assert ug.ui_plan(BP, brief) == []
+    grade = ug.parse_report(_report(["load:/"]), BP, brief)
+    assert not grade.ok and not grade.ran
+    assert grade.steps == [] and grade.not_applicable == []
+    assert grade.failing == [ug.BRIEF_UNREADABLE]
+    assert grade.brief_note == ug.BRIEF_UNREADABLE
+    calls = []
+
+    def fake(cmd, **kw):
+        calls.append(cmd)
+
+    stopped = ug.grade_ui(BP, tmp_path, base_url="http://x", run=fake, brief=brief)
+    assert stopped.failing == [ug.BRIEF_UNREADABLE]
+    assert calls == []
+    assert not (tmp_path / "grade_ui.spec.ts").exists()
 
 
 # --- the factory contract is not the brief -----------------------------------
@@ -168,7 +173,7 @@ def test_the_factory_contract_does_not_invent_a_document_ask():
 
     contract_only = ug.brief_for_steps({"capabilities": []}, compiled=_CONTRACT)
     assert contract_only is None
-    assert DOCUMENT_KINDS <= _kinds(contract_only)
+    assert ug.ui_plan(BP, contract_only) == []
 
 
 def test_a_document_ask_survives_beside_the_factory_contract():
@@ -183,11 +188,65 @@ def test_a_document_ask_survives_beside_the_factory_contract():
     assert DOCUMENT_KINDS <= _kinds(text)
 
 
-def test_the_blueprint_ask_is_the_brief_when_no_other_text_is_supplied():
+def test_blueprint_text_does_not_stand_in_for_a_missing_brief(tmp_path):
+    """A blueprint that mentions a PDF is still not a customer brief."""
     document_bp = dict(BP, summary="Operators upload a PDF and need a cited answer.")
     plain_bp = dict(BP)
-    assert DOCUMENT_KINDS <= _kinds(ug.brief_for_steps(document_bp))
-    assert not (_kinds(ug.brief_for_steps(plain_bp, compiled=_CONTRACT)) & DOCUMENT_KINDS)
+    assert ug.brief_for_steps(document_bp) is None
+    assert ug.brief_for_steps(plain_bp, compiled=_CONTRACT) is None
+    for bp, compiled in ((document_bp, None), (plain_bp, _CONTRACT)):
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+
+        brief = ug.brief_for_steps(bp, compiled=compiled)
+        grade = ug.grade_ui(bp, tmp_path / bp["summary"][:12], base_url="http://x", run=fake, brief=brief)
+        assert not grade.ok and not grade.ran
+        assert grade.steps == []
+        assert grade.failing == [ug.BRIEF_UNREADABLE]
+        assert calls == []
+
+
+@pytest.mark.parametrize("brief,blocked", [(None, True), (PLAIN_BRIEFS[1], False)])
+def test_the_ui_layer_does_not_boot_on_an_unreadable_brief(tmp_path, monkeypatch, brief, blocked):
+    import app.factory.build.grader as grader
+
+    boots = []
+    monkeypatch.setattr(grader, "boot_product", lambda root: boots.append(root) or (None, "no product"))
+    ui, ran, reason = grader._grade_ui(BP, tmp_path, tmp_path / "g", None, brief=brief)
+    if blocked:
+        assert boots == [] and not ran
+        assert reason == ug.BRIEF_UNREADABLE
+        assert ui.failing == [ug.BRIEF_UNREADABLE]
+    else:
+        assert boots
+        assert ug.BRIEF_UNREADABLE not in reason
+
+
+@pytest.mark.parametrize("supplied,runs", [(None, False), (PLAIN_BRIEFS[0], True)])
+def test_unreadable_brief_blocks_and_a_readable_brief_runs(tmp_path, supplied, runs):
+    brief = ug.brief_for_steps(BP, supplied=supplied, compiled=_CONTRACT)
+    calls = []
+
+    def fake(cmd, **kw):
+        calls.append(cmd)
+        names = _plan_names(brief)
+        open(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"], "w").write(json.dumps(_report(names)))
+
+    grade = ug.grade_ui(BP, tmp_path, base_url="http://x", run=fake, brief=brief)
+    if runs:
+        assert brief
+        assert calls
+        assert grade.ran and grade.ok
+        assert ug.BRIEF_UNREADABLE not in grade.failing
+        assert not (DOCUMENT_KINDS & {step["kind"] for step in grade.steps})
+    else:
+        assert brief is None
+        assert calls == []
+        assert not grade.ran and not grade.ok
+        assert grade.steps == []
+        assert grade.failing == [ug.BRIEF_UNREADABLE]
 
 
 # --- the run itself ----------------------------------------------------------
