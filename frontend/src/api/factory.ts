@@ -1024,13 +1024,13 @@ export const domains = {
   list: () => req<{ domains?: unknown[] }>('GET', '/v1/domains/'),
 }
 
-/** Named /health blocker when Kimi Code CLI is on PATH but config.toml is missing. */
+/** Named /health blocker when the coder CLI is on PATH but config.toml is missing. */
 export const FACTORY_CODE_CLI_CREDENTIALS_MISSING = 'FACTORY_CODE_CLI_CREDENTIALS_MISSING'
 /** Named /health blocker when config.toml exists but default_model is unusable. */
 export const FACTORY_CODE_CLI_NO_MODEL = 'FACTORY_CODE_CLI_NO_MODEL'
 /** Coder receipt / WRITER honesty when FACTORY_CODE_CLI exited non-zero. */
 export const FACTORY_CODE_CLI_FAILED = 'FACTORY_CODE_CLI_FAILED'
-/** Moonshot 429 / insufficient-balance / account-suspended CLI miss. */
+/** Provider 429 / insufficient-balance / account-suspended CLI miss. */
 export const FACTORY_CODE_CLI_BILLING = 'FACTORY_CODE_CLI_BILLING'
 
 export type FactoryCodeCliProbe = {

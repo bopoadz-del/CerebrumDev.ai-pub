@@ -127,7 +127,7 @@ Tests: schema reject cases, signature verification, queue persistence, idempoten
 **Branch:** `feat/build-mode-workbench`  
 **Status:** in progress / PR — see `M4-build-mode-workbench.md`
 
-Sandboxed Kimi Code lane inside CerebrumDev:
+Sandboxed coder lane inside CerebrumDev:
 
 - `backend/app/workbench/`: consumes approved `change_requests` queue items, runs coding agent (`kimi-k2.7-code:cloud` via Ollama Cloud when `KIMI_WORKBENCH_ENABLED=true`; default honest Factory regenerator stub) in an isolated workspace: session-scoped filesystem, no deploy credentials, no Store publish rights (network egress is NOT restricted — subprocesses inherit host network access)
 - Agent output is a **candidate** only; packager promotion lands at `staging/community` trust tier; certified/production still requires existing chain-approve

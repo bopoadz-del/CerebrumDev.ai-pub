@@ -2,7 +2,7 @@
 """Local OpenAI-compatible stand-in for Factory Floor UI tests.
 
 This is NOT a model. It answers the same `/v1/chat/completions` shape the
-architect and coding agent call, so a cloud VM without a paid Kimi key can
+architect and coding agent call, so a cloud VM without a paid provider key can
 still exercise: brief → architect_llm blueprint → runner WRITER →
 agent-written artifacts.
 

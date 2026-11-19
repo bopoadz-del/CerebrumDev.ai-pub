@@ -5,7 +5,7 @@
 
 ## What shipped
 
-Sandboxed Kimi Code workbench that consumes **approved** M3 queue items and produces
+Sandboxed coder workbench that consumes **approved** M3 queue items and produces
 **candidate change sets**, re-runs DNA acceptance gates, then promotes **only** through
 the Factory packager to **staging/community**. Never deploys. Never writes to the Store.
 Never bypasses the packager.

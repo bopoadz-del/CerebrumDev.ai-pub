@@ -1,7 +1,7 @@
 """PRODUCT one-record persist / re-read contract for C-BRIEF.
 
 Photographed Floor (2026-09-05, platforms-poll5 / sess_108e101): after a
-successful Kimi FACTORY_CODE_CLI WRITER, TESTER stopped:
+successful FACTORY_CODE_CLI WRITER, TESTER stopped:
 
     PRODUCT (one-record round-trip): 3 capability(ies) did not remember
     a record they were given.

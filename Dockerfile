@@ -107,7 +107,7 @@ COPY .github/workflows/ci.yml /app/.github/workflows/ci.yml
 
 # The manufacturing executor is the CodeWhale worker (FACTORY_CODEWHALE_WRITER):
 # headless codewhale exec with DEEPSEEK_API_KEY, version-pinned above.
-# No kimi / claude / cursor binaries ship in this image.
+# No coder CLI binaries (claude / cursor or any other) ship in this image.
 ENV PORT=8000
 # libpq defaults sslcert to $HOME/.postgresql/postgresql.crt. python:slim
 # leaves HOME=/root. After the entrypoint drops to uid 10001 that path is

@@ -1,6 +1,6 @@
 """The one gated coding-agent brief.
 
-The Factory coder (Kimi HTTP or an agentic CLI) is not a swarm of tiny
+The Factory coder (an HTTP model or an agentic CLI) is not a swarm of tiny
 product stories. Each handle()/spec/route packet is a task. The *system*
 context is this single brief: gates, contracts, and what done means.
 

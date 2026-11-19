@@ -1,7 +1,7 @@
 """Fail-closed authorship accounting — CLI keep-path is agent-written.
 
 sess_4e1ec7afa3894dc8 on tip 160af0e: harvest kept four FACTORY_CODE_CLI
-handlers tagged ``coder CLI (/usr/local/bin/kimi)``, but writer_contract
+handlers tagged ``coder CLI (<the operator's CLI path>)``, but writer_contract
 and Floor authorship only counted ``coder LLM`` prefixes. The operator
 saw ``0 by the coding agent, 27 templated`` after a ~16-minute CLI keep.
 

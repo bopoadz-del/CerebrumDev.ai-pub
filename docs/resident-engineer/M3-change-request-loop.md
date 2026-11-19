@@ -90,7 +90,7 @@ Also creates a **workspace record** (`workspaces/{request_id}/workspace.json`) w
 - `workspace.path` as the seed for an isolated worktree
 - Signed original `request` for audit
 
-M4 owns: Kimi Code workbench, any mutation, Store publish, UI beyond this paperwork.
+M4 owns: the coder workbench, any mutation, Store publish, UI beyond this paperwork.
 
 ## Tests
 
