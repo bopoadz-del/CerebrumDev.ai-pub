@@ -19,7 +19,7 @@ written inside gold #2 (`docs/REASONING_KERNEL.md`):
 - Create domain constitutions
 - Certify each domain pack
 
-It is a **factory development mission, executed by the Factory coder once per domain**
+It is a **factory development mission, executed by Kimi Code once per domain**
 against our donor repositories (The_Fork, RetailOpsReference, Projectfifteen,
 Projecttwo, Projectten, projectseven, Cerebrum-BuildOps).
 
