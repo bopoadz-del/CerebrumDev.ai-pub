@@ -832,6 +832,25 @@ class RoleRunner:
         kwargs["brief"] = str(self.state.get("brief") or "")
         return GateContext(**kwargs)
 
+    def _customer_brief_block(self) -> Optional[str]:
+        """Before the writer: a customer brief that cannot be read, or that
+        omits a required field, stops the run. No writer, grader or tester.
+
+        A run that was not given a customer brief is unchanged. Blueprint
+        text and the Factory contract are not consulted.
+        """
+        raw = self.state.get("brief")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        from app.factory.build.customer_brief import format_report, read_brief, stage_quotes
+
+        record, problems = read_brief(raw)
+        if record is None:
+            return format_report(problems)
+        quotes = stage_quotes(raw)
+        self.state["customer_brief_quote"] = quotes.get("writer", record.quote())
+        return None
+
     def _absorb(self, result: RoleResult) -> None:
         if result.gaps:
             self.state["gaps"] = tuple(result.gaps)
@@ -3364,6 +3383,23 @@ class RoleRunner:
         self._note_build_level()
         self._note_plan_budget()
         self._note_drafting_note()
+
+        # Before any phase. A customer brief that cannot be read, or that
+        # omits a required field, stops the run: no writer, no grader, no tester.
+        blocked = self._customer_brief_block()
+        if blocked is not None:
+            self.ledger.append(
+                EventKind.NOTE,
+                role=BuildRole.WRITER,
+                detail=blocked,
+                payload={"brief_gate": blocked},
+            )
+            return self._finish(
+                Outcome.FAILED_GATE,
+                blocked,
+                phase=BuildRole.WRITER,
+                rework=rework_used,
+            )
 
         index = 0
         while True:

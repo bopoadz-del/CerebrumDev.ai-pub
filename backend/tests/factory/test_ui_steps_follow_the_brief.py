@@ -1,11 +1,8 @@
-"""UI steps are derived from the brief.
+"""The customer brief is one format, read by the writer, the grader and the tester.
 
-A brief that asks for documents is graded on the document steps. A brief
-that does not contain them does not run them: they are not applicable, not
-passed, and not a failure. A brief that cannot be read keeps every step.
-
-The briefs below are synthetic. Nothing here names a product, a client or a
-probe.
+Synthetic records only. A document brief keeps the document UI steps. A brief
+with no documents does not run them. An unreadable brief, or one missing a
+required field, starts nothing — including the writer.
 """
 
 from __future__ import annotations
@@ -15,16 +12,21 @@ import json
 import pytest
 
 import app.factory.build.product_grader.ui_grader as ug
-from app.factory.build.architect import NARRATIVE_SEPARATOR
-from app.factory.build.grader import reason_classes
-from app.factory.build.product_grader.grade_md import render_md
+from app.factory.build.authority import BuildRole
+from app.factory.build.customer_brief import REQUIRED_FIELDS, format_report, read_brief, stage_quotes
+from app.factory.build.ledger import EventKind
+from app.factory.planner import ProductPlan
+from app.factory.build.product_grader.layer2 import layer2_messages
+from app.factory.build.roles_handlers import _compiled_writer_brief
+from app.factory.build.runner import Outcome, RoleRunner
+from app.factory.build.writer_prompt import render_writer_prompt
 
 DOCUMENT_KINDS = frozenset({"attach_pdf", "attach_xlsx", "parsed", "cited_answer"})
 
 BP = {
-    "product_id": "qty-desk",
-    "product_name": "Qty Desk",
-    "summary": "quantities on hand",
+    "product_id": "sample",
+    "product_name": "Sample",
+    "summary": "items on hand",
     "ui_modules": ["count_board"],
     "capabilities": [
         {"id": "qty_on_hand", "description": "Record the quantity on hand."},
@@ -32,22 +34,16 @@ BP = {
     ],
 }
 
-#: Two ways a brief asks for documents, and two that do not.
-DOCUMENT_BRIEFS = [
-    "Operators upload a PDF and a spreadsheet and must get a cited answer.",
-    "Each record cites the source spreadsheet it was taken from.",
-]
-PLAIN_BRIEFS = [
-    "Operators record the quantity on hand for each item and the reorder point.",
-    "The count is compared with the reorder point and a shortfall is flagged.",
-]
 
-#: The Factory contract always names a document field. That sentence is the
-#: contract, not the customer's ask.
-_CONTRACT = (
-    "CUT 1 — STEP 0 INVENTORY + STOP\n"
-    "When a retrieval surface is owed, ingest takes the document text.\n"
-)
+def _brief(ask, uploads, file_types):
+    return json.dumps(
+        {"ask": ask, "documents": {"uploads": uploads, "file_types": list(file_types)}},
+        sort_keys=True,
+    )
+
+
+DOC = _brief("Count the items and upload the files.", True, ["pdf", "xlsx"])
+PLAIN = _brief("Count the items on hand.", False, [])
 
 
 def _kinds(brief):
@@ -65,235 +61,119 @@ def _report(names, failed=()):
     }
 
 
-def _plan_names(brief):
-    return [step.name for step in ug.ui_plan(BP, brief)]
+class _Workspace:
+    def exists(self, _rel):
+        return False
 
 
-# --- the two briefs ----------------------------------------------------------
+class _Ctx:
+    def __init__(self, brief):
+        self.state = {"brief": brief}
+        self.blueprint = type("B", (), {"capabilities": [], "summary": ""})()
+        self.workspace = _Workspace()
 
 
-@pytest.mark.parametrize("brief", DOCUMENT_BRIEFS)
-def test_a_document_brief_keeps_and_grades_document_steps(brief):
-    assert DOCUMENT_KINDS <= _kinds(brief)
-    assert _plan_names(brief) == _plan_names(ug._UNSET)
-    assert ug._question(BP, brief) == ug._question(BP)
-    assert "attached document" in ug.render_spec(BP, brief)
-    names = _plan_names(brief)
-    failed = "attach:pdf"
-    grade = ug.parse_report(_report(names, failed={failed}), BP, brief)
-    assert not grade.ok
-    assert failed in grade.failing
-    assert grade.not_applicable == []
-    assert grade.brief_note == ""
-    passed = ug.parse_report(_report(names), BP, brief)
-    assert passed.ok
-    assert all(step["passed"] is True for step in passed.steps)
-    assert {step["kind"] for step in passed.steps} >= DOCUMENT_KINDS
-
-
-@pytest.mark.parametrize("brief", PLAIN_BRIEFS)
-def test_a_brief_with_no_documents_does_not_run_document_steps(brief, tmp_path):
-    kinds = _kinds(brief)
-    assert not (kinds & DOCUMENT_KINDS)
-    assert {"load", "bind", "honest_error", "screen", "route"} <= kinds
-    spec = ug.render_spec(BP, brief)
-    assert "attached document" not in spec
-    plan = json.loads(spec.split("const PLAN = ", 1)[1].split(";\n", 1)[0])
-    assert not ({step["kind"] for step in plan} & DOCUMENT_KINDS)
-    assert ug._question(BP, brief) == ""
-    assert ug.write_fixtures(BP, tmp_path / "fx", brief) == {}
-    names = _plan_names(brief)
-    grade = ug.parse_report(_report(names), BP, brief)
-    assert grade.ok, grade.failing
-    assert {step["kind"] for step in grade.not_applicable} == DOCUMENT_KINDS
-    assert all(step.get("passed") is not True for step in grade.not_applicable)
-    assert all(step["status"] == ug.NOT_APPLICABLE for step in grade.not_applicable)
-    assert all(step["applicable"] is False for step in grade.not_applicable)
-    failed = ug.parse_report(_report(names, failed={"load:/"}), BP, brief)
-    assert not failed.ok
-    assert failed.failing == ["load:/"]
-    assert not any(step["kind"] in DOCUMENT_KINDS for step in failed.steps)
-
-
-def test_document_steps_are_one_subject():
-    """Any document ask keeps every document step; the kinds are not special cases."""
-    assert DOCUMENT_KINDS == frozenset(
-        kind for kind, subject in ug.KIND_SUBJECT.items() if subject == "documents"
+def _runner(tmp_path, brief):
+    plan = ProductPlan(product_id="sample", capabilities=[], fail_closed=True)
+    return RoleRunner(
+        BP,
+        tmp_path / "build",
+        plan=plan,
+        blocks_root=tmp_path / "blocks",
+        inputs_hash="inputs",
+        brief=brief,
+        budget=__import__(
+            "app.factory.build.runner", fromlist=["BuildBudget"]
+        ).BuildBudget(max_rework=0, wall_clock_s=30),
     )
-    only_pdf = "Operators upload a PDF of the count."
-    assert DOCUMENT_KINDS <= _kinds(only_pdf)
 
 
-def test_a_whole_token_decides_not_a_substring():
-    brief = "The screen shows documentation for the count."
-    assert not (_kinds(brief) & DOCUMENT_KINDS)
+# --- documents field ---------------------------------------------------------
 
 
-# --- unreadable brief: the grade stops ----------------------------------------
+def test_a_document_brief_keeps_and_grades_every_document_step(tmp_path):
+    assert DOCUMENT_KINDS <= _kinds(DOC)
+    assert [s.name for s in ug.ui_plan(BP, DOC)] == [s.name for s in ug.ui_plan(BP)]
+    assert ug._question(BP, DOC) == ug._question(BP)
+    assert "attached document" in ug.render_spec(BP, DOC)
+    names = [s.name for s in ug.ui_plan(BP, DOC)]
+    failed = ug.parse_report(_report(names, failed={"attach:pdf"}), BP, DOC)
+    assert not failed.ok and "attach:pdf" in failed.failing
+    fx = ug.write_fixtures(BP, tmp_path / "fx", DOC)
+    assert fx["pdf"].is_file() and fx["xlsx"].is_file()
 
 
-@pytest.mark.parametrize("brief", [None, "", "   ", 0, {"summary": ""}, {"notes": 4}])
-def test_an_unreadable_brief_blocks_the_ui_grade(brief, tmp_path):
-    assert ug.ui_plan(BP, brief) == []
-    grade = ug.parse_report(_report(["load:/"]), BP, brief)
-    assert not grade.ok and not grade.ran
-    assert grade.steps == [] and grade.not_applicable == []
-    assert grade.failing == [ug.BRIEF_UNREADABLE]
-    assert grade.brief_note == ug.BRIEF_UNREADABLE
-    calls = []
-
-    def fake(cmd, **kw):
-        calls.append(cmd)
-
-    stopped = ug.grade_ui(BP, tmp_path, base_url="http://x", run=fake, brief=brief)
-    assert stopped.failing == [ug.BRIEF_UNREADABLE]
-    assert calls == []
-    assert not (tmp_path / "grade_ui.spec.ts").exists()
-
-
-# --- the factory contract is not the brief -----------------------------------
-
-
-def test_the_factory_contract_does_not_invent_a_document_ask():
-    plain = PLAIN_BRIEFS[0]
-    wrapped = (
-        f"USER BRIEF\n{plain}\n\n"
-        f"COMPILED C-BRIEF\n{_CONTRACT}\n\n"
-        "CAPABILITIES\n- qty_on_hand: Record the quantity on hand.\n"
-    )
-    text = ug.brief_for_steps(BP, supplied=plain, compiled=wrapped)
-    assert text is not None
-    assert "document text" not in text
-    assert not (_kinds(text) & DOCUMENT_KINDS)
-
-    narrated = plain + NARRATIVE_SEPARATOR + _CONTRACT
-    narrated_text = ug.brief_for_steps({"capabilities": []}, compiled=narrated)
-    assert narrated_text == plain
-    assert not (_kinds(narrated_text) & DOCUMENT_KINDS)
-
-    contract_only = ug.brief_for_steps({"capabilities": []}, compiled=_CONTRACT)
-    assert contract_only is None
-    assert ug.ui_plan(BP, contract_only) == []
-
-
-def test_a_document_ask_survives_beside_the_factory_contract():
-    ask = DOCUMENT_BRIEFS[0]
-    wrapped = (
-        f"USER BRIEF\n{ask}\n\n"
-        f"COMPILED C-BRIEF\n{_CONTRACT}\n\n"
-        "CAPABILITIES\n- qty_on_hand: Record the quantity on hand.\n"
-    )
-    text = ug.brief_for_steps(BP, compiled=wrapped)
-    assert text is not None and "PDF" in text
-    assert DOCUMENT_KINDS <= _kinds(text)
-
-
-def test_blueprint_text_does_not_stand_in_for_a_missing_brief(tmp_path):
-    """A blueprint that mentions a PDF is still not a customer brief."""
-    document_bp = dict(BP, summary="Operators upload a PDF and need a cited answer.")
-    plain_bp = dict(BP)
-    assert ug.brief_for_steps(document_bp) is None
-    assert ug.brief_for_steps(plain_bp, compiled=_CONTRACT) is None
-    for bp, compiled in ((document_bp, None), (plain_bp, _CONTRACT)):
-        calls = []
-
-        def fake(cmd, **kw):
-            calls.append(cmd)
-
-        brief = ug.brief_for_steps(bp, compiled=compiled)
-        grade = ug.grade_ui(bp, tmp_path / bp["summary"][:12], base_url="http://x", run=fake, brief=brief)
-        assert not grade.ok and not grade.ran
-        assert grade.steps == []
-        assert grade.failing == [ug.BRIEF_UNREADABLE]
-        assert calls == []
-
-
-@pytest.mark.parametrize("brief,blocked", [(None, True), (PLAIN_BRIEFS[1], False)])
-def test_the_ui_layer_does_not_boot_on_an_unreadable_brief(tmp_path, monkeypatch, brief, blocked):
-    import app.factory.build.grader as grader
-
-    boots = []
-    monkeypatch.setattr(grader, "boot_product", lambda root: boots.append(root) or (None, "no product"))
-    ui, ran, reason = grader._grade_ui(BP, tmp_path, tmp_path / "g", None, brief=brief)
-    if blocked:
-        assert boots == [] and not ran
-        assert reason == ug.BRIEF_UNREADABLE
-        assert ui.failing == [ug.BRIEF_UNREADABLE]
-    else:
-        assert boots
-        assert ug.BRIEF_UNREADABLE not in reason
-
-
-@pytest.mark.parametrize("supplied,runs", [(None, False), (PLAIN_BRIEFS[0], True)])
-def test_unreadable_brief_blocks_and_a_readable_brief_runs(tmp_path, supplied, runs):
-    brief = ug.brief_for_steps(BP, supplied=supplied, compiled=_CONTRACT)
-    calls = []
-
-    def fake(cmd, **kw):
-        calls.append(cmd)
-        names = _plan_names(brief)
-        open(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"], "w").write(json.dumps(_report(names)))
-
-    grade = ug.grade_ui(BP, tmp_path, base_url="http://x", run=fake, brief=brief)
-    if runs:
-        assert brief
-        assert calls
-        assert grade.ran and grade.ok
-        assert ug.BRIEF_UNREADABLE not in grade.failing
-        assert not (DOCUMENT_KINDS & {step["kind"] for step in grade.steps})
-    else:
-        assert brief is None
-        assert calls == []
-        assert not grade.ran and not grade.ok
-        assert grade.steps == []
-        assert grade.failing == [ug.BRIEF_UNREADABLE]
-
-
-# --- the run itself ----------------------------------------------------------
-
-
-def _grade(tmp_path, brief, failed=()):
-    names = _plan_names(brief)
-
-    def fake(cmd, **kw):
-        open(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"], "w").write(
-            json.dumps(_report(names, failed=failed))
-        )
-
-    return ug.grade_ui(BP, tmp_path, base_url="http://x", run=fake, brief=brief), names
-
-
-@pytest.mark.parametrize("brief", DOCUMENT_BRIEFS)
-def test_grade_ui_runs_document_steps_for_a_document_brief(tmp_path, brief):
-    grade, names = _grade(tmp_path, brief, failed={"attach:pdf"})
-    spec = (tmp_path / "grade_ui.spec.ts").read_text(encoding="utf-8")
-    assert "attach:pdf" in spec and "attached document" in spec
-    assert (tmp_path / "fixtures" / "fixture.pdf").is_file()
-    assert (tmp_path / "fixtures" / "fixture.xlsx").is_file()
-    assert not grade.ok and "attach:pdf" in grade.failing
-    assert set(names) >= {step["name"] for step in grade.steps}
-
-
-@pytest.mark.parametrize("brief", PLAIN_BRIEFS)
-def test_grade_ui_does_not_run_or_fail_on_steps_the_brief_omits(tmp_path, brief):
-    grade, _names = _grade(tmp_path, brief)
-    spec = (tmp_path / "grade_ui.spec.ts").read_text(encoding="utf-8")
-    plan = json.loads(spec.split("const PLAN = ", 1)[1].split(";\n", 1)[0])
-    assert not ({step["kind"] for step in plan} & DOCUMENT_KINDS)
-    assert "attached document" not in spec
-    assert not (tmp_path / "fixtures" / "fixture.pdf").exists()
+def test_a_brief_with_no_documents_does_not_run_those_steps(tmp_path):
+    assert not (_kinds(PLAIN) & DOCUMENT_KINDS)
+    assert {"load", "bind", "honest_error", "screen", "route"} <= _kinds(PLAIN)
+    assert ug._question(BP, PLAIN) == ""
+    assert "attached document" not in ug.render_spec(BP, PLAIN)
+    assert ug.write_fixtures(BP, tmp_path / "fx", PLAIN) == {}
+    names = [s.name for s in ug.ui_plan(BP, PLAIN)]
+    grade = ug.parse_report(_report(names), BP, PLAIN)
     assert grade.ok
-    ui_reasons = [row for row in reason_classes({"layer1": {"ui": grade.to_dict(), "functions": {}}, "layer2": {"ran": True}}, []) if row["layer"] == "ui"]
-    assert ui_reasons == []
-    rendered = render_md({
-        "product_id": "qty-desk",
-        "certified": True,
-        "layer1": {"ok": True, "functions": {}, "ui": grade.to_dict()},
-        "layer2": {"ran": False, "verdicts": [], "open_fails": []},
-        "next_tasks": [],
-    })
-    assert "UI steps not applicable:" in rendered
-    assert "attach:pdf" in rendered
-    assert "not applicable" in rendered
-    na_line = next(line for line in rendered.splitlines() if line.startswith("- UI steps not applicable:"))
-    assert "passed" not in na_line
+    assert {s["kind"] for s in grade.not_applicable} == DOCUMENT_KINDS
+    assert all(s.get("passed") is not True and s["status"] == ug.NOT_APPLICABLE for s in grade.not_applicable)
+    missed = ug.parse_report(_report(names, failed={"load:/"}), BP, PLAIN)
+    assert not missed.ok and missed.failing == ["load:/"]
+
+
+def test_prose_that_mentions_a_file_does_not_select_document_steps():
+    assert ug.ui_plan(BP, "upload a PDF and cite the spreadsheet") == []
+    grade = ug.parse_report({}, BP, "upload a PDF")
+    assert grade.failing == [ug.BRIEF_UNREADABLE]
+    assert not grade.steps
+
+
+# --- one quote for every stage ----------------------------------------------
+
+
+@pytest.mark.parametrize("raw", [DOC, PLAIN])
+def test_writer_grader_and_tester_quote_the_brief_verbatim(raw):
+    quotes = stage_quotes(raw)
+    assert quotes["writer"] == quotes["grader"] == quotes["tester"] == raw
+    written = _compiled_writer_brief(_Ctx(raw))
+    assert written.startswith(raw)
+    rendered = render_writer_prompt(type("B", (), {
+        "product_id": "sample", "product_name": "Sample", "vertical": "v", "summary": "s",
+    })(), brief=written)
+    assert raw in rendered
+    message = layer2_messages(
+        {"compiled_brief": quotes["grader"], "rendered_product": "tree", "layer1": {"ok": True}},
+        [{"id": "q1", "text": "shown?"}],
+    )
+    body = json.loads(message[-1]["content"])
+    assert body["compiled_brief"] == raw
+
+
+# --- the gate, before anything starts ----------------------------------------
+
+
+@pytest.mark.parametrize("raw,missing", [
+    ("this is not the brief format", ["unreadable"]),
+    (json.dumps({"ask": "Count the items."}), ["documents"]),
+])
+def test_an_unreadable_or_incomplete_brief_starts_nothing(tmp_path, raw, missing):
+    record, problems = read_brief(raw)
+    assert record is None
+    assert problems == missing
+    runner = _runner(tmp_path, raw)
+    outcome = runner.run()
+    assert outcome.outcome is Outcome.FAILED_GATE
+    assert outcome.detail == format_report(missing)
+    assert "brief incomplete/unreadable" in outcome.detail
+    for name in missing:
+        assert name in outcome.detail
+    started = [e.role for e in runner.ledger.events() if e.kind is EventKind.PHASE_STARTED]
+    assert BuildRole.WRITER not in started
+    assert BuildRole.TESTER not in started
+    assert started == []
+
+
+def test_a_complete_brief_names_its_required_fields():
+    record, problems = read_brief(DOC)
+    assert problems == []
+    assert record is not None and record.uploads is True
+    assert set(REQUIRED_FIELDS) <= {"ask", "documents"}
+    plain, _ = read_brief(PLAIN)
+    assert plain is not None and plain.uploads is False

@@ -1003,6 +1003,14 @@ def run_grader(
     blueprint = _as_mapping(blueprint)
     gradroot = Path(grader_root) if grader_root else root.parent / (root.name + ".grader")
     brief = _brief_text(blueprint, compiled_brief)
+    from app.factory.build.customer_brief import stage_quote as _stage_quote
+
+    # The grader prompt quotes the customer brief verbatim when one was given.
+    # A blueprint or a Factory contract is not substituted for it.
+    _quoted = _stage_quote(supplied_text)
+    if _quoted is None:
+        _quoted = _stage_quote(compiled_brief)
+    shown_brief = _quoted if _quoted is not None else brief
     vertical = str(blueprint.get("vertical") or "")
     cids = [
         str(cap.get("id") or "")
@@ -1114,7 +1122,7 @@ def run_grader(
             }
         ui_dict = ui.to_dict()
         layer1_view = _layer2_layer1_view(fn_dict, ui_dict)
-        l2_inputs = {"compiled_brief": brief, "rendered_product": rendered, "layer1": layer1_view}
+        l2_inputs = {"compiled_brief": shown_brief, "rendered_product": rendered, "layer1": layer1_view}
         l2 = layer2.run_layer2(
             l2_inputs, blueprint, _grader_complete, render=lambda stems: render_product(root, first=stems)
         )
