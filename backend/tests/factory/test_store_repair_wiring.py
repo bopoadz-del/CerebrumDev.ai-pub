@@ -594,7 +594,14 @@ def _worker_files(staging, brief="the repair brief"):
     (staging / WORKER_CLI_HOME_DIR / "policy" / "plugin.py").write_text("", encoding="utf-8")
 
 
-def test_the_worker_files_are_stripped_and_the_repair_kept(tmp_path):
+@pytest.mark.parametrize(
+    "added, kept",
+    [
+        ("helper.py", ["helper.py"]),
+        ("lib/helper.py", ["lib", "lib/helper.py"]),
+    ],
+)
+def test_the_worker_files_are_stripped_and_the_repair_kept(tmp_path, added, kept):
     from app.factory.build import store_repair_wiring as w
     from app.factory.build.codewhale_worker import WORKER_CLI_HOME_DIR
 
@@ -602,11 +609,12 @@ def test_the_worker_files_are_stripped_and_the_repair_kept(tmp_path):
     before = w._entries(staging)
     _worker_files(staging)
     (staging / "block.py").write_text("WIDTH = 3\n", encoding="utf-8")
-    (staging / "helper.py").write_text("def aid():\n    return 1\n", encoding="utf-8")
+    (staging / added).parent.mkdir(parents=True, exist_ok=True)
+    (staging / added).write_text("def aid():\n    return 1\n", encoding="utf-8")
 
     removed = w.strip_worker_files(staging, before)
 
-    assert _tree(staging) == ["block.json", "block.py", "helper.py"]
+    assert _tree(staging) == sorted(["block.json", "block.py", *kept])
     assert (staging / "block.py").read_text(encoding="utf-8") == "WIDTH = 3\n"
     assert removed == [
         WORKER_CLI_HOME_DIR,
@@ -618,31 +626,40 @@ def test_the_worker_files_are_stripped_and_the_repair_kept(tmp_path):
     ]
 
 
-def test_a_folder_or_file_the_block_already_had_is_kept(tmp_path):
+@pytest.mark.parametrize("had", ["docs/writer_prompt.txt", "docs/writer_progress.log"])
+def test_a_folder_or_file_the_block_already_had_is_kept(tmp_path, had):
     from app.factory.build import store_repair_wiring as w
 
-    own = {"docs/writer_prompt.txt": "kept as the block wrote it", "docs/usage.md": "use"}
+    own = {had: "kept as the block wrote it", "docs/usage.md": "use"}
     staging = _staged(tmp_path, own)
     before = w._entries(staging)
     (staging / "docs" / "writer_argv.json").write_text("[]", encoding="utf-8")
 
     assert w.strip_worker_files(staging, before) == ["docs/writer_argv.json"]
-    assert _tree(staging) == ["block.json", "block.py", "docs", "docs/usage.md", "docs/writer_prompt.txt"]
-    assert (staging / "docs" / "writer_prompt.txt").read_text(encoding="utf-8") == own["docs/writer_prompt.txt"]
+    assert _tree(staging) == sorted(["block.json", "block.py", "docs", "docs/usage.md", had])
+    assert (staging / had).read_text(encoding="utf-8") == own[had]
 
 
-def test_a_folder_the_repair_also_wrote_into_is_kept(tmp_path):
+@pytest.mark.parametrize(
+    "note, kept",
+    [
+        ("docs/notes.md", ["docs/notes.md"]),
+        ("docs/sub/notes.md", ["docs/sub", "docs/sub/notes.md"]),
+    ],
+)
+def test_a_folder_the_repair_also_wrote_into_is_kept(tmp_path, note, kept):
     from app.factory.build import store_repair_wiring as w
 
     staging = _staged(tmp_path)
     before = w._entries(staging)
     _worker_files(staging)
-    (staging / "docs" / "notes.md").write_text("why", encoding="utf-8")
+    (staging / note).parent.mkdir(parents=True, exist_ok=True)
+    (staging / note).write_text("why", encoding="utf-8")
 
     removed = w.strip_worker_files(staging, before)
 
     assert "docs" not in removed
-    assert _tree(staging) == ["block.json", "block.py", "docs", "docs/notes.md"]
+    assert _tree(staging) == sorted(["block.json", "block.py", "docs", *kept])
 
 
 @pytest.mark.parametrize(
@@ -674,10 +691,12 @@ class _NullSlot:
         return False
 
 
+@pytest.mark.parametrize("wall_left", [60.0, None], ids=["wall-bounded", "no-wall"])
 def test_the_real_worker_job_writes_only_in_the_staged_copy_and_leaves_none_of_its_files(
     smoke_blueprint,  # noqa: F811
     tmp_path,
     monkeypatch,
+    wall_left,
 ):
     """The real ``run_worker_job``, stopped at the CLI spawn: it writes its
     brief and argv audit into the staged copy, is confined to that copy
@@ -714,6 +733,10 @@ def test_the_real_worker_job_writes_only_in_the_staged_copy_and_leaves_none_of_i
             raise OSError("not under test")
         return opened(self, *a, **k)
 
+    # Built before Popen is stopped: constructing the runner may list the
+    # blocks checkout with git, which is not the spawn under test.
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    monkeypatch.setattr(runner, "_grantable_wall_left", lambda: wall_left)
     monkeypatch.setattr(pathlib.Path, "open", no_progress_log)
     monkeypatch.delenv("CODWHALE_HOME", raising=False)
     monkeypatch.setattr(codewhale_worker, "worker_cli_path", lambda: str(tmp_path / "cw"))
@@ -722,8 +745,6 @@ def test_the_real_worker_job_writes_only_in_the_staged_copy_and_leaves_none_of_i
     monkeypatch.setattr(codewhale_worker, "_dns_probe", lambda *a, **k: {})
     monkeypatch.setattr(agent_confine, "confinement_popen_kwargs", confine)
     monkeypatch.setattr(subprocess, "Popen", popen)
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
-    monkeypatch.setattr(runner, "_grantable_wall_left", lambda: 60.0)
     staging = _staged(tmp_path)
 
     with pytest.raises(_Stop):
@@ -814,3 +835,42 @@ def test_on_an_installed_repair_does_not_settle_without_a_regrade_that_does(
     assert notes and all(n.payload["regrade_settled"] is False for n in notes)
     assert all(not n.detail.endswith(": repaired") for n in notes)
     assert "installed, but the re-grade did not settle the run" in notes[0].detail
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_on_a_strip_that_raises_fails_the_exam_closed(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+):
+    """The worker writes a repair that would pass, and its own files (the
+    brief among them); then removing those files raises. The repair is not
+    examined, the unstripped tree is never installed or proposed, the Store
+    copy stays and the block's capabilities are not delivered."""
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build import store_repair_wiring as w
+
+    def strip_fails(staging, before):
+        raise OSError("the strip could not remove a file")
+
+    monkeypatch.setattr(w, "strip_worker_files", strip_fails)
+    runner, holder = _armed_build(
+        smoke_blueprint, tmp_path, monkeypatch, index, _brief_writer(_REPAIRS[index]), regrade=False
+    )
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws, block = runner.workspace, holder["block"]
+    assert len(holder["jobs"]) == 1
+    vendored = ws / "vendor" / "blocks" / block
+    assert _tree(vendored) == ["block.json", "block.py"]
+    assert (vendored / "block.py").read_text(encoding="utf-8") == _VENDORED
+    saved = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    assert so.OVERRIDES_KEY not in saved
+    assert sp.filed_proposals(ws) == []
+    row = _store_row(runner)
+    assert (row["repaired"], tuple(row["not_delivered"])) == (False, holder["bound"])
+    (note,) = _repair_notes(runner)
+    assert "repair crashed: OSError: the strip could not remove a file" in note.payload["detail"]
