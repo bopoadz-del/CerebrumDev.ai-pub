@@ -391,3 +391,163 @@ def test_no_grader_reasons_leaves_the_line_unchanged(payload):
     red = pilot.redact_event(event)
     assert red["grader_reasons"] == [] and red["grader_class_counts"] == {}
     assert "grader_classes" not in pilot.render_timeline([event])[0]
+
+
+# ---- the brief input (Advisor 05:26Z, 19 Nov) -------------------------------
+
+@pytest.mark.parametrize(
+    "env, expected_ok, expected_text",
+    [
+        ({"PILOT_BRIEF": "  A small clinic booking app.  "}, True, "A small clinic booking app."),
+        ({"PILOT_BRIEF": "A tool-hire register."}, True, "A tool-hire register."),
+        ({"PILOT_BRIEF": "   "}, False, "refuses to run"),
+        ({}, False, "no default brief"),
+    ],
+)
+def test_brief_from_env_refuses_an_empty_brief(env, expected_ok, expected_text):
+    ok, text = pilot.brief_from_env(env)
+    assert ok is expected_ok
+    assert expected_text in text
+
+
+@pytest.mark.parametrize("brief", ["", "   "])
+def test_run_pilot_without_a_brief_refuses_before_any_call(monkeypatch, tmp_path, brief):
+    monkeypatch.setattr(pilot, "RESULTS", [])
+    monkeypatch.setattr(pilot, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+    def no_network(*_a, **_k):
+        raise AssertionError("an empty brief must refuse before any live call")
+
+    monkeypatch.setattr(pilot.smoke, "wait_for_ready", no_network)
+    assert pilot.run_pilot("https://example.invalid", brief) == 1
+    assert pilot.RESULTS[0][0] == "brief input" and pilot.RESULTS[0][1] is False
+
+
+# ---- NOT APPLICABLE stages and the verdict ----------------------------------
+
+@pytest.mark.parametrize(
+    "ok, tag",
+    [(True, "PASS"), (False, "FAIL"), (None, "N/A")],
+)
+def test_outcome_tag(ok, tag):
+    assert pilot.outcome_tag(ok) == tag
+
+
+@pytest.mark.parametrize(
+    "results, expected_ok, expected_text",
+    [
+        ([("a", True, ""), ("b", None, ""), ("c", True, "")], True, "2/2 stages green, 1 not applicable"),
+        ([("a", True, ""), ("b", None, ""), ("c", False, "")], False, "1/2 stages green, 1 not applicable"),
+        ([("a", True, ""), ("b", True, "")], True, "2/2 stages green"),
+        ([("a", None, ""), ("b", None, "")], False, "0/0 stages green, 2 not applicable"),
+        ([], False, "0/0 stages green"),
+    ],
+)
+def test_pilot_verdict_counts_not_applicable_apart(results, expected_ok, expected_text):
+    ok, text = pilot.pilot_verdict(results)
+    assert ok is expected_ok
+    assert text == expected_text
+
+
+@pytest.mark.parametrize(
+    "run_line, results, expected_in",
+    [
+        (["rounds=3"], [("1 UPLOAD+INDEX", None, "n/a")], ["# PILOT_RESULT\n", "run: rounds=3", "**N/A** 1 UPLOAD+INDEX"]),
+        ([], [("3 BUILD->STORE", True, "ok")], ["# PILOT_RESULT\n", "**PASS** 3 BUILD->STORE", "**PASS**: 1/1"]),
+    ],
+)
+def test_result_title_names_no_brief_and_carries_the_run_line(monkeypatch, run_line, results, expected_in):
+    monkeypatch.setattr(pilot, "RUN_LINE", list(run_line))
+    monkeypatch.setattr(pilot, "RESULTS", list(results))
+    md = pilot.render_result_md()
+    assert md.splitlines()[0] == "# PILOT_RESULT"
+    for piece in expected_in:
+        assert piece in md
+    assert ("run: " in md) is bool(run_line)
+
+
+# ---- the run line, computed from the run ------------------------------------
+
+def _zip_with(name, body):
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(name, body)
+        zf.writestr("app/main.py", "x = 1\n")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "blob, expected",
+    [
+        (_zip_with("prod/docs/coder_receipt.json", json.dumps({"model": "m-one", "provider": "p"})), {"model": "m-one", "provider": "p"}),
+        (_zip_with("docs/coder_receipt.json", json.dumps({"model": ""})), {"model": ""}),
+        (_zip_with("docs/other.json", "{}"), None),
+        (_zip_with("docs/coder_receipt.json", "not json"), None),
+        (b"not a zip", None),
+        (None, None),
+    ],
+)
+def test_receipt_from_export(blob, expected):
+    assert pilot.receipt_from_export(blob) == expected
+
+
+def _ev(kind, payload):
+    return {"kind": kind, "role": "WRITER", "payload": payload}
+
+
+@pytest.mark.parametrize(
+    "product, ledger, receipt, expected",
+    [
+        (
+            {"plan": {"capabilities": [{"block_ids": ["b1"]}, {"block_ids": []}, {"block_ids": ["b2", "b3"]}]}},
+            [
+                _ev("CLONE", {"block_id": "b1"}),
+                _ev("CLONE", {"block_id": "b2"}),
+                _ev("CLONE", {"block_id": "b1"}),
+                _ev("NOTE", {"writer_rounds": {"rounds": 40, "specialists": 2}}),
+                _ev("NOTE", {"writer_rounds": {"rounds": 5, "specialists": 1}}),
+                _ev("NOTE", {"specialists": {"sessions": {"api": {}, "ui": {}}}}),
+            ],
+            {"model": "m-two"},
+            {"blocks_from_store": 2, "blocks_newly_written": 1, "model": "m-two",
+             "rounds": 45, "specialists": 2, "agents_spawned": 3},
+        ),
+        (
+            {"plan": {"capabilities": [{"block_ids": []}, {"block_ids": []}]}},
+            [_ev("NOTE", {"writer_rounds": {"rounds": 131, "specialists": 0}}), "junk", _ev("NOTE", None)],
+            {"model": ""},
+            {"blocks_from_store": 0, "blocks_newly_written": 2, "model": "not reported",
+             "rounds": 131, "specialists": None, "agents_spawned": 0},
+        ),
+        (
+            {},
+            [],
+            None,
+            {"blocks_from_store": 0, "blocks_newly_written": None, "model": "-",
+             "rounds": None, "specialists": None, "agents_spawned": None},
+        ),
+    ],
+)
+def test_run_stats_reads_the_run(product, ledger, receipt, expected):
+    assert pilot.run_stats(product, ledger, receipt) == expected
+
+
+@pytest.mark.parametrize(
+    "stats, expected",
+    [
+        (
+            {"blocks_from_store": 4, "blocks_newly_written": 1, "model": "m-x", "rounds": 9, "specialists": 0, "agents_spawned": 2},
+            "blocks_from_store=4 blocks_newly_written=1 model=m-x rounds=9 specialists=0 agents_spawned=2",
+        ),
+        (
+            {"blocks_from_store": 0, "blocks_newly_written": None, "model": "-", "rounds": None, "specialists": None, "agents_spawned": None},
+            "blocks_from_store=0 blocks_newly_written=- model=- rounds=- specialists=- agents_spawned=-",
+        ),
+    ],
+)
+def test_run_stats_line(stats, expected):
+    assert pilot.run_stats_line(stats) == expected

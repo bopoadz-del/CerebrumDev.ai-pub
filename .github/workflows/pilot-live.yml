@@ -1,19 +1,25 @@
 name: Pilot (live)
 
-# One full Harbourline Civil Works pilot build against the LIVE deployment, per
-# ORDERS_02NOV_1420Z/1808Z + DECISION_FACTORY_pilot_run_plan. It resolves the
+# One full pilot build against the LIVE deployment, per
+# ORDERS_02NOV_1420Z/1808Z + DECISION_FACTORY_pilot_run_plan, from the brief
+# given in the 'brief' input (Advisor 05:26Z, 19 Nov): there is no default
+# brief, and an empty one refuses to run. It resolves the
 # verified-principal token at RUN TIME from the live ECS task definition (where
 # the value already lives), masks it, and exports it to the env for pilot_runner
 # -- no lane holds a live token, nobody pastes anything, the value never reaches
 # logs, artifacts or the bus. STRICT: a missing principal FAILS (exit 1), never a
-# skip-pass. Uploads the two synthetic fixtures before the build, then drives the
-# five stages with per-stage PASS/FAIL checks.
+# skip-pass. Drives the five stages with per-stage PASS/FAIL checks; the
+# document stages are NOT APPLICABLE when the run uploads no documents.
 #
 # Fires on manual dispatch only (F-U0): a deploy never starts a pilot.
 
 on:
   workflow_dispatch:
     inputs:
+      brief:
+        description: "The product brief for this pilot (free text, required; no default)."
+        required: true
+        type: string
       base:
         description: "Live API base (empty = api.cerebrum-dev.com)."
         required: false
@@ -127,6 +133,9 @@ jobs:
           SMOKE_READY_WAIT_S: "1200"
           SMOKE_BUILD_WAIT_S: "10800"
           SMOKE_EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          # The brief rides an env var, never the shell line (no injection);
+          # pilot_runner refuses an empty one and never prints it.
+          PILOT_BRIEF: ${{ github.event.inputs.brief }}
         run: >-
           python3 scripts/pilot_runner.py
           ${{ github.event.inputs.base || vars.FACTORY_BASE_URL || 'https://api.cerebrum-dev.com' }}
