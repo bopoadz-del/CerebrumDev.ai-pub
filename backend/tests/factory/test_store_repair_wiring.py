@@ -156,6 +156,53 @@ def test_a_staged_block_that_cannot_answer_raises(tmp_path, source):
         w.invoke_staged(tmp_path)({"payload": {}})
 
 
+def _answers_then_exits(code):
+    return (
+        "import sys\n"
+        "def run(**kwargs):\n"
+        "    sys.stdout.write('\\n' + sys.argv[2] + '{\"status\": \"success\"}\\n')\n"
+        "    sys.stdout.flush()\n"
+        f"    raise SystemExit({code})\n"
+    )
+
+
+@pytest.mark.parametrize("code", [3, 9])
+def test_a_staged_block_that_exits_nonzero_is_refused_even_after_an_answer(tmp_path, code):
+    from app.factory.build import store_repair_wiring as w
+
+    (tmp_path / "block.py").write_text(_answers_then_exits(code), encoding="utf-8")
+    with pytest.raises(RuntimeError, match=f"exited {code}"):
+        w.invoke_staged(tmp_path)({"payload": {}})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def run(**kwargs):\n    raise SystemExit(0)\n",
+        "import os\ndef run(**kwargs):\n    os._exit(0)\n",
+    ],
+)
+def test_a_staged_block_that_exits_cleanly_without_an_answer_raises(tmp_path, source):
+    from app.factory.build import store_repair_wiring as w
+
+    (tmp_path / "block.py").write_text(source, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="printed no result"):
+        w.invoke_staged(tmp_path)({"payload": {}})
+
+
+@pytest.mark.parametrize(
+    "name, value", [("PATH", "/opt/staged-bin"), ("SYSTEMROOT", "C:\\StagedRoot")]
+)
+def test_the_child_environment_carries_only_the_os_basics_that_are_set(monkeypatch, name, value):
+    from app.factory.build import store_repair_wiring as w
+
+    monkeypatch.setenv(name, value)
+    monkeypatch.setenv("FACTORY_EXAM_PROOF_KEY", "must-not-reach-the-block")
+    env = w._child_env()
+    assert env[name] == value
+    assert "FACTORY_EXAM_PROOF_KEY" not in env
+
+
 @pytest.mark.parametrize(
     "clause",
     [
