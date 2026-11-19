@@ -371,7 +371,14 @@ def test_the_declared_fallback_still_refuses_a_grader_of_the_declared_family(mon
 
 
 @pytest.mark.parametrize("run", [None, WRITER_RUN])
-def test_an_unconfigured_grader_is_refused_before_the_writer_run_is_read(run):
+def test_an_unconfigured_grader_is_refused_before_the_writer_run_is_read(monkeypatch, run):
+    """The unconfigured refusal comes first: the writer's identity is never
+    consulted when there is no grader to compare it with."""
+
+    def _not_read(_writer_run):
+        raise AssertionError("writer identity read for an unconfigured grader")
+
+    monkeypatch.setattr(grader, "graded_writer_identity", _not_read)
     refusal = grader.graded_writer_refusal(run, None)
     assert refusal == grader.independence_refusal("", None)
     assert "CEREBRUM_GRADER_LLM_*" in refusal
