@@ -791,13 +791,14 @@ def test_a_failed_second_pass_leaves_no_run_record(tmp_path, monkeypatch, first_
     with pytest.raises(RoleError):
         _run_writer_via_codewhale_worker(ctx)
     assert WRITER_RUN_STATE_KEY not in ctx.state
-    # Grading this state is NOT CERTIFIED: with no writer record Layer 2 is
-    # refused, even under a configured grader of another family.
-    from app.factory.build.grader import graded_writer_refusal
+    # Grading this state falls back to the DECLARED identity, with the note --
+    # never the first pass's record (WK-1d keeps the pre-#268 rule).
+    from app.factory.build.grader import graded_writer_identity, writer_identity
 
-    grader_cfg = {"api_key": "k", "base_url": "https://grader.example", "model": "independent-grader"}
-    refusal = graded_writer_refusal(ctx.state.get(WRITER_RUN_STATE_KEY), grader_cfg)
-    assert refusal is not None and "no writer model was recorded" in refusal
+    identity, note = graded_writer_identity(ctx.state.get(WRITER_RUN_STATE_KEY))
+    assert identity == writer_identity()
+    assert first_model not in identity
+    assert note == "writer model not reported by the run; declared identity used"
 
 
 @pytest.mark.parametrize(
@@ -807,9 +808,9 @@ def test_a_failed_second_pass_leaves_no_run_record(tmp_path, monkeypatch, first_
 def test_the_receipt_model_is_recorded_when_it_differs_from_the_requested_one(
     tmp_path, monkeypatch, requested, ran
 ):
-    """WK-1: the worker is started with the configured model named, and the
-    build records the model the run's receipt reported -- not the one asked
-    for -- when the two differ."""
+    """WK-1: the build records the model the run's receipt reported -- not
+    the configured one -- when the two differ. WK-1d: the worker is started
+    with no --model at all."""
     import io
     import json as _json
 
@@ -857,5 +858,5 @@ def test_the_receipt_model_is_recorded_when_it_differs_from_the_requested_one(
     _run_writer_via_codewhale_worker(ctx)
 
     argv = argv_seen["argv"]
-    assert argv[argv.index("--model") + 1] == requested
+    assert "--model" not in argv and requested not in argv
     assert ctx.state[WRITER_RUN_STATE_KEY] == {"provider": "writerco", "model": ran}

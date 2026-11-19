@@ -688,23 +688,27 @@ def recorded_writer_identity(writer_run: Optional[Mapping[str, Any]]) -> Optiona
     return _norm_identity(provider, model)
 
 
+def graded_writer_identity(writer_run: Optional[Mapping[str, Any]]) -> Tuple[str, Optional[str]]:
+    """The writer identity Layer 2's independence check is run against, and
+    the build note that goes with it. The model the run's receipt reported
+    is used when the build recorded one (WK-1). A receipt that named no model
+    keeps the pre-WK-1 rule: the declared identity (:func:`writer_identity`),
+    with a note saying so -- never a refusal of every build."""
+    recorded = recorded_writer_identity(writer_run)
+    if recorded is not None:
+        return recorded, None
+    return writer_identity(), "writer model not reported by the run; declared identity used"
+
+
 def graded_writer_refusal(
     writer_run: Optional[Mapping[str, Any]], grader_cfg: Optional[Mapping[str, str]]
 ) -> Optional[str]:
     """Why Layer 2 may not run against THIS build's writer, or None. An
-    unconfigured grader is refused first; then a build with no recorded
-    writer model is refused (independence cannot be checked against a model
-    nobody recorded); then the recorded identity meets the independence
-    rule."""
+    unconfigured grader is refused first; then the identity from
+    :func:`graded_writer_identity` meets the independence rule."""
     if grader_cfg is None:
         return independence_refusal("", None)
-    writer_id = recorded_writer_identity(writer_run)
-    if writer_id is None:
-        return (
-            "layer 2 refused: no writer model was recorded for this build (the run "
-            "receipt named no provider or no model) -- independence is checked "
-            "against the model that ran, never a declared one"
-        )
+    writer_id, _note = graded_writer_identity(writer_run)
     return independence_refusal(writer_id, grader_cfg)
 
 
@@ -889,6 +893,9 @@ class GraderVerdict:
     #: a refusal) are in neither owner list.
     writer_items: Tuple[str, ...] = ()
     factory_owed: Tuple[str, ...] = ()
+    #: Build notes that change no tier (e.g. which writer identity the
+    #: independence check used).
+    notes: Tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -1053,6 +1060,8 @@ def run_grader(
     if ui_not_run:
         ungraded.append(ui_not_run)
     refusal = graded_writer_refusal(writer_run, grader_llm_config())
+    _writer_id, writer_note = graded_writer_identity(writer_run)
+    notes = tuple(n for n in (writer_note,) if n)
     if refusal:
         l2 = {"ran": False, "verdicts": [], "open_fails": [refusal]}
         ungraded.append(refusal)
@@ -1107,7 +1116,7 @@ def run_grader(
 
     # --- the verdict --------------------------------------------------------
     if outage:
-        return GraderVerdict(tier=ERROR, items=(outage,), ungraded=tuple(ungraded), grade=grade)
+        return GraderVerdict(tier=ERROR, items=(outage,), ungraded=tuple(ungraded), grade=grade, notes=notes)
 
     # Deterministic reds, computed once and quoted whatever the tier. Every
     # red is the writer's except a finding in a file the Factory wrote.
@@ -1155,6 +1164,7 @@ def run_grader(
             reasons=reasons,
             writer_items=tuple(items),
             factory_owed=tuple(factory_owed),
+            notes=notes,
         )
 
     # A Layer 2 that never answered is an outage -- a verdict about the run
@@ -1165,6 +1175,7 @@ def run_grader(
             items=(f"Layer 2 did not run: {'; '.join(str(q) for q in l2.get('open_fails') or [])}",),
             ungraded=tuple(ungraded),
             grade=grade,
+            notes=notes,
         )
 
     # A refused or unrun layer blocks certification: the report says what it
@@ -1178,5 +1189,6 @@ def run_grader(
             reasons=reasons,
             writer_items=tuple(items),
             factory_owed=tuple(factory_owed),
+            notes=notes,
         )
-    return GraderVerdict(tier=CERTIFIED, grade=grade)
+    return GraderVerdict(tier=CERTIFIED, grade=grade, notes=notes)
