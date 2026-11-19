@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Pilot run: one full build on the LIVE deployment with two uploaded docs.
+"""Pilot run: one full build on the LIVE deployment, from a brief given at dispatch.
 
-ORDERS_02NOV_1420Z + DECISION_FACTORY_pilot_run_plan. Runs the Harbourline
-Civil Works pilot against the live Factory API: logs in with the SAME
-verified-principal resolver post-deploy-smoke uses (SMOKE_GATE_TOKEN, else
+ORDERS_02NOV_1420Z + DECISION_FACTORY_pilot_run_plan; the brief is an input
+(Advisor 05:26Z, 19 Nov): the workflow's free-text ``brief`` input reaches this
+script as the PILOT_BRIEF environment variable. There is no default brief; an
+empty one refuses to run. The runner logs in with the SAME verified-principal
+resolver post-deploy-smoke uses (SMOKE_GATE_TOKEN, else
 SMOKE_EMAIL+SMOKE_PASSWORD -- a value is never printed), creates a session,
-uploads the two synthetic fixtures (tests/pilot/fixtures/harbourline_*.pdf/.xlsx)
-via POST /v1/sessions/{sid}/upload BEFORE the build, then drives the five
-stages through the live API with per-stage checks:
+uploads the run's documents (when it has any) via POST
+/v1/sessions/{sid}/upload BEFORE the build, then drives the five stages
+through the live API with per-stage checks:
 
-  1 UPLOAD+INDEX  both docs accepted and indexed into the session corpus.
+  1 UPLOAD+INDEX  every uploaded doc accepted and indexed into the session corpus.
   2 BRIEF (F-10c-a) the drafted brief carries document:<filename> requirements.
   3 BUILD          COLLECTOR..STORE reaches a terminal success; export zip ships.
   4 CORPUS (F-10c-b) the uploads reached the product corpus (no corpus finding;
@@ -17,8 +19,11 @@ stages through the live API with per-stage checks:
   5 PRODUCT RUN + RESUME  /product/pilot reaches Store-green and a second call
                    RESUMES the same workspace (resume-not-restart), never a fresh build.
 
-Each stage prints one line PASS/FAIL + evidence; any FAIL exits non-zero. A
-PILOT_RESULT.md is written (job artifact + GitHub step summary).
+Stages 1, 2 and 4 are about uploaded documents: when the run uploads none they
+are reported NOT APPLICABLE (neither PASS nor FAIL) and every other stage stays
+strict. Each stage prints one line PASS/FAIL/N/A + evidence; any FAIL exits
+non-zero. A PILOT_RESULT.md is written (job artifact + GitHub step summary),
+with one line computed from the run (:func:`run_stats_line`).
 
 Usage: python3 scripts/pilot_runner.py [base_url]
 Live tests run only through the repo-secret-backed GitHub workflow (pilot-live.yml);
@@ -40,22 +45,36 @@ import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import post_deploy_smoke as smoke  # reuse the live-API helpers + auth resolver
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = REPO_ROOT / "tests" / "pilot" / "fixtures"
-DOC_PDF = "harbourline_contract.pdf"
-DOC_XLSX = "harbourline_boq.xlsx"
-PROJECT_BRIEF = (
-    "Build a contracts-administration platform for the Harbourline Civil Works "
-    "project: progress claims, delay-damages tracking, QA/ITP records, and a "
-    "document register. Use the uploaded contract and BOQ as the source of record."
-)
+#: The environment variable the workflow's ``brief`` input arrives in. Passed
+#: through ``env:`` (never pasted into the shell line) and never printed: the
+#: run logs and artifacts are public.
+BRIEF_ENV = "PILOT_BRIEF"
+#: The export path of the writer's own run receipt (coder_session_status.RECEIPT_REL).
+RECEIPT_SUFFIX = "docs/coder_receipt.json"
 BUILD_LEVEL = "production"  # the full ladder + full acceptance floor (incl. STORE)
 
 Check = Tuple[bool, str]
+#: A stage outcome: True = PASS, False = FAIL, None = NOT APPLICABLE.
+Outcome = Optional[bool]
+NOT_APPLICABLE_NO_DOCS = "not applicable: the brief uploads no documents"
+
+
+def brief_from_env(env: Mapping[str, str]) -> Check:
+    """The pilot's brief, from the dispatch input. Empty refuses the run.
+
+    Returns (ok, brief_or_reason). The brief text is never printed.
+    """
+    brief = str(env.get(BRIEF_ENV) or "").strip()
+    if brief:
+        return True, brief
+    return False, (
+        f"no brief given ({BRIEF_ENV} is empty) -- the pilot has no default brief and refuses to run"
+    )
 
 
 # ---- pure stage checks (unit-tested; no network) ---------------------------
@@ -202,9 +221,116 @@ def wait_upload_terminal(sid: str, token: str, wait_s: int = 600) -> Dict[str, A
     return last
 
 
+# ---- the run line: what the build did, computed from the run --------------
+
+def _num(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def receipt_from_export(blob: Any) -> Optional[Dict[str, Any]]:
+    """The writer's run receipt shipped in the export zip, or None.
+
+    The worker writes it at ``docs/coder_receipt.json`` of the product; it is
+    the last writer pass's receipt (provider, model, rounds).
+    """
+    if not isinstance(blob, (bytes, bytearray)) or blob[:2] != b"PK":
+        return None
+    try:
+        with zipfile.ZipFile(io.BytesIO(bytes(blob))) as zf:
+            name = next((n for n in zf.namelist() if n.endswith(RECEIPT_SUFFIX)), None)
+            if name is None:
+                return None
+            data = json.loads(zf.read(name).decode("utf-8"))
+    except (zipfile.BadZipFile, OSError, ValueError, KeyError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def run_stats(
+    product: Mapping[str, Any],
+    ledger: Sequence[Any],
+    receipt: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """The run's numbers, each read from what the run recorded.
+
+    - blocks_from_store: distinct block ids the CLONER took from the Store
+      (ledger CLONE events).
+    - blocks_newly_written: planned capabilities that resolved to no Store
+      block, which the writer writes new (product plan).
+    - model: the model the writer's run receipt reported ("not reported" when
+      the receipt names none; "-" when the export carries no receipt).
+    - rounds / agents_spawned: summed over every writer pass's round note
+      (``writer_rounds``: tool rounds, and the coder's own ``agent_spawned``
+      events, which that note counts as ``specialists``).
+    - specialists: the Factory's specialist sessions (``specialists`` note,
+      one per fan-out session run).
+    A count the run never recorded is None (shown as "-"), never a zero.
+    """
+    cloned = set()
+    rounds: Optional[int] = None
+    spawned: Optional[int] = None
+    specialists: Optional[int] = None
+    for ev in ledger:
+        payload = ev.get("payload") if isinstance(ev, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if str(ev.get("kind") or "") == "CLONE" and payload.get("block_id"):
+            cloned.add(str(payload["block_id"]))
+        wr = payload.get("writer_rounds")
+        if isinstance(wr, dict):
+            r, s = _num(wr.get("rounds")), _num(wr.get("specialists"))
+            if r is not None:
+                rounds = (rounds or 0) + r
+            if s is not None:
+                spawned = (spawned or 0) + s
+        sp = payload.get("specialists")
+        if isinstance(sp, dict) and isinstance(sp.get("sessions"), dict):
+            specialists = (specialists or 0) + len(sp["sessions"])
+    plan = (product or {}).get("plan")
+    caps = plan.get("capabilities") if isinstance(plan, dict) else None
+    new_blocks = (
+        sum(1 for c in caps if isinstance(c, dict) and not c.get("block_ids"))
+        if isinstance(caps, list)
+        else None
+    )
+    if receipt is None:
+        model = "-"
+    else:
+        model = str(receipt.get("model") or "").strip() or "not reported"
+    return {
+        "blocks_from_store": len(cloned),
+        "blocks_newly_written": new_blocks,
+        "model": model,
+        "rounds": rounds,
+        "specialists": specialists,
+        "agents_spawned": spawned,
+    }
+
+
+RUN_LINE_KEYS = (
+    "blocks_from_store",
+    "blocks_newly_written",
+    "model",
+    "rounds",
+    "specialists",
+    "agents_spawned",
+)
+
+
+def run_stats_line(stats: Mapping[str, Any]) -> str:
+    """One line of the run's numbers for PILOT_RESULT; ``-`` = not recorded."""
+    return " ".join(
+        f"{k}={stats.get(k) if stats.get(k) is not None else '-'}" for k in RUN_LINE_KEYS
+    )
+
+
 # ---- the five stages over the live API -------------------------------------
 
-RESULTS: List[Tuple[str, bool, str]] = []
+RESULTS: List[Tuple[str, Outcome, str]] = []
+RUN_LINE: List[str] = []
 
 #: F-G3 (ORDERS_08NOV_0020Z): on ANY stage FAIL the pilot prints the last
 #: ledger events into the step output and PILOT_RESULT -- a silent stop is
@@ -245,8 +371,15 @@ REASON_CLASS_SHAPE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 CAPABILITY_ID_SHAPE = re.compile(r"-|[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 
 
-def record(stage: str, ok: bool, evidence: str) -> None:
-    tag = "PASS" if ok else "FAIL"
+def outcome_tag(ok: Outcome) -> str:
+    """PASS / FAIL, or N/A for a stage that does not apply to this run."""
+    if ok is None:
+        return "N/A"
+    return "PASS" if ok else "FAIL"
+
+
+def record(stage: str, ok: Outcome, evidence: str) -> None:
+    tag = outcome_tag(ok)
     print(f"[{tag}] {stage} -- {evidence}")
     RESULTS.append((stage, ok, evidence))
 
@@ -464,8 +597,12 @@ def brief_diag_summary(product: Dict[str, Any]) -> str:
     return json.dumps(diag, ensure_ascii=False, default=str)[:400]
 
 
-def run_pilot(base: str) -> int:
+def run_pilot(base: str, brief: str, documents: Sequence[Path] = ()) -> int:
     global LAST_SID, LAST_TOKEN
+    okb, evb = brief_from_env({BRIEF_ENV: brief})
+    if not okb:
+        record("brief input", False, evb)
+        return finish()
     smoke.BASE = base
     print(f"pilot run against {base}\n")
     if not smoke.wait_for_ready(allow_descendant=True):
@@ -495,24 +632,30 @@ def run_pilot(base: str) -> int:
     LAST_SID = sid
     LAST_TOKEN = token
 
-    # Stage 1 -- UPLOAD + INDEX (before the build)
-    paths = [FIXTURES / DOC_PDF, FIXTURES / DOC_XLSX]
-    us, _ub = upload_files(sid, token, paths)
-    term = wait_upload_terminal(sid, token)
-    _rs, result = smoke.req("GET", f"/v1/sessions/{sid}/upload/result", token=token)
-    ok1, ev1 = upload_indexed(result if isinstance(result, dict) else {}, {DOC_PDF, DOC_XLSX})
-    record("1 UPLOAD+INDEX", ok1 and us in (200, 201), f"upload_http={us} status={term.get('status')} {ev1}")
+    # Stage 1 -- UPLOAD + INDEX (before the build); not applicable with no documents
+    doc_names = [p.name for p in documents]
+    if documents:
+        us, _ub = upload_files(sid, token, list(documents))
+        term = wait_upload_terminal(sid, token)
+        _rs, result = smoke.req("GET", f"/v1/sessions/{sid}/upload/result", token=token)
+        ok1, ev1 = upload_indexed(result if isinstance(result, dict) else {}, set(doc_names))
+        record("1 UPLOAD+INDEX", ok1 and us in (200, 201), f"upload_http={us} status={term.get('status')} {ev1}")
+    else:
+        record("1 UPLOAD+INDEX", None, NOT_APPLICABLE_NO_DOCS)
 
     # Stage 2 -- BRIEF (F-10c-a document:<filename> citations)
-    raw, turns = smoke.chat_until_drafted(sid, token, PROJECT_BRIEF)
+    raw, turns = smoke.chat_until_drafted(sid, token, brief)
     _ps, product = smoke.req("GET", f"/v1/sessions/{sid}/product", token=token)
     product = product if isinstance(product, dict) else {}
-    ok2, ev2 = brief_cites_documents(product, [DOC_PDF, DOC_XLSX])
     # ORDERS_08NOV_0250Z: quote the PERSISTED diag (product_design.brief_diag,
     # #157/#148) -- chunks/source_files/digest_folded/loaded_from/worker/
     # upload_worker -- not the fragile SSE regex, so cited=[] is traced to the
     # state, never guessed.
-    record("2 BRIEF (F-10c-a)", ok2, f"turns={turns} {ev2} brief_diag={brief_diag_summary(product)}")
+    if documents:
+        ok2, ev2 = brief_cites_documents(product, doc_names)
+        record("2 BRIEF (F-10c-a)", ok2, f"turns={turns} {ev2} brief_diag={brief_diag_summary(product)}")
+    else:
+        record("2 BRIEF (F-10c-a)", None, f"{NOT_APPLICABLE_NO_DOCS} (turns={turns})")
 
     # Stage 3 -- BUILD through STORE + export zip
     smoke.chat(sid, token, "", action="set_build_level", value=BUILD_LEVEL)
@@ -524,15 +667,26 @@ def run_pilot(base: str) -> int:
     ok3, ev3 = build_reached_store(build, zip_ok and len(names) > 5)
     record("3 BUILD->STORE", ok3, f"zip_http={zs} files={len(names)} {ev3}")
 
-    # Stage 4 -- CORPUS (F-10c-b): uploads reached the product corpus, visibly
-    _us2, upload_state = smoke.req("GET", f"/v1/sessions/{sid}/upload/status", token=token)
+    # The run line: what the build did, from the plan, the ledger and the receipt.
     _ls, ledger = smoke.req("GET", f"/v1/sessions/{sid}/product/ledger", token=token)
     ledger_events = (ledger or {}).get("events") if isinstance(ledger, dict) else ledger
-    ok4, ev4 = corpus_seed_ok(
-        upload_state if isinstance(upload_state, dict) else {},
-        ledger_events if isinstance(ledger_events, list) else [],
+    ledger_events = ledger_events if isinstance(ledger_events, list) else []
+    _ps3, product_after = smoke.req("GET", f"/v1/sessions/{sid}/product", token=token)
+    stats = run_stats(
+        product_after if isinstance(product_after, dict) else product,
+        ledger_events,
+        receipt_from_export(blob) if zip_ok else None,
     )
-    record("4 CORPUS (F-10c-b)", ok4, ev4)
+    RUN_LINE[:] = [run_stats_line(stats)]
+    print(f"run: {RUN_LINE[0]}")
+
+    # Stage 4 -- CORPUS (F-10c-b): uploads reached the product corpus, visibly
+    if documents:
+        _us2, upload_state = smoke.req("GET", f"/v1/sessions/{sid}/upload/status", token=token)
+        ok4, ev4 = corpus_seed_ok(upload_state if isinstance(upload_state, dict) else {}, ledger_events)
+        record("4 CORPUS (F-10c-b)", ok4, ev4)
+    else:
+        record("4 CORPUS (F-10c-b)", None, NOT_APPLICABLE_NO_DOCS)
 
     # Stage 5 -- PRODUCT RUN (Store-green) + resume-not-restart
     s5a, first = smoke.req("POST", f"/v1/sessions/{sid}/product/pilot", {}, token=token)
@@ -546,13 +700,26 @@ def run_pilot(base: str) -> int:
     return finish()
 
 
+def pilot_verdict(results: Sequence[Tuple[str, Outcome, str]]) -> Tuple[bool, str]:
+    """Green only when no stage FAILED and at least one PASSED; a NOT
+    APPLICABLE stage is neither, and is counted on its own."""
+    passed = sum(1 for _s, ok, _e in results if ok is True)
+    failed = sum(1 for _s, ok, _e in results if ok is False)
+    na = sum(1 for _s, ok, _e in results if ok is None)
+    text = f"{passed}/{passed + failed} stages green"
+    if na:
+        text += f", {na} not applicable"
+    return (failed == 0 and passed > 0), text
+
+
 def render_result_md() -> str:
-    lines = ["# PILOT_RESULT -- Harbourline Civil Works", ""]
+    lines = ["# PILOT_RESULT", ""]
+    if RUN_LINE:
+        lines += [f"run: {RUN_LINE[0]}", ""]
     for stage, ok, ev in RESULTS:
-        lines.append(f"- **{'PASS' if ok else 'FAIL'}** {stage} — {ev}")
-    failed = [s for s, ok, _ in RESULTS if not ok]
-    verdict = "FAIL" if (failed or not RESULTS) else "PASS"
-    lines += ["", f"**{verdict}**: {len(RESULTS) - len(failed)}/{len(RESULTS)} stages green"]
+        lines.append(f"- **{outcome_tag(ok)}** {stage} — {ev}")
+    ok_all, text = pilot_verdict(RESULTS)
+    lines += ["", f"**{'PASS' if ok_all else 'FAIL'}**: {text}"]
     if LEDGER_TAIL:
         lines += ["", "## build timeline (redacted)"]
         lines += [f"- {line}" for line in LEDGER_TAIL]
@@ -563,7 +730,7 @@ def finish() -> int:
     # F-G3 (ORDERS_10NOV_1940Z): a failure must carry the REDACTED timeline and
     # its terminal reason in the run, never a silent stop; the full ledger
     # stays server-side.
-    failed = [s for s, ok, _ in RESULTS if not ok]
+    failed = [s for s, ok, _ in RESULTS if ok is False]
     if failed and LAST_SID and LAST_TOKEN and not LEDGER_TAIL:
         try:
             events = fetch_full_ledger(LAST_SID, LAST_TOKEN)
@@ -589,13 +756,14 @@ def finish() -> int:
         except OSError:
             pass
     print("\n" + md)
-    # STRICT: green only when there is >=1 stage and every stage passed.
-    return 0 if RESULTS and all(ok for _s, ok, _e in RESULTS) else 1
+    # STRICT: green only when no stage failed and at least one passed.
+    return 0 if pilot_verdict(RESULTS)[0] else 1
 
 
 def main() -> None:
     base = smoke.resolve_base(sys.argv)
-    sys.exit(run_pilot(base))
+    ok, brief = brief_from_env(os.environ)
+    sys.exit(run_pilot(base, brief if ok else ""))
 
 
 if __name__ == "__main__":
