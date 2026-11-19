@@ -668,6 +668,10 @@ def record_writer_run(state: Dict[str, Any], *, provider: str, model: str) -> No
     state[WRITER_RUN_STATE_KEY] = {"provider": str(provider or "").strip(), "model": str(model or "").strip()}
 
 
+# Only the CodeWhale writer path clears and records this key. The other
+# writer paths (compiled-brief dispatch, deterministic template) neither
+# clear nor record it: a pass they run leaves the record as it stood, and a
+# build only they wrote has none, which the grader refuses (WK-1a).
 def clear_writer_run(state: Dict[str, Any]) -> None:
     """Drop the recorded writer run before a writer pass is launched.
 
