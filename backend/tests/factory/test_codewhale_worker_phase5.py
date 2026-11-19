@@ -293,11 +293,11 @@ def test_headless_dispatch_passes_provider_and_key_from_env(monkeypatch, tmp_pat
     assert captured["env"]["DEEPSEEK_API_KEY"] == "sk-deepseek-test"
 
 
-@pytest.mark.parametrize("configured", ["model-alpha-1", "other-vendor/model-beta"])
-def test_headless_dispatch_names_the_configured_writer_model(monkeypatch, tmp_path, configured):
-    """WK-1b: the worker is started with the CONFIGURED writer model named
-    (``--model``), never left to the CLI's own default route; 0.9.13 takes
-    it as a global flag, so it must precede ``exec`` like ``--provider``."""
+@pytest.mark.parametrize("provider", ["provider-alpha", "provider-beta"])
+def test_headless_dispatch_names_no_model(monkeypatch, tmp_path, provider):
+    """WK-1d: the worker argv is the pre-#268 line, ``--provider`` and no
+    ``--model``: the coder CLI runs on its own default model (the one it runs
+    its own agents on). What ran is read from the run's receipt."""
     import io
     import subprocess
 
@@ -320,16 +320,14 @@ def test_headless_dispatch_names_the_configured_writer_model(monkeypatch, tmp_pa
 
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/usr/local/bin/codewhale")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
-    monkeypatch.delenv("CODEWHALE_PROVIDER", raising=False)
-    from app.factory import code_cli
-
-    monkeypatch.setattr(code_cli, "deepseek_code_model", lambda: configured)
+    monkeypatch.setattr(worker_mod, "worker_api_key", lambda: "sk-test")
+    monkeypatch.setattr(worker_mod, "worker_provider", lambda: provider)
 
     run_worker_job("build it", tmp_path, tenant_store=_binding("d3m"))
     argv = captured["argv"]
-    assert argv.index("--model") < argv.index("exec")
-    assert argv[argv.index("--model") + 1] == configured
+    assert argv[1:3] == ["--provider", provider]
+    assert argv[3] == "exec"
+    assert "--model" not in argv
 
 
 def test_no_env_key_falls_back_to_cli_config(monkeypatch, tmp_path):

@@ -1166,13 +1166,16 @@ class RoleRunner:
         self.ledger.append(
             EventKind.NOTE,
             role=BuildRole.WRITER,
-            detail=f"GRADER: {verdict.tier}: " + ("; ".join(verdict.items)[:400] or "-"),
+            detail=f"GRADER: {verdict.tier}: "
+            + ("; ".join(verdict.items)[:400] or "-")
+            + "".join(f" [note: {n}]" for n in verdict.notes),
             payload={
                 "grader_gate": GRADER_GATE,
                 "grader_tier": verdict.tier,
                 "grader_items": list(verdict.items),
                 "grader_ungraded": list(verdict.ungraded),
                 "grader_reasons": [dict(r) for r in verdict.reasons],
+                "grader_notes": list(verdict.notes),
             },
         )
         if verdict.ok:

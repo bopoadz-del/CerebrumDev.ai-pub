@@ -327,14 +327,47 @@ def test_recorded_writer_identity_is_none_when_provider_or_model_is_missing(run)
     assert grader.recorded_writer_identity(run) is None
 
 
+DECLARED_NOTE = "writer model not reported by the run; declared identity used"
+
+
 @pytest.mark.parametrize("run", [None, {"provider": "writerco", "model": ""}])
-def test_a_build_with_no_recorded_writer_model_is_refused(monkeypatch, run):
+def test_a_receipt_with_no_model_uses_the_declared_identity_with_a_note(monkeypatch, run):
+    """WK-1d: a receipt that names no model keeps the pre-#268 rule -- the
+    declared identity, never a refusal of every build -- and says so."""
     monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
     monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://api.graderco.example/v1")
     monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, "grader-model-1")
-    refusal = grader.graded_writer_refusal(run, grader.grader_llm_config())
-    assert refusal is not None
-    assert "no writer model was recorded for this build" in refusal
+    assert grader.graded_writer_identity(run) == (grader.writer_identity(), DECLARED_NOTE)
+    cfg = grader.grader_llm_config()
+    assert grader.graded_writer_refusal(run, cfg) is None
+
+
+@pytest.mark.parametrize(
+    "run, expected",
+    [
+        (WRITER_RUN, "writerco:writer-model-1:"),
+        ({"provider": "otherco", "model": "other/model-2"}, "otherco:other/model-2:"),
+    ],
+)
+def test_a_receipt_with_a_model_uses_the_recorded_identity_and_no_note(run, expected):
+    assert grader.graded_writer_identity(run) == (expected, None)
+
+
+@pytest.mark.parametrize("grader_model", ["deepseek-chat", "deepseek/deepseek-v3"])
+def test_the_declared_fallback_still_refuses_a_grader_of_the_declared_family(monkeypatch, grader_model):
+    """With no recorded model the declared identity meets the independence
+    rule exactly as before #268: a grader of the declared writer's family is
+    refused."""
+    from app.factory import code_cli
+
+    monkeypatch.setenv(code_cli.DEEPSEEK_API_KEY_ENV, "writer-key")
+    monkeypatch.setenv(grader.GRADER_LLM_KEY_ENV, "k")
+    monkeypatch.setenv(grader.GRADER_LLM_BASE_URL_ENV, "https://openrouter.ai/api/v1")
+    monkeypatch.setenv(grader.GRADER_LLM_MODEL_ENV, grader_model)
+    cfg = grader.grader_llm_config()
+    expected = grader.independence_refusal(grader.writer_identity(), cfg)
+    assert expected is not None
+    assert grader.graded_writer_refusal(None, cfg) == expected
 
 
 @pytest.mark.parametrize("run", [None, WRITER_RUN])
@@ -377,11 +410,22 @@ def test_the_recorded_model_passes_when_the_configured_one_would_be_refused(monk
 
 
 @pytest.mark.parametrize("product_id", ["invented-product", "invented-product-two"])
-def test_run_grader_without_a_recorded_writer_run_is_not_certified(tmp_path, independent_grader, green_ui, product_id):
+def test_run_grader_without_a_recorded_writer_run_notes_the_declared_identity(
+    tmp_path, independent_grader, green_ui, product_id
+):
     ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
     verdict = grader.run_grader(plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id=product_id)
-    assert verdict.tier == grader.NOT_CERTIFIED
-    assert any("no writer model was recorded for this build" in item for item in verdict.ungraded)
+    assert verdict.notes == (DECLARED_NOTE,)
+    assert not any("no writer model" in item for item in verdict.ungraded + verdict.items)
+
+
+@pytest.mark.parametrize("product_id", ["invented-product", "invented-product-two"])
+def test_run_grader_with_a_recorded_writer_run_has_no_note(tmp_path, independent_grader, green_ui, product_id):
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id=product_id, writer_run=WRITER_RUN
+    )
+    assert verdict.notes == ()
 
 
 @pytest.mark.parametrize("provider, model", [("WriterCo ", " writer-model-1"), ("otherco", "")])

@@ -103,9 +103,6 @@ def test_worker_argv_puts_provider_before_exec_and_key_in_env(tmp_path):
         "codewhale",
         "--provider",
         "deepseek",
-        # WK-1b: the configured writer model is named, before `exec`.
-        "--model",
-        "configured-writer-model",
         "exec",
         "--auto",
         "--output-format",
