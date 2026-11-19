@@ -1697,6 +1697,11 @@ def _run(
             session_id=session_id,
             inputs_hash=inputs_hash or None,
         )
+        # F-3c (b): the Store repairer and installer, only when the one
+        # setting (FACTORY_STORE_REPAIR) is on; off leaves the runner as is.
+        from app.factory.build.store_repair_wiring import arm as arm_store_repair
+
+        arm_store_repair(runner)
         outcome = runner.run()
         logger.info(
             "runner build finished: product=%s outcome=%s rework=%s",

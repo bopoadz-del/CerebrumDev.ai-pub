@@ -791,6 +791,13 @@ def test_a_failed_second_pass_leaves_no_run_record(tmp_path, monkeypatch, first_
     with pytest.raises(RoleError):
         _run_writer_via_codewhale_worker(ctx)
     assert WRITER_RUN_STATE_KEY not in ctx.state
+    # Grading this state is NOT CERTIFIED: with no writer record Layer 2 is
+    # refused, even under a configured grader of another family.
+    from app.factory.build.grader import graded_writer_refusal
+
+    grader_cfg = {"api_key": "k", "base_url": "https://grader.example", "model": "independent-grader"}
+    refusal = graded_writer_refusal(ctx.state.get(WRITER_RUN_STATE_KEY), grader_cfg)
+    assert refusal is not None and "no writer model was recorded" in refusal
 
 
 @pytest.mark.parametrize(
