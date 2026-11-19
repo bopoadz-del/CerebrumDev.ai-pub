@@ -14,7 +14,10 @@ import pytest
 from tests.factory.test_a_grader import _fake_pass, _fake_pass_harness, smoke_blueprint  # noqa: F401
 from tests.factory.test_store_repair import (
     _bound_block,
+    _certified,
     _finding,
+    _grader_reworks,
+    _repair_notes,
     _runner,
     _store_verdict,
 )
@@ -230,3 +233,282 @@ def test_the_installer_refuses_a_lock_that_is_not_an_object(
     (runner.workspace / "blocks.lock.json").write_text(raw, encoding="utf-8")
     _, installer = w.build_parts(runner)
     assert installer(RepairResult("blk", True), ()) == "blocks.lock.json is not a JSON object"
+
+
+# -- the ON path through the real runner (grader 00:30Z on #271) ---------------
+#
+# Each build below is armed by ``arm`` with the setting on and a proof key,
+# then run by the real ``RoleRunner.run()``. The repairer, the exam, the
+# staged-block invoker, the rescan, the proof store and the installer are the
+# real ones ``arm`` built. Fakes stand only at the provider boundary: the
+# phase roles and the grader's verdicts (as in every runner test here), and
+# the coding-worker job. Every block id, input, output and literal is invented.
+
+_CONTRACT = {
+    "id": "the block",
+    "inputs": [
+        {"name": "rows", "type": "json", "required": True},
+        {"name": "order", "type": "string", "required": False, "options": ["up", "down"]},
+    ],
+    "outputs": [{"name": "summary", "type": "json"}],
+}
+_VENDORED = "WIDTH = 2\ndef run(**kw):\n    raise RuntimeError('the vendored copy is broken')\n"
+_REPAIRS = (
+    "WIDTH = 2\n"
+    "def run(**kw):\n"
+    "    if 'rows' not in kw:\n"
+    "        return {'status': 'error'}\n"
+    "    if 'order' in kw and kw['order'] not in ('up', 'down'):\n"
+    "        return {'status': 'error'}\n"
+    "    return {'status': 'success', 'summary': {'count': len(kw), 'width': WIDTH}}\n",
+    "WIDTH = 2\n"
+    "_ALLOWED = {'up', 'down'}\n"
+    "def run(**kw):\n"
+    "    rows = kw.get('rows')\n"
+    "    if rows is None or kw.get('order', 'up') not in _ALLOWED:\n"
+    "        raise ValueError('refused')\n"
+    "    return {'summary': [WIDTH, sorted(kw)]}\n",
+)
+_STUB = (
+    "WIDTH = 2\n"
+    "def run(**kw):\n"
+    "    if 'rows' not in kw:\n"
+    "        return {'status': 'error'}\n"
+    "    return {'status': 'success'}\n"
+)
+_CLAUSE = "the tide tables are read aloud before the lantern count"
+
+
+def _armed_build(smoke_blueprint, tmp_path, monkeypatch, index, worker, *, regrade=True):  # noqa: F811
+    """A build armed with the setting on, whose CLONER vendors a broken block
+    (with its declared contract) and whose grader finds that block's defect,
+    then (``regrade``) certifies the product graded again."""
+    from app.factory.build import codewhale_worker
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build import store_repair_wiring as w
+    from app.factory.build.authority import BuildRole
+    from app.factory.build.writer_prompt import record_writer_dispatch
+
+    monkeypatch.setattr(so, "_process_key", b"factory-test-key")
+    holder: dict = {"jobs": [], "writes": []}
+
+    def verdicts(runner):
+        holder["runner"] = runner
+        holder["block"], holder["bound"] = _bound_block(runner, index)
+        found = _store_verdict(_finding(holder["block"], "block.py"))
+        return [found, _certified()] if regrade else [found]
+
+    def cloner(ctx):
+        ws, block = holder["runner"].workspace, holder["block"]
+        vendored = ws / "vendor" / "blocks" / block
+        vendored.mkdir(parents=True, exist_ok=True)
+        (vendored / "block.json").write_text(json.dumps(_CONTRACT), encoding="utf-8")
+        (vendored / "block.py").write_text(_VENDORED, encoding="utf-8")
+        row = {"source": "store:origin-two", "commit": "fe11a00", "path": f"vendor/blocks/{block}"}
+        sp.save_lock(ws, {"blocks": {block: {**row, so.VENDORED_HASH_KEY: so.tree_hash(vendored)}}})
+        return _fake_pass(ctx)
+
+    def writer(ctx):
+        record_writer_dispatch(
+            holder["runner"].state,
+            supplied=_CLAUSE,
+            brief=_CLAUSE,
+            prompt="Preamble.\n\n" + _CLAUSE,
+        )
+        holder["writes"].append(1)
+        return _fake_pass(ctx)
+
+    def job(prompt, checkout_dir, **kwargs):
+        holder["jobs"].append((prompt, checkout_dir, kwargs))
+        return worker(checkout_dir)
+
+    monkeypatch.setattr(codewhale_worker, "run_worker_job", job)
+    runner, _ = _runner(smoke_blueprint, tmp_path, monkeypatch, verdicts, None, None)
+    runner.roles[BuildRole.CLONER] = cloner
+    runner.roles[BuildRole.WRITER] = writer
+    assert w.arm(runner, {w.SETTING_ENV: "1"}) is None
+    return runner, holder
+
+
+def _writes(source):
+    def worker(staging):
+        (staging / "block.py").write_text(source, encoding="utf-8")
+        return "receipt"
+
+    return worker
+
+
+def _crashes(staging):
+    raise RuntimeError("worker exited 2")
+
+
+def _store_row(runner):
+    from app.factory.build.store_repair import GRADE_SECTION
+
+    grade = json.loads((runner.workspace / "grade.json").read_text(encoding="utf-8"))
+    (row,) = grade[GRADE_SECTION]
+    return row
+
+
+@pytest.mark.parametrize("index, source", [(0, _REPAIRS[0]), (1, _REPAIRS[1])])
+def test_on_a_repaired_block_is_installed_and_the_regrade_certifies(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+    source,
+):
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build.store_repair import STORE_REPAIR_KEY
+    from app.factory.build.store_repair_exam import REPAIR_DIR
+
+    runner, holder = _armed_build(smoke_blueprint, tmp_path, monkeypatch, index, _writes(source))
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws, block = runner.workspace, holder["block"]
+    staging = ws / REPAIR_DIR / block
+    (job,) = holder["jobs"]
+    assert job[1] == staging
+    vendored = ws / "vendor" / "blocks" / block
+    assert (vendored / "block.py").read_text(encoding="utf-8") == source
+    saved = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    assert saved[so.OVERRIDES_KEY][block]["override_hash"] == so.tree_hash(staging)
+    assert [r["block_id"] for r in sp.filed_proposals(ws)] == [block]
+    row = _store_row(runner)
+    assert (row["repaired"], row["not_delivered"]) == (True, [])
+    notes = _repair_notes(runner)
+    assert [n.payload[STORE_REPAIR_KEY] for n in notes] == [block]
+    assert notes[0].detail == f"STORE DEFECT {block}: repaired"
+    assert len(holder["writes"]) == 1 and _grader_reworks(runner) == []
+
+
+@pytest.mark.parametrize(
+    "index, worker, named",
+    [(0, _writes(_STUB), "empty"), (1, _crashes, "repair crashed: RuntimeError: worker exited 2")],
+    ids=["exam-failed", "worker-crashed"],
+)
+def test_on_a_failed_repair_leaves_the_store_copy_and_is_not_delivered(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+    worker,
+    named,
+):
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+
+    runner, holder = _armed_build(
+        smoke_blueprint, tmp_path, monkeypatch, index, worker, regrade=False
+    )
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws, block = runner.workspace, holder["block"]
+    assert len(holder["jobs"]) == 1
+    vendored = ws / "vendor" / "blocks" / block
+    assert (vendored / "block.py").read_text(encoding="utf-8") == _VENDORED
+    saved = json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    assert so.OVERRIDES_KEY not in saved
+    assert sp.filed_proposals(ws) == []
+    row = _store_row(runner)
+    assert (row["repaired"], tuple(row["not_delivered"])) == (False, holder["bound"])
+    (note,) = _repair_notes(runner)
+    assert named in note.payload["detail"]
+    assert len(holder["writes"]) == 1 and _grader_reworks(runner) == []
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_on_a_block_whose_allowance_is_spent_starts_no_worker(
+    smoke_blueprint,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    index,
+):
+    """A build resumed after its block already had its repair round: the
+    allowance is read from the ledger, no worker job is started, the Store
+    copy stays and the block's capabilities are not delivered."""
+    from app.factory.build import store_override as so
+    from app.factory.build import store_proposal as sp
+    from app.factory.build.ledger import EventKind
+    from app.factory.build.store_repair import ALLOWANCE_SPENT, STORE_REPAIR_KEY
+
+    runner, holder = _armed_build(
+        smoke_blueprint, tmp_path, monkeypatch, index, _writes(_REPAIRS[0]), regrade=False
+    )
+    block = holder["block"]
+    runner.workspace.mkdir(parents=True, exist_ok=True)
+    runner.ledger.start_run(
+        product_id=getattr(smoke_blueprint, "product_id", "unknown"),
+        inputs_hash=runner.inputs_hash,
+    )
+    runner.ledger.append(
+        EventKind.NOTE,
+        detail=f"STORE DEFECT {block}: repair failed",
+        payload={STORE_REPAIR_KEY: block},
+    )
+    outcome = runner.run()
+
+    assert outcome.ok, outcome.detail
+    ws = runner.workspace
+    assert holder["jobs"] == []
+    vendored = ws / "vendor" / "blocks" / block
+    assert (vendored / "block.py").read_text(encoding="utf-8") == _VENDORED
+    assert so.OVERRIDES_KEY not in json.loads((ws / sp.LOCK_FILE).read_text(encoding="utf-8"))
+    row = _store_row(runner)
+    assert (row["repaired"], tuple(row["not_delivered"])) == (False, holder["bound"])
+    assert _repair_notes(runner)[-1].payload["detail"] == ALLOWANCE_SPENT
+
+
+# -- the build job calls the arming step --------------------------------------
+
+
+@pytest.mark.parametrize("value, armed", [("1", True), ("0", False)])
+def test_the_build_job_arms_the_runner_before_it_runs(tmp_path, monkeypatch, value, armed):
+    """``build_jobs._run`` hands its runner to ``arm`` before ``run()``: with
+    the setting on (and the key) the runner it runs holds both parts; off,
+    neither."""
+    from types import SimpleNamespace
+
+    from app.factory import build_jobs
+    from app.factory.blueprint import load_blueprint
+    from app.factory.build import store_override as so
+    from app.factory.build import store_repair_wiring as w
+    from tests.factory.test_build_jobs_run_refunds_failed import SMOKE
+
+    monkeypatch.setenv(w.SETTING_ENV, value)
+    monkeypatch.setattr(so, "_process_key", b"factory-test-key")
+    seen: list = []
+
+    class _Planner:
+        def __init__(self, root, factory_shelf=None):
+            pass
+
+        def plan(self, bp):
+            return SimpleNamespace(budget_class="small")
+
+    class _Runner:
+        store_repairer = None
+        store_installer = None
+
+        def __init__(self, blueprint, output_dir, **kwargs):
+            self.workspace = output_dir
+
+        def run(self):
+            from app.factory.build.runner import Outcome
+
+            seen.append((callable(self.store_repairer), callable(self.store_installer)))
+            return SimpleNamespace(outcome=Outcome.SUCCESS, rework_used=0)
+
+    monkeypatch.setattr("app.factory.planner.CapabilityPlanner", _Planner)
+    monkeypatch.setattr("app.factory.planner.assert_generatable", lambda p: p)
+    monkeypatch.setattr("app.factory.build.runner.RoleRunner", _Runner)
+    monkeypatch.setattr(build_jobs, "_maybe_clone_canonical", lambda *a, **k: None)
+    monkeypatch.setattr(build_jobs, "_refund_generation_quota", lambda *a, **k: None)
+
+    build_jobs._run(load_blueprint(SMOKE), tmp_path / "out", tmp_path / "store")
+
+    assert seen == [(armed, armed)]
