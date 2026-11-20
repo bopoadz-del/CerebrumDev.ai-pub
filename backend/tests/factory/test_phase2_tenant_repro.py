@@ -73,7 +73,7 @@ def blueprint():
 def test_emitted_product_is_tenant_scoped(blueprint, tmp_path, stub_coder, monkeypatch):
     runner = RoleRunner(
         blueprint, tmp_path / "build", budget=BuildBudget(max_rework=2)
-    )
+    , brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.to_dict()
 

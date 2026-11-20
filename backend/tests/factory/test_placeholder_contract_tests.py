@@ -260,7 +260,7 @@ def test_the_runner_sends_a_test_defect_back_to_the_writer_not_to_rework(
 
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = writer
-    runner = RoleRunner(bp, out, roles=roles)
+    runner = RoleRunner(bp, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     events = list(runner.ledger.events())

@@ -155,7 +155,7 @@ def test_a_failed_writer_gate_sends_the_writer_back_with_its_typed_findings(
 ):
     calls = _writer_gate(monkeypatch, _f1_verdict())
     captured: list = []
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.detail
@@ -191,7 +191,7 @@ def test_the_same_writer_gate_failure_twice_stops_the_run(
 ):
     _writer_gate(monkeypatch, _f1_verdict(), times=99)
     captured: list = []
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert not outcome.ok
@@ -210,7 +210,7 @@ def test_a_writer_gate_failure_the_brief_never_defined_goes_advisory(
 ):
     _writer_gate(monkeypatch, _f1_verdict(check=INVENTED))
     captured: list = []
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.detail
@@ -278,7 +278,7 @@ def test_the_stamped_self_check_is_the_gates_own_probe():
 
 
 def test_the_writer_pass_ships_the_self_check(blueprint, tmp_path, stub_coder):
-    runner = RoleRunner(blueprint, tmp_path / "build")
+    runner = RoleRunner(blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.detail

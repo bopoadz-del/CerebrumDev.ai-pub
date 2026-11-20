@@ -232,7 +232,7 @@ def test_grade_ui_stops_the_boot_on_every_exit_path(monkeypatch, tmp_path, raise
 
     class _UiGrader:
         @staticmethod
-        def grade_ui(blueprint, workdir, *, base_url):
+        def grade_ui(blueprint, workdir, *, base_url, brief=None):
             raise raised("the UI walk broke")
 
     monkeypatch.setattr(pg, "ui_grader", _UiGrader, raising=False)
@@ -347,7 +347,7 @@ def test_grade_ui_quotes_a_run_that_rendered_nothing_with_its_own_errors(monkeyp
 
     class _UiGrader:
         @staticmethod
-        def grade_ui(blueprint, workdir, *, base_url):
+        def grade_ui(blueprint, workdir, *, base_url, brief=None):
             return UiGrade([], list(errors))
 
     monkeypatch.setattr(pg, "ui_grader", _UiGrader, raising=False)

@@ -93,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
         default="code",
         help="code-phase 5/5 (default) or Store-green pytest -m pilot cycle",
     )
+    p_build.add_argument(
+        "--brief",
+        default="",
+        help="customer_brief.v1 JSON for this run. A run without one stops before any phase.",
+    )
 
     p_lock = sub.add_parser(
         "update-lock",
@@ -359,6 +364,7 @@ def _build_cmd(args: argparse.Namespace, blueprint, blocks_root) -> int:
             phase_wall_clock_s=args.phase_wall_clock,
         ),
         cycle=getattr(args, "cycle", "code"),
+        brief=str(getattr(args, "brief", "") or ""),
     )
     outcome = runner.run()
     from app.factory.build.authorship import coding_agent_artifact_ids

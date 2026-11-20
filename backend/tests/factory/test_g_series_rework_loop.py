@@ -60,7 +60,7 @@ def test_a_broken_generated_test_halts_as_factory_fault_with_zero_rework(
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.TESTER] = _tester_with_a_broken_generated_test
 
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert not outcome.ok
@@ -121,14 +121,14 @@ def test_a_run_killed_at_tester_is_re_entered_at_tester(blueprint, tmp_path, stu
     out = tmp_path / "build"
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.TESTER] = _tester_with_a_broken_generated_test
-    first = RoleRunner(blueprint, out, roles=roles)
+    first = RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert not first.run().ok
     seen = len(list(first.ledger.events()))
 
     assert reattach_point(out) == ("TESTER", "")
 
     (out / "tests" / "test_zz_broken_generated.py").unlink()
-    second = RoleRunner(blueprint, out)
+    second = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = second.run()
 
     after = list(second.ledger.events())[seen:]
@@ -161,13 +161,13 @@ def test_a_run_failed_at_writer_is_re_entered_at_writer(blueprint, tmp_path, stu
     out = tmp_path / "build"
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = _writer_that_fails_its_gate
-    first = RoleRunner(blueprint, out, roles=roles)
+    first = RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert not first.run().ok
     seen = len(list(first.ledger.events()))
 
     assert reattach_point(out) == ("WRITER", "")
 
-    second = RoleRunner(blueprint, out)
+    second = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = second.run()
 
     after = list(second.ledger.events())[seen:]
@@ -188,7 +188,7 @@ def test_a_re_entered_writer_is_told_what_it_failed(blueprint, tmp_path, stub_co
     out = tmp_path / "build"
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = _writer_that_fails_its_gate
-    first = RoleRunner(blueprint, out, roles=roles)
+    first = RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert not first.run().ok
 
     captured: dict = {}
@@ -200,7 +200,7 @@ def test_a_re_entered_writer_is_told_what_it_failed(blueprint, tmp_path, stub_co
 
     roles2 = dict(ROLE_IMPLEMENTATIONS)
     roles2[BuildRole.WRITER] = recording_writer
-    second = RoleRunner(blueprint, out, roles=roles2)
+    second = RoleRunner(blueprint, out, roles=roles2, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = second.run()
 
     assert "work_list" in captured, "the re-entered WRITER never ran"
@@ -223,7 +223,7 @@ def test_a_fresh_run_has_no_seeded_findings(blueprint, tmp_path, stub_coder):
 
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = recording_writer
-    assert RoleRunner(blueprint, out, roles=roles).run().ok
+    assert RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     assert captured.get("first_work_list") == (), captured.get("first_work_list")
 
 
@@ -241,7 +241,7 @@ def test_start_runner_build_records_resumed_on_the_same_workspace(
     out = tmp_path / "build"
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.TESTER] = _tester_with_a_broken_generated_test
-    assert not RoleRunner(blueprint, out, roles=roles).run().ok
+    assert not RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
 
     monkeypatch.setattr(
         "app.factory.build.coder_session.raise_if_cli_session_unready", lambda *a, **k: None
@@ -254,7 +254,7 @@ def test_start_runner_build_records_resumed_on_the_same_workspace(
         ),
     )
 
-    result = build_jobs.start_runner_build(blueprint, out)
+    result = build_jobs.start_runner_build(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
     assert Path(result["output_dir"]) == out, "same workspace, not a __runN sibling"
     from app.factory.build.ledger import BuildLedger
@@ -266,7 +266,7 @@ def test_start_runner_build_records_resumed_on_the_same_workspace(
 
 def test_the_rework_counter_survives_a_resume(blueprint, tmp_path, stub_coder):
     out = tmp_path / "build"
-    runner = RoleRunner(blueprint, out)
+    runner = RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.ledger.start_run(product_id=blueprint.product_id, inputs_hash="x")
     runner.ledger.append(EventKind.REWORK, role=BuildRole.WRITER, detail="round 1",
                          payload={"failure_names": ["a"]})

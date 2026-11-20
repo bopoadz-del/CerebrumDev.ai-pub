@@ -31,6 +31,10 @@ from app.factory.build.roles import (
 )
 from app.factory.build.workspace import RoleWorkspace
 
+#: A complete customer_brief.v1 -- the run carries one, and the tester keeps
+#: it in state (the writer, grader and tester quote the same text).
+_BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}'
+
 
 @pytest.fixture(autouse=True)
 def _no_paid_calls(monkeypatch):
@@ -435,9 +439,15 @@ def test_the_smoke_scans_nested_results_for_block_errors(tmp_path):
         workspace=RoleWorkspace(BuildRole.TESTER, tmp_path / "build"),
         blueprint=None,
         plan=_Plan(),
-        state={"vendored_blocks": ("team",), "model_specs": {}},
+        state={"vendored_blocks": ("team",), "model_specs": {},
+               "brief": _BRIEF},
     )
     assert run_tester(tester_ctx).ok
+    # The brief the writer and grader quote is the tester's too: recorded in
+    # state (a dropped rule loses exactly these keys) and stamped into the
+    # suite the tester writes.
+    assert tester_ctx.state["tester_prompt"] == _BRIEF
+    assert tester_ctx.state["customer_brief_quote"] == _BRIEF
 
     smoke = (tmp_path / "build" / "tests" / "test_smoke.py").read_text(encoding="utf-8")
     assert "@pytest.mark.pilot" in smoke

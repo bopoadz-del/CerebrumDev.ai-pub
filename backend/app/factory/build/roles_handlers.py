@@ -3805,7 +3805,13 @@ def _compiled_writer_brief(ctx: RoleContext) -> str:
     """
     sections: List[str] = []
     user_brief = str(ctx.state.get("brief") or "").strip()
-    if user_brief:
+    from app.factory.build.customer_brief import stage_quote
+
+    quoted = stage_quote(user_brief)
+    if quoted is not None:
+        # The customer brief, byte for byte. Not a paraphrase.
+        sections.append(quoted)
+    elif user_brief:
         sections.append(f"USER BRIEF\n{user_brief}")
     coder_brief_rel = Path("docs") / "coder_brief.md"
     if ctx.workspace.exists(coder_brief_rel):
@@ -6148,8 +6154,34 @@ def _constraints_of(spec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def quote_for_tester(brief: Any) -> str:
+    """The tester's prompt: the customer brief, verbatim.
+
+    Empty when ``brief`` is not a complete customer brief. The same text the
+    writer and the grader quote.
+    """
+    from app.factory.build.customer_brief import stage_quote
+
+    return stage_quote(brief) or ""
+
+
+def smoke_header(quote: str) -> List[str]:
+    """The opening of the suite the tester writes.
+
+    When the run carries a customer brief, that brief is a line of the suite.
+    The line's value is the brief, byte for byte.
+    """
+    lines = ['"""The platform runs, and it runs without the store."""']
+    if quote:
+        lines.append("TESTER_PROMPT = " + json.dumps(quote))
+    return lines
+
+
 def run_tester(ctx: RoleContext) -> RoleResult:
     """Acceptance inspector: write the code-phase suite. tests/ only.
+
+    When the run carries a customer brief, the tester's prompt is that
+    brief quoted verbatim — the same text the writer and the grader see.
 
     Factory-gated tests judge the coder's 20–30 minute pass: imports,
     dispatch load, handle() returning a mapping, model round-trip, routes
@@ -6170,6 +6202,10 @@ def run_tester(ctx: RoleContext) -> RoleResult:
     Re-emit the suite from the current specs so ``pytest -m pilot`` matches
     the workspace under test.
     """
+    quoted = quote_for_tester(ctx.state.get("brief"))
+    if quoted:
+        ctx.state["tester_prompt"] = quoted
+        ctx.state["customer_brief_quote"] = quoted
     # The roster the route suite asserts comes from the same role contracts
     # that stamp app/jobs.py (build/kernel_publish.py) -- one source.
     from app.factory.build.deploy import render_health_route_test as _render_health_route_test
@@ -6241,7 +6277,7 @@ def run_tester(ctx: RoleContext) -> RoleResult:
 
     # -- capability + offline dispatch ------------------------------------
     smoke = [
-        '"""The platform runs, and it runs without the store."""',
+        *smoke_header(quoted),
         "",
         "import os",
         "",

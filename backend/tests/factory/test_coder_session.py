@@ -975,7 +975,7 @@ def test_start_runner_build_refuses_when_cli_missing(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[3]
     bp = load_blueprint(root / "blueprints/examples/runner_smoke.yaml")
     with pytest.raises(CodeCliUnavailable, match=NAMED_BLOCKER_CLI):
-        start_runner_build(bp, tmp_path / "out")
+        start_runner_build(bp, tmp_path / "out", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert not (tmp_path / "out" / "build_ledger.jsonl").exists()
 
 
@@ -1330,7 +1330,7 @@ def test_start_runner_build_refuses_when_credentials_missing(tmp_path, monkeypat
     root = Path(__file__).resolve().parents[3]
     bp = load_blueprint(root / "blueprints/examples/runner_smoke.yaml")
     with pytest.raises(CodeCliCredentialsMissing, match=NAMED_BLOCKER_CLI_CREDS):
-        start_runner_build(bp, tmp_path / "out")
+        start_runner_build(bp, tmp_path / "out", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert not (tmp_path / "out" / "build_ledger.jsonl").exists()
 
 
@@ -1459,7 +1459,7 @@ def test_start_runner_build_refuses_a_vendor_file_without_a_provider(tmp_path, m
     root = Path(__file__).resolve().parents[3]
     bp = load_blueprint(root / "blueprints/examples/runner_smoke.yaml")
     with pytest.raises(CodeCliCredentialsMissing, match=NAMED_BLOCKER_CLI_CREDS):
-        start_runner_build(bp, tmp_path / "out")
+        start_runner_build(bp, tmp_path / "out", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert not (tmp_path / "out" / "build_ledger.jsonl").exists()
 
 

@@ -49,7 +49,7 @@ def test_off_leaves_the_runner_untouched_and_takes_no_key(smoke_blueprint, tmp_p
     from app.factory.build.runner import RoleRunner
 
     env = {} if value is None else {w.SETTING_ENV: value}
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     taken = []
     monkeypatch.setattr(so, "take_proof_key", lambda *a, **k: taken.append(a) or b"k")
     before = _snapshot(runner)
@@ -66,7 +66,7 @@ def test_on_without_a_proof_key_stays_off(smoke_blueprint, tmp_path, monkeypatch
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.setattr(so, "_process_key", None)
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert w.arm(runner, {w.SETTING_ENV: value}) == w.NO_KEY
     assert runner.store_repairer is None and runner.store_installer is None
 
@@ -78,7 +78,7 @@ def test_on_with_a_proof_key_arms_both(smoke_blueprint, tmp_path, monkeypatch, v
     from app.factory.build.runner import RoleRunner
 
     monkeypatch.setattr(so, "_process_key", b"factory-test-key")
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert w.arm(runner, {w.SETTING_ENV: value}) is None
     assert callable(runner.store_repairer) and callable(runner.store_installer)
 
@@ -232,7 +232,7 @@ def test_the_writer_is_not_started_with_no_wall_left(smoke_blueprint, tmp_path, 
 
     started = []
     monkeypatch.setattr(codewhale_worker, "run_worker_job", lambda *a, **k: started.append(a))
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     monkeypatch.setattr(runner, "_grantable_wall_left", lambda: left)
     with pytest.raises(RuntimeError, match="no build wall left"):
         w.worker_writer(runner)("blk", tmp_path, {"block_id": "blk"})
@@ -255,7 +255,7 @@ def test_the_writer_runs_on_the_staged_copy_within_the_wall_left(
 
     monkeypatch.setattr(codewhale_worker, "run_worker_job", fake_job)
     monkeypatch.setattr(codewhale_worker, "worker_timeout_s", lambda: 3600.0)
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     monkeypatch.setattr(runner, "_grantable_wall_left", lambda: left)
     staging = tmp_path / "staging"
     handback = {"block_id": "blk", "defects": [{"kind": "crash"}]}
@@ -275,7 +275,7 @@ def test_the_installer_refuses_a_lock_that_is_not_an_object(
     from app.factory.build.store_repair import RepairResult
 
     monkeypatch.setattr(so, "_process_key", b"factory-test-key")
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.workspace.mkdir(parents=True, exist_ok=True)
     (runner.workspace / "blocks.lock.json").write_text(raw, encoding="utf-8")
     _, installer = w.build_parts(runner)
@@ -735,7 +735,7 @@ def test_the_real_worker_job_writes_only_in_the_staged_copy_and_leaves_none_of_i
 
     # Built before Popen is stopped: constructing the runner may list the
     # blocks checkout with git, which is not the spawn under test.
-    runner = RoleRunner(smoke_blueprint, tmp_path / "build")
+    runner = RoleRunner(smoke_blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     monkeypatch.setattr(runner, "_grantable_wall_left", lambda: wall_left)
     monkeypatch.setattr(pathlib.Path, "open", no_progress_log)
     monkeypatch.delenv("CODWHALE_HOME", raising=False)

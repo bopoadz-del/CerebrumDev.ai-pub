@@ -36,7 +36,7 @@ def built(tmp_path, stub_coder):
     # 0.5: without a coding agent the WRITER refuses (writer_no_output);
     # the fixture stubs a deterministic agent so the build goes green.
     out = tmp_path / "build"
-    assert RoleRunner(load_blueprint(SMOKE), out).run().ok
+    assert RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     return out
 
 
@@ -88,7 +88,7 @@ def test_the_deploy_contract_declares_no_database(built):
 def test_the_service_name_is_slugged_from_the_product_id(tmp_path, stub_coder):
     # 0.5: needs a green build; stub a deterministic coding agent.
     out = tmp_path / "b"
-    assert RoleRunner(load_blueprint(SMOKE), out).run().ok
+    assert RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     import json
 
     contract = json.loads((out / "deploy" / "contract.json").read_text(encoding="utf-8"))

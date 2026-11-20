@@ -136,3 +136,24 @@ def test_ungraded_capabilities_are_listed(ids):
     g["layer1"]["functions"]["ungraded"] = [{"capability_id": i, "detail": "no contract"} for i in ids]
     lines = _lines(g)
     assert [line for line in lines if "UNGRADED" in line] == [f"  - `{i}`: UNGRADED; no contract" for i in ids]
+
+
+@pytest.mark.parametrize(
+    "rows,names",
+    [
+        ([{"name": "attach:pdf", "kind": "attach_pdf", "target": "fixture.pdf"}], ["attach:pdf"]),
+        (
+            [
+                {"name": "attach:pdf", "kind": "attach_pdf", "target": "fixture.pdf"},
+                {"name": "attach:xlsx", "kind": "attach_xlsx", "target": "fixture.xlsx"},
+            ],
+            ["attach:pdf", "attach:xlsx"],
+        ),
+    ],
+)
+def test_not_applicable_steps_are_listed(rows, names):
+    """The render names every step the brief did not select -- a dropped rule
+    erases them from the human-readable grade, which is a planted defect."""
+    g = _grade()
+    g["layer1"]["ui"]["not_applicable"] = rows
+    assert "- UI steps not applicable: " + ", ".join(names) in _lines(g)

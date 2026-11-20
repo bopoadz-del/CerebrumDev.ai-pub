@@ -235,8 +235,7 @@ def _run(tmp_path, monkeypatch, verdicts, *, audit, replies):
         load_blueprint(SMOKE),
         tmp_path / "build",
         roles={role: stub(role) for role in BUILD_PHASES},
-        budget=BuildBudget(max_rework=2),
-    )
+        budget=BuildBudget(max_rework=2), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     return runner, runner.run(), calls, llm
 
 

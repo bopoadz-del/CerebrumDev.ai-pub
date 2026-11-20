@@ -177,8 +177,7 @@ def test_runner_seeds_bound_tenant_store_into_writer_state(tmp_path):
     runner = RoleRunner(
         load_blueprint(smoke),
         workspace,
-        tenant_store=binding,
-    )
+        tenant_store=binding, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner.state.get("tenant_store") is binding
 
 
@@ -242,8 +241,7 @@ def test_start_runner_build_binds_tenant_from_session_identity_when_account_abse
     bj.start_runner_build(
         load_blueprint(smoke),
         tmp_path / "out2",
-        quota_account_id="acct_1",
-    )
+        quota_account_id="acct_1", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert captured["tenant_store"].tenant_key == tenant_bind.bind_tenant_store("acct_1").tenant_key
 
 

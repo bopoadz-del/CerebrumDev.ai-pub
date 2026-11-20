@@ -137,7 +137,7 @@ def test_a_kill_mid_writer_leaves_the_previous_pass_intact(
     same content, one consistent attempt.
     """
     out = tmp_path / "build"
-    assert RoleRunner(blueprint, out).run().ok
+    assert RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     before = {
         p.relative_to(out).as_posix(): p.read_text(encoding="utf-8")
         for p in (out / "app").rglob("*.py")
@@ -160,7 +160,7 @@ def test_a_kill_mid_writer_leaves_the_previous_pass_intact(
     led.append(EventKind.GATE_FAILED, role=BuildRole.WRITER, detail="forced")
 
     with pytest.raises(_Killed):
-        RoleRunner(blueprint, out, roles=roles).run()
+        RoleRunner(blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     after = {
         p.relative_to(out).as_posix(): p.read_text(encoding="utf-8")
@@ -175,7 +175,7 @@ def test_the_committed_build_is_self_consistent(blueprint, tmp_path, stub_coder)
     import re
 
     out = tmp_path / "build"
-    assert RoleRunner(blueprint, out).run().ok
+    assert RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
 
     mig_src = (out / "alembic" / "versions" / "0001_baseline.py").read_text(
         encoding="utf-8"
@@ -193,6 +193,6 @@ def test_the_committed_build_is_self_consistent(blueprint, tmp_path, stub_coder)
 
 def test_staging_directories_are_not_shipped(blueprint, tmp_path, stub_coder):
     out = tmp_path / "build"
-    assert RoleRunner(blueprint, out).run().ok
+    assert RoleRunner(blueprint, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     leftovers = [p.name for p in out.parent.iterdir() if ".staging-" in p.name]
     assert not leftovers, f"staging directory left behind: {leftovers}"

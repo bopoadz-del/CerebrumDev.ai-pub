@@ -177,7 +177,7 @@ def test_the_same_brief_at_prototype_and_at_pilot_stops_at_different_gates(
 
     # prototype, with the environment asking for a pilot cycle
     monkeypatch.setenv("FACTORY_AUTO_PILOT", "1")
-    proto = RoleRunner(_with_level(brief, "prototype"), tmp_path / "proto", budget=budget)
+    proto = RoleRunner(_with_level(brief, "prototype"), tmp_path / "proto", budget=budget, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     proto_outcome = proto.run()
     assert proto_outcome.outcome is Outcome.SUCCESS, proto_outcome.to_dict()
     p_events = proto.ledger.events()
@@ -200,7 +200,7 @@ def test_the_same_brief_at_prototype_and_at_pilot_stops_at_different_gates(
 
     # pilot, with the environment asking for code-only
     monkeypatch.setenv("FACTORY_AUTO_PILOT", "0")
-    pilot = RoleRunner(_with_level(brief, "pilot"), tmp_path / "pilot", budget=budget)
+    pilot = RoleRunner(_with_level(brief, "pilot"), tmp_path / "pilot", budget=budget, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     pilot.run()
     l_events = pilot.ledger.events()
     # The level climbed past CODE: a pilot cycle opened on the same workspace,

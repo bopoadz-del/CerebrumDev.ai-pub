@@ -156,11 +156,18 @@ def handler_rel(capability_id: str) -> str:
     return f"app/actions/{capability_id.replace('-', '_')}.py"
 
 
-def _runner(blueprint_path: Path, root: Path, store: Path) -> Any:
+def _runner(blueprint_path: Path, root: Path, store: Path, brief: str = "") -> Any:
     from app.factory.blueprint import load_blueprint
     from app.factory.build.runner import RoleRunner
 
-    return RoleRunner(load_blueprint(blueprint_path), root, blocks_root=store, store_root=store, roles={})
+    return RoleRunner(
+        load_blueprint(blueprint_path),
+        root,
+        blocks_root=store,
+        store_root=store,
+        roles={},
+        brief=brief,
+    )
 
 
 def _role_ctx(runner: Any, role: Any) -> Any:
@@ -178,7 +185,7 @@ def _role_ctx(runner: Any, role: Any) -> Any:
     )
 
 
-def compose(blueprint_path: Path, root: Path, store: Path) -> Composed:
+def compose(blueprint_path: Path, root: Path, store: Path, brief: str = "") -> Composed:
     """Compose the three-layer tree a live build hands the grader."""
     from app.factory.build import factory_owned
     from app.factory.build.authority import BuildRole
@@ -190,7 +197,7 @@ def compose(blueprint_path: Path, root: Path, store: Path) -> Composed:
     layers: Dict[str, str] = {}
 
     before = _snapshot(root)
-    runner = _runner(blueprint_path, root, store)
+    runner = _runner(blueprint_path, root, store, brief=brief)
     after = _snapshot(root)
     _record(layers, before, after, RUNNER)
 
@@ -376,7 +383,7 @@ def ui_from_report(report: Optional[Mapping[str, Any]], not_run_reason: str = ""
     ``report`` is None -- the grader's own not-run shape with the reason."""
     from app.factory.build import grader
 
-    def grade_ui(blueprint, root, gradroot, base_url):
+    def grade_ui(blueprint, root, gradroot, base_url, brief=None):
         if report is None:
             reason = not_run_reason or "UI run did not happen"
             return grader._UiNotRun(reason), False, reason

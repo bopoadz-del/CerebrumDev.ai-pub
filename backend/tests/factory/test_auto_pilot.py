@@ -214,8 +214,7 @@ def test_auto_pilot_opens_pilot_instead_of_code_success(tmp_path, monkeypatch, s
         load_blueprint(SMOKE),
         out,
         budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=300),
-        auto_pilot=True,
-    )
+        auto_pilot=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     kinds = [e.kind for e in runner.ledger.events()]
     assert EventKind.PILOT_OPENED in kinds
@@ -302,8 +301,7 @@ def test_code_only_success_still_exists_without_auto_pilot(tmp_path, stub_coder)
     runner = RoleRunner(
         load_blueprint(SMOKE),
         out,
-        auto_pilot=False,
-    )
+        auto_pilot=False, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.to_dict()
     assert runner.ledger.succeeded()

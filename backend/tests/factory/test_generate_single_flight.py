@@ -42,7 +42,7 @@ def test_start_runner_build_refuses_second_start(tmp_path, monkeypatch):
         raise AssertionError("must not spawn a second runner thread")
 
     monkeypatch.setattr("threading.Thread.start", _no_thread)
-    result = start_runner_build(_bp(), out)
+    result = start_runner_build(_bp(), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert result["already_running"] is True
     assert result["build"]["state"] == "building"
     assert started == []

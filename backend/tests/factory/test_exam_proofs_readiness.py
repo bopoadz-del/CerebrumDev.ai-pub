@@ -270,7 +270,7 @@ def test_a_build_start_is_refused_at_the_door_with_the_reason(
     monkeypatch.setattr(runner, "blueprint_hash", lambda bp: "h")
     monkeypatch.setattr(build_jobs.threading, "Thread", _no_thread)
     with pytest.raises(BuildsUnavailable) as exc:
-        build_jobs.start_runner_build(SimpleNamespace(product_id="p"), out)
+        build_jobs.start_runner_build(SimpleNamespace(product_id="p"), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert expected in str(exc.value)
     assert str(tmp_path) not in str(exc.value)
     assert not build_jobs._ledger_path(out).exists()

@@ -132,7 +132,7 @@ def test_a_finished_build_carries_agent_manufactured_shape(tmp_path, stub_coder)
     Every one of these was ABSENT from the physically downloaded product.
     """
     out = tmp_path / "build"
-    started = start_runner_build(load_blueprint(SMOKE), out)
+    started = start_runner_build(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert started["engine"] == RUNNER
     assert started["build"]["state"] in ("building", "succeeded")
 
@@ -217,7 +217,7 @@ def test_status_is_read_from_the_ledger_not_process_memory(tmp_path, stub_coder)
     assert build_status(tmp_path / "nothing-here")["state"] == "unknown"
 
     out = tmp_path / "build"
-    start_runner_build(load_blueprint(SMOKE), out)
+    start_runner_build(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     _await_build(out)
 
     # Nothing of this process's state is consulted: a fresh read of the same

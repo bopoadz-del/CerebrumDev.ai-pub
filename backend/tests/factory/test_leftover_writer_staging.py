@@ -53,7 +53,7 @@ def _phase_start(tmp_path: Path, leftover: dict[str, str] | None):
 
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = looking_writer
-    runner = RoleRunner(load_blueprint(SMOKE), out, roles=roles)
+    runner = RoleRunner(load_blueprint(SMOKE), out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     with pytest.raises(_Stop):
         runner._run_phase(BuildRole.WRITER, [])
     return seen, runner

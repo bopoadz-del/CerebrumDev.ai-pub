@@ -55,7 +55,7 @@ def _product_finding(reason: str, finding: str) -> GateResult:
 def _runner(tmp_path):
     from app.factory.build.runner import RoleRunner
 
-    return RoleRunner(load_blueprint(SMOKE), tmp_path / "build")
+    return RoleRunner(load_blueprint(SMOKE), tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
 
 def _decide(runner, verdict, reprompts):

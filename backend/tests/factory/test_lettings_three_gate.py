@@ -78,8 +78,7 @@ def test_lettings_code_cycle_is_a_full_repo_and_not_pilot_ready(tmp_path, stub_c
         remap_blueprint_to_estate_stubs(load_blueprint(LETTINGS)),
         out,
         budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=300),
-        auto_pilot=False,
-    )
+        auto_pilot=False, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert outcome.ok, outcome.to_dict()
     assert "CODE PASS" in outcome.detail
@@ -161,8 +160,7 @@ def test_lettings_three_gate_pilot_walk_is_honest(tmp_path):
         lettings_offline,
         out,
         budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=300),
-        auto_pilot=False,
-    ).run()
+        auto_pilot=False, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert code.ok is False, code.to_dict()
     assert "writer_no_output" in (code.detail or "")
 

@@ -479,7 +479,7 @@ def test_runner_reopens_writer_when_pre_acceptance_pilot_needs_stamp(tmp_path):
     bp = load_blueprint(root / "blueprints/examples/runner_smoke.yaml")
     out = tmp_path / "ws"
     out.mkdir()
-    runner = RoleRunner(bp, out, cycle="pilot", auto_pilot=False)
+    runner = RoleRunner(bp, out, cycle="pilot", auto_pilot=False, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     ledger = runner.ledger
     ledger.start_run(product_id="smoke", inputs_hash="abc123def456aa")
     for role in (

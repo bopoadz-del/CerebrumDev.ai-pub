@@ -38,7 +38,7 @@ def _factory_holds_a_key(monkeypatch, tmp_path):
 
 
 def _runner(product: Path) -> RoleRunner:
-    return RoleRunner(load_blueprint(SMOKE), product)
+    return RoleRunner(load_blueprint(SMOKE), product, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
 
 def _unrecorded_notes(runner: RoleRunner) -> list:

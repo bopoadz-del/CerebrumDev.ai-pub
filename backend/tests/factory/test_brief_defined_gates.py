@@ -157,7 +157,7 @@ def test_an_invented_gate_goes_advisory_with_zero_writer_rounds(
         ),
     )
     captured: list = []
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.detail
@@ -203,7 +203,7 @@ def test_a_failing_check_the_compiled_brief_defines_reaches_the_writer(
         ),
     )
     captured: list = []
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert brief_gates.SUITE_CHECK in runner._brief_defined_checks(), (
@@ -236,7 +236,7 @@ def test_mixed_round_hands_the_writer_only_the_brief_defined_failure(
         ),
     )
     captured: list = []
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.detail

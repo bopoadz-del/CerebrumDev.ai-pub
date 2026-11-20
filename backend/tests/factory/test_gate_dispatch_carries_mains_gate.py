@@ -269,7 +269,7 @@ def test_the_handoff_records_the_sha_the_dispatch_gated(monkeypatch, tmp_path):
     roles[BuildRole.WRITER] = lambda _ctx: RoleResult(ok=True, detail="writer ran")
     out = tmp_path / "build"
     bp = load_blueprint(REPO_ROOT / "blueprints/examples/runner_smoke.yaml")
-    outcome = RoleRunner(bp, out, roles=roles).run()
+    outcome = RoleRunner(bp, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     assert outcome.outcome is Outcome.HANDOFF_TO_N3, outcome
     handoffs = [

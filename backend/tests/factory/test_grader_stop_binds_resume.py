@@ -82,7 +82,7 @@ def test_a_grader_stop_is_the_writers_terminal_verdict_and_resume_re_enters_writ
     first: list = []
     roles[BuildRole.WRITER] = _recording_writer(first)
     out = tmp_path / "build"
-    runner = RoleRunner(smoke_blueprint, out, roles=roles)
+    runner = RoleRunner(smoke_blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert not outcome.ok
     assert runner.ledger.terminal_event().kind is EventKind.RUN_FAILED
@@ -107,7 +107,7 @@ def test_a_grader_stop_is_the_writers_terminal_verdict_and_resume_re_enters_writ
     monkeypatch.setattr(grader_mod, "run_grader", certified)
     resumed: list = []
     roles[BuildRole.WRITER] = _recording_writer(resumed)
-    again = RoleRunner(smoke_blueprint, out, roles=roles)
+    again = RoleRunner(smoke_blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     result = again.run()
     assert result.ok, result.detail
     assert len(resumed) == 1
@@ -136,7 +136,7 @@ def test_certified_then_a_tester_failure_still_resumes_at_tester(
 
     roles[BuildRole.TESTER] = broken_tester
     out = tmp_path / "build"
-    runner = RoleRunner(smoke_blueprint, out, roles=roles)
+    runner = RoleRunner(smoke_blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert not outcome.ok
     assert _writer_terminal(runner.ledger).kind is EventKind.GATE_PASSED
@@ -146,7 +146,7 @@ def test_certified_then_a_tester_failure_still_resumes_at_tester(
     resumed: list = []
     roles[BuildRole.WRITER] = _recording_writer(resumed)
     roles[BuildRole.TESTER] = _fake_pass
-    again = RoleRunner(smoke_blueprint, out, roles=roles)
+    again = RoleRunner(smoke_blueprint, out, roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     result = again.run()
     assert result.ok, result.detail
     assert resumed == []

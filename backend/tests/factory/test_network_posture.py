@@ -145,7 +145,7 @@ def test_cloner_emits_p1_capture_without_blocks_root(tmp_path):
 
 def test_role_runner_tree_is_p1(tmp_path, monkeypatch, stub_coder):
     out = tmp_path / "build"
-    result = RoleRunner(load_blueprint(SMOKE), out).run()
+    result = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert result.ok, result.to_dict()
     text = (out / ".env.example").read_text(encoding="utf-8")
     assert text == P1_ENV_EXAMPLE

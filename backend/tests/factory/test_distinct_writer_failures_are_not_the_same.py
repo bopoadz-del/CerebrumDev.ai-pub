@@ -104,7 +104,7 @@ def test_a_different_second_failure_gets_its_own_rework_round(tmp_path, stub_cod
     never a SAME_FAILURE_TWICE that hides what the writer must hear next."""
     _writer_gate_sequence(monkeypatch, [FIRST, SECOND])
     captured: list = []
-    runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "build", roles=_recording_writer(captured))
+    runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert "SAME_FAILURE_TWICE" not in (outcome.detail or ""), outcome.detail
@@ -120,7 +120,7 @@ def test_a_different_second_failure_gets_its_own_rework_round(tmp_path, stub_cod
 def test_the_same_failure_twice_still_stops(tmp_path, stub_coder, monkeypatch):
     again = _verdict("zorblat_first_reason", "quillfeather: the first thing wrong")
     _writer_gate_sequence(monkeypatch, [FIRST, again])
-    runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "build", roles=_recording_writer([]))
+    runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "build", roles=_recording_writer([]), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert not outcome.ok

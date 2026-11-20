@@ -10,6 +10,14 @@ attach a real PDF and XLSX; parsed status appears; a cited answer with a
 number renders; an invalid request is answered honestly with 422/503 (never
 a 200); every declared route returns 200 and renders with no console errors.
 
+Which of those steps run is read from the customer brief's ``documents``
+field (``customer_brief``): whether the customer uploads documents, and
+which file types. No other text is consulted. A kind with no file type is
+the product surface and always runs. A document step whose type the field
+does not list is not run and is reported not applicable — never passed,
+never a failure. A value that is not a customer brief does not choose steps
+by guessing words.
+
 No base URL, no Playwright, or no report = the UI run did not happen = FAIL.
 A skipped UI run is never a pass.
 """
@@ -23,7 +31,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.factory.build.authority import capability_route
 
@@ -36,9 +44,28 @@ TOOLCHAIN_TIMEOUT_S = 120
 #: How much of a failed tool's output a recorded reason keeps.
 OUTPUT_TAIL_CHARS = 400
 
-#: The fixed step kinds every product must pass. Their TARGETS come from
-#: the blueprint; the kinds are the owner's Layer-1 list.
+#: The fixed step kinds. Their TARGETS come from the blueprint. Whether a
+#: document kind runs is the customer brief's documents field.
 STEP_KINDS = ("load", "bind", "attach_pdf", "attach_xlsx", "parsed", "cited_answer", "honest_error")
+
+#: Not a pass and not a failure: the documents field does not include this step.
+NOT_APPLICABLE = "not_applicable"
+
+#: Returned when a value was given and it is not a customer brief. The UI
+#: grade does not guess which steps apply.
+BRIEF_UNREADABLE = "brief unreadable"
+
+_UNSET: Any = object()
+
+#: Document step kind -> the file type id the step attaches. ``cited_answer``
+#: runs whenever the brief says the customer uploads documents, whichever
+#: types were named. The ids are the step targets' own suffixes.
+_KIND_FILE_TYPE = {
+    "attach_pdf": "pdf",
+    "parsed": "pdf",
+    "attach_xlsx": "xlsx",
+}
+
 
 
 @dataclass(frozen=True)
@@ -52,6 +79,8 @@ class UiStep:
 class UiGrade:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    not_applicable: List[Dict[str, Any]] = field(default_factory=list)
+    brief_note: str = ""
 
     @property
     def ran(self) -> bool:
@@ -66,14 +95,57 @@ class UiGrade:
         return self.ran and not self.failing
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"ok": self.ok, "ran": self.ran, "failing": self.failing, "steps": self.steps}
+        out: Dict[str, Any] = {
+            "ok": self.ok, "ran": self.ran, "failing": self.failing, "steps": self.steps,
+        }
+        if self.not_applicable:
+            out["not_applicable"] = list(self.not_applicable)
+        if self.brief_note:
+            out["brief_note"] = self.brief_note
+        return out
 
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(text).lower()).strip("_")
 
 
-def ui_plan(blueprint: Mapping[str, Any]) -> List[UiStep]:
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dict(dump())
+        except TypeError:
+            pass
+    data = getattr(value, "__dict__", None)
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def brief_for_steps(
+    blueprint: Any,
+    *,
+    supplied: Any = None,
+    compiled: Any = None,
+) -> Optional[str]:
+    """The customer brief the UI steps are derived from, or None.
+
+    Only a complete customer brief counts. ``blueprint`` is not a brief.
+    The Factory contract is not a brief. None means no complete customer
+    brief was given (callers then keep the full step list).
+    """
+    del blueprint, compiled
+    from app.factory.build.customer_brief import stage_quote
+
+    return stage_quote(supplied)
+
+
+def _unreadable_block() -> UiGrade:
+    """A value was given and it is not a customer brief. No step ran."""
+    return UiGrade([], [BRIEF_UNREADABLE], brief_note=BRIEF_UNREADABLE)
+
+
+def _candidate_steps(blueprint: Mapping[str, Any]) -> List[UiStep]:
     caps = [str(c.get("id")) for c in blueprint.get("capabilities") or [] if c.get("id")]
     first = caps[0] if caps else ""
     steps = [
@@ -92,9 +164,82 @@ def ui_plan(blueprint: Mapping[str, Any]) -> List[UiStep]:
     return steps
 
 
-def _question(blueprint: Mapping[str, Any]) -> str:
+def _applicable_document_kinds(brief: Any) -> Optional[set]:
+    """None: no customer brief was given, so every document step applies.
+    A set: the document kinds the brief's documents field turns on.
+    Raises ValueError when a value was given and it is not a customer brief.
+    """
+    if brief is _UNSET or brief is None:
+        return None
+    from app.factory.build.customer_brief import read_brief
+
+    record, _problems = read_brief(brief)
+    if record is None:
+        raise ValueError(BRIEF_UNREADABLE)
+    if not record.uploads:
+        return set()
+    kinds = {"cited_answer"}
+    types = set(record.file_types)
+    for kind, type_id in _KIND_FILE_TYPE.items():
+        if type_id in types:
+            kinds.add(kind)
+    return kinds
+
+
+def _split_plan(
+    blueprint: Mapping[str, Any], brief: Any
+) -> Tuple[List[UiStep], List[UiStep], str]:
+    """``(run, not_applicable, block)``.
+
+    No brief: every candidate step runs. A customer brief runs a document
+    step only when its documents field says so. Anything else that was
+    passed in is not a brief: the grade blocks and does not guess.
+    """
+    try:
+        allowed = _applicable_document_kinds(brief)
+    except ValueError:
+        return [], [], BRIEF_UNREADABLE
+    run: List[UiStep] = []
+    skip: List[UiStep] = []
+    for step in _candidate_steps(blueprint):
+        document_kind = step.kind in _KIND_FILE_TYPE or step.kind == "cited_answer"
+        if allowed is not None and document_kind:
+            (run if step.kind in allowed else skip).append(step)
+        else:
+            run.append(step)
+    return run, skip, ""
+
+
+def ui_plan(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> List[UiStep]:
+    """The steps that will be run. An unreadable value runs none."""
+    run, _skip, _block = _split_plan(blueprint, brief)
+    return run
+
+
+def _not_applicable_row(step: UiStep) -> Dict[str, Any]:
+    return {
+        "name": step.name,
+        "kind": step.kind,
+        "target": step.target,
+        "applicable": False,
+        "status": NOT_APPLICABLE,
+    }
+
+
+def _question(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
+    """The cited-answer prompt. Empty when that step does not apply, so a
+    brief with no documents is not asked about an attached document."""
+    _run, _skip, _note = _split_plan(blueprint, brief)
+    if not any(step.kind == "cited_answer" for step in _run):
+        return ""
     caps = blueprint.get("capabilities") or [{}]
-    return f"What does the attached document say about {str(caps[0].get('description') or '').split('.')[0][:120]}?"
+    first = caps[0] if caps else {}
+    if not isinstance(first, Mapping):
+        first = _as_mapping(first)
+    return (
+        "What does the attached document say about "
+        f"{str(first.get('description') or '').split('.')[0][:120]}?"
+    )
 
 
 def _pdf_bytes(text: str) -> bytes:
@@ -118,8 +263,12 @@ def _pdf_bytes(text: str) -> bytes:
     return bytes(out)
 
 
-def write_fixtures(blueprint: Mapping[str, Any], dest: Path) -> Dict[str, Path]:
+def write_fixtures(blueprint: Mapping[str, Any], dest: Path, brief: Any = _UNSET) -> Dict[str, Path]:
+    """PDF and spreadsheet fixtures, written only when a document step runs.
+    A brief that cannot be read still writes them (every step is kept)."""
     dest.mkdir(parents=True, exist_ok=True)
+    if not any(step.kind in ("attach_pdf", "attach_xlsx") for step in ui_plan(blueprint, brief)):
+        return {}
     caps = blueprint.get("capabilities") or []
     pdf = dest / "fixture.pdf"
     pdf.write_bytes(_pdf_bytes(f"{blueprint.get('product_name', '')}: {blueprint.get('summary', '')}"))
@@ -176,10 +325,11 @@ KIND_JS: Dict[str, str] = {
 KIND_JS["attach_xlsx"] = KIND_JS["attach_pdf"]
 
 
-def render_spec(blueprint: Mapping[str, Any]) -> str:
+def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
     """The Playwright test file. One ``test`` per plan step, titled by name.
-    A step whose kind has no body is a hard error, never an empty pass."""
-    plan = ui_plan(blueprint)
+    A step whose kind has no body is a hard error, never an empty pass.
+    Steps the brief does not contain are absent: they are not run."""
+    plan = ui_plan(blueprint, brief)
     missing = sorted({s.kind for s in plan} - set(KIND_JS))
     if missing:
         raise ValueError(f"no UI assertion for step kinds: {missing}")
@@ -190,7 +340,7 @@ def render_spec(blueprint: Mapping[str, Any]) -> str:
     return (
         "import { test, expect } from '@playwright/test';\n"
         f"const PLAN = {json.dumps([s.__dict__ for s in plan])};\n"
-        f"const QUESTION = {json.dumps(_question(blueprint))};\n"
+        f"const QUESTION = {json.dumps(_question(blueprint, brief))};\n"
         + BASE_JS +
         "const errs: string[] = [];\n"
         "test.describe.configure({ mode: 'serial' });\n"
@@ -232,16 +382,24 @@ def report_outcomes(report: Mapping[str, Any]) -> Dict[str, bool]:
     return seen
 
 
-def parse_report(report: Mapping[str, Any], blueprint: Mapping[str, Any]) -> UiGrade:
+def parse_report(
+    report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET
+) -> UiGrade:
     """Playwright JSON reporter -> UiGrade. A planned step absent from the
-    report is a failed step (a skipped step is not a passed one)."""
+    report is a failed step (a skipped step is not a passed one). A step the
+    brief does not contain is not applicable: it was not run, it is not
+    passed, and it is not a failure. A brief that cannot be read is a block:
+    no step is graded."""
+    run, skip, block = _split_plan(blueprint, brief)
+    if block:
+        return _unreadable_block()
     seen = report_outcomes(report)
     steps = [
         {"name": st.name, "kind": st.kind, "target": st.target, "passed": seen.get(st.name, False)}
-        for st in ui_plan(blueprint)
+        for st in run
     ]
     errors = [] if seen else ["playwright report has no results"]
-    return UiGrade(steps, errors)
+    return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
 
 
 def _tail(text: Any) -> str:
@@ -328,7 +486,11 @@ def grade_ui(
     *,
     base_url: Optional[str],
     run: Any = subprocess.run,
+    brief: Any = _UNSET,
 ) -> UiGrade:
+    _run, _skip, block = _split_plan(blueprint, brief)
+    if block:
+        return _unreadable_block()
     if not base_url:
         return UiGrade([], ["UI run did not happen: no base URL for the rendered product"])
     if run is subprocess.run:
@@ -337,15 +499,16 @@ def grade_ui(
             return UiGrade([], [f"UI run did not happen: UI toolchain unavailable: {toolchain.detail}"])
     wd = Path(workdir)
     wd.mkdir(parents=True, exist_ok=True)
-    fx = write_fixtures(blueprint, wd / "fixtures")
-    (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint), encoding="utf-8")
+    fx = write_fixtures(blueprint, wd / "fixtures", brief)
+    (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
     out = wd / "report.json"
+    fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
-                               fixtures=fx["pdf"].parent, timeout=RUN_TIMEOUT_S)
+                               fixtures=fixtures, timeout=RUN_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     report_text = _report_text(out, proc)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc)}"])
-    return parse_report(json.loads(report_text), blueprint)
+    return parse_report(json.loads(report_text), blueprint, brief)

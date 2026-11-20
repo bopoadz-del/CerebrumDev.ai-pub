@@ -300,8 +300,7 @@ def _run(tmp_path, monkeypatch, verdicts, *, mode, replies, max_rework=2):
         blueprint,
         tmp_path / "build",
         roles={role: stub(role) for role in BUILD_PHASES},
-        budget=BuildBudget(max_rework=max_rework),
-    )
+        budget=BuildBudget(max_rework=max_rework), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     return runner, runner.run(), calls, llm
 
 

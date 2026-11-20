@@ -30,8 +30,8 @@ def test_two_builds_share_a_digest(tmp_path, stub_coder):
     bp = load_blueprint(SMOKE)
     a = tmp_path / "a"
     b = tmp_path / "b"
-    assert RoleRunner(bp, a).run().ok
-    assert RoleRunner(bp, b).run().ok
+    assert RoleRunner(bp, a, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
+    assert RoleRunner(bp, b, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
     da = artifact_digest(a)
     db = artifact_digest(b)
     assert da == db

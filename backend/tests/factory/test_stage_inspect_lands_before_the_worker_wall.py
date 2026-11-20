@@ -42,8 +42,7 @@ def _staged_runner(tmp_path, *, wall=STAGE_1_S):
             phase_wall_clock_s=7200.0,
             hard_ceiling_s=7200.0,
         ),
-        clock=lambda: clock["t"],
-    )
+        clock=lambda: clock["t"], brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.workspace.mkdir(parents=True, exist_ok=True)
     runner.ledger.start_run(product_id="p", inputs_hash="h")
     runner._run_started = 0.0

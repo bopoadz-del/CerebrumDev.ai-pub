@@ -43,7 +43,7 @@ def test_collect_all_records_failed_gate_and_keeps_going(
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.CLONER] = empty_cloner
 
-    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles)
+    runner = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.outcome is Outcome.COLLECT_ALL_REPORT
@@ -63,7 +63,7 @@ def test_collect_all_records_failed_gate_and_keeps_going(
 def test_collect_all_clean_run_is_still_success(blueprint, tmp_path, monkeypatch, stub_coder):
     """The flag alone must not change a green build's outcome."""
     monkeypatch.setenv("FACTORY_GATE_COLLECT_ALL", "1")
-    outcome = RoleRunner(blueprint, tmp_path / "build").run()
+    outcome = RoleRunner(blueprint, tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.outcome is Outcome.SUCCESS
     assert outcome.ok
 
@@ -78,6 +78,6 @@ def test_flag_off_keeps_terminal_behaviour(blueprint, tmp_path, monkeypatch):
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.CLONER] = empty_cloner
 
-    outcome = RoleRunner(blueprint, tmp_path / "build", roles=roles).run()
+    outcome = RoleRunner(blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.outcome is Outcome.FAILED_GATE
     assert outcome.failed_phase is BuildRole.CLONER

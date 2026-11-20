@@ -129,8 +129,7 @@ def test_the_runner_ramps_a_live_codewhale_writer_past_its_phase_wall(tmp_path, 
             wall_clock_s=60.0,
             phase_wall_clock_s=1.5,
             hard_ceiling_s=60.0,
-        ),
-    )
+        ), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner.run()
 
     assert outcome.get("worker") == "finished", (

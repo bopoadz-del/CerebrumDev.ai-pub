@@ -176,6 +176,16 @@ def _brief_text(blueprint: Mapping[str, Any], compiled_brief: Any) -> str:
     return ""
 
 
+def shown_customer_brief(supplied: Any) -> str:
+    """The brief Layer 2 is shown: the customer brief, verbatim, or empty.
+
+    A blueprint and a compiled Factory contract are not substituted for it.
+    """
+    from app.factory.build.customer_brief import stage_quote
+
+    return stage_quote(supplied) or ""
+
+
 def _tokens(text: str) -> List[str]:
     """Whitespace tokens with trailing punctuation stripped -- the structural
     tokenization the derivations read; no vocabulary decides anything here."""
@@ -902,16 +912,37 @@ class GraderVerdict:
         return self.tier == CERTIFIED
 
 
+class _BriefOmitted:
+    """``_grade_ui`` was not given a brief. Distinct from a brief that is
+    missing: only an explicit brief is checked, so a caller that does not
+    pass one is not blocked."""
+
+
+_BRIEF_OMITTED = _BriefOmitted()
+
+
 def _grade_ui(
     blueprint: Mapping[str, Any],
     root: Path,
     gradroot: Path,
     base_url: Optional[str],
+    *,
+    brief: Any = _BRIEF_OMITTED,
 ) -> Tuple[Any, bool, str]:
     """The UI layer, honestly: it runs when the product boots and the
     playwright toolchain exists; otherwise it is recorded as NOT RUN -- a
     quoted gap, never a fabricated green. A boot this layer starts is
-    stopped on every exit path."""
+    stopped on every exit path.
+
+    An explicit brief that cannot be read stops the layer before a boot:
+    nothing runs, and the result is the brief-unreadable block.
+    """
+    if brief is not _BRIEF_OMITTED:
+        from app.factory.build.product_grader.ui_grader import BRIEF_UNREADABLE, _split_plan, _unreadable_block
+
+        _run, _skip, block = _split_plan(blueprint if isinstance(blueprint, Mapping) else {}, brief)
+        if block:
+            return _unreadable_block(), False, BRIEF_UNREADABLE
     ui_not_run = ""
     boot: Optional[GradingBoot] = None
     try:
@@ -939,7 +970,8 @@ def _grade_ui(
             ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
             return ui, False, ui_not_run
         if base_url:
-            ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url)
+            passed = {} if brief is _BRIEF_OMITTED else {"brief": brief}
+            ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url, **passed)
         else:
             ui = ui_grader.UiGrade(
                 [], [ui_not_run or "UI run did not happen: no base URL for the rendered product"]
@@ -981,6 +1013,9 @@ def run_grader(
     blueprint = _as_mapping(blueprint)
     gradroot = Path(grader_root) if grader_root else root.parent / (root.name + ".grader")
     brief = _brief_text(blueprint, compiled_brief)
+    # Layer 2 is shown the customer brief verbatim. A blueprint or a Factory
+    # contract is not substituted when that brief is missing.
+    shown_brief = shown_customer_brief(supplied_text)
     vertical = str(blueprint.get("vertical") or "")
     cids = [
         str(cap.get("id") or "")
@@ -1047,7 +1082,16 @@ def run_grader(
         )
 
     # --- Layer 1 UI -------------------------------------------------------
-    ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url)
+    # Steps come from the customer's brief. Blueprint text does not stand in
+    # for one, and the Factory contract on its own is not a brief. No
+    # customer text blocks the UI grade: nothing further in this layer runs.
+    from app.factory.build.product_grader import ui_grader as _ui_steps
+
+    ui_brief = _ui_steps.brief_for_steps(
+        blueprint, supplied=supplied_text, compiled=compiled_brief
+    )
+    ui, ui_ran, ui_not_run = _grade_ui(blueprint, root, gradroot, base_url, brief=ui_brief)
+    brief_blocked = ui_not_run == _ui_steps.BRIEF_UNREADABLE
     # A function the grade did not run is a gap the Factory owes: quoted as
     # ungraded, not a FAIL.
     ungraded: List[str] = [
@@ -1062,7 +1106,10 @@ def run_grader(
     refusal = graded_writer_refusal(writer_run, grader_llm_config())
     _writer_id, writer_note = graded_writer_identity(writer_run)
     notes = tuple(n for n in (writer_note,) if n)
-    if refusal:
+    if brief_blocked:
+        # The brief cannot be read. Do not ask Layer 2, and do not grade steps.
+        l2 = {"ran": False, "verdicts": [], "open_fails": []}
+    elif refusal:
         l2 = {"ran": False, "verdicts": [], "open_fails": [refusal]}
         ungraded.append(refusal)
     else:
@@ -1080,7 +1127,7 @@ def run_grader(
             }
         ui_dict = ui.to_dict()
         layer1_view = _layer2_layer1_view(fn_dict, ui_dict)
-        l2_inputs = {"compiled_brief": brief, "rendered_product": rendered, "layer1": layer1_view}
+        l2_inputs = {"compiled_brief": shown_brief, "rendered_product": rendered, "layer1": layer1_view}
         l2 = layer2.run_layer2(
             l2_inputs, blueprint, _grader_complete, render=lambda stems: render_product(root, first=stems)
         )
@@ -1115,6 +1162,14 @@ def run_grader(
             outage = f"grade record could not be written: {type(exc).__name__}: {exc}"
 
     # --- the verdict --------------------------------------------------------
+    if brief_blocked and not outage:
+        return GraderVerdict(
+            tier=NOT_CERTIFIED,
+            items=(_ui_steps.BRIEF_UNREADABLE,),
+            ungraded=tuple(ungraded),
+            grade=grade,
+            notes=notes,
+        )
     if outage:
         return GraderVerdict(tier=ERROR, items=(outage,), ungraded=tuple(ungraded), grade=grade, notes=notes)
 

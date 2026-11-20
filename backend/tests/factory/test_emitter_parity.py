@@ -60,7 +60,7 @@ def test_role_runner_does_not_call_product_generator_generate(
         )
 
     monkeypatch.setattr(ProductGenerator, "generate", _boom)
-    result = RoleRunner(load_blueprint(SMOKE), tmp_path / "runner").run()
+    result = RoleRunner(load_blueprint(SMOKE), tmp_path / "runner", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert result.ok, result.to_dict()
 
 
@@ -69,7 +69,7 @@ def test_role_runner_and_product_generator_share_fourteen_classes(
 ):
     bp = load_blueprint(SMOKE)
     runner_out = tmp_path / "runner"
-    runner = RoleRunner(bp, runner_out)
+    runner = RoleRunner(bp, runner_out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     result = runner.run()
     assert result.ok, result.to_dict()
 

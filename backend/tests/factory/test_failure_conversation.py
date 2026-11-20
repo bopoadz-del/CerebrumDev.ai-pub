@@ -160,8 +160,7 @@ def test_a_failed_run_attaches_its_narrative(tmp_path, monkeypatch):
         out,
         roles=roles,
         blocks_root=STORE,
-        budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=600),
-    ).run()
+        budget=BuildBudget(max_rework=1, wall_clock_s=600, phase_wall_clock_s=600), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     events = list(BuildLedger(out / "build_ledger.jsonl").events())
     failed_at = max(i for i, e in enumerate(events) if e.kind is EventKind.RUN_FAILED)
     attached = [e for e in events[failed_at:] if fn.NARRATIVE_KEY in (e.payload or {})]

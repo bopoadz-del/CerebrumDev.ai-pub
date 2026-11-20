@@ -1419,7 +1419,7 @@ def test_field_ops_role_runner_emits_block_inputs_and_pilot_accepts(
 
     root = Path(__file__).resolve().parents[3]
     out = tmp_path / "field_ops_build"
-    outcome = RoleRunner(load_blueprint(root / "blueprints/examples/field_ops.yaml"), out).run()
+    outcome = RoleRunner(load_blueprint(root / "blueprints/examples/field_ops.yaml"), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
     assert (out / "app" / "block_inputs.py").is_file()
     handler = (out / "app" / "actions" / "stakeholder_notification.py").read_text(

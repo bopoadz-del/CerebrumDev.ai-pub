@@ -205,7 +205,7 @@ def test_start_runner_build_rotates_off_a_failed_ledger_only_on_start_over(tmp_p
     )
     # Without Start over a failed run is re-entered in place, never replaced,
     # and the resume keeps the rework budget it had (no reset in the ledger).
-    resumed = start_runner_build(bp, dead)
+    resumed = start_runner_build(bp, dead, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert resumed["fresh_workspace"] is False
     assert Path(resumed["output_dir"]) == dead
     from app.factory.build.rule_decision import BUDGET_RESET_KEY as REWORK_BUDGET_RESET
@@ -213,7 +213,7 @@ def test_start_runner_build_rotates_off_a_failed_ledger_only_on_start_over(tmp_p
     assert not any((e.payload or {}).get(REWORK_BUDGET_RESET) for e in BuildLedger(dead / "build_ledger.jsonl").events())
     ledger.append(EventKind.RUN_FAILED, detail="failed again")
     # Start over -- the only fresh door -- rotates to a new workspace.
-    result = start_runner_build(bp, dead, start_over=True)
+    result = start_runner_build(bp, dead, start_over=True, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert result["already_running"] is False
     assert result["fresh_workspace"] is True
     assert Path(result["output_dir"]) != dead

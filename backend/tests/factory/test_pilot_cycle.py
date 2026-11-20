@@ -207,7 +207,7 @@ def test_vendor_is_sealed_after_cloner(tmp_path: Path):
 
 def test_opening_pilot_does_not_rewrite_vendor(tmp_path, monkeypatch, stub_coder):
     out = tmp_path / "build"
-    first = RoleRunner(load_blueprint(SMOKE), out).run()
+    first = RoleRunner(load_blueprint(SMOKE), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert first.ok, first.to_dict()
 
     def _vendor_tree(root: Path) -> dict:
@@ -224,7 +224,7 @@ def test_opening_pilot_does_not_rewrite_vendor(tmp_path, monkeypatch, stub_coder
 
     before = _vendor_tree(out)
     assert before, "code-phase must have vendored blocks"
-    second = RoleRunner(load_blueprint(SMOKE), out, cycle="pilot").run()
+    second = RoleRunner(load_blueprint(SMOKE), out, cycle="pilot", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     after = _vendor_tree(out)
     assert before == after, "opening a pilot cycle must not rewrite vendor/**"
     assert "prepare_pilot_workspace" not in (out / "build_ledger.jsonl").read_text(

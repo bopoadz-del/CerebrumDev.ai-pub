@@ -153,7 +153,7 @@ def test_generated_platform_inherits_engine(tmp_path, stub_coder):
         / "examples"
         / "runner_smoke.yaml"
     )
-    outcome = RoleRunner(load_blueprint(blueprint_path), tmp_path / "build").run()
+    outcome = RoleRunner(load_blueprint(blueprint_path), tmp_path / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
     assert outcome.ok, outcome.to_dict()
 
     engine_file = (

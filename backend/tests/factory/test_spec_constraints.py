@@ -360,7 +360,7 @@ def test_a_constrained_build_passes_its_own_route_test(tmp_path, stub_coder):
     is what keeps the constraint assertions meaningful in CI with no key.
     """
     out = tmp_path / "build"
-    outcome = RoleRunner(load_blueprint(FIELD_OPS), out).run()
+    outcome = RoleRunner(load_blueprint(FIELD_OPS), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run()
 
     assert outcome.ok, outcome.to_dict()
     models = (out / "app" / "models.py").read_text(encoding="utf-8")
@@ -384,7 +384,7 @@ def test_the_route_actually_rejects_a_value_outside_the_vocabulary(
     other test here -- the payload is valid, so nothing would notice.
     """
     out = tmp_path / "build"
-    assert RoleRunner(load_blueprint(FIELD_OPS), out).run().ok
+    assert RoleRunner(load_blueprint(FIELD_OPS), out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}').run().ok
 
     import subprocess
     import sys

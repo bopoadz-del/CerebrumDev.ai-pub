@@ -78,7 +78,7 @@ def test_a_writer_edited_lock_row_is_refused_by_the_real_build(tmp_path, stub_co
     roles[BuildRole.WRITER] = editing_writer
     runner = RoleRunner(
         load_blueprint(SMOKE), product, roles=roles, budget=BuildBudget(max_rework=1)
-    )
+    , brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert not outcome.ok
@@ -93,7 +93,7 @@ def test_a_writer_edited_lock_row_is_refused_by_the_real_build(tmp_path, stub_co
 @pytest.mark.parametrize("product_rel", ["volume/build", "volume-two/product-two"])
 def test_the_same_build_without_the_edit_passes_the_lock_gate(tmp_path, product_rel, stub_coder):
     product = tmp_path / product_rel
-    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert outcome.ok, outcome.to_dict()
@@ -125,7 +125,7 @@ def _runner_with_writer(product: Path, after_writer=None) -> RoleRunner:
 
     roles = dict(ROLE_IMPLEMENTATIONS)
     roles[BuildRole.WRITER] = writer
-    return RoleRunner(load_blueprint(SMOKE), product, roles=roles, budget=BuildBudget(max_rework=1))
+    return RoleRunner(load_blueprint(SMOKE), product, roles=roles, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
 
 def test_no_key_and_an_unrecorded_edit_is_refused_by_the_real_build(tmp_path, stub_coder, monkeypatch):
@@ -162,7 +162,7 @@ def test_the_placement_check_gets_the_agents_real_confinement_roots(tmp_path, pr
     from app.factory.build.coder_session import agent_rw_extras
 
     product = tmp_path / product_rel
-    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     roots = runner.agent_rw_roots()
     staging = runner._staging_for(BuildRole.WRITER)
     assert staging is not None and staging != runner.workspace
@@ -191,7 +191,7 @@ def test_a_proofs_dir_the_writer_may_write_is_refused_and_the_build_says_why(
     tmp_path, monkeypatch, under
 ):
     product = tmp_path / "volume" / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     staging = runner._staging_for(BuildRole.WRITER)
     target = staging if under == "staging" else staging / "deeper"
     monkeypatch.setenv(so.PROOFS_DIR_ENV, str(target))
@@ -212,19 +212,19 @@ def test_a_restarted_build_finds_its_record_or_refuses_with_a_plain_reason(
 
     monkeypatch.setattr(so, "_process_key", key)
     product = tmp_path / "volume" / "build"
-    first = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    first = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert first.run().ok
 
     # A restart is a new orchestrator over the same product: the record is
     # found under the same build id and the lock gate holds.
-    again = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    again = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert again.build_id == first.build_id
     assert again.exam_proofs().root == first.exam_proofs().root
     assert again._vendored_lock_gate() is None
 
     # The record gone: the resumed build is refused, and says why.
     shutil.rmtree(first.exam_proofs().root)
-    lost = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    lost = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     verdict = lost._vendored_lock_gate()
     assert verdict is not None and verdict.findings == [so.NO_RECORD]
 
@@ -232,7 +232,7 @@ def test_a_restarted_build_finds_its_record_or_refuses_with_a_plain_reason(
 @pytest.mark.parametrize("body", ["[]", '"a string"'])
 def test_a_lock_that_is_not_a_json_object_is_refused(tmp_path, body):
     product = tmp_path / "volume" / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     product.mkdir(parents=True, exist_ok=True)
     (product / "blocks.lock.json").write_text(body, encoding="utf-8")
     verdict = runner._vendored_lock_gate()
@@ -241,7 +241,7 @@ def test_a_lock_that_is_not_a_json_object_is_refused(tmp_path, body):
 
 @pytest.mark.parametrize("role", [BuildRole.CLONER, BuildRole.TESTER])
 def test_only_the_writer_is_staged(tmp_path, role):
-    runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "volume" / "build")
+    runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "volume" / "build", brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert runner._staging_for(role) is None
     assert runner._staging_for(BuildRole.WRITER) is not None
 
@@ -263,7 +263,7 @@ def test_an_unwritable_proofs_directory_ends_the_build_refused_not_crashed(
     blocker.write_text("not a directory\n", encoding="utf-8")
     monkeypatch.setenv(so.PROOFS_DIR_ENV, str(blocker / below_file if below_file else blocker))
     product = tmp_path / "volume" / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
     outcome = runner.run()
 
@@ -295,7 +295,7 @@ def test_a_proofs_directory_that_cannot_be_resolved_refuses_with_a_plain_reason(
 
     monkeypatch.setattr(so, "proofs_base", unresolvable)
     product = tmp_path / "volume" / "build"
-    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1))
+    runner = RoleRunner(load_blueprint(SMOKE), product, budget=BuildBudget(max_rework=1), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
 
     outcome = runner.run()
 

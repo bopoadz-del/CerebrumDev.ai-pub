@@ -922,8 +922,7 @@ def test_budget_inspect_does_not_success_thin_stubs_before_cli_when_deepseek_rea
     runner = RoleRunner(
         load_blueprint(root / "blueprints/examples/runner_smoke.yaml"),
         out,
-        ledger=ledger,
-    )
+        ledger=ledger, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock()
     runner.state["brief_dispatch"] = {"via": "skipped"}
     outcome = runner._finish(
@@ -1038,8 +1037,7 @@ def test_cli_exit_0_zero_harvest_does_not_finish_success_when_deepseek_ready(
     runner = RoleRunner(
         load_blueprint(root / "blueprints/examples/runner_smoke.yaml"),
         out,
-        ledger=ledger,
-    )
+        ledger=ledger, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock() - (STAGE_1_S + 30.0)
     runner.state["brief_dispatch"] = {
         "via": "cli",
@@ -1136,8 +1134,7 @@ def test_hung_killed_by_wall_is_not_unused_and_refuses_thin_success(
     runner = RoleRunner(
         load_blueprint(root / "blueprints/examples/runner_smoke.yaml"),
         out,
-        ledger=ledger,
-    )
+        ledger=ledger, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock()
     runner.state["brief_dispatch"] = {
         "via": "cli",
@@ -1236,8 +1233,7 @@ def test_partial_thin_authorship_refuses_success_when_cli_ready(tmp_path, monkey
     runner = RoleRunner(
         load_blueprint(root / "blueprints/lettings/residential_lettings.v1.yaml"),
         out,
-        ledger=ledger,
-    )
+        ledger=ledger, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._run_started = runner.clock()
     runner.state["brief_dispatch"] = {
         "via": "cli",

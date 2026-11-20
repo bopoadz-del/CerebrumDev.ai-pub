@@ -447,7 +447,7 @@ def test_start_runner_build_does_not_fresh_workspace_on_handoff(tmp_path, monkey
         "app.factory.build.coder_session.raise_if_cli_session_unready",
         lambda: None,
     )
-    result = start_runner_build(bp, out)
+    result = start_runner_build(bp, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     assert result.get("n3_ingest") is True
     assert result["output_dir"] == str(out)
     assert started == [str(out)]

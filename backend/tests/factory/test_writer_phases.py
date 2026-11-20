@@ -574,7 +574,7 @@ def test_runner_hydrates_landed_writer_phases(tmp_path):
             "inputs_hash": digest,
         },
     )
-    runner = RoleRunner(bp, out)
+    runner = RoleRunner(bp, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._restore_workspace_state()
     assert WRITER_PHASE_BACKEND in runner.state.get("landed_writer_phases", [])
     ctx = SimpleNamespace(state=runner.state)
@@ -598,7 +598,7 @@ def test_restore_workspace_state_rehydrates_vendored_blocks(tmp_path, dirs, expe
         (vendor / name).mkdir(parents=True)
         (vendor / name / "block.py").write_text("# block\n", encoding="utf-8")
     (vendor / "not_a_block").mkdir(parents=True)
-    runner = RoleRunner(bp, out)
+    runner = RoleRunner(bp, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._restore_workspace_state()
     assert runner.state.get("vendored_blocks") == expected
 
@@ -607,7 +607,7 @@ def test_restore_workspace_state_without_vendor_dir_sets_no_blocks(tmp_path):
     bp = load_blueprint(SMOKE)
     out = tmp_path / "build"
     out.mkdir()
-    runner = RoleRunner(bp, out)
+    runner = RoleRunner(bp, out, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     runner._restore_workspace_state()
     assert "vendored_blocks" not in runner.state
 
