@@ -3,7 +3,7 @@
 #407 aligned PHASE 2 DO/ACCEPTANCE with the checker. Tip ``9df9b15``
 Steward Continue ``sess_5782f226`` run6 still ``FAILED_ROLE_ERROR`` at
 ``writer_phase_frontend_rag``: C-BRIEF #2 ``work=6`` ``gaps_only`` completed
-via kimi CLI, ingest/query still unquoted in ``app/**/*.py``.
+via the coder CLI, ingest/query still unquoted in ``app/**/*.py``.
 
 Cause (not a brief typo): ``cbrief_work_ids`` is GENERATE gaps plus REUSE
 hole-fill capability ids. PHASE 2 ``phase_step0_line`` said ``Author only

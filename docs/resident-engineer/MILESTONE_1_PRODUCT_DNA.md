@@ -37,7 +37,7 @@ Plus `checksum_manifest.json` (`sha256`, `read_only: true`).
 |-----------|--------|
 | **M2** | Resident Mode core (L1 observe, L2 allowlisted heal, injection guard); feature-flag `RESIDENT_ENGINEER_ENABLED=false` |
 | **M3** | Signed change-request intake + dry-run queue |
-| **M4** | Build Mode workbench (sandboxed Kimi Code) |
+| **M4** | Build Mode workbench (sandboxed coder) |
 
 ## Tests
 

@@ -32,7 +32,7 @@ Not required for M2. When you want multi-worker session fan-out / queue later:
 ## What remains
 
 - **M3** Signed change-request intake + dry-run queue + advisory Store upgrade compare
-- **M4** Build Mode workbench (sandboxed Kimi Code)
+- **M4** Build Mode workbench (sandboxed coder)
 
 ## Tests
 

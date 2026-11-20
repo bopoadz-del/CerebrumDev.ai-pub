@@ -1,4 +1,4 @@
-"""Delivery-standard API — the canonical brief for the factory's coder (Kimi Code).
+"""Delivery-standard API — the canonical brief for the factory's coder.
 
 GET  /v1/factory/delivery-standard         → standard hash + required keys
 POST /v1/factory/delivery-standard/render  → assembled brief (fail-closed)

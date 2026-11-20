@@ -1,6 +1,6 @@
-# Kimi Code as Factory Engineer and Block Store Manager
+# The Factory coder as Factory Engineer and Block Store Manager
 
-Kimi Code is **not** merely a consumer of the Block Store. He is the authorised
+The Factory coder is **not** merely a consumer of the Block Store. It is the authorised
 engineering manager of the Cerebrum Block Store under CerebrumDev governance.
 
 ## Authority ops
@@ -26,6 +26,6 @@ python -m app.factory.cli store decide --op STORE_PUBLISH_PATCH \
 
 ## Final rule
 
-> Kimi Code does not simply pull from the Block Store.  
-> Kimi Code builds the products, learns from the products, manages the Block Store
+> The Factory coder does not simply pull from the Block Store.  
+> The Factory coder builds the products, learns from the products, manages the Block Store
 > and feeds every proven improvement back into the factory ecosystem.

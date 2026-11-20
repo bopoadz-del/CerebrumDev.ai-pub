@@ -4,7 +4,7 @@ Surviving slice of the retired ``coder_session`` module: the runner and
 the Floor monitor still stamp ``coder_control`` / ``coder_log`` /
 ``coder_receipt`` / ``coder_brief_present`` onto build-status, and the
 owner control endpoint still writes ``docs/coder_control.json``. The
-executor machinery that used to live here (FACTORY_CODE_CLI / kimi CLI /
+executor machinery that used to live here (FACTORY_CODE_CLI / the retired vendor's CLI /
 cursor BA) is retired; the CodeWhale worker path owns execution.
 """
 

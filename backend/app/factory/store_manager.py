@@ -1,6 +1,6 @@
-"""Block Store Manager authority — schemas for Kimi Code as Store Manager.
+"""Block Store Manager authority — schemas for the Factory coder as Store Manager.
 
-Kimi Code is not a mere consumer of the Block Store; it is the Store Manager
+The Factory coder is not a mere consumer of the Block Store; it is the Store Manager
 under CerebrumDev governance. Major publishes and deletes require user approval.
 """
 
@@ -30,7 +30,7 @@ class StoreOp(str, Enum):
     STORE_ROLLBACK = "STORE_ROLLBACK"
 
 
-# Ops Kimi Code may run autonomously after gates pass
+# Ops the Factory coder may run autonomously after gates pass
 AUTONOMOUS_OPS = frozenset(
     {
         StoreOp.STORE_READ,
@@ -179,7 +179,7 @@ def health_cycle_steps() -> List[str]:
 
 def store_manager_manifest() -> Dict[str, Any]:
     return {
-        "role": "Kimi Code — Factory Engineer + Block Store Manager",
+        "role": "Factory coder — Factory Engineer + Block Store Manager",
         "autonomous_ops": sorted(o.value for o in AUTONOMOUS_OPS),
         "user_approval_ops": sorted(o.value for o in USER_APPROVAL_OPS),
         "improvement_classes": [c.value for c in ImprovementClass],
@@ -187,7 +187,7 @@ def store_manager_manifest() -> Dict[str, Any]:
         "upgrade_checklist": list(STORE_UPGRADE_CHECKLIST),
         "health_cycle": health_cycle_steps(),
         "rule": (
-            "Kimi Code does not simply pull from the Block Store. "
+            "The Factory coder does not simply pull from the Block Store. "
             "He builds products, learns from products, manages the Block Store, "
             "and feeds every proven improvement back into the factory ecosystem."
         ),

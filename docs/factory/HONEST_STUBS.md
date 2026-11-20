@@ -45,5 +45,5 @@ Emitted by Factory generator into product repos (e.g. Steward):
 ## Role reminder
 
 - **Kimi API** — Product Architect (needs `KIMI_API_KEY` for Factory architect path)
-- **Kimi Code** — Factory Engineer + Block Store Manager
+- **The Factory coder** — Factory Engineer + Block Store Manager
 - **CerebrumDev.ai** — governance, dual registry, certify, regenerate
