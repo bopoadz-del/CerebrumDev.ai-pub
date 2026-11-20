@@ -694,6 +694,7 @@ _PENDING_1C2_CARRIERS: dict = {
     "docs/FREE_TRIAL_READINESS_REPORT.md": 5,
     "docs/GUARDRAILS.md": 3,
     "docs/LIVE_TEST_READY.md": 6,
+    "docs/PHASE2_SCOUT_LAW.md": 1,
     "docs/PRODUCT_DELIVERY_STANDARD.md": 2,
     "docs/PUBLIC_LAUNCH_READINESS.md": 2,
     "docs/UNIVERSAL_KERNEL.md": 1,
