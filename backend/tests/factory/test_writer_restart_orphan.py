@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from app.factory.blueprint import CapabilitySpec, ProductBlueprint
 from app.factory.build.authority import BuildRole
 from app.factory.build.ledger import BuildLedger, EventKind
@@ -25,6 +27,7 @@ from app.factory.build.orphan_recovery import (
     fail_orphaned_model_call,
     is_boot_resumable_orphan,
     is_orphaned_inflight_workspace,
+    load_brief_for_workspace,
     recover_orphaned_model_calls,
     session_id_from_output,
 )
@@ -545,3 +548,35 @@ def test_recover_resumes_at_most_one_recent_orphan(tmp_path, monkeypatch):
         )
     finally:
         held.set()
+
+
+# --- the resume carries the session's stored brief ---------------------------
+
+
+@pytest.mark.parametrize(
+    "brief",
+    [
+        '{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}',
+        '{"ask": "Upload the sheet.", "documents": {"file_types": ["xlsx"], "uploads": true}}',
+    ],
+)
+def test_load_brief_for_workspace_reads_the_sessions_brief(tmp_path, brief):
+    """The resume passes the brief the starting session stored -- never a
+    constant, never a re-invented one."""
+    sid = "sess_orphan_brief"
+    out = tmp_path / "sessions" / sid / "product"
+    out.mkdir(parents=True)
+    storage = tmp_path / "storage"
+    (storage / "sessions" / sid).mkdir(parents=True)
+    (storage / "sessions" / sid / "state.json").write_text(
+        json.dumps({"user_id": "u1", "product_design": {"brief": brief}}),
+        encoding="utf-8",
+    )
+    assert load_brief_for_workspace(out, storage_root=storage) == brief
+
+
+@pytest.mark.parametrize("rel", [Path("plain") / "build", Path("sessions2") / "x" / "y"])
+def test_load_brief_for_workspace_without_a_session_is_empty(tmp_path, rel):
+    """No sessions/ element in the path means no session id, and that is an
+    empty brief -- not a crash on a session id that was never there."""
+    assert load_brief_for_workspace(tmp_path / rel, storage_root=tmp_path / "storage") == ""

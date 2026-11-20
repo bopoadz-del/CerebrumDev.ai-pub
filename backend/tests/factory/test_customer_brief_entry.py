@@ -24,9 +24,12 @@ from app.factory.build.ledger import EventKind
 from app.factory.build.roles_handlers import (
     _compiled_writer_brief,
     quote_for_tester,
+    run_tester,
     smoke_header,
 )
+from app.factory.build.roles import RoleContext
 from app.factory.build.runner import Outcome, RoleRunner
+from app.factory.build.workspace import RoleWorkspace
 from app.factory.planner import ProductPlan
 from app.main import app
 from app.models.session import SessionState
@@ -159,6 +162,19 @@ def test_chat_and_api_briefs_pass_the_gate_and_reach_every_stage(
     else:
         monkeypatch.setattr(api, "generate_product", _forward)
         monkeypatch.setattr(api, "resolve_blocks_root", lambda: tmp_path)
+        # The generate endpoint plans the blueprint against the Store before
+        # it generates. This test is about the brief travelling, not about
+        # which Store blocks the drafted blueprint can build, so the plan is
+        # supplied directly -- the Store's capability check is not this test's.
+        monkeypatch.setattr(
+            api,
+            "plan_blueprint",
+            lambda bp, blocks_root=None: ProductPlan(
+                product_id=str(getattr(bp, "product_id", "sample") or "sample"),
+                capabilities=[],
+                fail_closed=True,
+            ),
+        )
         monkeypatch.setattr(
             chat,
             "_compile_and_lint_approved",
@@ -255,3 +271,56 @@ def test_a_run_with_a_brief_proceeds_and_one_without_starts_nothing(
     assert refused.outcome is Outcome.FAILED_GATE
     assert refused.detail == format_report(["missing brief"])
     assert [e.role for e in stopped.ledger.events() if e.kind is EventKind.PHASE_STARTED] == []
+
+
+# --- the tester quotes the brief too ----------------------------------------
+
+
+class _TesterCap:
+    def __init__(self, cid):
+        self.capability_id = cid
+        self.block_ids = ()
+
+
+class _TesterPlan:
+    def __init__(self, caps):
+        self.capabilities = caps
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [emit_brief(ASK_A, []), emit_brief(ASK_B, ["sheet.xlsx"])],
+)
+def test_the_tester_records_and_stamps_the_brief_verbatim(tmp_path, monkeypatch, raw):
+    """run_tester keeps the quote in state AND in the smoke suite it writes.
+
+    A dropped ``if quoted:`` block loses the state record; a lost
+    ``smoke_header`` loses the suite line. Both are the planted defects this
+    test exists to catch.
+    """
+    monkeypatch.setattr(
+        "app.factory.coder.propose_domain_test_cases",
+        lambda **kw: {"cases": [], "model": "stub-tester"},
+    )
+    ctx = RoleContext(
+        role=BuildRole.TESTER,
+        workspace=RoleWorkspace(BuildRole.TESTER, tmp_path / "build"),
+        blueprint=type("B", (), {"product_name": "Sample", "product_id": "sample", "vertical": "v"})(),
+        plan=_TesterPlan((_TesterCap("count_items"),)),
+        state={
+            "brief": raw,
+            "vendored_blocks": (),
+            "model_specs": {
+                "count_items": {
+                    "entity": "count_items",
+                    "fields": [{"name": "reference", "type": "str", "required": True}],
+                }
+            },
+        },
+    )
+    result = run_tester(ctx)
+    assert result.ok, result.detail
+    assert ctx.state["tester_prompt"] == raw
+    assert ctx.state["customer_brief_quote"] == raw
+    smoke = (tmp_path / "build" / "tests" / "test_smoke.py").read_text(encoding="utf-8")
+    assert "TESTER_PROMPT = " + json.dumps(raw) in smoke

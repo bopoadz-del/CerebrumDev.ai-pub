@@ -1007,3 +1007,18 @@ def test_runner_grader_is_none_when_the_switch_is_off(smoke_blueprint, tmp_path,
     runner = RoleRunner(smoke_blueprint, workspace, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     monkeypatch.setenv(grader.DISABLE_ENV, "0")
     assert runner._writer_grader() is None
+
+
+@pytest.mark.parametrize("raw", ["upload a pdf please", "{not a brief}"])
+def test_grade_ui_blocks_before_any_boot_when_the_brief_cannot_be_read(tmp_path, raw):
+    """An explicit brief that is not a customer brief stops the UI layer
+    BEFORE a boot or a toolchain probe -- nothing runs, and the reason is the
+    brief-unreadable block. A dropped rule would boot (or reach for the
+    toolchain) and report a boot failure instead, which is a planted defect."""
+    from app.factory.build.product_grader.ui_grader import BRIEF_UNREADABLE
+
+    ui, ran, note = grader._grade_ui({}, tmp_path, tmp_path / "grad", None, brief=raw)
+    assert ran is False
+    assert note == BRIEF_UNREADABLE
+    assert list(ui.errors) == [BRIEF_UNREADABLE]
+    assert not ui.ran

@@ -136,6 +136,29 @@ def test_md_title_names_the_product(pid):
     assert _md(product_id=pid).splitlines()[0] == f"# GRADE -- {pid}"
 
 
+@pytest.mark.parametrize(
+    "rows,names",
+    [
+        ([{"name": "attach:pdf", "kind": "attach_pdf", "target": "fixture.pdf"}], ["attach:pdf"]),
+        (
+            [
+                {"name": "attach:pdf", "kind": "attach_pdf", "target": "fixture.pdf"},
+                {"name": "attach:xlsx", "kind": "attach_xlsx", "target": "fixture.xlsx"},
+            ],
+            ["attach:pdf", "attach:xlsx"],
+        ),
+    ],
+)
+def test_render_md_lists_not_applicable_ui_steps(rows, names):
+    """GRADE.md names every step the brief did not select -- a dropped rule
+    erases them, and the human reading the record cannot tell a skipped
+    document step from one that never existed."""
+    ui = _ui()
+    ui["not_applicable"] = rows
+    md = gw.render_md(gw.build_record(product_id="p", functions=_fn(), ui=ui, layer2=_l2()))
+    assert "- UI steps not applicable: " + ", ".join(names) in md
+
+
 @pytest.mark.parametrize("kw,cert,l1", [
     ({}, "YES", "GREEN"),
     ({"functions": _fn(ok=False)}, "NO", "RED"),

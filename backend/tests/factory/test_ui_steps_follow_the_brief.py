@@ -222,3 +222,87 @@ def test_an_empty_or_absent_brief_starts_nothing(tmp_path, how):
     assert outcome.detail == "brief incomplete/unreadable: missing brief"
     started = [e.role for e in runner.ledger.events() if e.kind is EventKind.PHASE_STARTED]
     assert started == []
+
+
+# --- the mutants this suite must kill ----------------------------------------
+
+
+class _ModelLike:
+    """A pydantic-shaped object: its own dumper declares the mapping."""
+
+    def model_dump(self):
+        return {"capability_id": "qty_on_hand", "description": "Record it."}
+
+
+class _PlainObject:
+    def __init__(self):
+        self.capability_id = "reorder_point"
+
+
+class _BareObject:
+    pass
+
+
+@pytest.mark.parametrize(
+    "value,want",
+    [
+        ({"a": 1}, {"a": 1}),
+        (_ModelLike(), {"capability_id": "qty_on_hand", "description": "Record it."}),
+        (_PlainObject(), {"capability_id": "reorder_point"}),
+        (_BareObject(), {}),
+    ],
+)
+def test_as_mapping_keeps_every_shape(value, want):
+    """A mapping stays itself; a model is dumped by its own dumper; a plain
+    object's __dict__ is read; anything else is empty. A constant return or a
+    dropped mapping branch leaves a step with no target to grade."""
+    assert ug._as_mapping(value) == want
+
+
+@pytest.mark.parametrize(
+    "supplied,want",
+    [
+        (DOC, DOC),
+        (PLAIN, PLAIN),
+        ("upload a pdf please", None),
+        (None, None),
+    ],
+)
+def test_brief_for_steps_reads_only_a_complete_brief(supplied, want):
+    """The blueprint and the Factory contract are not a brief. Only a complete
+    customer brief selects steps; anything else is None (every step runs)."""
+    assert ug.brief_for_steps(BP, supplied=supplied) == want
+
+
+@pytest.mark.parametrize("raw", ["upload a pdf please", "{not json}"])
+def test_grade_ui_blocks_on_an_unreadable_brief(tmp_path, raw):
+    """The whole grade, not just the plan: an unreadable brief is the
+    brief-unreadable block, before any toolchain or base-URL decision."""
+    grade = ug.grade_ui(BP, tmp_path / "ui", base_url=None, brief=raw)
+    assert grade.errors == [ug.BRIEF_UNREADABLE]
+    assert not grade.ran
+    assert grade.brief_note == ug.BRIEF_UNREADABLE
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"name": "attach:pdf", "kind": "attach_pdf", "target": "fixture.pdf"}],
+        [
+            {"name": "attach:pdf", "kind": "attach_pdf", "target": "fixture.pdf"},
+            {"name": "attach:xlsx", "kind": "attach_xlsx", "target": "fixture.xlsx"},
+        ],
+    ],
+)
+def test_to_dict_keeps_not_applicable_rows(rows):
+    """The record a dropped rule would silently drop: steps the brief did not
+    select are named, never erased from the grade the gate reads."""
+    out = ug.UiGrade(not_applicable=rows).to_dict()
+    assert out["not_applicable"] == rows
+
+
+@pytest.mark.parametrize("note", [ug.BRIEF_UNREADABLE, "no documents in the brief"])
+def test_to_dict_keeps_a_brief_note_when_present(note):
+    out = ug.UiGrade(brief_note=note).to_dict()
+    assert out["brief_note"] == note
+    assert "not_applicable" not in out

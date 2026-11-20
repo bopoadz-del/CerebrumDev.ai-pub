@@ -208,8 +208,15 @@ def _ledger_events(root: Path) -> list:
     ]
 
 
+#: The customer_brief.v1 these builds run under. The brief gate stops any
+#: run without one, so a fan-out comparison build must carry the same brief
+#: both runs -- the brief is an input like the blueprint, not a variable.
+_BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}'
+
+
 def _build(blueprint, out: Path, monkeypatch, fanout: str, **kw):
     monkeypatch.setenv("FACTORY_CODER_FANOUT", fanout)
+    kw.setdefault("brief", _BRIEF)
     outcome = RoleRunner(blueprint, out, **kw).run()
     return outcome
 
