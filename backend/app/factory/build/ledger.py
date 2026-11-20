@@ -564,13 +564,17 @@ class BuildLedger:
 
         None is the honest answer for a killed run: absence of a verdict is
         not success, and callers must not infer one from "no failures seen".
-        A ``PILOT_OPENED`` -- or a REWORK carrying ``reopen`` -- after the
-        last terminal reopens the run.
+        A ``RUN_STARTED`` after the last terminal reopens the run: a resume
+        (Continue) appends one, and the status derivation must not keep
+        painting a live build as the finished failure it resumed from. A
+        ``PILOT_OPENED`` -- or a REWORK carrying ``reopen`` -- does the same.
         """
         last: Optional[BuildEvent] = None
         for event in self.events():
             if event.kind in (EventKind.RUN_SUCCEEDED, EventKind.RUN_FAILED):
                 last = event
+            elif event.kind is EventKind.RUN_STARTED:
+                last = None
             elif event.kind is EventKind.PILOT_OPENED:
                 last = None
             elif event.kind is EventKind.NOTE and (event.payload or {}).get(INPUTS_REBASED_KEY):
