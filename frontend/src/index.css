@@ -257,12 +257,35 @@ h3 { margin: 0 0 10px; }
 .rail-session-delete:focus-visible { opacity: 1; }
 .rail-session-delete:hover { background: var(--panel-2); color: #e5867a; }
 .rail-session-delete:focus-visible { outline: 2px solid var(--gold); }
+/* A row hidden behind its delete confirm is really hidden: the row's own
+   display rule would otherwise beat the hidden attribute. */
+.rail-session[hidden] { display: none; }
+/* Touch screens have no hover to reveal delete: show it, at 44px. */
+@media (hover: none) {
+  .rail-session-row .rail-session { padding-right: 52px; min-height: 44px; justify-content: center; }
+  .rail-session-delete { opacity: 1; width: 44px; height: 44px; right: 0; font-size: 20px; }
+}
+.rail-sessions-foot {
+  margin-top: 10px;
+  padding: 10px 12px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  min-width: 0;
+}
+.rail-sessions-foot .rail-foot-support { display: block; }
+.account-support .rail-foot-support { color: var(--text); text-decoration: underline; overflow-wrap: anywhere; }
 .rail-session-confirm {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   padding: 7px 12px; border-radius: 8px; background: var(--panel);
 }
 .rail-session-confirm-q { font-size: 12px; color: var(--text); flex: 1 1 100%; }
-.rail-session-yes, .rail-session-no { font-size: 12px; padding: 3px 10px; border-radius: 6px; }
+.rail-session-confirm-name {
+  flex: 1 1 100%; min-width: 0; font-size: 14px; font-weight: 600; color: var(--text);
+  overflow-wrap: anywhere;
+}
+.rail-session-yes, .rail-session-no {
+  font-size: 14px; min-height: 44px; min-width: 72px; padding: 0 14px; border-radius: 8px;
+}
 .rail-session-yes { background: #6e2a23; color: #fbe3df; }
 .rail-session-yes:disabled { opacity: 0.6; }
 .rail-session-no { background: var(--panel-2); color: var(--text); }
@@ -425,38 +448,63 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
    and its backdrop do not exist. */
 .rail-sessions-toggle { display: none; }
 .rail-sessions-backdrop { display: none; }
+.topbar-title, .topbar-new { display: none; }
 
-@media (max-width: 760px) {
+/* Phone (under 768px): a 48px top bar (Sessions, the session's name, New
+   session) and a 56px bottom tab bar with four equal tabs and whole labels.
+   The drawer and the page reserve space from these two variables, so an
+   offset never drifts from the bar it sits under. */
+@media (max-width: 767px) {
+  :root {
+    --topbar-h: 48px;
+    --tabbar-h: 56px;
+  }
   .shell { flex-direction: column; }
   .rail {
     width: 100%;
+    height: calc(env(safe-area-inset-top, 0px) + var(--topbar-h));
+    flex: 0 0 auto;
     flex-direction: row;
     align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
+    gap: 4px;
+    padding: env(safe-area-inset-top, 0px) 2px 0;
     border-right: none;
     border-bottom: 1px solid var(--line);
   }
-  .brand { margin-bottom: 0; flex-shrink: 0; }
-  .brand-text { display: none; }
-  /* The phone rail is a one-row tab bar; the list lives on wider screens. */
+  .brand { display: none; }
   /* The sessions list is a drawer on phones: hidden until the toggle opens it. */
   .rail-sessions { display: none; }
-  .rail-sessions-toggle {
+  .rail-sessions-toggle,
+  .topbar-new {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    flex: 0 0 auto;
-    padding: 6px 10px;
-    font-size: 12px;
-    font-weight: 500;
-    border: 1px solid var(--line);
+    justify-content: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+    border: none;
     border-radius: 8px;
-    background: var(--panel);
+    background: transparent;
     color: var(--text);
     cursor: pointer;
-    white-space: nowrap;
   }
+  .rail-sessions-toggle { order: 1; }
+  .topbar-title {
+    display: block;
+    order: 2;
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 16px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar-new { order: 3; font-size: 24px; }
+  .topbar-new:disabled { opacity: 0.5; }
   .rail-sessions-backdrop {
     display: block;
     position: fixed;
@@ -472,10 +520,10 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   .rail-sessions.rail-sessions--open {
     display: flex;
     position: fixed;
-    top: calc(env(safe-area-inset-top, 0px) + 56px);
+    top: calc(env(safe-area-inset-top, 0px) + var(--topbar-h));
     left: 0;
     right: 0;
-    max-height: 70vh;
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - var(--topbar-h) - var(--tabbar-h));
     overflow-y: auto;
     z-index: 50;
     margin: 0;
@@ -484,35 +532,48 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
     border-bottom: 1px solid var(--line);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
   }
+  /* Bottom tab bar: four equal tabs, each label shown whole. */
   .rail nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
     flex-direction: row;
-    flex: 1;
-    min-width: 0;
-    justify-content: space-between;
-    gap: 2px;
+    gap: 0;
+    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+    padding: 0 0 env(safe-area-inset-bottom, 0px);
+    background: var(--bg-2);
+    border-top: 1px solid var(--line);
   }
   .nav-btn {
-    flex: 1;
+    flex: 1 1 0;
     min-width: 0;
+    height: var(--tabbar-h);
     flex-direction: column;
     justify-content: center;
     gap: 2px;
-    padding: 6px 2px;
+    padding: 4px 2px;
+    border-radius: 0;
     text-align: center;
   }
-  .nav-icon { width: auto; font-size: 16px; }
+  /* A tab never keeps a hover box after a tap; the open tab is the gold one. */
+  .nav-btn:hover:not(:disabled) { background: transparent; color: var(--dim); }
+  .nav-btn.active,
+  .nav-btn.active:hover:not(:disabled) { background: transparent; color: var(--gold); }
+  .nav-icon { width: auto; font-size: 18px; }
   .nav-label-full { display: none; }
   .nav-label-short {
     display: block;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
   }
-  .rail-foot { margin-left: 4px; flex-shrink: 0; }
-  .rail-foot-text { display: none; }
+  .rail-foot { display: none; }
+  /* The tab bar is fixed over the bottom of the screen; the page ends above it. */
+  main { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px)); }
+  /* The Floor's title and New session live in the top bar on phones. */
+  .floor .page-head-row { display: none; }
   .bubble { max-width: 92%; }
   .page { padding: 18px 14px; }
   .floor { padding: 0; }
