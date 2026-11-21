@@ -643,16 +643,17 @@ def _collect_all_enabled() -> bool:
 class BuildBudget:
     """Bounds on a run. Exhausting a bound ends the build as a failure.
 
-    ``wall_clock_s`` is the whole build. Default is stage 1 (~30 min);
-    inspect-and-ramp may extend to 45 min. A leftover 2h wall is honoured
-    but is not the default. ``phase_wall_clock_s`` caps *each* role.
-    ``0`` disables that bound.
+    ``wall_clock_s`` is the whole build's first pass: one hour since the
+    2026-11-21 ruling (the strict grader needs room to be answered), plus
+    ``FIX_ALLOWANCE_S`` per granted rework round. ``phase_wall_clock_s``
+    caps *each* role; it must be at least the first pass, or the phase box
+    -- not the plan -- is what ends the pass. ``0`` disables that bound.
     """
 
     #: Per gate (owner rule): the same REWORK_BUDGET the rule enforces.
     max_rework: int = REWORK_BUDGET
-    wall_clock_s: float = 1800.0
-    phase_wall_clock_s: float = 1500.0
+    wall_clock_s: float = 3600.0
+    phase_wall_clock_s: float = 3600.0
     #: The wall may be RAMPED at an inspect, never past this. It is the same
     #: number ``budget_inspect.CEILING_S`` proposes up to; it lives here as
     #: well because ``_extend_wall`` is the only writer of the deadline and
@@ -2908,14 +2909,17 @@ class RoleRunner:
         new_wall = self.budget.capped(requested)
         plan_wall = float(getattr(self, "_plan_wall_s", 0.0) or 0.0)
         if plan_wall > 0:
-            # Per-pass plan budget (2026-11-11): the plan wall bounds ONE
-            # writer pass; each granted rework round re-arms it (one more
-            # pass). The phase budget and the hard ceiling still bound the
-            # total -- the ceiling via ``capped`` above and the phase budget
-            # via the caller's requested wall -- so no caller can grow the
-            # wall past ``plan_wall * passes``.
+            # First pass + fixes (owner ruling 2026-11-21): the plan wall is
+            # the writer's FIRST pass; each granted rework round adds one
+            # FIX_ALLOWANCE_S (30 min) on top, not another whole pass. The
+            # phase budget and the hard ceiling still bound the total -- the
+            # ceiling via ``capped`` above -- so no caller can grow the wall
+            # past ``writer_wall_bound(...)``, the same formula the inspector
+            # proposes with.
+            from app.factory.build.budget_inspect import writer_wall_bound
+
             passes = int(getattr(self, "_plan_wall_passes", 1) or 1)
-            bound = plan_wall * passes
+            bound = writer_wall_bound(plan_wall, passes)
             if progress_evidenced:
                 # Evidence beats plan: the phase budget bounds this grant
                 # (never below the plan bound); ``capped`` above already

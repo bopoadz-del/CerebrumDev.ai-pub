@@ -11,6 +11,7 @@ import {
   formatHeartbeat,
   formatPhaseCounts,
   formatPhaseHeadline,
+  graderChip,
   ACCEPTANCE_KK,
   ACCEPTANCE_REQUIRED,
   formatAcceptanceScore,
@@ -1242,5 +1243,73 @@ describe('build progress copy', () => {
         phases_total: 5,
       }),
     ).toBe('3/5')
+  })
+})
+
+describe('graderChip: the grader is a stage, and only its record is claimed', () => {
+  it('is absent when there is no build at all', () => {
+    expect(graderChip(null)).toBeNull()
+  })
+
+  it('reads not-reached before any gate has refused anything', () => {
+    const chip = graderChip({
+      state: 'building',
+      current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
+    })
+    expect(chip?.state).toBe('pending')
+    expect(chip?.detail).toBe('not reached')
+  })
+
+  it('never claims a pass it cannot prove', () => {
+    // A writer that finished its own gate without a grader verdict leaves
+    // no decision; the chip must stay neutral rather than paint green.
+    const chip = graderChip({
+      state: 'building',
+      completed: ['COLLECTOR', 'CLONER'],
+      current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
+      phase_trail: [],
+    })
+    expect(chip?.state).toBe('pending')
+  })
+
+  it('shows the fix round when the gate sent the work back', () => {
+    const chip = graderChip({
+      state: 'building',
+      decisions: [
+        {
+          class: 'REWORK',
+          gate: 'WRITER',
+          gate_name: 'writer_contract',
+          round_gate: 1,
+          gate_budget: 1,
+          round_build: 1,
+          build_ceiling: 6,
+          check: 'money_assumed_without_a_brief',
+          finding: 'the declared code AE is a literal',
+        },
+      ],
+    })
+    expect(chip?.state).toBe('rework')
+    expect(chip?.detail).toBe('sent it back \u2014 round 1/1')
+    expect(chip?.title).toContain('money_assumed_without_a_brief')
+  })
+
+  it('turns red only when the run actually stopped on a gate verdict', () => {
+    const decision = {
+      class: 'STOP',
+      gate: 'WRITER',
+      gate_name: 'writer_contract',
+      round_gate: 1,
+      gate_budget: 1,
+      round_build: 1,
+      build_ceiling: 6,
+      check: 'grader_not_certified',
+      finding: 'GRADER: NOT_CERTIFIED',
+    }
+    const live = graderChip({ state: 'building', decisions: [decision] })
+    expect(live?.state).toBe('pending')
+    const dead = graderChip({ state: 'failed', decisions: [decision] })
+    expect(dead?.state).toBe('failed')
+    expect(dead?.title).toContain('grader_not_certified')
   })
 })

@@ -119,6 +119,24 @@ TERMINAL_KINDS = frozenset(
     {EventKind.GATE_PASSED, EventKind.GATE_FAILED, EventKind.PHASE_ABORTED}
 )
 
+#: Kinds that mean the machine KEPT GOING after a run verdict. A verdict
+#: says where a run stopped; the moment a phase starts, a gate answers, a
+#: rework is granted or a block is cloned after it, the run is open again.
+#: This is the mechanism that keeps ``build_status`` from painting a live
+#: build as the failure it resumed from -- for the resume NOTE, the granted
+#: rework and any future door, without each writer having to remember a key.
+#: ``NOTE`` is deliberately absent: the "failure narrative" note follows
+#: ``RUN_FAILED`` and records the verdict it explains.
+_RUN_CONTINUED_KINDS = frozenset(
+    {
+        EventKind.PHASE_STARTED,
+        EventKind.GATE_PASSED,
+        EventKind.GATE_FAILED,
+        EventKind.REWORK,
+        EventKind.CLONE,
+    }
+)
+
 
 class LedgerError(RuntimeError):
     """The ledger on disk cannot be trusted for the run being attempted."""
@@ -564,10 +582,24 @@ class BuildLedger:
 
         None is the honest answer for a killed run: absence of a verdict is
         not success, and callers must not infer one from "no failures seen".
-        A ``RUN_STARTED`` after the last terminal reopens the run: a resume
-        (Continue) appends one, and the status derivation must not keep
-        painting a live build as the finished failure it resumed from. A
-        ``PILOT_OPENED`` -- or a REWORK carrying ``reopen`` -- does the same.
+
+        A verdict records where the run STOPPED, so it stops being the run's
+        state the moment the machine does anything after it. Three doors
+        reopen a finished run, and all three are covered here rather than in
+        each writer:
+
+        * ``RUN_STARTED`` -- a fresh run on the same workspace;
+        * ``PILOT_OPENED`` -- the Store-green cycle over a code-phase pass;
+        * ``NOTE`` carrying ``INPUTS_REBASED`` -- Continue with new answers.
+
+        Plus ``_RUN_CONTINUED_KINDS``: a phase, a gate, a rework or a clone
+        appended after the verdict. That is what a Continued or reworked run
+        looks like, and it is the case that used to lie -- live 21 Nov,
+        ``plt_61e1edbf10e249e4`` was writing its fifth fix round while the
+        Floor showed the WRITER timeout from fifty minutes earlier, because
+        the resume NOTE and the granted REWORK carried no key this reader
+        knew. A plain ``NOTE`` stays out: the "failure narrative" note is
+        appended right after ``RUN_FAILED`` and must not reopen the run.
         """
         last: Optional[BuildEvent] = None
         for event in self.events():
@@ -580,6 +612,8 @@ class BuildLedger:
             elif event.kind is EventKind.NOTE and (event.payload or {}).get(INPUTS_REBASED_KEY):
                 last = None
             elif event.kind is EventKind.REWORK and (event.payload or {}).get("reopen"):
+                last = None
+            elif event.kind in _RUN_CONTINUED_KINDS:
                 last = None
         return last
 

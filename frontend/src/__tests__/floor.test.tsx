@@ -1542,6 +1542,46 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByTestId('floor-failure-line')).not.toBeInTheDocument()
   })
 
+  it('shows the GRADER as its own stage: amber when it sent the work back', async () => {
+    // The grader is not one of BUILD_PHASES -- it runs inside the writer's
+    // gate -- so the five-chip strip had no place for it, and two grader
+    // rejections read as writer failures with no cause (live 21 Nov,
+    // plt_61e1edbf10e249e4). It belongs after WRITER, where it speaks.
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({
+        state: 'building',
+        current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
+        completed: ['COLLECTOR', 'CLONER'],
+        decisions: [
+          {
+            class: 'REWORK',
+            gate: 'WRITER',
+            gate_name: 'writer_contract',
+            round_gate: 1,
+            gate_budget: 1,
+            round_build: 1,
+            build_ceiling: 6,
+            check: 'money_assumed_without_a_brief',
+            finding: 'the declared code AE is a literal',
+          },
+        ],
+      })
+    })
+    getMock.mockResolvedValue({
+      blueprint: LLM_BLUEPRINT,
+      blueprint_approved: true,
+      generation: { engine: 'runner', product_id: 'construction', triggered_by: 'chat_llm' },
+    })
+    render(<Floor sessionId="sess_grader_chip" goPlatforms={() => {}} />)
+
+    const chip = await screen.findByTestId('floor-phase-grader-rework')
+    expect(chip.className).toContain('rework')
+    expect(chip).toHaveTextContent('GRADER')
+    expect(chip).toHaveTextContent('sent it back')
+    // The strip still reports five build phases: the grader is not a sixth.
+    expect(chip.className).not.toContain('done')
+  })
+
   it('shows a failure the run recovered from as history, not a red alert', async () => {
     // sess_617f60024df24a4e: a 13/13 build showed "TESTER failed -- KeyError"
     // in red for a KeyError the agent had already fixed in rework.

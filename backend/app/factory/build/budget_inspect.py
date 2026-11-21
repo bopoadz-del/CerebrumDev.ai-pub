@@ -59,6 +59,14 @@ NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD = 0.5
 #: enforcer cannot drift; ``test_budget_ceiling`` asserts they are equal.
 CEILING_S = 7200.0
 
+#: Owner ruling 2026-11-21: the writer's FIRST pass gets a full hour, and
+#: every granted rework round -- a WRITER-gate rejection or a TESTER
+#: rejection -- buys 30 more minutes on top of it. Written as
+#: ``first + fix x (passes - 1)`` rather than ``first x passes`` so a fix
+#: round is a fixed allowance, not a second full hour. For a 1800s plan the
+#: two forms agree, which is why the pilot cycle is unchanged by this.
+FIX_ALLOWANCE_S = 1800.0
+
 INSPECT_NOTE_KIND = "budget_inspect"
 
 #: No-progress (idle) wall. A coder leg that has produced NO visible work --
@@ -441,15 +449,33 @@ def coder_stall_reason(snapshot: Mapping[str, Any], stage: str) -> str:
     )
 
 
+def writer_wall_bound(first_wall_s: float, plan_wall_passes: int) -> float:
+    """The largest wall the open writer pass may hold.
+
+    The first pass's wall plus one ``FIX_ALLOWANCE_S`` per granted rework
+    round after it (owner ruling 2026-11-21). One formula for the proposer
+    (``phase_bounded_wall``) and the enforcer (``RoleRunner._extend_wall``),
+    so a granted fix can never be promised and then clamped away.
+
+    ``0.0`` when no first wall is set -- the caller then has no bound of its
+    own and the hard ceiling is the only limit.
+    """
+    first = float(first_wall_s or 0.0)
+    if first <= 0:
+        return 0.0
+    passes = max(1, int(plan_wall_passes or 1))
+    return first + FIX_ALLOWANCE_S * (passes - 1)
+
+
 def phase_bounded_wall(
     *, plan_wall_s: float, plan_wall_passes: int, phase_wall_s: float
 ) -> Optional[float]:
-    """The wall a producing CLI may hold: max(plan wall x passes, phase
-    budget), never above ``CEILING_S``. The same bound ``_extend_wall``
-    applies to a progress-evidenced grant, so proposer and enforcer agree.
-    None when the runner has no budget to bound it."""
+    """The wall a producing CLI may hold: max(writer bound, phase budget),
+    never above ``CEILING_S``. The same bound ``_extend_wall`` applies to a
+    progress-evidenced grant, so proposer and enforcer agree. None when the
+    runner has no budget to bound it."""
     try:
-        plan = float(plan_wall_s or 0.0) * max(1, int(plan_wall_passes or 1))
+        plan = writer_wall_bound(plan_wall_s, plan_wall_passes)
         phase = float(phase_wall_s or 0.0)
     except (TypeError, ValueError):
         return None
