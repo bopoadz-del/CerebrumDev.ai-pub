@@ -17,6 +17,8 @@ because the failure narrative is a NOTE appended right after ``RUN_FAILED``.
 
 from __future__ import annotations
 
+import pytest
+
 from app.factory.build.ledger import BuildLedger, BuildRole, EventKind
 from app.factory.build_jobs import build_status, is_build_complete
 
@@ -100,15 +102,16 @@ def test_a_gate_after_a_verdict_reopens_the_run(tmp_path):
     assert ledger.terminal_event() is None
 
 
-def test_the_next_verdict_closes_the_reopened_run(tmp_path):
+@pytest.mark.parametrize("ending", ["stopped by the owner", "WRITER failed again"])
+def test_the_next_verdict_closes_the_reopened_run(tmp_path, ending):
     """Reopening must not hide the real ending: the newest verdict wins."""
     ledger = _ledger(tmp_path)
     _failed_run(ledger)
     ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER, detail="WRITER")
-    ledger.append(EventKind.RUN_FAILED, role=BuildRole.WRITER, detail="stopped by the owner")
+    ledger.append(EventKind.RUN_FAILED, role=BuildRole.WRITER, detail=ending)
     terminal = ledger.terminal_event()
     assert terminal is not None
-    assert terminal.detail == "stopped by the owner"
+    assert terminal.detail == ending
 
 
 def test_a_successful_run_is_not_reopened_by_its_own_narrative(tmp_path):
@@ -122,7 +125,10 @@ def test_a_successful_run_is_not_reopened_by_its_own_narrative(tmp_path):
     assert ledger.succeeded()
 
 
-def test_the_floor_reads_a_resumed_rework_as_building(tmp_path):
+@pytest.mark.parametrize(
+    "refusal", ["money_assumed_without_a_brief", "a_route_without_a_test"]
+)
+def test_the_floor_reads_a_resumed_rework_as_building(tmp_path, refusal):
     """The whole live shape, through the function the Floor actually calls.
 
     plt_61e1edbf10e249e4, 21 Nov: WRITER timed out at 05:34, the owner pressed
@@ -162,7 +168,7 @@ def test_the_floor_reads_a_resumed_rework_as_building(tmp_path):
     ledger.append(
         EventKind.GATE_FAILED,
         role=BuildRole.WRITER,
-        detail="money_assumed_without_a_brief",
+        detail=refusal,
     )
     ledger.append(
         EventKind.REWORK,

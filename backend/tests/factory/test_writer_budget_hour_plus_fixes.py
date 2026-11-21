@@ -41,10 +41,12 @@ BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "up
 FIRST_PASS_S = 3600.0
 
 
-def test_a_fix_is_half_the_first_pass():
+@pytest.mark.parametrize("fixes, extra", [(1, 1800.0), (2, 3600.0)])
+def test_a_fix_is_half_the_first_pass(fixes, extra):
     """One fix must buy 30 min, not a second hour."""
-    assert FIX_ALLOWANCE_S == 1800.0
     assert FIX_ALLOWANCE_S == FIRST_PASS_S / 2
+    assert FIX_ALLOWANCE_S * fixes == extra
+    assert writer_wall_bound(FIRST_PASS_S, 1 + fixes) - FIRST_PASS_S == extra
 
 
 @pytest.mark.parametrize(
@@ -64,14 +66,16 @@ def test_the_writer_bound_is_the_first_pass_plus_one_allowance_per_fix(
     assert writer_wall_bound(FIRST_PASS_S, passes) == bound
 
 
-def test_no_first_wall_means_no_bound_of_its_own():
+@pytest.mark.parametrize("passes", [1, 3])
+def test_no_first_wall_means_no_bound_of_its_own(passes):
     """A runner with no wall set is bounded by the ceiling, not by zero."""
-    assert writer_wall_bound(0.0, 1) == 0.0
-    assert writer_wall_bound(0.0, 3) == 0.0
+    assert writer_wall_bound(0.0, passes) == 0.0
 
 
-def test_a_pass_count_of_zero_is_still_the_first_pass():
-    assert writer_wall_bound(FIRST_PASS_S, 0) == FIRST_PASS_S
+@pytest.mark.parametrize("first", [FIRST_PASS_S, 1800.0])
+def test_a_pass_count_of_zero_is_still_the_first_pass(first):
+    assert writer_wall_bound(first, 0) == first
+    assert writer_wall_bound(first, 0) == writer_wall_bound(first, 1)
 
 
 @pytest.mark.parametrize(
@@ -99,7 +103,8 @@ def test_the_inspector_proposes_the_same_bound_the_enforcer_applies(
     )
 
 
-def test_the_pilot_cycle_is_unchanged_by_the_ruling():
+@pytest.mark.parametrize("passes", [1, 3])
+def test_the_pilot_cycle_is_unchanged_by_the_ruling(passes):
     """Pilot is a 1800s plan with a 5400s phase: the phase, not the plan.
 
     ``first + fix x (passes - 1)`` equals ``first x passes`` when the first
@@ -110,19 +115,14 @@ def test_the_pilot_cycle_is_unchanged_by_the_ruling():
     pilot_phase = 5400.0
     assert (
         phase_bounded_wall(
-            plan_wall_s=pilot_plan, plan_wall_passes=1, phase_wall_s=pilot_phase
-        )
-        == pilot_phase
-    )
-    assert (
-        phase_bounded_wall(
-            plan_wall_s=pilot_plan, plan_wall_passes=3, phase_wall_s=pilot_phase
+            plan_wall_s=pilot_plan, plan_wall_passes=passes, phase_wall_s=pilot_phase
         )
         == pilot_phase
     )
 
 
-def test_the_code_cycle_defaults_are_an_hour_for_the_writer(monkeypatch):
+@pytest.mark.parametrize("reader", ["_wall_clock_s", "_phase_wall_clock_s"])
+def test_the_code_cycle_defaults_are_an_hour_for_the_writer(monkeypatch, reader):
     """The Floor's code build: a one-hour writer inside a one-hour phase box.
 
     If the phase box were smaller than the first pass (it was 1500s), the
@@ -130,8 +130,7 @@ def test_the_code_cycle_defaults_are_an_hour_for_the_writer(monkeypatch):
     """
     monkeypatch.delenv("FACTORY_BUILD_WALL_CLOCK_S", raising=False)
     monkeypatch.delenv("FACTORY_PHASE_WALL_CLOCK_S", raising=False)
-    assert build_jobs._wall_clock_s() == FIRST_PASS_S
-    assert build_jobs._phase_wall_clock_s() == FIRST_PASS_S
+    assert getattr(build_jobs, reader)() == FIRST_PASS_S
 
 
 def _runner(tmp_path, *, passes: int) -> RoleRunner:
@@ -156,23 +155,28 @@ def _runner(tmp_path, *, passes: int) -> RoleRunner:
     return runner
 
 
-def test_the_enforcer_grants_the_fix_allowance_after_a_rework(tmp_path):
+@pytest.mark.parametrize("passes, granted", [(2, 5400.0), (3, 7200.0)])
+def test_the_enforcer_grants_the_fix_allowance_after_a_rework(
+    tmp_path, passes, granted
+):
     """The live defect: a granted fix must actually move the deadline."""
-    runner = _runner(tmp_path, passes=2)
-    assert runner._extend_wall(5400.0) == 5400.0
-    assert runner._deadline == 5400.0
-    assert runner.budget.wall_clock_s == 5400.0
+    runner = _runner(tmp_path, passes=passes)
+    assert runner._extend_wall(granted) == granted
+    assert runner._deadline == granted
+    assert runner.budget.wall_clock_s == granted
 
 
-def test_the_enforcer_stops_at_the_ceiling(tmp_path):
+@pytest.mark.parametrize("passes, asked", [(6, 12600.0), (9, 18000.0)])
+def test_the_enforcer_stops_at_the_ceiling(tmp_path, passes, asked):
     """Past the ceiling the wall stops, whatever the caller asks for."""
-    runner = _runner(tmp_path, passes=6)
-    assert runner._extend_wall(12600.0) == CEILING_S
+    runner = _runner(tmp_path, passes=passes)
+    assert runner._extend_wall(asked) == CEILING_S
 
 
-def test_the_first_pass_cannot_be_stretched_by_a_progress_grant(tmp_path):
+@pytest.mark.parametrize("asked", [2700.0, 5400.0])
+def test_the_first_pass_cannot_be_stretched_by_a_progress_grant(tmp_path, asked):
     """One hour is one hour: only a granted FIX adds time."""
     runner = _runner(tmp_path, passes=1)
     # The inspector's stage-1 proposal, backed by progress evidence.
-    assert runner._extend_wall(2700.0, progress_evidenced=True) == FIRST_PASS_S
+    assert runner._extend_wall(asked, progress_evidenced=True) == FIRST_PASS_S
     assert runner._deadline == FIRST_PASS_S
