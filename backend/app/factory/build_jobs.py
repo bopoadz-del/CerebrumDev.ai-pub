@@ -49,13 +49,18 @@ BUILD_WALL_CLOCK_ENV = "FACTORY_BUILD_WALL_CLOCK_S"
 BUILD_REWORK_ENV = "FACTORY_BUILD_MAX_REWORK"
 BUILD_PHASE_WALL_ENV = "FACTORY_PHASE_WALL_CLOCK_S"
 
-#: Code-only Floor run: one WRITER pass (~25 min phase cap) inside 30 min.
+#: Code-only Floor run: one WRITER pass gets a full HOUR (owner ruling
+#: 2026-11-21 -- 30 min was sized before the strict grader, and a producing
+#: writer was being cut off mid-pass), and every granted rework round --
+#: a WRITER-gate rejection or a TESTER rejection -- adds 30 min on top
+#: (``budget_inspect.FIX_ALLOWANCE_S``). The phase cap must be at least the
+#: first pass, or the phase box ends the pass before the plan does.
 #: Auto-pilot / explicit pilot: start 30 min, inspect, optional 45 min,
 #: 3 WRITER reworks. Phase cap stays 90 min so a leftover high wall is
 #: not clipped by the old 25 min abort.
-_DEFAULT_WALL_CLOCK_S = 1800.0
+_DEFAULT_WALL_CLOCK_S = 3600.0
 _DEFAULT_MAX_REWORK = 1
-_DEFAULT_PHASE_WALL_CLOCK_S = 1500.0
+_DEFAULT_PHASE_WALL_CLOCK_S = 3600.0
 _DEFAULT_PILOT_PHASE_WALL_CLOCK_S = 5400.0
 #: Leftover dashboard walls in this band cannot host a Claude→DeepSeek
 #: C-BRIEF session. sess_b9fbae7 died at ~47s FAILED_BUDGET_SPENT after
@@ -145,7 +150,11 @@ def _max_rework(cycle: str = "code", auto_pilot: bool = False) -> int:
 
 
 def _phase_wall_clock_s(cycle: str = "code", auto_pilot: bool = False) -> float:
-    """Per-role cap. Code-only stays 25 min; Store-green uses 90 min.
+    """Per-role cap. Code-only is 60 min; Store-green uses 90 min.
+
+    The code-only cap must be at least the writer's first pass (owner ruling
+    2026-11-21: one hour, then 30 min per granted fix), or the phase box --
+    not the plan wall -- is what ends the pass.
 
     A dashboard leftover of 1500s must not cap a keyed auto-pilot WRITER
     — that is how a 2-hour coding run died after the first handler wave.
@@ -1118,7 +1127,17 @@ def build_status(
 
     phases = [p.value for p in BUILD_PHASES]
     current_role = interrupted or resume
-    if terminal is None and _crash_marker_path(output_dir).is_file():
+    # A crash marker is a record of a DEAD run. A live runner thread for
+    # this workspace outranks it: a deploy writes the marker, the owner's
+    # Continue resumes the build, and the stale marker used to make
+    # build_status report "build thread crashed" for a writer that was
+    # writing (live 21 Nov: a resumed build ran through COLLECTOR/CLONER
+    # with nothing shown as running, while DELETE correctly refused it).
+    if (
+        terminal is None
+        and _crash_marker_path(output_dir).is_file()
+        and not _live_runner_thread(output_dir)
+    ):
         trail, failure = _phase_trail(events)
         failure = _floor_failure(failure or _crash_failure(trail))
         return _with_level_grade(

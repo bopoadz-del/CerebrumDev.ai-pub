@@ -173,8 +173,10 @@ def test_no_cli_in_flight_means_no_next_wall(tmp_path, files, steps):
     "plan, passes, phase, bound",
     [
         (1800.0, 1, 5400.0, 5400.0),
-        (1800.0, 4, 5400.0, 7200.0),  # plan x passes, then the ceiling
-        (2400.0, 2, 0.0, 4800.0),
+        (1800.0, 4, 5400.0, 7200.0),  # first pass + 3 fixes, then the ceiling
+        # A fix is a FLAT 30-min allowance (2026-11-21 ruling), not a second
+        # full plan: 2400 + 1800, not 2400 x 2.
+        (2400.0, 2, 0.0, 4200.0),
         (0.0, 1, 0.0, None),
         ("x", 1, 5400.0, None),
     ],

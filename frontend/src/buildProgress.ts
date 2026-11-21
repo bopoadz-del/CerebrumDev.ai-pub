@@ -231,6 +231,69 @@ export function kernelName(phase: string): string {
   return KERNEL_NAMES[phase] ?? phase
 }
 
+/**
+ * The brief's grader, as the strip can show it.
+ *
+ * The grader is NOT a build phase: it runs inside the writer's gate and its
+ * verdict arrives as a runner ``decision`` -- REWORK when it sends the work
+ * back, STOP when it ends the run. So the five-phase strip had no chip for
+ * it, and a build the grader sent back twice read as a writer that stopped
+ * for no reason (live 21 Nov: two WRITER failures, both grader verdicts,
+ * neither visible as a stage).
+ *
+ * Only what the ledger records is claimed. No decision means ``pending`` --
+ * never a green "passed" the record cannot prove.
+ */
+export type GraderChipState = 'pending' | 'rework' | 'failed'
+
+export interface GraderChip {
+  state: GraderChipState
+  /** What the chip says beside the stage name. */
+  detail: string
+  /** The tooltip: the gate that spoke and the finding it named. */
+  title: string
+}
+
+export function graderChip(build: BuildStatus | null | undefined): GraderChip | null {
+  if (!build) return null
+  const decisions = build.decisions ?? []
+  const last = decisions.length ? decisions[decisions.length - 1] : null
+  const stopped = build.state === 'failed' || build.state === 'stalled'
+  if (stopped && last) {
+    const gate = last.gate_name || last.gate || 'WRITER'
+    const why = last.check || last.finding || 'gate failed'
+    return {
+      state: 'failed',
+      detail: 'rejected',
+      title: `${gate} gate: ${why}`,
+    }
+  }
+  if (
+    last &&
+    (last.class === 'REWORK' ||
+      last.class === 'REGENERATE_TEST' ||
+      last.class === 'REPROMPT')
+  ) {
+    const gate = last.gate_name || last.gate || 'WRITER'
+    const round = last.round_gate
+      ? `round ${last.round_gate}/${last.gate_budget ?? 1}`
+      : 'fix round'
+    return {
+      state: 'rework',
+      detail: `sent it back \u2014 ${round}`,
+      title: `${gate} gate: ${last.check || last.finding || 'sent the work back'}`,
+    }
+  }
+  const verdict = build.failed?.check || build.failure?.code
+  return {
+    state: 'pending',
+    detail: verdict === 'grader_not_certified' ? 'not certified' : 'not reached',
+    title: verdict
+      ? `the graded gate named: ${verdict}`
+      : 'the grader has not refused anything on this pass yet',
+  }
+}
+
 /** Named current phase plus 1-based index: "WORKERS 3/5", not a bare "2/5". */
 export function formatPhaseHeadline(build: BuildStatus): string {
   const id = build.current_phase?.id

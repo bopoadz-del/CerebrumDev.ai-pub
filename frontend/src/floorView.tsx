@@ -36,6 +36,7 @@ import {
   withClientStall,
   withResolvedNRequired,
   kernelName,
+  graderChip,
 } from './buildProgress'
 import { LevelGradeStrip } from './levelGradeView'
 import { VerticalPicker } from './verticalPicker'
@@ -314,6 +315,16 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
     ? build.phases
     : ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER']
   const done = new Set(build?.completed ?? [])
+  // The grader is not one of BUILD_PHASES -- it runs inside the writer's
+  // gate -- so without a chip of its own a run the grader sent back twice
+  // reads as a writer that stopped for no reason. It sits after WRITER
+  // because that is where it speaks, and its state comes from the run's own
+  // decision record: no decision reads "not reached", never a green the
+  // ledger cannot prove.
+  const grader = graderChip(build)
+  const strip = phases.flatMap((p) =>
+    p === 'WRITER' && grader ? [p, 'GRADER'] : [p],
+  )
   const current = build?.current_phase?.id
   const failedAt = build?.failure?.location || build?.failure?.phase
   const failedReason = build?.failure?.reason || 'unknown'
@@ -326,7 +337,20 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
   const stopped = build?.state === 'failed' || build?.state === 'stalled'
   return (
     <ol className="kernel-strip">
-      {phases.map((phase) => {
+      {strip.map((phase) => {
+        if (phase === 'GRADER' && grader) {
+          return (
+            <li
+              key="GRADER"
+              className={grader.state === 'pending' ? undefined : grader.state}
+              title={grader.title}
+              data-testid={`floor-phase-grader-${grader.state}`}
+            >
+              <span className="kernel-id">GRADER</span>
+              <span className="kernel-title">{grader.detail}</span>
+            </li>
+          )
+        }
         const job = KERNEL_JOBS[phase]
         const cls = done.has(phase) ? 'done' : phase === current ? 'current' : undefined
         const failed = phase === failedAt && stopped
