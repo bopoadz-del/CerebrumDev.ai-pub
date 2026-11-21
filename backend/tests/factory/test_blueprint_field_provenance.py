@@ -9,8 +9,8 @@ that is not provably its own.
 Functions under test, by name:
 ``field_setters`` and ``customer_settable`` (app.factory.blueprint);
 ``canonical_copy_dir`` (app.factory.paths);
-``clone_canonical``, ``_canonical_owner``, ``_maybe_clone_canonical`` and
-``_run`` (app.factory.build_jobs);
+``clone_canonical``, ``_canonical_owner``, ``is_operator_run``,
+``_maybe_clone_canonical`` and ``_run`` (app.factory.build_jobs);
 ``generate_product`` (app.factory.product_architect);
 ``approve_blueprint``, ``accept_golden`` and ``draft_product``
 (app.routers.session_product).
@@ -446,18 +446,41 @@ def test_maybe_clone_canonical_is_silent_when_no_copy_is_asked_for(
 
 # --- the two build doors ------------------------------------------------------
 
+#: Where a build's workspace is: an operator's own directory, or a session's.
+OPERATOR_WORKSPACE = "out"
+SESSION_WORKSPACE = "sessions/sess_one/out"
 
-@pytest.mark.parametrize("tenant_bound", [False, True])
-def test_run_honours_the_canonical_copy_only_when_no_tenant_is_bound(
-    tenant_bound, outputs_root, tmp_path, monkeypatch
+
+@pytest.mark.parametrize(
+    "workspace, tenant_bound, expected",
+    [
+        (OPERATOR_WORKSPACE, False, True),
+        (OPERATOR_WORKSPACE, True, False),
+        (SESSION_WORKSPACE, False, False),
+        (SESSION_WORKSPACE, True, False),
+    ],
+)
+def test_is_operator_run_only_with_no_tenant_and_outside_any_session(
+    workspace, tenant_bound, expected, tmp_path
 ):
-    """``build_jobs._run``: a build bound to a tenant store is that tenant's
-    and never writes a canonical copy; an operator's own run still does."""
+    assert build_jobs.is_operator_run(tmp_path / workspace, tenant_bound=tenant_bound) is expected
+
+
+@pytest.mark.parametrize(
+    "workspace, tenant_bound",
+    [(OPERATOR_WORKSPACE, False), (OPERATOR_WORKSPACE, True), (SESSION_WORKSPACE, False)],
+)
+def test_run_honours_the_canonical_copy_only_on_an_operators_own_run(
+    workspace, tenant_bound, outputs_root, tmp_path, monkeypatch
+):
+    """``build_jobs._run``: a build bound to a tenant store, or built in a
+    session's workspace, never writes a canonical copy; an operator's own run
+    still does."""
     from app.factory.build.ledger import BuildLedger
     from app.factory.build.tenant_bind import TenantStoreBinding
 
     blueprint = load_blueprint(SMOKE).model_copy(update={"canonical_output": "SharedCopy"})
-    out = _tree(tmp_path / "out", "v1")
+    out = _tree(tmp_path / workspace, "v1")
     BuildLedger(build_jobs._ledger_path(out)).start_run(
         product_id=blueprint.product_id, inputs_hash="h"
     )
@@ -491,7 +514,8 @@ def test_run_honours_the_canonical_copy_only_when_no_tenant_is_bound(
 
     build_jobs._run(blueprint, out, store, "code", tenant_store)
 
-    assert (outputs_root / "SharedCopy" / "app" / "main.py").exists() is not tenant_bound
+    operator_run = workspace == OPERATOR_WORKSPACE and not tenant_bound
+    assert (outputs_root / "SharedCopy" / "app" / "main.py").exists() is operator_run
 
 
 def _template_engine(monkeypatch, seen: dict) -> None:
@@ -527,20 +551,29 @@ def _template_engine(monkeypatch, seen: dict) -> None:
 
 
 @pytest.mark.parametrize(
-    "tenant_identity, quota_account_id",
-    [(None, None), ("acct-1", None), (None, "acct-1"), ("acct-1", "acct-1")],
+    "workspace, tenant_identity, quota_account_id",
+    [
+        (OPERATOR_WORKSPACE, None, None),
+        (OPERATOR_WORKSPACE, "acct-1", None),
+        (OPERATOR_WORKSPACE, None, "acct-1"),
+        (OPERATOR_WORKSPACE, "acct-1", "acct-1"),
+        (SESSION_WORKSPACE, None, None),
+    ],
 )
-def test_generate_product_honours_the_canonical_copy_only_on_an_operator_run(
-    tenant_identity, quota_account_id, outputs_root, tmp_path, monkeypatch
+def test_generate_product_honours_the_canonical_copy_only_on_an_operators_own_run(
+    workspace, tenant_identity, quota_account_id, outputs_root, tmp_path, monkeypatch
 ):
-    """``product_architect.generate_product``: a run that carries a tenant is
-    a customer's; only a run that carries none is an operator's own."""
+    """``product_architect.generate_product``: a run that carries a tenant,
+    or builds in a session's workspace, is a customer's; only a run that is
+    neither is an operator's own."""
     _template_engine(monkeypatch, {})
-    operator_run = tenant_identity is None and quota_account_id is None
+    operator_run = (
+        workspace == OPERATOR_WORKSPACE and tenant_identity is None and quota_account_id is None
+    )
 
     result = product_architect.generate_product(
         _bp("field-desk", "SharedCopy"),
-        tmp_path / "build",
+        tmp_path / workspace,
         blocks_root=tmp_path,
         tenant_identity=tenant_identity,
         quota_account_id=quota_account_id,

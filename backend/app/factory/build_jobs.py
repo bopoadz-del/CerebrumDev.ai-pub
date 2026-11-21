@@ -1633,6 +1633,18 @@ def _canonical_owner(dest: Path) -> Optional[str]:
     return owner if isinstance(owner, str) and owner else None
 
 
+def is_operator_run(output_dir: Path | str, *, tenant_bound: bool) -> bool:
+    """Whether a build is an operator's own run and not a customer's.
+
+    A customer's build is bound to a tenant, or its workspace is a session's,
+    or both. Only a run that is neither may honour an operator-only blueprint
+    field (``clone_canonical``).
+    """
+    from app.factory.build.orphan_recovery import session_id_from_output
+
+    return not tenant_bound and session_id_from_output(output_dir) is None
+
+
 def clone_canonical(
     blueprint: Any, source_dir: Path | str, *, operator_run: bool
 ) -> Optional[Path]:
@@ -1647,8 +1659,9 @@ def clone_canonical(
     it. So it writes only what is provably its own, and refuses the rest with
     a typed reason (``CanonicalRefused``):
 
-    * a run that belongs to a customer (``operator_run`` is False) -- the
-      field is not theirs to set, whatever blueprint reached the build;
+    * a run that belongs to a customer (``operator_run`` is False, see
+      ``is_operator_run``) -- the field is not theirs to set, whatever
+      blueprint reached the build;
     * a name that is not one plain directory directly under the outputs root
       once resolved (``paths.canonical_copy_dir``);
     * a target that is, holds, or sits inside the tree being copied;
@@ -1898,10 +1911,14 @@ def _run(
     if failed:
         _refund_generation_quota(output_dir)
         return
-    # A build bound to a tenant store is that tenant's build. Only a run no
-    # tenant is bound to is an operator's own, and only that run may honour an
-    # operator-only blueprint field.
-    _maybe_clone_canonical(blueprint, output_dir, operator_run=tenant_store is None)
+    # A build bound to a tenant store, or built in a session's workspace, is
+    # a customer's. Only an operator's own run may honour an operator-only
+    # blueprint field.
+    _maybe_clone_canonical(
+        blueprint,
+        output_dir,
+        operator_run=is_operator_run(output_dir, tenant_bound=tenant_store is not None),
+    )
     _clear_quota_marker(output_dir)
 
 

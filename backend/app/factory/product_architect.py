@@ -894,15 +894,18 @@ def generate_product(
         blocks_commit=git_head(blocks) if blocks else "unknown",
     )
     result = gen.generate(output_dir)
-    from app.factory.build_jobs import clone_canonical
+    from app.factory.build_jobs import clone_canonical, is_operator_run
 
     try:
-        # A run that carries a tenant is that tenant's build; only a run with
-        # none is an operator's own and may honour an operator-only field.
+        # A run that carries a tenant, or builds in a session's workspace, is
+        # a customer's; only an operator's own run may honour an operator-only
+        # blueprint field.
         canonical = clone_canonical(
             blueprint,
             output_dir,
-            operator_run=not (tenant_identity or quota_account_id),
+            operator_run=is_operator_run(
+                output_dir, tenant_bound=bool(tenant_identity or quota_account_id)
+            ),
         )
         if canonical is not None:
             result["canonical_output"] = str(canonical)
