@@ -103,6 +103,68 @@ def test_a_changed_answer_rides_onto_the_proposal_and_confirm_stores_it(client, 
 
 
 @pytest.mark.parametrize(
+    "proposal, saved",
+    [
+        # The sheet's Save: all four answers and Confirm in one request.
+        ({"country": "ZQ", "currency": "ZQX", "build_level": "pilot"},
+         {"vertical": "kiln", "country": "zr", "currency": "zrx", "build_level": "light"}),
+        ({}, {"vertical": "", "country": "zq", "currency": "zqx", "build_level": "production "}),
+    ],
+)
+def test_one_save_with_all_four_answers_stores_all_four(client, proposal, saved):
+    sid = "sess_pr05_save_four_" + saved["country"]
+    _open_session(sid, proposal)
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/chat",
+        json={"message": "", "action": "confirm_intake", **saved},
+    )
+    assert resp.status_code == 200, resp.text
+
+    pd = get_session(sid).product_design
+    assert (pd.vertical, pd.country, pd.currency, pd.build_level) == (
+        saved["vertical"] or None,
+        saved["country"].upper(),
+        saved["currency"].upper(),
+        saved["build_level"].strip(),
+    )
+    assert pd.intake_proposal is None
+
+
+@pytest.mark.parametrize("level", ["zorblat", "fastest"])
+def test_an_unknown_build_level_field_is_refused_and_keeps_nothing(client, level):
+    sid = "sess_pr05_bad_level_" + level
+    _open_session(sid, {"build_level": "pilot"})
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/chat",
+        json={"message": "", "action": "confirm_intake", "country": "zr", "build_level": level},
+    )
+    infos = _infos(resp.text)
+    assert [i["ok"] for i in infos] == [False]
+    assert "nothing was changed" in infos[0]["summary"]
+    pd = get_session(sid).product_design
+    assert (pd.country, pd.build_level) == (None, None)
+    assert pd.intake_proposal == {"build_level": "pilot"}
+
+
+@pytest.mark.parametrize("level", ["light", "pilot"])
+def test_a_changed_build_level_field_on_an_approved_session_is_refused(tmp_path, client, level):
+    sid = "sess_pr05_frozen_level_" + level
+    _frozen_session(tmp_path, sid)
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/chat",
+        json={"message": "", "action": "take_copy", "build_level": level},
+    )
+    infos = _infos(resp.text)
+    assert [i.get("refused") for i in infos] == [platform_chat_flow.INTAKE_FROZEN]
+    pd = get_session(sid).product_design
+    assert pd.build_level == "production"
+    assert pd.intake_proposal is None
+
+
+@pytest.mark.parametrize(
     "typed",
     [
         {"action": "list_capabilities"},
@@ -259,6 +321,21 @@ def test_apply_intake_action_refuses_an_action_that_is_not_intake(monkeypatch, a
 )
 def test_shaped_intake_edit_keeps_what_fits(vertical, country, currency, edit):
     assert shaped_intake_edit(vertical, country, currency) == (edit, None)
+
+
+@pytest.mark.parametrize(
+    "level, edit",
+    [(None, {}), ("  ", {}), (" light", {"build_level": "light"}), ("pilot", {"build_level": "pilot"})],
+)
+def test_shaped_intake_edit_shapes_the_build_level(level, edit):
+    assert shaped_intake_edit(None, None, None, level) == (edit, None)
+
+
+@pytest.mark.parametrize("level", ["zorblat", "fast"])
+def test_shaped_intake_edit_refuses_an_unknown_build_level(level):
+    edit, error = shaped_intake_edit("kiln", "zr", "zrx", level)
+    assert edit == {}
+    assert error.endswith("nothing was changed.")
 
 
 @pytest.mark.parametrize(

@@ -97,13 +97,16 @@ _EDIT_SHAPES = (
 
 
 def shaped_intake_edit(
-    vertical: Optional[str], country: Optional[str], currency: Optional[str]
+    vertical: Optional[str],
+    country: Optional[str],
+    currency: Optional[str],
+    build_level: Optional[str] = None,
 ) -> Tuple[Dict[str, str], Optional[str]]:
     """The answers the user changed on the Floor, shaped, and the refusal for
     one that does not fit its field (then nothing is kept at all).
 
-    ``None`` or an empty country / currency is "not changed". An empty
-    vertical is the user's explicit "no industry" choice.
+    ``None`` or an empty country / currency / build level is "not changed".
+    An empty vertical is the user's explicit "no industry" choice.
     """
     edit: Dict[str, str] = {}
     if vertical is not None:
@@ -119,6 +122,12 @@ def shaped_intake_edit(
         if not value:
             return {}, f"{field} {text!r} is not {hint}; nothing was changed."
         edit[field] = value
+    level = str(build_level or "").strip()
+    if level:
+        try:
+            edit["build_level"] = parse_build_level(level).value
+        except BuildLevelError as exc:
+            return {}, f"{exc}; nothing was changed."
     return edit, None
 
 

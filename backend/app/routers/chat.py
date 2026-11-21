@@ -54,6 +54,10 @@ class ChatMessage(BaseModel):
     #: the Floor -- typed fields, persisted on the session like ``vertical``.
     country: Optional[str] = None
     currency: Optional[str] = None
+    #: The build level chosen in the Floor's edit sheet: a typed field beside
+    #: the three above, through the same one write path (the proposal; only
+    #: Confirm stores it). ``set_build_level`` remains the one-field action.
+    build_level: Optional[str] = None
     #: What a Floor control asked the Factory to DO (app.factory.floor_actions:
     #: approve, continue, run_pilot, draft, add/remove_capability, rename,
     #: set_vertical, set_build_level, confirm_intake, list_capabilities) and
@@ -626,14 +630,16 @@ async def chat(
     # SSE generator it could only surface as an event). Quotas exempt
     # subscribers; this binds every account.
     require_llm_rate(getattr(state, "user_id", None), "chat")
-    # The industry, country and currency the user changed ride beside the
+    # The industry, country, currency and build level the user changed ride beside the
     # action as typed fields. One write path: they change the pending
     # proposal, persisted before the stream reloads the session, and only
     # Confirm stores them. A changed answer on a frozen intake is refused,
     # and then the action does not run either.
     from ..factory.locale_choice import sync_blueprint_intake
 
-    edit = platform_chat_flow.edit_intake(state, body.vertical, body.country, body.currency)
+    edit = platform_chat_flow.edit_intake(
+        state, body.vertical, body.country, body.currency, body.build_level
+    )
     if edit is not None and not edit["ok"]:
         return StreamingResponse(_yield_platform_result(edit), media_type="text/event-stream")
     # The stored blueprint keeps carrying exactly the declared pair on EVERY

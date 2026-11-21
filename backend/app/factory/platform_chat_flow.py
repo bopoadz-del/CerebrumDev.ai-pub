@@ -193,9 +193,10 @@ def edit_intake(
     vertical: Optional[str] = None,
     country: Optional[str] = None,
     currency: Optional[str] = None,
+    build_level: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """The answers a chat request carries beside its action (industry,
-    country, currency), through the one write path: they change the pending
+    country, currency, build level), through the one write path: they change the pending
     proposal, and only Confirm stores them.
 
     None when the request changes nothing. Otherwise a result: ``ok`` True
@@ -205,7 +206,7 @@ def edit_intake(
     nothing, and the request's action does not run.
     """
     pd = state.product_design
-    edit, error = shaped_intake_edit(vertical, country, currency)
+    edit, error = shaped_intake_edit(vertical, country, currency, build_level)
     if error:
         return {"sse": "info", "ok": False, "summary": error, "intake": intake_state(pd)}
     if not edit_differs_from_declared(pd, edit):
