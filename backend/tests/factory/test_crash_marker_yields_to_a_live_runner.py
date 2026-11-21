@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from app.factory.build.ledger import BuildLedger, EventKind
+from app.factory.build.ledger import BuildLedger
 from app.factory.build_jobs import build_status, register_runner_thread
 
 
