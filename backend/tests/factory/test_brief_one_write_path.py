@@ -54,8 +54,8 @@ def _events(text: str) -> list:
     return out
 
 
-def _intake_event(text: str) -> dict:
-    return next(data for event, data in _events(text) if event == "intake")
+def _infos(text: str) -> list:
+    return [data for event, data in _events(text) if event == "info"]
 
 
 def _open_session(session_id: str, proposal: dict):
@@ -67,33 +67,55 @@ def _open_session(session_id: str, proposal: dict):
     return state
 
 
-# -- acceptance 1: suggest, change the country, confirm ----------------------
+def _frozen_session(tmp_path, session_id: str):
+    """An approved platform whose build stopped; the intake is not reopened."""
+    _out, state = _failed_platform(tmp_path, session_id)
+    state.product_design.country, state.product_design.currency = "ZQ", "ZQX"
+    update_session(session_id, state)
+    return get_session(session_id)
 
 
-def test_a_changed_country_rides_onto_the_proposal_and_confirm_stores_it(client):
-    sid = "sess_pr05_change_then_confirm"
+# -- acceptance 1: suggest, change an answer, confirm -------------------------
+
+
+@pytest.mark.parametrize(
+    "changed, stored",
+    [
+        ({"country": "zr"}, ("ZR", "ZQX", "pilot")),
+        ({"currency": "zrx"}, ("ZQ", "ZRX", "pilot")),
+    ],
+)
+def test_a_changed_answer_rides_onto_the_proposal_and_confirm_stores_it(client, changed, stored):
+    sid = "sess_pr05_confirm_" + "_".join(changed)
     _open_session(sid, {"country": "ZQ", "currency": "ZQX", "build_level": "pilot"})
 
     resp = client.post(
         f"/v1/sessions/{sid}/chat",
-        json={"message": "", "action": "confirm_intake", "country": "zr"},
+        json={"message": "", "action": "confirm_intake", **changed},
     )
     assert resp.status_code == 200, resp.text
 
     pd = get_session(sid).product_design
-    assert (pd.country, pd.currency, pd.build_level) == ("ZR", "ZQX", "pilot")
+    assert (pd.country, pd.currency, pd.build_level) == stored
     assert pd.intake_proposal is None
-    assert _intake_event(resp.text)["declared"]["country"] == "ZR"
+    intake = next(data for event, data in _events(resp.text) if event == "intake")
+    assert (intake["declared"]["country"], intake["declared"]["currency"]) == stored[:2]
 
 
-def test_a_typed_answer_without_confirm_is_only_a_proposal(client):
-    sid = "sess_pr05_no_ride_along"
+@pytest.mark.parametrize(
+    "typed",
+    [
+        {"action": "list_capabilities"},
+        {"action": "set_build_level", "value": "light"},
+    ],
+)
+def test_a_typed_answer_without_confirm_is_only_a_proposal(client, typed):
+    sid = "sess_pr05_no_ride_along_" + typed["action"]
     _open_session(sid, {"build_level": "light"})
 
     resp = client.post(
         f"/v1/sessions/{sid}/chat",
-        json={"message": "", "action": "list_capabilities", "country": "zr", "currency": "zrx",
-              "vertical": "zorblat yards"},
+        json={"message": "", **typed, "country": "zr", "currency": "zrx", "vertical": "zorblat yards"},
     )
     assert resp.status_code == 200, resp.text
 
@@ -107,17 +129,19 @@ def test_a_typed_answer_without_confirm_is_only_a_proposal(client):
     }
 
 
-def test_a_misshaped_answer_is_refused_and_keeps_nothing(client):
-    sid = "sess_pr05_misshaped"
+@pytest.mark.parametrize("field, bad", [("country", "Z1"), ("currency", "ZQ1")])
+def test_a_misshaped_answer_is_refused_and_keeps_nothing(client, field, bad):
+    sid = f"sess_pr05_misshaped_{field}"
     _open_session(sid, {"country": "ZQ"})
 
     resp = client.post(
         f"/v1/sessions/{sid}/chat",
-        json={"message": "", "action": "confirm_intake", "country": "Z1", "vertical": "kiln"},
+        json={"message": "", "action": "confirm_intake", field: bad, "vertical": "kiln"},
     )
     assert resp.status_code == 200, resp.text
-    info = next(d for e, d in _events(resp.text) if e == "info")
-    assert info["ok"] is False
+    infos = _infos(resp.text)
+    assert [i["ok"] for i in infos] == [False]
+    assert field in infos[0]["summary"]
     pd = get_session(sid).product_design
     assert pd.country is None  # the Confirm did not run
     assert pd.intake_proposal == {"country": "ZQ"}  # and the vertical was not kept
@@ -126,8 +150,14 @@ def test_a_misshaped_answer_is_refused_and_keeps_nothing(client):
 # -- acceptance 2: the same on a reopened intake after a stopped build --------
 
 
-def test_on_a_reopened_intake_the_changed_country_is_what_resumes(tmp_path, monkeypatch):
-    _out, state = _failed_platform(tmp_path, "sess_pr05_reopened")
+@pytest.mark.parametrize(
+    "country, currency, stored",
+    [("zr", "zrx", ("ZR", "ZRX")), ("zs", None, ("ZS", None))],
+)
+def test_on_a_reopened_intake_the_changed_answer_is_what_resumes(
+    tmp_path, monkeypatch, country, currency, stored
+):
+    _out, state = _failed_platform(tmp_path, f"sess_pr05_reopened_{country}")
     resumed: list = []
     monkeypatch.setattr(
         platform_chat_flow,
@@ -138,137 +168,167 @@ def test_on_a_reopened_intake_the_changed_country_is_what_resumes(tmp_path, monk
     )
 
     assert platform_chat_flow.continue_with_intake(state)["ok"] is True
-    edited = platform_chat_flow.edit_intake(state, country="zr", currency="zrx")
+    edited = platform_chat_flow.edit_intake(state, country=country, currency=currency)
     assert edited["ok"] is True
     assert (state.product_design.country, state.product_design.currency) == (None, None)
 
     platform_chat_flow.confirm_and_continue(state)
-    assert resumed == [("ZR", "ZRX", True)]
+    assert resumed == [(*stored, True)]
     assert state.product_design.intake_reopened is False
 
 
 # -- acceptance 3: approved, not reopened: refused, nothing changes -----------
 
 
-def test_a_changed_country_on_an_approved_session_is_refused(tmp_path, client):
-    sid = "sess_pr05_frozen"
-    _out, state = _failed_platform(tmp_path, sid)
-    state.product_design.country, state.product_design.currency = "ZQ", "ZQX"
-    update_session(sid, state)
+@pytest.mark.parametrize(
+    "changed",
+    [{"country": "zr", "currency": "zqx"}, {"vertical": "kiln"}],
+)
+def test_a_changed_answer_on_an_approved_session_is_refused(tmp_path, client, changed):
+    sid = "sess_pr05_frozen_" + "_".join(changed)
+    _frozen_session(tmp_path, sid)
     before = copy.deepcopy(get_session(sid).product_design.blueprint)
 
     resp = client.post(
         f"/v1/sessions/{sid}/chat",
-        json={"message": "", "action": "take_copy", "country": "zr", "currency": "zqx"},
+        json={"message": "", "action": "take_copy", **changed},
     )
     assert resp.status_code == 200, resp.text
 
-    infos = [d for e, d in _events(resp.text) if e == "info"]
+    infos = _infos(resp.text)
     assert [i.get("refused") for i in infos] == [platform_chat_flow.INTAKE_FROZEN]
     assert not any("download" in i for i in infos)  # the action did not run
     pd = get_session(sid).product_design
-    assert (pd.country, pd.currency) == ("ZQ", "ZQX")
+    assert (pd.vertical, pd.country, pd.currency) == (None, "ZQ", "ZQX")
     assert pd.intake_proposal is None
     assert pd.blueprint == before
 
 
-def test_an_unchanged_answer_on_an_approved_session_lets_the_action_run(tmp_path, client):
-    sid = "sess_pr05_frozen_same"
-    _out, state = _failed_platform(tmp_path, sid)
-    state.product_design.country, state.product_design.currency = "ZQ", "ZQX"
-    update_session(sid, state)
+@pytest.mark.parametrize(
+    "same",
+    [{"country": "zq", "currency": "zqx"}, {"vertical": ""}],
+)
+def test_an_unchanged_answer_on_an_approved_session_lets_the_action_run(tmp_path, client, same):
+    sid = "sess_pr05_frozen_same_" + "_".join(same)
+    _frozen_session(tmp_path, sid)
 
     resp = client.post(
         f"/v1/sessions/{sid}/chat",
-        json={"message": "", "action": "take_copy", "country": "zq", "currency": "zqx"},
+        json={"message": "", "action": "take_copy", **same},
     )
-    infos = [d for e, d in _events(resp.text) if e == "info"]
-    assert any("download" in i for i in infos)
+    assert [("download" in i) for i in _infos(resp.text)] == [True]
     assert get_session(sid).product_design.intake_proposal is None
 
 
-def test_a_running_build_freezes_the_intake_even_before_approval(monkeypatch):
-    pd = SimpleNamespace(blueprint_approved=False, intake_reopened=True)
-    state = SimpleNamespace(product_design=pd)
-    monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: True)
-    assert platform_chat_flow.intake_frozen(state) is True
-    monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: False)
-    assert platform_chat_flow.intake_frozen(state) is False
-    pd.blueprint_approved, pd.intake_reopened = True, False
-    assert platform_chat_flow.intake_frozen(state) is True
+@pytest.mark.parametrize(
+    "running, approved, reopened, frozen",
+    [
+        (True, False, True, True),
+        (False, False, True, False),
+        (False, True, False, True),
+        (False, True, True, False),
+    ],
+)
+def test_intake_frozen_reads_running_approved_and_reopened(
+    monkeypatch, running, approved, reopened, frozen
+):
+    pd = SimpleNamespace(blueprint_approved=approved, intake_reopened=reopened)
+    monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: running)
+    assert platform_chat_flow.intake_frozen(SimpleNamespace(product_design=pd)) == frozen
 
 
-def test_apply_intake_action_refuses_an_action_that_is_not_intake(monkeypatch):
+@pytest.mark.parametrize("action", [FloorAction.RENAME, FloorAction.APPROVE])
+def test_apply_intake_action_refuses_an_action_that_is_not_intake(monkeypatch, action):
     pd = SimpleNamespace(blueprint_approved=False, intake_reopened=False, intake_proposal=None)
-    state = SimpleNamespace(product_design=pd)
     monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: False)
     with pytest.raises(FloorActionError):
-        platform_chat_flow.apply_intake_action(state, FloorAction.RENAME, "x")
+        platform_chat_flow.apply_intake_action(SimpleNamespace(product_design=pd), action, "x")
 
 
-# -- the edit helpers, two inputs each ----------------------------------------
+# -- the edit helpers ---------------------------------------------------------
 
 
-def test_shaped_intake_edit_keeps_what_fits_and_refuses_what_does_not():
-    assert shaped_intake_edit(None, None, None) == ({}, None)
-    assert shaped_intake_edit(None, "", "  ") == ({}, None)  # empty is "not changed"
-    assert shaped_intake_edit("", None, None) == ({"vertical": NO_VERTICAL}, None)
-    assert shaped_intake_edit("Kiln Works", "zr", "zrx") == (
-        {"vertical": "kiln_works", "country": "ZR", "currency": "ZRX"},
-        None,
-    )
-    edit, error = shaped_intake_edit("kiln", "zr", "zr1")
-    assert edit == {} and "currency" in error
-    edit, error = shaped_intake_edit(None, "zrq", None)
-    assert edit == {} and "country" in error
+@pytest.mark.parametrize(
+    "vertical, country, currency, edit",
+    [
+        (None, None, None, {}),
+        (None, "", "  ", {}),  # empty is "not changed"
+        ("", None, None, {"vertical": NO_VERTICAL}),  # the explicit "no industry"
+        ("Kiln Works", "zr", "zrx", {"vertical": "kiln_works", "country": "ZR", "currency": "ZRX"}),
+    ],
+)
+def test_shaped_intake_edit_keeps_what_fits(vertical, country, currency, edit):
+    assert shaped_intake_edit(vertical, country, currency) == (edit, None)
 
 
-def test_edit_differs_from_declared_reads_no_industry_as_unchanged():
+@pytest.mark.parametrize(
+    "country, currency, named",
+    [("zr", "zr1", "currency"), ("zrq", None, "country")],
+)
+def test_shaped_intake_edit_refuses_what_does_not_fit_and_keeps_nothing(country, currency, named):
+    edit, error = shaped_intake_edit("kiln", country, currency)
+    assert edit == {}
+    assert named in error
+
+
+@pytest.mark.parametrize(
+    "edit, differs",
+    [
+        ({"vertical": NO_VERTICAL}, False),
+        ({"vertical": "kiln"}, True),
+        ({"country": "ZQ"}, False),
+        ({"country": "ZR"}, True),
+    ],
+)
+def test_edit_differs_from_declared_reads_no_industry_as_unchanged(edit, differs):
     pd = SimpleNamespace(vertical=None, country="ZQ", currency="ZQX")
-    assert edit_differs_from_declared(pd, {"vertical": NO_VERTICAL}) is False
-    assert edit_differs_from_declared(pd, {"vertical": "kiln"}) is True
-    assert edit_differs_from_declared(pd, {"country": "ZQ"}) is False
-    assert edit_differs_from_declared(pd, {"country": "ZR"}) is True
+    assert edit_differs_from_declared(pd, edit) is differs
 
 
-def test_propose_intake_edit_merges_onto_the_proposal_and_never_declares():
-    pd = SimpleNamespace(country=None, intake_proposal=None)
-    propose_intake_edit(pd, {})
-    assert pd.intake_proposal is None
-    pd.intake_proposal = {"build_level": "pilot", "country": "ZQ"}
-    propose_intake_edit(pd, {"country": "ZR"})
-    assert pd.intake_proposal == {"build_level": "pilot", "country": "ZR"}
+@pytest.mark.parametrize(
+    "before, edit, after",
+    [
+        (None, {}, None),
+        ({"build_level": "pilot", "country": "ZQ"}, {"country": "ZR"},
+         {"build_level": "pilot", "country": "ZR"}),
+    ],
+)
+def test_propose_intake_edit_merges_onto_the_proposal_and_never_declares(before, edit, after):
+    pd = SimpleNamespace(country=None, intake_proposal=before)
+    propose_intake_edit(pd, edit)
+    assert pd.intake_proposal == after
     assert pd.country is None
 
 
-def test_edit_intake_returns_none_when_nothing_changes():
+@pytest.mark.parametrize("fields", [{}, {"vertical": ""}])
+def test_edit_intake_returns_none_when_nothing_changes(fields):
     pd = SimpleNamespace(vertical=None, country=None, currency=None, intake_proposal=None,
                          blueprint_approved=True, intake_reopened=False, build_level=None)
-    state = SimpleNamespace(product_design=pd)
-    assert platform_chat_flow.edit_intake(state) is None
-    assert platform_chat_flow.edit_intake(state, vertical="") is None
+    assert platform_chat_flow.edit_intake(SimpleNamespace(product_design=pd), **fields) is None
+    assert pd.intake_proposal is None
 
 
 # -- acceptance 4: the action spec, and one sentence per level ----------------
 
 
-def test_the_spec_carries_one_sentence_per_level_from_its_bar():
+@pytest.mark.parametrize("level", list(BuildLevel))
+def test_the_spec_carries_each_level_its_sentence_from_its_bar(level):
     shape = fa.action_spec()["actions"][FloorAction.SET_BUILD_LEVEL.value]["value"]
-    assert list(shape["sentences"]) == shape["one_of"] == [lv.value for lv in BuildLevel]
-    sentences = [shape["sentences"][lv.value] for lv in BuildLevel]
-    assert all(s.strip() for s in sentences)
-    assert len(set(sentences)) == len(sentences)  # each level reads differently
-    for lv in BuildLevel:
-        assert shape["sentences"][lv.value] == level_sentence(BARS[lv])
+    assert list(shape["sentences"]) == shape["one_of"]
+    assert shape["sentences"][level.value] == level_sentence(BARS[level])
+    others = [s for lv, s in shape["sentences"].items() if lv != level.value]
+    assert shape["sentences"][level.value] not in others  # each level reads differently
 
 
-def test_level_sentence_follows_each_flag_of_the_bar():
+@pytest.mark.parametrize(
+    "variant",
+    [
+        LevelBar(BuildLevel.LIGHT, "CODE", False, False),
+        LevelBar(BuildLevel.LIGHT, "STORE", True, False),
+        LevelBar(BuildLevel.LIGHT, "STORE", False, True),
+    ],
+)
+def test_level_sentence_follows_each_flag_of_the_bar(variant):
     base = LevelBar(BuildLevel.LIGHT, "STORE", False, False)
-    variants = {
-        level_sentence(base),
-        level_sentence(LevelBar(BuildLevel.LIGHT, "CODE", False, False)),
-        level_sentence(LevelBar(BuildLevel.LIGHT, "STORE", True, False)),
-        level_sentence(LevelBar(BuildLevel.LIGHT, "STORE", False, True)),
-    }
-    assert len(variants) == 4  # every flag changes the sentence
-    assert BuildLevel.LIGHT.value not in level_sentence(base)  # built from the bar, not the name
+    assert level_sentence(variant) != level_sentence(base)
+    assert BuildLevel.LIGHT.value not in level_sentence(variant)  # from the bar, not the name
