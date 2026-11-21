@@ -434,17 +434,15 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
     border-bottom: 1px solid var(--line);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
   }
-  /* Navigation labels do not truncate: the nav keeps its content width and
-     the support address (.rail-foot) is what shrinks to an ellipsis. */
   .rail nav {
     flex-direction: row;
-    flex: 1 0 auto;
+    flex: 1;
     min-width: 0;
     justify-content: space-between;
     gap: 2px;
   }
   .nav-btn {
-    flex: 1 0 auto;
+    flex: 1;
     min-width: 0;
     flex-direction: column;
     justify-content: center;
@@ -459,8 +457,13 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
     font-size: 10px;
     font-weight: 500;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
-  .rail-foot { margin-left: 4px; flex: 0 1 auto; min-width: 0; }
+  /* The support address shrinks to an ellipsis before the navigation
+     labels do; the header never grows wider than the screen. */
+  .rail-foot { margin-left: 4px; flex: 0 1 auto; min-width: 0; max-width: 24vw; }
   .rail-foot-text { display: none; }
   .bubble { max-width: 92%; }
   .page { padding: 18px 14px; }
