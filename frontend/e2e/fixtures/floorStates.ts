@@ -325,6 +325,9 @@ function makeSessions(): Record<string, SessionWorld> {
   }
   draft.history = DRAFTED
   draft.intake = { declared: { ...DECLARED }, proposal: null }
+  // The pilot build was asked for at the pilot level.
+  const pilot = builtSession(SID['finished-pilot'], BUILD_OK_PILOT)
+  pilot.intake = { declared: { ...DECLARED, build_level: 'pilot' }, proposal: null }
   return {
     [SID['new-session']]: emptySession(SID['new-session']),
     [SID['suggestion-pending']]: suggest,
@@ -334,7 +337,20 @@ function makeSessions(): Record<string, SessionWorld> {
     [SID.stopped]: builtSession(SID.stopped, BUILD_STOPPED),
     [SID.stalled]: builtSession(SID.stalled, BUILD_STALLED),
     [SID['finished-prototype']]: builtSession(SID['finished-prototype'], BUILD_OK_PROTO),
-    [SID['finished-pilot']]: builtSession(SID['finished-pilot'], BUILD_OK_PILOT),
+    [SID['finished-pilot']]: pilot,
+  }
+}
+
+/** What the brief card should show for a state: the intake the server holds
+ *  (declared, or a pending suggestion) and the length of the feature list. */
+export function briefFixture(state: FloorState): { fields: IntakeFields; suggested: boolean; features: number | null } {
+  const w = makeSessions()[SID[state]]
+  const suggested = !w.intake.declared.country && Boolean(w.intake.proposal)
+  const caps = (w.design.blueprint as { capabilities?: unknown[] } | undefined)?.capabilities
+  return {
+    fields: suggested ? (w.intake.proposal as IntakeFields) : w.intake.declared,
+    suggested,
+    features: caps ? caps.length : null,
   }
 }
 
