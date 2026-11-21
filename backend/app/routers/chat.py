@@ -626,23 +626,19 @@ async def chat(
     # SSE generator it could only surface as an event). Quotas exempt
     # subscribers; this binds every account.
     require_llm_rate(getattr(state, "user_id", None), "chat")
-    if body.vertical is not None:
-        # The user's own choice, persisted before the stream reloads the
-        # session. An empty value clears it back to "no vertical".
-        from ..factory.store_kits import NO_VERTICAL, chosen_vertical
+    # The industry, country and currency the user changed ride beside the
+    # action as typed fields. One write path: they change the pending
+    # proposal, persisted before the stream reloads the session, and only
+    # Confirm stores them. A changed answer on a frozen intake is refused,
+    # and then the action does not run either.
+    from ..factory.locale_choice import sync_blueprint_intake
 
-        choice = chosen_vertical(body.vertical)
-        state.product_design.vertical = None if choice == NO_VERTICAL else choice
-        update_session(state.session_id, state)
-    # The declared country/currency, and the stored blueprint kept carrying
-    # exactly that pair on EVERY request -- a blueprint drafted mid-chat
-    # picks it up before an approve starts the build.
-    from ..factory.locale_choice import apply_locale_choice, sync_blueprint_intake
-
-    if body.country is not None or body.currency is not None:
-        apply_locale_choice(state.product_design, body.country, body.currency)
-        update_session(state.session_id, state)
-    elif sync_blueprint_intake(state.product_design):
+    edit = platform_chat_flow.edit_intake(state, body.vertical, body.country, body.currency)
+    if edit is not None and not edit["ok"]:
+        return StreamingResponse(_yield_platform_result(edit), media_type="text/event-stream")
+    # The stored blueprint keeps carrying exactly the declared pair on EVERY
+    # request -- a blueprint drafted mid-chat picks it up before an approve.
+    if sync_blueprint_intake(state.product_design) or edit is not None:
         update_session(state.session_id, state)
     try:
         action = parse_action(body.action)

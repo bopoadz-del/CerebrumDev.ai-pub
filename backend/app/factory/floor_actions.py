@@ -16,7 +16,13 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from app.factory.build.build_level import BuildLevel, BuildLevelError, parse_build_level
+from app.factory.build.build_level import (
+    BARS,
+    BuildLevel,
+    BuildLevelError,
+    LevelBar,
+    parse_build_level,
+)
 
 
 class FloorAction(str, Enum):
@@ -94,14 +100,42 @@ ACTION_SPEC_PATH = "frontend/src/api/floor_actions.json"
 ACTION_SPEC_SCHEMA = "floor_actions.v1"
 
 
+def level_sentence(bar: LevelBar) -> str:
+    """One plain sentence on what a build level asks of the build, put
+    together from the level's own bar (how far it runs, whether template
+    code fails it, whether every check is enforced) -- never typed per level.
+    """
+    if not bar.reaches_pilot:
+        return (
+            "Done when the code passes its own tests; the product is not "
+            "started or checked against your acceptance tests."
+        )
+    parts = ["The finished product is started and checked against your acceptance tests"]
+    parts.append(
+        "code that is mostly Factory templates fails it"
+        if bar.thin_success_is_failure
+        else "code that is mostly Factory templates still passes"
+    )
+    parts.append(
+        "every check must pass, the security scan included."
+        if bar.full_floor
+        else "the security scan is advice only."
+    )
+    return "; ".join(parts)
+
+
 def action_spec() -> dict:
     """Every action this module accepts, with the shape of its ``value``:
     ``null`` (no value), ``"string"`` (free text: an id, a name, a vertical),
-    or ``{"one_of": [...]}`` (a closed set)."""
+    or ``{"one_of": [...]}`` (a closed set). The build level's set also
+    carries one plain sentence per level, for the Floor to show beside it."""
 
     def value_shape(action: "FloorAction"):
         if action is FloorAction.SET_BUILD_LEVEL:
-            return {"one_of": [level.value for level in BuildLevel]}
+            return {
+                "one_of": [level.value for level in BuildLevel],
+                "sentences": {level.value: level_sentence(BARS[level]) for level in BuildLevel},
+            }
         if action in VALUE_REQUIRED:
             return "string"
         return None

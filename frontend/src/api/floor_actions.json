@@ -33,7 +33,13 @@
           "light",
           "pilot",
           "production"
-        ]
+        ],
+        "sentences": {
+          "prototype": "Done when the code passes its own tests; the product is not started or checked against your acceptance tests.",
+          "light": "The finished product is started and checked against your acceptance tests; code that is mostly Factory templates still passes; the security scan is advice only.",
+          "pilot": "The finished product is started and checked against your acceptance tests; code that is mostly Factory templates fails it; the security scan is advice only.",
+          "production": "The finished product is started and checked against your acceptance tests; code that is mostly Factory templates fails it; every check must pass, the security scan included."
+        }
       }
     },
     "confirm_intake": {

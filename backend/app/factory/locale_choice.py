@@ -9,14 +9,15 @@ reads, so the money contract and the build's bar judge the build against what
 the user said and nothing else. Never inferred from the brief's prose.
 
 The Floor chat ASKS for them and may PROPOSE values from the user's answer
-(``intake_proposal``). A proposal stores nothing: only the typed
-``confirm_intake`` action -- the user pressing Confirm -- turns it into the
-typed fields, exactly as if the user had typed each one.
+(``intake_proposal``). An answer the user changes on the Floor goes onto the
+same proposal (``propose_intake_edit``). A proposal stores nothing: only the
+typed ``confirm_intake`` action -- the user pressing Confirm -- turns it into
+the typed fields. That is the one write path.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from app.factory.build.build_level import BuildLevelError, parse_build_level
 from app.factory.build.money_contract import declared_locale, shaped_country, shaped_currency
@@ -86,6 +87,60 @@ def shaped_proposal(raw: Any) -> Optional[Dict[str, str]]:
         except BuildLevelError:
             pass
     return shaped or None
+
+
+#: What a typed answer must look like, said back when one does not fit.
+_EDIT_SHAPES = (
+    ("country", shaped_country, "a two-letter country code"),
+    ("currency", shaped_currency, "a three-letter currency code"),
+)
+
+
+def shaped_intake_edit(
+    vertical: Optional[str], country: Optional[str], currency: Optional[str]
+) -> Tuple[Dict[str, str], Optional[str]]:
+    """The answers the user changed on the Floor, shaped, and the refusal for
+    one that does not fit its field (then nothing is kept at all).
+
+    ``None`` or an empty country / currency is "not changed". An empty
+    vertical is the user's explicit "no industry" choice.
+    """
+    edit: Dict[str, str] = {}
+    if vertical is not None:
+        from app.factory.store_kits import chosen_vertical
+
+        edit["vertical"] = chosen_vertical(vertical)
+    for field, shape, hint in _EDIT_SHAPES:
+        raw = {"country": country, "currency": currency}[field]
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        value = shape(text)
+        if not value:
+            return {}, f"{field} {text!r} is not {hint}; nothing was changed."
+        edit[field] = value
+    return edit, None
+
+
+def edit_differs_from_declared(pd: Any, edit: Mapping[str, str]) -> bool:
+    """True when the edit would change an answer the session already holds."""
+    from app.factory.store_kits import NO_VERTICAL
+
+    for field, value in edit.items():
+        held = getattr(pd, field, None)
+        if field == "vertical":
+            held = held or NO_VERTICAL
+        if held != value:
+            return True
+    return False
+
+
+def propose_intake_edit(pd: Any, edit: Mapping[str, str]) -> None:
+    """The one write path for a changed answer: it goes onto the pending
+    proposal, beside the declared fields, and only ``confirm_intake`` stores
+    it. A typed answer never lands on the declared fields by itself."""
+    if edit:
+        pd.intake_proposal = {**(getattr(pd, "intake_proposal", None) or {}), **edit}
 
 
 def confirm_intake(pd: Any) -> Optional[Dict[str, str]]:

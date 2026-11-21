@@ -52,7 +52,14 @@ from .floor_actions import (
     FloorActionError,
     parse_level,
 )
-from .locale_choice import confirm_intake, intake_state, sync_blueprint_intake
+from .locale_choice import (
+    confirm_intake,
+    edit_differs_from_declared,
+    intake_state,
+    propose_intake_edit,
+    shaped_intake_edit,
+    sync_blueprint_intake,
+)
 from .blocks_source import resolve_blocks_root
 from .paths import factory_outputs_root
 from .product_architect import (
@@ -167,6 +174,64 @@ def _level_bar_sentence(level: str) -> str:
     return f"{level} — {reach}{thin}{floor}"
 
 
+def intake_frozen(state: Any) -> bool:
+    """True while the answers cannot change: a build is running, or the
+    blueprint is approved and "Continue with new answers" has not reopened
+    the intake."""
+    if has_running_build(state):
+        return True
+    pd = state.product_design
+    return bool(pd.blueprint_approved) and not bool(getattr(pd, "intake_reopened", False))
+
+
+#: The typed reason a changed answer is refused on a frozen intake.
+INTAKE_FROZEN = "INTAKE_FROZEN"
+
+
+def edit_intake(
+    state: Any,
+    vertical: Optional[str] = None,
+    country: Optional[str] = None,
+    currency: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """The answers a chat request carries beside its action (industry,
+    country, currency), through the one write path: they change the pending
+    proposal, and only Confirm stores them.
+
+    None when the request changes nothing. Otherwise a result: ``ok`` True
+    when the proposal took the edit; ``ok`` False when it is refused -- an
+    answer that does not fit its field, or a changed answer while the intake
+    is frozen (approved and not reopened, or building). A refused edit keeps
+    nothing, and the request's action does not run.
+    """
+    pd = state.product_design
+    edit, error = shaped_intake_edit(vertical, country, currency)
+    if error:
+        return {"sse": "info", "ok": False, "summary": error, "intake": intake_state(pd)}
+    if not edit_differs_from_declared(pd, edit):
+        return None
+    if intake_frozen(state):
+        return {
+            "sse": "info",
+            "ok": False,
+            "refused": INTAKE_FROZEN,
+            "summary": (
+                "The blueprint is approved: its answers (industry, country, "
+                "currency and build level) are frozen with it, so nothing was "
+                "changed. After a stopped build, Continue with new answers "
+                "opens them again."
+            ),
+            "intake": intake_state(pd),
+        }
+    propose_intake_edit(pd, edit)
+    return {
+        "sse": "info",
+        "ok": True,
+        "summary": "Changed answers are waiting for your Confirm.",
+        "intake": intake_state(pd),
+    }
+
+
 def apply_intake_action(
     state: Any, action: FloorAction, value: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -176,8 +241,7 @@ def apply_intake_action(
     any blueprint exists. Refused once the blueprint is approved: the level is
     part of the frozen blueprint hashed at approval, never added afterwards."""
     pd = state.product_design
-    reopened = bool(getattr(pd, "intake_reopened", False)) and not has_running_build(state)
-    if (pd.blueprint_approved and not reopened) or has_running_build(state):
+    if intake_frozen(state):
         return {
             "sse": "info",
             "ok": False,
