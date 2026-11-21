@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -223,6 +224,96 @@ def rework_seed_paths(root: Path, sealed: Sequence[str] = SEALED_AFTER_CLONER) -
             continue
         out.append(posix)
     return sorted(out)
+
+
+def sealed_stock_paths(root: Path | str) -> List[str]:
+    """The CLONER stock a writer's checkout must physically carry.
+
+    The sealed lane (``vendor/**``), every path the build's lock says CLONER
+    vendored (block dirs, Store kits, the kernel runtime) and the lock
+    itself — expanded to FILES, symlinks skipped. The writer's staging tree
+    is created empty; without this stock the post-pass suite fails every
+    locked-block load and the grader fails every REUSE capability, whatever
+    the writer writes.
+    """
+    from app.factory.build.factory_receipt import _vendored_paths
+    from app.factory.build.image_sufficiency import LOCKFILE
+
+    base = Path(root)
+    files: List[Path] = []
+    lock = base / LOCKFILE
+    if lock.is_file():
+        files.append(lock)
+    candidates = [base / "vendor"]
+    candidates.extend(base / rel for rel in _vendored_paths(base))
+    for candidate in candidates:
+        if candidate.is_symlink():
+            continue
+        if candidate.is_file():
+            files.append(candidate)
+            continue
+        if candidate.is_dir():
+            files.extend(
+                p for p in sorted(candidate.rglob("*")) if p.is_file() and not p.is_symlink()
+            )
+    out: List[str] = []
+    for path in files:
+        try:
+            out.append(path.relative_to(base).as_posix())
+        except ValueError:
+            continue
+    return list(dict.fromkeys(out))
+
+
+def seed_sealed_stock(destination: Path | str, staging: Path | str) -> int:
+    """Copy the CLONER stock into a writer's staging tree, read-only.
+
+    The writer's checkout IS the staging tree, and the rework seed leaves the
+    sealed stock out on purpose (``vendor`` is sealed after CLONER). The
+    prompt names the locked blocks, but the post-pass suite runs *in this
+    tree*: without the stock, ``test_dispatch_runs_offline`` fails "locked
+    block X is absent from ...staging-writer/vendor/blocks/X/block.py" and
+    the grader fails every REUSE capability (live 20 Nov, fleet-ops build:
+    two writer passes and a rework spent on a tree that could never pass).
+    Files already in staging are never overwritten; each copy is read-only
+    for the pass. The sealed lane still refuses RoleWorkspace writes and the
+    vendored-lock gate still proves every hash.
+    """
+    dest, stage = Path(destination), Path(staging)
+    copied = 0
+    for rel in sealed_stock_paths(dest):
+        src = dest / rel
+        out = stage / rel
+        if out.exists():
+            continue
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(src.read_bytes())
+        try:
+            mode = stat.S_IMODE(out.stat().st_mode)
+            out.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        except OSError:
+            continue
+        copied += 1
+    return copied
+
+
+def remove_staging(path: Path | str) -> None:
+    """Remove a staging tree, clearing read-only modes first.
+
+    The seeded stock is read-only, and a plain ``rmtree`` can then fail
+    (Windows on read-only files, Linux on a read-only directory) and -- with
+    ``ignore_errors`` -- leave a partial tree the next pass would resume
+    from. The walk opens every mode before the single removal; no callback
+    and no nested helper, so this rule is testable on its own.
+    """
+    target = Path(path)
+    if target.is_dir():
+        for item in [target, *target.rglob("*")]:
+            try:
+                os.chmod(item, 0o700)
+            except OSError:
+                continue
+    shutil.rmtree(target, ignore_errors=True)
 
 
 def runner_enabled() -> bool:
@@ -1591,7 +1682,23 @@ class RoleRunner:
                     payload={"writer_resumed": True},
                 )
             else:
-                shutil.rmtree(staging, ignore_errors=True)
+                remove_staging(staging)
+        if role is BuildRole.WRITER and staging is not None:
+            # The writer's checkout must show the product it is writing.
+            # The CLONER stock is sealed after CLONER and the rework seed
+            # leaves it out, so it is put in here, read-only, before the pass
+            # -- the same tree the post-pass suite is then run in.
+            seeded = seed_sealed_stock(self.workspace, staging)
+            if seeded:
+                self.ledger.append(
+                    EventKind.NOTE,
+                    role=role,
+                    detail=(
+                        "sealed stock seeded into the writer's checkout: "
+                        f"{seeded} file(s) (locked blocks, kits, runtime, lock)"
+                    ),
+                    payload={"sealed_stock_seeded": seeded},
+                )
         sealed = (
             SEALED_AFTER_CLONER
             if role is not BuildRole.CLONER
@@ -1708,7 +1815,7 @@ class RoleRunner:
                     len(missing),
                     ", ".join(missing[:10]),
                 )
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_staging(staging)
         self._absorb(result)
 
         if role is BuildRole.TESTER:
