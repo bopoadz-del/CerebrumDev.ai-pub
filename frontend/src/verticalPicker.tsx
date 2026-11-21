@@ -1,70 +1,85 @@
-import { useEffect, useState } from 'react'
-import { product, type DeclaredVertical } from './api/factory'
+import { useId } from 'react'
+import type { DeclaredVertical } from './api/factory'
+import { readableName } from './briefCard'
 
 /**
- * The user's vertical, chosen on the Floor -- picked from what the Store's
- * kits declare they serve, or typed. The Factory never infers a vertical from
- * the brief's words or from the blocks a draft binds; with no choice the
- * product is built as a plain "product" with no domain kit.
+ * The user's industry, chosen in the edit-brief sheet -- one chip per
+ * industry the Store's kits declare they serve, plus "General" (no domain
+ * kit) and "Other" (typed). The Factory never infers an industry from the
+ * brief's words or from the blocks a draft binds; with no choice the product
+ * is built as a general product with no domain kit.
  */
-export function VerticalPicker({
-  sessionId,
+export function IndustryChips({
+  options,
   value,
+  other,
   onChange,
-  onLoaded,
-  onLocaleLoaded,
   disabled,
 }: {
-  sessionId: string
+  /** What the Store's kits declare (product.verticals). */
+  options: DeclaredVertical[]
+  /** The chosen industry id; '' is General. */
   value: string
-  /** The user changed the vertical (picked or typed). */
-  onChange: (vertical: string) => void
-  /** The session's saved choice, loaded from the server (not a user change). */
-  onLoaded?: (vertical: string) => void
-  /** The session's saved country/currency, loaded from the server. */
-  onLocaleLoaded?: (locale: { country: string; currency: string }) => void
+  /** True while the user types their own industry. */
+  other: boolean
+  onChange: (next: { value: string; other: boolean }) => void
   disabled?: boolean
 }) {
-  const [options, setOptions] = useState<DeclaredVertical[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    product
-      .verticals(sessionId)
-      .then((res) => {
-        if (cancelled) return
-        setOptions(res.verticals || [])
-        if (res.chosen && onLoaded) onLoaded(res.chosen)
-        if ((res.country || res.currency) && onLocaleLoaded)
-          onLocaleLoaded({ country: res.country || '', currency: res.currency || '' })
-      })
-      .catch(() => {
-        // No Store reachable: the user can still type a vertical.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [sessionId, onLoaded, onLocaleLoaded])
-
-  const listId = `vertical-options-${sessionId}`
+  const id = useId()
+  const known = options.some((o) => o.vertical === value)
+  const otherOn = other || (value !== '' && !known)
+  const chosen = options.find((o) => o.vertical === value && !otherOn)
+  const chip = (key: string, label: string, pressed: boolean, onClick: () => void, sub?: string) => (
+    <button
+      key={key}
+      type="button"
+      className={'chip-choice' + (pressed ? ' chip-on' : '')}
+      aria-pressed={pressed}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {label}
+      {sub && <span className="chip-sub">{sub}</span>}
+    </button>
+  )
   return (
-    <label className="vertical-picker">
-      <span className="dim">Vertical</span>
-      <input
-        aria-label="Vertical"
-        list={listId}
-        value={value}
-        placeholder="pick or type (blank = general product)"
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-      />
-      <datalist id={listId}>
-        {options.map((o) => (
-          <option key={`${o.vertical}-${o.kit}`} value={o.vertical}>
-            {o.build_ready ? `${o.kit} kit` : `${o.kit} kit (not certified)`}
-          </option>
-        ))}
-      </datalist>
-    </label>
+    <fieldset className="sheet-field">
+      <legend className="field-label">Industry</legend>
+      <div className="chip-row" data-testid="industry-chips">
+        {chip('general', 'General', value === '' && !otherOn, () => onChange({ value: '', other: false }))}
+        {options.map((o) =>
+          chip(
+            `${o.vertical}-${o.kit}`,
+            readableName(o.vertical),
+            value === o.vertical && !otherOn,
+            () => onChange({ value: o.vertical, other: false }),
+            o.build_ready ? undefined : 'not certified',
+          ),
+        )}
+        {chip('other', 'Other', otherOn, () => onChange({ value: known ? '' : value, other: true }))}
+      </div>
+      {chosen && !chosen.build_ready && (
+        <p className="field-hint">
+          Not certified: the Store has not marked this kit ready for builds yet.
+        </p>
+      )}
+      {value === '' && !otherOn && (
+        <p className="field-hint">A general product, built without an industry kit.</p>
+      )}
+      {otherOn && (
+        <>
+          <label className="field-label" htmlFor={`${id}-other`}>
+            Your industry
+          </label>
+          <input
+            id={`${id}-other`}
+            className="field-input"
+            value={value}
+            disabled={disabled}
+            onChange={(e) => onChange({ value: e.target.value, other: true })}
+          />
+        </>
+      )}
+    </fieldset>
   )
 }

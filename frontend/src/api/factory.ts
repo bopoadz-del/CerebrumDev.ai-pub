@@ -311,6 +311,11 @@ export type FloorAction = keyof typeof floorActionSpec.actions
  *  the same spec's ``set_build_level`` value set. There is no default. */
 export const BUILD_LEVELS: readonly string[] = floorActionSpec.actions.set_build_level.value.one_of
 
+/** One plain sentence per build level, from the same spec (the server puts
+ *  it together from the level's own bar). */
+export const BUILD_LEVEL_SENTENCES: Readonly<Record<string, string>> =
+  floorActionSpec.actions.set_build_level.value.sentences
+
 /** The user's typed intake as the server holds it: what they declared, and
  *  what the chat PROPOSED from their answer (stored only on Confirm). */
 export interface IntakeFields {
@@ -340,8 +345,9 @@ export async function chatStream(
   vertical?: string | null,
   locale?: DeclaredLocale | null,
   typed?: TypedFloorAction | null,
+  buildLevel?: string | null,
 ): Promise<void> {
-  // The vertical, country and currency travel as their own typed fields,
+  // The vertical, country, currency and build level travel as their own typed fields,
   // never inside the message: the user types them on the Floor and the
   // Factory never infers them.
   const body: {
@@ -349,6 +355,7 @@ export async function chatStream(
     vertical?: string
     country?: string
     currency?: string
+    build_level?: string
     action?: FloorAction
     value?: string
   } = { message }
@@ -361,6 +368,7 @@ export async function chatStream(
     body.country = locale.country
     body.currency = locale.currency
   }
+  if (buildLevel) body.build_level = buildLevel
   const res = await fetch(`${API_BASE}/v1/sessions/${sessionId}/chat`, {
     method: 'POST',
     headers: authHeaders(),

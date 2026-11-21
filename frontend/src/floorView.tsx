@@ -10,6 +10,7 @@ import {
   type BuildStatus,
   type ChatEvent,
   type DeclaredLocale,
+  type DeclaredVertical,
   type GoldenSuggestion,
   type IntakeState,
   type ProductDesign,
@@ -39,9 +40,8 @@ import {
   graderChip,
 } from './buildProgress'
 import { LevelGradeStrip } from './levelGradeView'
-import { VerticalPicker } from './verticalPicker'
-import { LocalePicker } from './localePicker'
 import { BriefCard, briefStatus } from './briefCard'
+import { BriefSheet, type BriefAnswers } from './briefSheet'
 import { FloorUpload } from './FloorUpload'
 import { displayProductName, humanizeProductId, latestBlueprintIn } from './productDisplay'
 import { distanceFromBottom, scrollBehavior, settledKey, shouldFollow } from './floorScroll'
@@ -595,6 +595,22 @@ function hydrateFromDesign(
   return { msgs, coderActive: false }
 }
 
+/** JSON from an SSE data line, or null when it is not JSON. */
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/** A suggestion's answers without its empty fields, to lay over the declared. */
+function definedOnly(fields: IntakeState['proposal']): Partial<NonNullable<IntakeState['proposal']>> {
+  return Object.fromEntries(Object.entries(fields ?? {}).filter(([, v]) => v)) as Partial<
+    NonNullable<IntakeState['proposal']>
+  >
+}
+
 export function Floor({
   sessionId,
   goPlatforms,
@@ -615,37 +631,14 @@ export function Floor({
     },
   ])
   const [input, setInput] = useState('')
-  // The user's own vertical choice (picked or typed). Sent with each chat as
-  // a typed field; '' = no choice (a general product, no domain kit).
-  const [vertical, setVertical] = useState('')
-  // Sent only when the user changed it, so a choice made another way (the
-  // typed "vertical is ..." command) is never cleared by an untouched picker.
-  const [verticalDirty, setVerticalDirty] = useState(false)
-  // The intake line: what the user declared and what the chat proposed.
+  // The brief: what the server holds as declared and what the chat proposed.
+  // Only the server's answer is shown; nothing typed lands here ahead of it.
   const [intake, setIntake] = useState<IntakeState>({ declared: {}, proposal: null })
-  const pickVertical = useCallback((v: string) => {
-    setVertical(v)
-    setVerticalDirty(true)
-    setIntake((prev) => ({ ...prev, declared: { ...prev.declared, vertical: v || null } }))
-  }, [])
-  const syncVertical = useCallback((v: string) => setVertical(v), [])
-  // The country/currency the user declares (typed fields, shape-checked).
-  // Sent only when changed, like the vertical; '' = undeclared.
-  const [locale, setLocale] = useState<DeclaredLocale>({ country: '', currency: '' })
-  const [localeDirty, setLocaleDirty] = useState(false)
-  const pickLocale = useCallback((next: DeclaredLocale) => {
-    setLocale(next)
-    setLocaleDirty(true)
-    setIntake((prev) => ({
-      ...prev,
-      declared: {
-        ...prev.declared,
-        country: next.country || null,
-        currency: next.currency || null,
-      },
-    }))
-  }, [])
-  const syncLocale = useCallback((next: DeclaredLocale) => setLocale(next), [])
+  // The industries the Store's kits declare, for the edit sheet's chips.
+  const [verticalOptions, setVerticalOptions] = useState<DeclaredVertical[]>([])
+  // The edit-brief sheet, and the server's refusal of its last Save.
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [sheetError, setSheetError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [coderBuild, setCoderBuild] = useState<BuildStatus | null>(null)
   const [productDesign, setProductDesign] = useState<ProductDesign | null>(null)
@@ -723,9 +716,7 @@ export function Floor({
       .then((res) => {
         if (cancelled || !res) return
         if (res.intake) setIntake(res.intake)
-        if (res.chosen) setVertical(res.chosen)
-        if (res.country || res.currency)
-          setLocale({ country: res.country || '', currency: res.currency || '' })
+        setVerticalOptions(res.verticals || [])
       })
       .catch(() => {})
     return () => {
@@ -848,27 +839,33 @@ export function Floor({
     async (
       message: string,
       typed?: TypedFloorAction,
-    ): Promise<{ runnerStarted: boolean }> => {
+      answers?: BriefAnswers,
+    ): Promise<{ runnerStarted: boolean; refused: string | null }> => {
       let runnerStarted = false
+      let refused: string | null = null
       // A typed action shows what the user pressed; it is not chat text.
       const shown = typed
         ? typedActionLabel(typed)
         : message
       setMsgs((m) => [...m, { role: 'user', text: shown }, { role: 'factory', text: '' }])
       try {
-        // Trailing typed fields, only when the user changed them.
-        const typedFields: [vertical?: string | null, locale?: DeclaredLocale | null] = localeDirty
-          ? [verticalDirty ? vertical : undefined, locale]
-          : verticalDirty
-            ? [vertical]
-            : []
-        // A typed action rides after the vertical/locale slots; free text
-        // keeps the original call shape.
+        // The brief's answers travel only with the edit sheet's Save, all
+        // four in one request; nothing rides along with any other request.
         const trailing: [
           vertical?: string | null,
           locale?: DeclaredLocale | null,
           typed?: TypedFloorAction | null,
-        ] = typed ? [typedFields[0], typedFields[1], typed] : typedFields
+          buildLevel?: string | null,
+        ] = answers
+          ? [
+              answers.vertical,
+              { country: answers.country, currency: answers.currency },
+              typed,
+              answers.build_level,
+            ]
+          : typed
+            ? [undefined, undefined, typed]
+            : []
         await chatStream(
           sessionId,
           message,
@@ -881,6 +878,14 @@ export function Floor({
               copy[copy.length - 1] = { ...last, text: last.text + token }
               return copy
             })
+            return
+          }
+          if (ev.event === 'info') {
+            const d = (typeof ev.data === 'string' ? safeJson(ev.data) : ev.data) as {
+              ok?: boolean
+              summary?: string
+            } | null
+            if (d && d.ok === false) refused = d.summary || 'Refused.'
             return
           }
           if (ev.event === 'intake') {
@@ -967,17 +972,15 @@ export function Floor({
           },
           ...trailing,
         )
-        if (verticalDirty) setVerticalDirty(false)
-        if (localeDirty) setLocaleDirty(false)
       } catch (e) {
         setMsgs((m) => [
           ...m.slice(0, -1),
           { role: 'factory', text: e instanceof Error ? e.message : 'chat failed', card: 'error' },
         ])
       }
-      return { runnerStarted }
+      return { runnerStarted, refused }
     },
-    [sessionId, vertical, verticalDirty, locale, localeDirty],
+    [sessionId],
   )
 
   const send = useCallback(
@@ -988,6 +991,25 @@ export function Floor({
       setBusy(true)
       try {
         await sendCore(message)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [accessPaused, busy, sendCore],
+  )
+
+  // The edit sheet's Save: all four answers and the typed Confirm in one
+  // request. The card then shows what the server returned; a refusal stays
+  // in the sheet with the server's reason.
+  const saveBrief = useCallback(
+    async (answers: BriefAnswers) => {
+      if (busy || accessPaused) return
+      setBusy(true)
+      setSheetError(null)
+      try {
+        const { refused } = await sendCore('', { action: 'confirm_intake' }, answers)
+        if (refused) setSheetError(refused)
+        else setSheetOpen(false)
       } finally {
         setBusy(false)
       }
@@ -1236,6 +1258,8 @@ export function Floor({
     buildState: coderActive ? liveCoderBuild?.state : null,
   })
 
+  const briefEditable = statusOfBrief === 'draft' || statusOfBrief === 'suggested by chat'
+
   return (
     <div className="floor">
       <BriefCard
@@ -1249,25 +1273,22 @@ export function Floor({
         onShowConversation={() => streamRef.current?.scrollTo?.({ top: 0 })}
         onTyped={(typed) => void sendTyped(typed)}
         disabled={busy || accessPaused}
-        editControls={
-          <>
-            <VerticalPicker
-              sessionId={sessionId}
-              value={vertical}
-              onChange={pickVertical}
-              onLoaded={syncVertical}
-              onLocaleLoaded={syncLocale}
-              disabled={busy || coderBuilding || accessPaused}
-            />
-            <LocalePicker
-              country={locale.country}
-              currency={locale.currency}
-              onChange={pickLocale}
-              disabled={busy || coderBuilding || accessPaused}
-            />
-          </>
-        }
+        onEdit={() => {
+          setSheetError(null)
+          setSheetOpen(true)
+        }}
       />
+      {sheetOpen && briefEditable && (
+        <BriefSheet
+          initial={{ ...intake.declared, ...definedOnly(intake.proposal) }}
+          verticals={verticalOptions}
+          resume={Boolean(intake.reopened)}
+          busy={busy}
+          error={sheetError}
+          onSave={(answers) => void saveBrief(answers)}
+          onClose={() => setSheetOpen(false)}
+        />
+      )}
       <div
         className="chat-scroll floor-stream"
         ref={streamRef}

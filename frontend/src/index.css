@@ -590,8 +590,7 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 }
 .brief-card button.brief-expand { display: inline-flex; align-items: center; gap: var(--space-2); text-align: left; padding-left: 0; }
 .brief-chevron { color: var(--text-muted); }
-.brief-card .intake-edit { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); padding-bottom: var(--space-2); }
-.brief-card .intake-edit label { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); }
+.brief-lock { width: 12px; height: 12px; fill: currentColor; margin-right: var(--space-1); vertical-align: -1px; }
 .brief-details { margin: 0 0 var(--space-2); display: grid; gap: var(--space-2); }
 .brief-detail { display: grid; grid-template-columns: 9.5em 1fr; gap: var(--space-3); }
 .brief-detail dt { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
@@ -1344,4 +1343,119 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* The edit-brief sheet (PR-06): a bottom sheet on phones, a centred dialog
+   from 768px. One field per row, the label above it. */
+.sheet-layer { position: fixed; inset: 0; z-index: var(--z-sheet); display: flex; align-items: flex-end; justify-content: center; }
+.sheet-backdrop { position: absolute; inset: 0; z-index: var(--z-backdrop); background: rgba(0, 0, 0, 0.6); }
+.sheet {
+  position: relative;
+  z-index: var(--z-sheet);
+  width: 100%;
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-3);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-sizing: border-box;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--divider);
+}
+.sheet-title { margin: 0; font-size: var(--text-lg); line-height: var(--lh-lg); font-weight: var(--weight-strong); }
+.sheet button.icon-button {
+  min-width: var(--control-h);
+  padding: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--text-xl);
+}
+.sheet button.icon-button:active:not(:disabled) { background: none; color: var(--text); }
+.sheet-body { overflow-y: auto; padding: var(--space-3) var(--space-4); display: grid; gap: var(--space-4); overscroll-behavior: contain; }
+.sheet-field { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: var(--space-2); }
+.field-label { display: block; padding: 0; color: var(--text); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-strong); }
+.field-input { width: 100%; box-sizing: border-box; min-height: var(--control-h-primary); }
+.field-hint { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.field-error { margin: 0; color: var(--danger-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.field-input[aria-invalid='true'] { border-color: var(--danger-edge); }
+.level-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-height: var(--control-h-primary);
+  padding: var(--space-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.level-card.level-on { border-color: var(--accent); }
+.level-card input[type='radio'] { margin: 2px 0 0; width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+.level-text { display: grid; gap: var(--space-1); min-width: 0; }
+.level-name { font-size: var(--text-md); line-height: var(--lh-md); font-weight: var(--weight-strong); }
+.level-sentence { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.chip-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.sheet button.chip-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+  white-space: nowrap;
+}
+.sheet button.chip-choice.chip-on { border-color: var(--accent); background: var(--surface-2); font-weight: var(--weight-strong); }
+.sheet button.chip-choice:active:not(:disabled) { background: var(--surface-2); }
+.chip-sub { color: var(--text-muted); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.code-options { list-style: none; margin: 0; padding: var(--space-1) 0; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--surface-1); }
+.sheet button.code-option {
+  display: block;
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  text-align: left;
+  background: none;
+  color: var(--text);
+  border: 0;
+  border-radius: 0;
+  font-weight: var(--weight-regular);
+  overflow-wrap: anywhere;
+}
+.sheet button.code-option:active:not(:disabled) { background: var(--surface-3); }
+.sheet-foot {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--divider);
+}
+.sheet-foot > button { flex: 0 0 auto; }
+.sheet-save { display: grid; gap: var(--space-1); justify-items: end; flex: 1 1 auto; min-width: 0; }
+.sheet-save > button { min-height: var(--control-h-primary); min-width: 8em; }
+.button-sub { color: var(--text-muted); font-size: var(--text-xs); line-height: var(--lh-xs); text-align: right; }
+@media (hover: hover) {
+  .sheet button.chip-choice:hover:not(:disabled),
+  .sheet button.code-option:hover:not(:disabled) { background: var(--surface-2); }
+  .level-card:hover { border-color: var(--text-muted); }
+}
+@media (min-width: 768px) {
+  .sheet-layer { align-items: center; padding: var(--space-5); }
+  .sheet { max-width: 560px; max-height: 86vh; border-radius: var(--radius); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet button.chip-choice, .sheet button.code-option { transition: none; }
 }
