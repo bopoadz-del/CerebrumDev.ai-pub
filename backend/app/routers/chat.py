@@ -117,6 +117,20 @@ def _session_state_summary(state) -> str:
     return "\n".join(lines)
 
 
+def _is_configurator_turn(action: Optional[FloorAction]) -> bool:
+    """True when the legacy kit-chain configurator answers this turn.
+
+    The configurator is the chat surface where the Factory's own model writes
+    an answer to the user's question (from their documents and session). It
+    is reached by the typed ``chain`` action, or by free text while the
+    platform flow is switched off. Every other turn is platform intake: a
+    typed Floor action, or free text for the Floor chat model to decide on.
+    """
+    if action is FloorAction.CHAIN:
+        return True
+    return action is None and not platform_chat_flow.platform_chat_enabled()
+
+
 async def _stream_response(
     session_id: str,
     user_message: str,
@@ -136,9 +150,16 @@ async def _stream_response(
         yield _sse_event("done", "")
         return
 
-    # Scope refusal precedes everything: a refused question never reaches
-    # the platform flow or the LLM, however grounded the corpus may be.
-    refusal = check_scope_refusal(user_message)
+    configurator_turn = _is_configurator_turn(action)
+
+    # Scope refusal guards the one surface where the Factory itself answers:
+    # there a refused question never reaches the LLM, however grounded the
+    # corpus may be. It does not run on platform intake. A brief is a
+    # description of software to build, not a question put to the Factory, and
+    # the scope patterns pair words across the whole message, so they matched
+    # ordinary product briefs. The Floor never decides from the user's words:
+    # an intake message is declined only by the chat model's typed decision.
+    refusal = check_scope_refusal(user_message) if configurator_turn else None
     if refusal is not None:
         persist_verdict(
             {
@@ -169,9 +190,7 @@ async def _stream_response(
     # the Floor chat LLM (a typed decision) or, with no LLM, to an honest
     # pointer at the controls. Nothing reads the user's words to pick an
     # action. PLATFORM_CHAT_FLOW_ENABLED=0 keeps the legacy configurator.
-    if action is FloorAction.CHAIN or (
-        action is None and not platform_chat_flow.platform_chat_enabled()
-    ):
+    if configurator_turn:
         pass  # legacy kit-chain generator below
     else:
         try:
