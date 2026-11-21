@@ -897,7 +897,13 @@ def generate_product(
     from app.factory.build_jobs import clone_canonical
 
     try:
-        canonical = clone_canonical(blueprint, output_dir)
+        # A run that carries a tenant is that tenant's build; only a run with
+        # none is an operator's own and may honour an operator-only field.
+        canonical = clone_canonical(
+            blueprint,
+            output_dir,
+            operator_run=not (tenant_identity or quota_account_id),
+        )
         if canonical is not None:
             result["canonical_output"] = str(canonical)
     except Exception:  # noqa: BLE001
