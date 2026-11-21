@@ -37,6 +37,9 @@ import {
   withResolvedNRequired,
   kernelName,
   graderChip,
+  fixRoundsLine,
+  stopHeadline,
+  stopTone,
 } from './buildProgress'
 import { LevelGradeStrip } from './levelGradeView'
 import { VerticalPicker } from './verticalPicker'
@@ -318,9 +321,8 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
   // The grader is not one of BUILD_PHASES -- it runs inside the writer's
   // gate -- so without a chip of its own a run the grader sent back twice
   // reads as a writer that stopped for no reason. It sits after WRITER
-  // because that is where it speaks, and its state comes from the run's own
-  // decision record: no decision reads "not reached", never a green the
-  // ledger cannot prove.
+  // because that is where it speaks, and its state comes only from what the
+  // grader itself recorded: nothing recorded reads "not reached".
   const grader = graderChip(build)
   const strip = phases.flatMap((p) =>
     p === 'WRITER' && grader ? [p, 'GRADER'] : [p],
@@ -330,6 +332,8 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
   const failedReason = build?.failure?.reason || 'unknown'
   // J2: the title shows the one-line summary, never the raw payload.
   const failedSummary = build?.failure?.summary || failedReason
+  // Red only for a check that refused the work; a timeout or a Stop is halted.
+  const tone = stopTone(build?.failure)
   // A failure on a run that is still moving is a rework round -- the phase
   // sent the work back and the machine is fixing it. Red is reserved for a
   // run that actually stopped; live 2026-09-30 TESTER suite_red painted the
@@ -358,19 +362,19 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
         return (
           <li
             key={phase}
-            className={[cls, failed ? 'failed' : undefined, rework ? 'rework' : undefined]
+            className={[cls, failed ? tone : undefined, rework ? 'rework' : undefined]
               .filter(Boolean)
               .join(' ')}
             title={
               failed
-                ? `${kernelName(phase)} failed — ${failedSummary}`
+                ? `${stopHeadline(build?.failure)} — ${failedSummary}`
                 : rework
                   ? `${kernelName(phase)} sent it back to the coder — ${failedSummary}`
                   : undefined
             }
             data-testid={
               failed
-                ? `floor-phase-failed-${phase}`
+                ? `floor-phase-${tone}-${phase}`
                 : rework
                   ? `floor-phase-rework-${phase}`
                   : undefined
@@ -505,6 +509,9 @@ function coderTakeoverNote(build: BuildStatus | null): string | null {
       : 'Code-cycle 5/5 passed. Not yet pilot-ready. Continue to open a pilot cycle.'
   }
   if (build.state === 'failed' || build.state === 'stalled') {
+    // The failure line already says why, once; the run's raw detail stays in
+    // the record (Technical detail), never concatenated into a sentence.
+    if (build.state === 'failed' && build.failure?.summary) return ''
     return 'The coding agent stopped: ' + (build.detail ?? 'build did not pass its gates') + '.'
   }
   const headline = formatPhaseHeadline(build)
@@ -660,6 +667,7 @@ export function Floor({
   // is confirmed first: the button arms an inline confirm that offers Continue
   // (resume at the failing stage) instead. Only the confirm sends start_over.
   const [confirmStartOver, setConfirmStartOver] = useState(false)
+  const [refCopied, setRefCopied] = useState(false)
   const cliHonesty = useFactoryCodeCliHonesty()
   const bottomRef = useRef<HTMLDivElement>(null)
   // Approve appends a pending factory bubble before the generation SSE.
@@ -720,9 +728,13 @@ export function Floor({
     }
   }, [sessionId])
 
+  // Follow a new message and a change of build state. A status poll makes a
+  // new build object every few seconds; following that dragged a reader who
+  // had scrolled up to the chat back down to the status card.
+  const coderState = coderBuild?.state
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' })
-  }, [msgs, coderBuild])
+  }, [msgs, coderState])
 
   useEffect(() => {
     const latest = latestProductCard(msgs)
@@ -1223,8 +1235,9 @@ export function Floor({
             </div>
           )
         })}
-        <div ref={bottomRef} />
-      </div>
+      {/* The status card scrolls WITH the chat. As a sibling under it, a tall
+          card took the whole column: the chat shrank to nothing and the
+          actions were clipped off the bottom of a phone with no way to scroll. */}
       {coderActive && (
         <div
           className={
@@ -1260,39 +1273,26 @@ export function Floor({
           <KernelStrip build={liveCoderBuild} />
           {liveCoderBuild?.failure &&
             (liveCoderBuild.state === 'failed' || liveCoderBuild.state === 'stalled' ? (
-              <p className="coder-failure-line" data-testid="floor-failure-line" role="alert">
-                <strong>
-                  {liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'Build'}{' '}
-                  failed
-                </strong>
+              <p
+                className={`coder-failure-line ${stopTone(liveCoderBuild.failure)}`}
+                data-testid="floor-failure-line"
+                role="alert"
+              >
+                <strong>{stopHeadline(liveCoderBuild.failure)}</strong>
                 {liveCoderBuild.failure.summary
                   ? ` — ${liveCoderBuild.failure.summary}`
                   : liveCoderBuild.failure.reason
                     ? ` — ${liveCoderBuild.failure.reason}`
                     : ''}
-                {liveCoderBuild.failure.ref ? (
-                  <span className="coder-failure-ref" data-testid="floor-failure-ref">
-                    {' '}(ref <code>{liveCoderBuild.failure.ref}</code>
-                    <button
-                      type="button"
-                      className="coder-failure-copy"
-                      title="Copy the reference"
-                      onClick={() => {
-                        void navigator.clipboard?.writeText(liveCoderBuild.failure?.ref || '')
-                      }}
-                    >
-                      copy
-                    </button>
-                    )
-                  </span>
-                ) : null}
               </p>
             ) : (
               // The run is still moving: a mid-fail is a rework round, not a
               // stop. Orange status, no red alert -- red means it ended.
               <p className="coder-rework-line" data-testid="floor-rework-line" role="status">
                 <strong>
-                  {liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'A phase'}{' '}
+                  {kernelName(
+                    liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'A phase',
+                  )}{' '}
                   sent it back to the coder
                 </strong>
                 {liveCoderBuild.failure.summary
@@ -1304,16 +1304,60 @@ export function Floor({
                 {' — rework in progress.'}
               </p>
             ))}
-          {(liveCoderBuild?.decisions?.length ?? 0) > 0 && (
-            <ol className="coder-decisions" data-testid="floor-decisions">
-              {liveCoderBuild!.decisions!.map((d, i) => (
-                <li key={i} data-testid="floor-decision" data-class={d.class}>
-                  <strong>{d.class}</strong> {d.gate} round {d.round_gate}/{d.gate_budget} (build{' '}
-                  {d.round_build}/{d.build_ceiling}) — {d.check}
-                  {d.finding ? `: ${d.finding}` : ''}
-                </li>
-              ))}
-            </ol>
+          {coderFailed && liveCoderBuild?.next_continue && (
+            <p className="coder-next-line" data-testid="floor-next-continue">
+              {liveCoderBuild.next_continue}
+            </p>
+          )}
+          {fixRoundsLine(liveCoderBuild) && (
+            <p className="coder-rounds-line" data-testid="floor-fix-rounds">
+              {fixRoundsLine(liveCoderBuild)}
+            </p>
+          )}
+          {(liveCoderBuild?.failure?.ref ||
+            (coderFailed && (liveCoderBuild?.failed_label || liveCoderBuild?.failure_narrative?.text)) ||
+            (liveCoderBuild?.decisions?.length ?? 0) > 0) && (
+            // The machine detail: kept, but out of the headline -- the record's
+            // own FAILED(...) label, the ledger narrative and each rule decision
+            // with its check id and finding, which are written for the coder.
+            <details className="coder-technical" data-testid="floor-technical-detail">
+              <summary>Technical detail</summary>
+              {liveCoderBuild?.failure?.ref && (
+                <p className="coder-failure-ref" data-testid="floor-failure-ref">
+                  Reference <code>{liveCoderBuild.failure.ref}</code>
+                  {typeof navigator !== 'undefined' && navigator.clipboard ? (
+                    <button
+                      type="button"
+                      className="link coder-failure-copy"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(liveCoderBuild.failure?.ref || '')
+                          .then(() => setRefCopied(true))
+                      }}
+                    >
+                      {refCopied ? 'copied' : 'copy'}
+                    </button>
+                  ) : null}
+                </p>
+              )}
+              {coderFailed && liveCoderBuild?.failed_label && (
+                <p data-testid="floor-failed-label">{liveCoderBuild.failed_label}</p>
+              )}
+              {coderFailed && liveCoderBuild?.failure_narrative?.text && (
+                <p data-testid="floor-failure-narrative">{liveCoderBuild.failure_narrative.text}</p>
+              )}
+              {(liveCoderBuild?.decisions?.length ?? 0) > 0 && (
+                <ol className="coder-decisions" data-testid="floor-decisions">
+                  {liveCoderBuild!.decisions!.map((d, i) => (
+                    <li key={i} data-testid="floor-decision" data-class={d.class}>
+                      <strong>{d.class}</strong> {d.gate} round {d.round_gate}/{d.gate_budget}{' '}
+                      (build {d.round_build}/{d.build_ceiling}) — {d.check}
+                      {d.finding ? `: ${d.finding}` : ''}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </details>
           )}
           {(liveCoderBuild?.suggested_checks?.length ?? 0) > 0 && (
             <SuggestedChecks checks={liveCoderBuild!.suggested_checks!} />
@@ -1387,7 +1431,7 @@ export function Floor({
                 </button>
               </div>
             </>
-          ) : (
+          ) : coderTakeoverNote(liveCoderBuild) === '' ? null : (
             <p>
               {coderTakeoverNote(liveCoderBuild) ??
                 'The feature list is approved. The coding agent is starting WORKERS now.'}
@@ -1455,29 +1499,12 @@ export function Floor({
               </button>
             </div>
           )}
-          {coderFailed && liveCoderBuild?.failed_label && (
-            <p className="muted" data-testid="floor-failed-label">
-              {liveCoderBuild.failed_label}
-            </p>
-          )}
-          {coderFailed && liveCoderBuild?.next_continue && (
-            <p className="muted" data-testid="floor-next-continue">
-              {liveCoderBuild.next_continue}
-            </p>
-          )}
-          {coderFailed && liveCoderBuild?.failure_narrative?.text && (
-            <p className="muted" data-testid="floor-failure-narrative">
-              {liveCoderBuild.failure_narrative.text}
-            </p>
-          )}
           {coderFailed && (
             // A FAILED build offers exactly three TYPED choices. Chat text
             // never triggers any of them.
             <div className="card-actions" data-testid="floor-failure-choices">
               <span className="status-pill status-pill-failed" data-testid="floor-failed-pill">
-                {liveCoderBuild?.failure
-                  ? `${liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'Build'} failed`
-                  : 'Pilot suite failed'}
+                {liveCoderBuild?.failure ? stopHeadline(liveCoderBuild.failure) : 'Pilot suite failed'}
               </span>
               <button
                 type="button"
@@ -1548,6 +1575,8 @@ export function Floor({
           {newSessionError && <div className="error-box">{newSessionError}</div>}
         </div>
       )}
+        <div ref={bottomRef} />
+      </div>
       <IntakeLine
         intake={intake}
         onTyped={(typed) => void sendTyped(typed)}

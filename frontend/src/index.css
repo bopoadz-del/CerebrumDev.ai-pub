@@ -434,15 +434,17 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
     border-bottom: 1px solid var(--line);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
   }
+  /* Navigation labels do not truncate: the nav keeps its content width and
+     the support address (.rail-foot) is what shrinks to an ellipsis. */
   .rail nav {
     flex-direction: row;
-    flex: 1;
+    flex: 1 0 auto;
     min-width: 0;
     justify-content: space-between;
     gap: 2px;
   }
   .nav-btn {
-    flex: 1;
+    flex: 1 0 auto;
     min-width: 0;
     flex-direction: column;
     justify-content: center;
@@ -457,11 +459,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
     font-size: 10px;
     font-weight: 500;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
   }
-  .rail-foot { margin-left: 4px; flex-shrink: 0; }
+  .rail-foot { margin-left: 4px; flex: 0 1 auto; min-width: 0; }
   .rail-foot-text { display: none; }
   .bubble { max-width: 92%; }
   .page { padding: 18px 14px; }
@@ -708,7 +707,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 }
 /* A mid-fail the run is still fixing: the phase sent the work back to the
    coder. Orange = rework in progress; red is reserved for a stopped run. */
-.kernel-strip li.rework {
+.kernel-strip li.rework,
+.kernel-strip li.halted {
   color: #ffb27d;
   border-color: #8a5530;
   background: #1f1508;
@@ -731,7 +731,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   font-size: 13px;
   margin: 0 0 10px;
 }
-.coder-rework-line {
+.coder-rework-line,
+.coder-failure-line.halted {
   color: #ffb27d;
   background: #1f1508;
   border: 1px solid #8a5530;
@@ -753,6 +754,26 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .coder-takeover.stale {
   border-color: #8a7030;
 }
+.coder-takeover .coder-next-line,
+.coder-takeover .coder-rounds-line {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.coder-takeover .coder-next-line { color: var(--text); }
+/* The record's own wording, collapsed: every line at the card's small text
+   size and wrapping, so a path or a check id never widens a phone column. */
+.coder-technical { margin: 0 0 10px; font-size: 12px; color: var(--dim); }
+.coder-technical summary { cursor: pointer; }
+.coder-takeover .coder-technical p,
+.coder-technical .coder-decisions {
+  margin: 6px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.coder-technical .coder-decisions { padding-left: 18px; }
+/* A text-sized link beside the reference -- never the page's primary button
+   dropped inside a sentence. */
+button.coder-failure-copy { font-size: inherit; padding: 0 4px; margin-left: 6px; }
 .coder-progress {
   display: flex;
   flex-direction: column;
