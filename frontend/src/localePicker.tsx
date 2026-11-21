@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 
 /**
  * Country and currency pickers for the edit-brief sheet: searchable, with
@@ -57,7 +57,7 @@ export function regionOptions(): CodeOption[] {
 export function currencyOptions(): CodeOption[] {
   if (!currencyCache) {
     const supported = (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf
-    let codes: string[] = []
+    let codes: string[]
     try {
       codes = supported ? supported('currency') : []
     } catch {
@@ -136,6 +136,12 @@ export function CodePicker({
   const listId = `${id}-list`
   const errorId = `${id}-error`
   const showList = open && matches.length > 0
+  // The matches open under the field; on a phone the field is often near
+  // the sheet's foot, so bring the list into view when it opens.
+  const listRef = useRef<HTMLUListElement>(null)
+  useEffect(() => {
+    if (showList) listRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [showList, matches.length])
   return (
     <div className="sheet-field">
       <label className="field-label" htmlFor={id}>
@@ -167,7 +173,7 @@ export function CodePicker({
         }}
       />
       {showList && (
-        <ul className="code-options" role="listbox" id={listId} aria-label={label}>
+        <ul className="code-options" role="listbox" id={listId} aria-label={label} ref={listRef}>
           {matches.map((o) => (
             <li key={o.code} role="presentation">
               <button

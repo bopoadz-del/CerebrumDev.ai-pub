@@ -459,3 +459,115 @@ test.describe('pointer hover at 360x780', () => {
     expect(after.fg).toBe('rgb(232, 236, 241)')
   })
 })
+
+/**
+ * PR-06: the edit-brief sheet. At 360px every label sits above its field,
+ * every control is at least 44px tall, nothing overflows sideways with the
+ * sheet open, and suggest -> change -> Save shows the changed country in the
+ * brief card (the card shows what the server returned).
+ */
+test.describe('edit-brief sheet at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  async function openSheet(page: Page, state: FloorState) {
+    await openState(page, state)
+    await page.getByTestId('intake-change').click()
+    const sheet = page.getByRole('dialog', { name: 'Your brief' })
+    await expect(sheet).toBeVisible()
+    return sheet
+  }
+
+  for (const state of ['new-session', 'suggestion-pending'] as const) {
+    test(`every label sits above its field (${state})`, async ({ page }) => {
+      const sheet = await openSheet(page, state)
+      const pairs = await sheet.evaluate((root) =>
+        [...root.querySelectorAll('.sheet-field')].map((field) => {
+          const label = field.querySelector(':scope > .field-label') as HTMLElement
+          const control = field.querySelector(
+            ':scope > input, :scope > .chip-row, :scope > .level-card',
+          ) as HTMLElement
+          return {
+            name: label?.textContent ?? '?',
+            labelBottom: label?.getBoundingClientRect().bottom ?? Infinity,
+            controlTop: control?.getBoundingClientRect().top ?? -Infinity,
+          }
+        }),
+      )
+      expect(pairs.map((p) => p.name)).toEqual(['Build level', 'Industry', 'Country', 'Currency'])
+      for (const p of pairs) expect(p.labelBottom, p.name).toBeLessThanOrEqual(p.controlTop + 0.5)
+    })
+
+    test(`every control is at least 44px tall and nothing overflows sideways (${state})`, async ({ page }) => {
+      const sheet = await openSheet(page, state)
+      expect(await shortControls(page)).toEqual([])
+      const levelCards = await sheet.locator('.level-card').evaluateAll((els) =>
+        els.map((el) => el.getBoundingClientRect().height),
+      )
+      expect(levelCards).toHaveLength(4)
+      for (const h of levelCards) expect(h).toBeGreaterThanOrEqual(44)
+      const overflow = await page.evaluate(() => {
+        const sheetEl = document.querySelector('[data-testid="brief-sheet"]') as HTMLElement
+        const body = sheetEl.querySelector('.sheet-body') as HTMLElement
+        return {
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          sheet: sheetEl.scrollWidth - sheetEl.clientWidth,
+          body: body.scrollWidth - body.clientWidth,
+          right: sheetEl.getBoundingClientRect().right - window.innerWidth,
+        }
+      })
+      expect(overflow.page).toBeLessThanOrEqual(0)
+      expect(overflow.sheet).toBeLessThanOrEqual(0)
+      expect(overflow.body).toBeLessThanOrEqual(0)
+      expect(overflow.right).toBeLessThanOrEqual(0.5)
+      // Save and Cancel are on screen, not below the fold.
+      for (const name of ['Cancel', /^Save/]) {
+        const box = await sheet.getByRole('button', { name }).boundingBox()
+        expect(box && box.y + box.height).toBeLessThanOrEqual(780)
+      }
+    })
+  }
+
+  test('suggest, change, save: the brief card shows the changed country', async ({ page }) => {
+    const sheet = await openSheet(page, 'suggestion-pending')
+    const country = sheet.getByLabel('Country')
+    // Pre-filled with the chat's suggestion, by name and code.
+    await expect(country).toHaveValue(/\(AE\)$/)
+    await country.fill('Swed')
+    await sheet.getByRole('option', { name: /\(SE\)$/ }).click()
+    await sheet.getByLabel('Currency').fill('SEK')
+    await sheet.getByTestId('brief-save').click()
+    await expect(sheet).toBeHidden()
+    const values = page.getByTestId('brief-values')
+    await expect(values).toContainText(/Sweden/)
+    await expect(values).toContainText('SEK')
+    await expect(page.getByTestId('intake-proposal')).toHaveCount(0)
+  })
+
+  test('an unknown code and half a pair each show an error, and Save waits', async ({ page }) => {
+    const sheet = await openSheet(page, 'new-session')
+    await sheet.getByLabel('Country').fill('QQ')
+    await expect(sheet.getByText(/Not a country this browser knows/)).toBeVisible()
+    await expect(sheet.getByTestId('pair-error')).toBeVisible()
+    await expect(sheet.getByTestId('brief-save')).toBeDisabled()
+    await expect(sheet.getByTestId('brief-save-reason')).toBeVisible()
+  })
+
+  test('Cancel closes the sheet and stores nothing', async ({ page }) => {
+    let chats = 0
+    page.on('request', (r) => {
+      if (r.url().endsWith('/chat')) chats += 1
+    })
+    const sheet = await openSheet(page, 'suggestion-pending')
+    await sheet.getByLabel('Country').fill('Japan')
+    await sheet.getByRole('button', { name: 'Cancel' }).click()
+    await expect(sheet).toBeHidden()
+    expect(chats).toBe(0)
+    await expect(page.getByTestId('intake-proposal')).toBeVisible()
+  })
+
+  test('after approval the brief is read-only with a lock', async ({ page }) => {
+    await openState(page, 'building')
+    await expect(page.getByTestId('brief-lock')).toBeVisible()
+    await expect(page.getByTestId('intake-change')).toHaveCount(0)
+  })
+})
