@@ -10,7 +10,7 @@
     "test": "vitest run",
     "preview": "vite preview",
     "e2e": "playwright test",
-    "e2e:mocked": "playwright test e2e/factory_surfaces.spec.ts e2e/verify_email_boot.spec.ts"
+    "e2e:mocked": "playwright test e2e/factory_surfaces.spec.ts e2e/verify_email_boot.spec.ts e2e/floor_states_phone.spec.ts"
   },
   "dependencies": {
     "@sentry/react": "^11.8.0",

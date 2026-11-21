@@ -3,9 +3,12 @@
  * tall. The owner's stalled build filled .chat-scroll with a long rework card
  * and the input bar vanished off the bottom: .chat-scroll lacked min-height:0,
  * so it expanded to its content instead of scrolling, pushing .composer past
- * main's overflow:hidden boundary. This loads the Floor at 390x844, fills the
- * scroll region with a tall card, and asserts the composer is still visible and
- * fully within the viewport (the scroll region absorbs the overflow).
+ * main's overflow:hidden boundary. This loads the Floor at 390x844 and at the
+ * smallest phone the revamp targets (360x640), fills the one scrolling stream
+ * (.chat-scroll, which now also holds the page head and the build card) with a
+ * tall card, and asserts the pinned composer is still visible and fully within
+ * the viewport (the stream absorbs the overflow). Every Floor state is covered
+ * by floor_states_phone.spec.ts.
  */
 import { expect, test, type Page } from '@playwright/test'
 
@@ -38,9 +41,13 @@ async function mockFloor(page: Page) {
   })
 }
 
-test('the chat composer stays visible at phone width when the Floor is tall', async ({ page }) => {
+for (const vp of [
+  { width: 390, height: 844 },
+  { width: 360, height: 640 },
+]) {
+test(`the chat composer stays visible at ${vp.width}x${vp.height} when the Floor is tall`, async ({ page }) => {
   await mockFloor(page)
-  await page.setViewportSize({ width: 390, height: 844 })
+  await page.setViewportSize(vp)
   await page.goto(`/floor/${SID}`)
 
   await expect(page.locator('.floor')).toBeVisible()
@@ -67,3 +74,4 @@ test('the chat composer stays visible at phone width when the Floor is tall', as
   })
   expect(within).toBe(true)
 })
+}
