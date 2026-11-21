@@ -114,6 +114,10 @@ def test_remove_staging_removes_read_only_seeded_files(tmp_path, rel):
     staging.mkdir()
     seed_sealed_stock(dest, staging)
     assert (staging / rel).is_file()
+    # A read-only directory AND read-only files: Linux refuses to descend the
+    # first, Windows refuses to delete the second. A plain rmtree with
+    # ignore_errors leaves the tree (the next pass would resume from it).
+    (staging / "vendor" / "blocks" / "audit").chmod(0o555)
     remove_staging(staging)
     assert staging.exists() is False
 

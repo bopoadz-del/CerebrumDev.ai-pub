@@ -241,21 +241,21 @@ def sealed_stock_paths(root: Path | str) -> List[str]:
 
     base = Path(root)
     files: List[Path] = []
-
-    def _add(path: Path) -> None:
-        if path.is_file() and not path.is_symlink():
-            files.append(path)
-        elif path.is_dir() and not path.is_symlink():
-            files.extend(
-                p for p in sorted(path.rglob("*")) if p.is_file() and not p.is_symlink()
-            )
-
     lock = base / LOCKFILE
     if lock.is_file():
         files.append(lock)
-    _add(base / "vendor")
-    for rel in _vendored_paths(base):
-        _add(base / rel)
+    candidates = [base / "vendor"]
+    candidates.extend(base / rel for rel in _vendored_paths(base))
+    for candidate in candidates:
+        if candidate.is_symlink():
+            continue
+        if candidate.is_file():
+            files.append(candidate)
+            continue
+        if candidate.is_dir():
+            files.extend(
+                p for p in sorted(candidate.rglob("*")) if p.is_file() and not p.is_symlink()
+            )
     out: List[str] = []
     for path in files:
         try:
@@ -298,25 +298,22 @@ def seed_sealed_stock(destination: Path | str, staging: Path | str) -> int:
 
 
 def remove_staging(path: Path | str) -> None:
-    """Remove a staging tree, clearing read-only files first.
+    """Remove a staging tree, clearing read-only modes first.
 
     The seeded stock is read-only, and a plain ``rmtree`` can then fail
-    (Windows especially); with ``ignore_errors`` that leaves a partial tree
-    the next pass would resume from. One retry with the mode opened keeps
-    the removal honest.
+    (Windows on read-only files, Linux on a read-only directory) and -- with
+    ``ignore_errors`` -- leave a partial tree the next pass would resume
+    from. The walk opens every mode before the single removal; no callback
+    and no nested helper, so this rule is testable on its own.
     """
-
-    def _retry(func: Any, name: str, _exc: Any) -> None:
-        try:
-            os.chmod(name, 0o700)
-        except OSError:
-            pass
-        try:
-            func(name)
-        except OSError:
-            pass
-
-    shutil.rmtree(path, onerror=_retry)
+    target = Path(path)
+    if target.is_dir():
+        for item in [target, *target.rglob("*")]:
+            try:
+                os.chmod(item, 0o700)
+            except OSError:
+                continue
+    shutil.rmtree(target, ignore_errors=True)
 
 
 def runner_enabled() -> bool:
