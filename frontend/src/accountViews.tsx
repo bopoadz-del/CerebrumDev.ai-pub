@@ -13,6 +13,7 @@ import {
   type BuildStatus,
   type ProductDesign,
 } from './api/factory'
+import { SupportContact } from './supportContact'
 import {
   exportAffordance,
   formatAcceptanceScore,
@@ -690,9 +691,12 @@ function AdminOps() {
 export function Account({
   onLogout,
   initialMe,
+  supportEmail = null,
 }: {
   onLogout: () => void
   initialMe?: AccountInfo | null
+  /** The operator's support address (from /version); omitted when unknown. */
+  supportEmail?: string | null
 }) {
   const [me, setMe] = useState<AccountInfo | null>(initialMe ?? null)
   const [verifyToken, setVerifyToken] = useState('')
@@ -831,6 +835,14 @@ export function Account({
           <dd>{verifiedLabel(me)}</dd>
           <dt>Account</dt>
           <dd className="mono">{me?.account_id ? String(me.account_id) : '—'}</dd>
+          {supportEmail ? (
+            <>
+              <dt>Support</dt>
+              <dd className="account-support">
+                <SupportContact email={supportEmail} />
+              </dd>
+            </>
+          ) : null}
         </dl>
         {me && me.email_verified === false && (
           <>

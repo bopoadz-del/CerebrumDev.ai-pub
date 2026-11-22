@@ -9,9 +9,19 @@
  *   4. every enabled action button and the composer are inside the viewport,
  *      or reachable by scrolling the stream.
  * (Check 2, the brief card, starts with PR-04.)
+ *
+ * PR-02 adds the phone shell: the bottom tab bar, the top bar, the Sessions
+ * drawer and its delete control, and no sideways scroll on any tab.
  */
 import { expect, test, type Page } from '@playwright/test'
-import { BUILD_STATES, FLOOR_STATES, SID, mockFloorStates, type FloorState } from './fixtures/floorStates'
+import {
+  BUILD_STATES,
+  FLOOR_STATES,
+  SID,
+  SUPPORT_EMAIL,
+  mockFloorStates,
+  type FloorState,
+} from './fixtures/floorStates'
 
 const PHONES = [
   { width: 360, height: 640 },
@@ -173,4 +183,160 @@ for (const state of FLOOR_STATES) {
       }
     })
   }
+}
+
+/* ---------------- PR-02: phone navigation and header ---------------- */
+
+const TABS = ['Factory Floor', 'Your Platforms', 'Subscription', 'Account'] as const
+
+for (const vp of [
+  { width: 360, height: 780 },
+  { width: 412, height: 915 },
+]) {
+  test.describe(`phone shell at ${vp.width}x${vp.height}`, () => {
+    // isMobile + hasTouch: the page matches (hover: none), as a phone does.
+    test.use({ viewport: vp, hasTouch: true, isMobile: true })
+
+    test('four bottom tabs, whole labels, each at least 72x48', async ({ page }) => {
+      await openState(page, 'stopped')
+      const nav = page.getByRole('navigation', { name: 'Factory navigation' })
+      const tabs = await nav.evaluate((el) => {
+        const vh = window.innerHeight
+        return [...el.querySelectorAll('button')].map((b) => {
+          const r = b.getBoundingClientRect()
+          const label = b.querySelector('.nav-label-short') as HTMLElement
+          return {
+            name: b.getAttribute('aria-label'),
+            text: label.textContent,
+            w: r.width,
+            h: r.height,
+            atBottom: r.bottom <= vh + 1 && r.bottom >= vh - 60,
+            labelShown: getComputedStyle(label).display !== 'none',
+            cut: label.scrollWidth > label.clientWidth,
+          }
+        })
+      })
+      expect(tabs.map((t) => t.name)).toEqual([...TABS])
+      for (const t of tabs) {
+        expect(t.labelShown, `${t.text} label shown`).toBe(true)
+        expect(t.cut, `${t.text} label not cut`).toBe(false)
+        expect(t.w, `${t.text} width`).toBeGreaterThanOrEqual(72)
+        expect(t.h, `${t.text} height`).toBeGreaterThanOrEqual(48)
+        expect(t.atBottom, `${t.text} sits in the bottom bar`).toBe(true)
+      }
+    })
+
+    test('a 48px top bar: Sessions, the session name, New session; no support address', async ({ page }) => {
+      await openState(page, 'stopped')
+      const bar = await page.locator('.rail').evaluate((el) => {
+        const r = el.getBoundingClientRect()
+        const box = (q: string) => {
+          const e = el.querySelector(q) as HTMLElement | null
+          if (!e || getComputedStyle(e).display === 'none') return null
+          const b = e.getBoundingClientRect()
+          return { w: b.width, h: b.height }
+        }
+        const mail = [...el.querySelectorAll('a[href^="mailto:"]')].filter(
+          (a) => (a as HTMLElement).getBoundingClientRect().width > 0 && !a.closest('.rail-sessions'),
+        )
+        return {
+          top: r.top,
+          h: r.height,
+          toggle: box('.rail-sessions-toggle'),
+          title: (el.querySelector('.topbar-title') as HTMLElement).innerText,
+          titleBox: box('.topbar-title'),
+          newBtn: box('.topbar-new'),
+          mail: mail.length,
+        }
+      })
+      expect(bar.top).toBe(0)
+      expect(bar.h).toBeGreaterThanOrEqual(47)
+      expect(bar.h).toBeLessThanOrEqual(49)
+      expect(bar.toggle?.w ?? 0).toBeGreaterThanOrEqual(44)
+      expect(bar.toggle?.h ?? 0).toBeGreaterThanOrEqual(44)
+      expect(bar.newBtn?.w ?? 0).toBeGreaterThanOrEqual(44)
+      expect(bar.titleBox).not.toBeNull()
+      expect(bar.title).toBe('stopped')
+      expect(bar.mail).toBe(0)
+      await expect(page.locator('.rail').getByText(SUPPORT_EMAIL)).toBeHidden()
+      // The Floor's own title row moved into the bar: no second New session.
+      await expect(page.getByTestId('floor-new-session')).toBeHidden()
+    })
+
+    test('the drawer opens right under the bar and ends with the support address', async ({ page }) => {
+      await openState(page, 'stopped')
+      await page.getByRole('button', { name: 'Your sessions' }).click()
+      const drawer = page.getByRole('region', { name: 'Your sessions' })
+      await expect(drawer).toBeVisible()
+      const gap = await page.evaluate(() => {
+        const bar = document.querySelector('.rail') as HTMLElement
+        const d = document.querySelector('.rail-sessions') as HTMLElement
+        return Math.abs(d.getBoundingClientRect().top - bar.getBoundingClientRect().bottom)
+      })
+      expect(gap).toBeLessThanOrEqual(1)
+      await expect(drawer.getByRole('link', { name: 'Contact support' })).toHaveAttribute(
+        'href',
+        `mailto:${SUPPORT_EMAIL}`,
+      )
+    })
+
+    test('delete shows on touch; its confirm replaces the row and names the session', async ({ page }) => {
+      await openState(page, 'stopped')
+      expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true)
+      await page.getByRole('button', { name: 'Your sessions' }).click()
+      const del = page.getByRole('button', { name: 'Delete session: building', exact: true })
+      await expect(del).toBeVisible()
+      const box = await del.evaluate((el) => {
+        const r = el.getBoundingClientRect()
+        return { w: r.width, h: r.height, opacity: Number(getComputedStyle(el).opacity) }
+      })
+      expect(box.opacity).toBe(1)
+      expect(box.w).toBeGreaterThanOrEqual(44)
+      expect(box.h).toBeGreaterThanOrEqual(44)
+      await del.click()
+      const confirm = page.getByRole('group', { name: 'Delete building?' })
+      await expect(confirm).toBeVisible()
+      await expect(confirm.locator('.rail-session-confirm-name')).toHaveText('building')
+      await expect(confirm.locator('xpath=ancestor::li[1]').locator('button.rail-session')).toBeHidden()
+      for (const name of ['Delete', 'Keep']) {
+        const h = await confirm
+          .getByRole('button', { name, exact: true })
+          .evaluate((el) => el.getBoundingClientRect().height)
+        expect(h, `${name} height`).toBeGreaterThanOrEqual(44)
+      }
+    })
+
+    test('no sideways scroll on Floor, Platforms, Plan or Account', async ({ page }) => {
+      await openState(page, 'stopped')
+      for (const tab of TABS) {
+        await page.getByRole('button', { name: tab, exact: true }).click()
+        await expect(page.getByRole('button', { name: tab, exact: true })).toHaveAttribute('aria-current', 'page')
+        await page.waitForTimeout(300)
+        const over = await page.evaluate(() => {
+          const se = document.scrollingElement as Element
+          const vw = document.documentElement.clientWidth
+          const outside = [...document.querySelectorAll('main *, .rail *')]
+            .filter((e) => {
+              const r = e.getBoundingClientRect()
+              return r.width > 0 && r.right > vw + 1 && !e.closest('.rail-sessions')
+            })
+            .slice(0, 6)
+            .map((e) => `${(e as HTMLElement).className || e.tagName}:${Math.round(e.getBoundingClientRect().right)}`)
+          return { page: se.scrollWidth - se.clientWidth, outside }
+        })
+        expect(over.page, `${tab} page overflow`).toBeLessThanOrEqual(1)
+        expect(over.outside, `${tab} elements off screen`).toEqual([])
+      }
+    })
+
+    test('the Account page carries the support address', async ({ page }) => {
+      await openState(page, 'stopped')
+      await page.getByRole('button', { name: 'Account', exact: true }).click()
+      await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible()
+      await expect(page.locator('main').getByRole('link', { name: 'Contact support' })).toHaveAttribute(
+        'href',
+        `mailto:${SUPPORT_EMAIL}`,
+      )
+    })
+  })
 }
