@@ -444,15 +444,14 @@ def writer_gate_acceptance_lines() -> Tuple[str, ...]:
         WRITER_BEHAVIOUR_CHECK,
         WRITER_CONTRACT_CHECK,
     )
-    from app.factory.build.money_contract import MONEY_SETTINGS_MODULE
+    from app.factory.build.money_contract import money_acceptance_text
     from app.factory.build.writer_behaviour import SELF_CHECK_COMMAND
 
     return (
         "- every module under app/ parses and the app imports  "
         f"[check:{WORKSPACE_COMPILES_CHECK}]",
-        "- the capability handlers are agent-authored, and no currency code or "
-        f"tax rate is a literal in code: money is read from {MONEY_SETTINGS_MODULE}  "
-        f"[check:{WRITER_CONTRACT_CHECK}]",
+        "- the capability handlers are agent-authored, and "
+        f"{money_acceptance_text()}  [check:{WRITER_CONTRACT_CHECK}]",
         "- every capability fails closed when a block it calls fails: it returns "
         "the block's refusal (ok=false) and persists nothing -- never ok=true over "
         "a failed block (F1) -- and it calls every block it declares (F11); run "
