@@ -448,7 +448,9 @@ test.describe('pointer hover at 360x780', () => {
 
   test('hovering an outline button does not turn it gold', async ({ page }) => {
     await openState(page, 'stopped')
-    const ghost = page.locator('[data-testid="floor-coder-takeover"] button.ghost:not(:disabled)').first()
+    // PR-08: on a phone the state's actions sit in the action bar; its
+    // outline button is the secondary "Download copy".
+    const ghost = page.locator('[data-testid="floor-action-bar"] button.action-secondary:not(:disabled)').first()
     await ghost.scrollIntoViewIfNeeded()
     const before = await ghost.evaluate((el) => getComputedStyle(el).backgroundColor)
     await ghost.hover()
@@ -638,3 +640,97 @@ test.describe('build card at 360x780', () => {
     await expect(page.getByTestId('floor-coder-takeover')).toHaveAttribute('data-tone', 'warning')
   })
 })
+
+/*
+ * PR-08: the action bar. One set of verbs; pinned above the composer on a
+ * phone. "Try again" and "Download copy" are on screen without scrolling on
+ * a stopped or stalled build; a destructive press asks first and its safe
+ * choice sends nothing; stacked buttons are full width with room between.
+ */
+function watchActionRequests(page: Page): string[] {
+  const sent: string[] = []
+  page.on('request', (req) => {
+    if (req.method() !== 'POST') return
+    const url = req.url()
+    if (/\/chat(\/|\?|$)|\/coder-control|\/product\/generate/.test(url)) sent.push(url)
+  })
+  return sent
+}
+
+for (const vp of [
+  { width: 360, height: 640 },
+  { width: 360, height: 780 },
+]) {
+  test.describe(`action bar at ${vp.width}x${vp.height}`, () => {
+    test.use({ viewport: vp, hasTouch: true, isMobile: true })
+
+    for (const state of ['stopped', 'stalled'] as const) {
+      test(`${state}: Try again and Download copy are fully on screen without scrolling`, async ({ page }) => {
+        await openState(page, state)
+        const bar = page.getByTestId('floor-action-bar')
+        await expect(bar).toHaveAttribute('data-placement', 'bar')
+        for (const id of ['floor-try-again', 'floor-take-copy']) {
+          const box = await page.getByTestId(id).boundingBox()
+          expect(box, `${id} laid out`).not.toBeNull()
+          expect(box!.y).toBeGreaterThanOrEqual(0)
+          expect(box!.y + box!.height).toBeLessThanOrEqual(vp.height)
+          expect(box!.x).toBeGreaterThanOrEqual(0)
+          expect(box!.x + box!.width).toBeLessThanOrEqual(vp.width)
+        }
+        await expect(page.getByTestId('floor-try-again')).toHaveText('Try again')
+        await expect(page.getByTestId('floor-try-again')).toBeEnabled()
+        // Not inside the card too: the actions appear in one place.
+        await expect(page.getByTestId('floor-coder-takeover').getByTestId('floor-try-again')).toHaveCount(0)
+      })
+
+      test(`${state}: stacked buttons are full width with at least 8px between them`, async ({ page }) => {
+        await openState(page, state)
+        const rows = await page.evaluate(() => {
+          const list = document.querySelector('[data-testid="floor-action-bar"] .action-list') as HTMLElement
+          const lw = list.getBoundingClientRect().width
+          return [...list.querySelectorAll(':scope > .action-item > .action-button, :scope > .action-more > .action-more-toggle')].map(
+            (b) => {
+              const r = b.getBoundingClientRect()
+              return { top: r.top, bottom: r.bottom, width: r.width, listWidth: lw }
+            },
+          )
+        })
+        expect(rows.length).toBeGreaterThanOrEqual(2)
+        for (const r of rows) expect(Math.abs(r.width - r.listWidth)).toBeLessThanOrEqual(1)
+        for (let i = 1; i < rows.length; i++) expect(rows[i].top - rows[i - 1].bottom).toBeGreaterThanOrEqual(8)
+      })
+    }
+
+    test('stopped: Start from scratch then Cancel sends no request', async ({ page }) => {
+      await openState(page, 'stopped')
+      const sent = watchActionRequests(page)
+      await page.getByTestId('floor-action-more').click()
+      await page.getByTestId('floor-start-over').click()
+      const sheet = page.getByTestId('floor-confirm-sheet')
+      await expect(sheet).toBeVisible()
+      await expect(page.getByTestId('floor-confirm-keep')).toHaveText('Cancel')
+      await expect(page.getByTestId('floor-confirm-keep')).toBeFocused()
+      const box = await sheet.boundingBox()
+      expect(box!.y).toBeGreaterThanOrEqual(0)
+      expect(box!.y + box!.height).toBeLessThanOrEqual(vp.height + 1)
+      await page.getByTestId('floor-confirm-keep').click()
+      await expect(sheet).toHaveCount(0)
+      await page.waitForTimeout(300)
+      expect(sent).toEqual([])
+    })
+
+    test('building: Stop build then Keep building sends no request', async ({ page }) => {
+      await openState(page, 'building')
+      const sent = watchActionRequests(page)
+      const stop = page.getByTestId('floor-coder-stop')
+      await expect(stop).toHaveText('Stop build')
+      await expect(page.getByRole('button', { name: /^(Pause|Resume)$/ })).toHaveCount(0)
+      await stop.click()
+      await expect(page.getByTestId('floor-confirm-sheet')).toContainText('Stop this build?')
+      await page.getByTestId('floor-confirm-keep').click()
+      await expect(page.getByTestId('floor-confirm-sheet')).toHaveCount(0)
+      await page.waitForTimeout(300)
+      expect(sent).toEqual([])
+    })
+  })
+}
