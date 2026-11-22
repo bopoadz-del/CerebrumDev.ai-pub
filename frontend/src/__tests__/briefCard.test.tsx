@@ -60,6 +60,10 @@ describe('briefStatus: one word for the state of the brief', () => {
     [{ intake: declared, approved: true, buildState: 'stalled' }, 'stopped'],
     [{ intake: declared, approved: true, buildState: 'succeeded' }, 'built'],
     [{ intake: { ...declared, reopened: true }, approved: true, buildState: 'failed' }, 'draft'],
+    // PR-09: a reopened brief is pre-filled with the declared answers; a
+    // proposal that changes nothing is not a suggestion.
+    [{ intake: { declared: DECLARED, proposal: { ...DECLARED }, reopened: true }, approved: true, buildState: 'failed' }, 'draft'],
+    [{ intake: { declared: DECLARED, proposal: { ...DECLARED, country: 'DK' }, reopened: true }, approved: true, buildState: 'failed' }, 'suggested by chat'],
   ] as const)('%o -> %s', (input, want) => {
     expect(briefStatus(input as Parameters<typeof briefStatus>[0])).toBe(want)
   })

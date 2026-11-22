@@ -734,3 +734,92 @@ for (const vp of [
     })
   })
 }
+
+/*
+ * PR-09: buttons answer where you pressed. After a press the visible screen
+ * changes (a result line in the action bar, or the sheet), and the reader is
+ * not moved away from the buttons.
+ */
+test.describe('action results at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  async function cardTop(page: Page): Promise<number> {
+    const box = await page.getByTestId('floor-coder-takeover').boundingBox()
+    if (!box) throw new Error('build card not laid out')
+    return box.y
+  }
+
+  test('stopped: Download copy changes the screen, answers in the bar and keeps the position', async ({ page }) => {
+    await openState(page, 'stopped')
+    const before = await page.screenshot()
+    const topBefore = await cardTop(page)
+    const copy = page.getByTestId('floor-take-copy')
+    const copyBox = await copy.boundingBox()
+    await copy.click()
+    const result = page.getByTestId('floor-action-result')
+    await expect(result).toBeVisible()
+    await expect(page.getByTestId('floor-action-result-text')).toHaveText('Copy downloading.')
+    await expect(page.getByTestId('floor-action-bar')).toContainText('Copy downloading.')
+    const box = await result.boundingBox()
+    expect(box!.y).toBeGreaterThanOrEqual(0)
+    expect(box!.y + box!.height).toBeLessThanOrEqual(780)
+    await page.waitForTimeout(400)
+    expect(Math.abs((await cardTop(page)) - topBefore)).toBeLessThanOrEqual(2)
+    // The pressed button is still under the finger (the bar may grow upward
+    // by the result line, never sideways or off screen).
+    const after = await copy.boundingBox()
+    expect(Math.abs(after!.x - copyBox!.x)).toBeLessThanOrEqual(1)
+    expect(after!.y + after!.height).toBeLessThanOrEqual(780)
+    expect(Buffer.compare(before, await page.screenshot())).not.toBe(0)
+  })
+
+  test('stopped: Change answers opens the sheet in the viewport with "Save and try again"', async ({ page }) => {
+    await openState(page, 'stopped')
+    const before = await page.screenshot()
+    const topBefore = await cardTop(page)
+    await page.getByTestId('floor-action-more').click()
+    await page.getByTestId('floor-continue-with-intake').click()
+    const sheet = page.getByTestId('brief-sheet')
+    await expect(sheet).toBeVisible()
+    await expect(page.getByTestId('brief-save')).toHaveText('Save and try again')
+    await expect(sheet.getByRole('button', { name: 'Cancel' })).toBeVisible()
+    const box = await sheet.boundingBox()
+    expect(box!.y).toBeGreaterThanOrEqual(0)
+    expect(box!.y + box!.height).toBeLessThanOrEqual(781)
+    expect(box!.x).toBeGreaterThanOrEqual(0)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(360)
+    expect(Math.abs((await cardTop(page)) - topBefore)).toBeLessThanOrEqual(2)
+    expect(Buffer.compare(before, await page.screenshot())).not.toBe(0)
+    // Cancel closes it; the result line is still where the finger was.
+    await sheet.getByRole('button', { name: 'Cancel' }).click()
+    await expect(sheet).toHaveCount(0)
+    await expect(page.getByTestId('floor-action-result-text')).toHaveText(
+      'Your brief is open to change. Edit brief changes it.',
+    )
+    // The pre-filled answers are not a chat suggestion: no second gold button.
+    await expect(page.getByTestId('intake-confirm')).toHaveCount(0)
+    await expect(page.getByTestId('intake-change')).toBeVisible()
+  })
+
+  test('a refused press says why in the bar and the close control clears it', async ({ page }) => {
+    await openState(page, 'stopped')
+    await page.route(/\/v1\/sessions\/[^/]+\/chat$/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body:
+          `event: info\ndata: ${JSON.stringify({ ok: false, summary: 'Choose a build level first.' })}\n\n` +
+          'event: done\ndata: ""\n\n',
+      }),
+    )
+    await page.getByTestId('floor-try-again').click()
+    await expect(page.getByTestId('floor-action-result')).toHaveAttribute('data-tone', 'refused')
+    await expect(page.getByTestId('floor-action-result-text')).toHaveText('Refused: Choose a build level first.')
+    const close = page.getByTestId('floor-action-result-close')
+    const cb = await close.boundingBox()
+    expect(cb!.width).toBeGreaterThanOrEqual(44)
+    expect(cb!.height).toBeGreaterThanOrEqual(44)
+    await close.click()
+    await expect(page.getByTestId('floor-action-result')).toHaveCount(0)
+  })
+})

@@ -84,6 +84,29 @@ export interface ActionInput {
   downloading?: boolean
   /** Stop was pressed and the build has not stopped yet. */
   stopping?: boolean
+  /** The action whose press is in flight: it shows its busy label. */
+  pending?: ActionId | null
+}
+
+/** The label a pressed action shows while its request runs. */
+export const BUSY_LABEL: Record<ActionId, string> = {
+  stop: 'Stopping…',
+  try_again: 'Starting…',
+  download_copy: 'Packing…',
+  change_answers: 'Opening…',
+  start_over: 'Starting…',
+  copy_report: 'Copying…',
+  download_platform: 'Packing…',
+  run_pilot: 'Starting…',
+  open_repo: 'Opening…',
+}
+
+/** The pressed action shows its busy label and cannot be pressed twice. */
+function withPending<T extends Pick<ActionPlan, 'bar' | 'more'>>(plan: T, pending: ActionId | null | undefined): T {
+  if (!pending) return plan
+  const mark = (a: BuildAction): BuildAction =>
+    a.id === pending && !a.href ? { ...a, label: BUSY_LABEL[a.id], disabled: BUSY_LABEL[a.id] } : a
+  return { ...plan, bar: plan.bar.map(mark), more: plan.more.map(mark) }
 }
 
 export const STOP_CONFIRM: ConfirmSpec = {
@@ -259,6 +282,10 @@ function finishedPlan(input: ActionInput, build: BuildStatus): Pick<ActionPlan, 
 }
 
 export function buildActions(input: ActionInput): ActionPlan {
+  return withPending(planFor(input), input.pending)
+}
+
+function planFor(input: ActionInput): ActionPlan {
   const build = input.build
   const accessPaused = Boolean(input.accessPaused)
   if (build?.state === 'succeeded') return { ...finishedPlan(input, build), accessPaused }

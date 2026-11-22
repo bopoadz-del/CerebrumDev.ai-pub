@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import type { ActionOutcome } from './actionResult'
 import type { ActionId, ActionPlan, BuildAction, ConfirmSpec } from './buildActions'
 
 /**
@@ -158,22 +159,74 @@ function ConfirmSheet({
   )
 }
 
+/** The next step is offered only as one of the state's own, pressable actions. */
+function findAction(plan: ActionPlan, id: ActionId): BuildAction | null {
+  const a = [...plan.bar, ...plan.more].find((x) => x.id === id)
+  return a && !a.disabled && !a.href ? a : null
+}
+
+function OutcomeLine({
+  outcome,
+  next,
+  onPress,
+  onDismiss,
+}: {
+  outcome: ActionOutcome
+  next: BuildAction | null
+  onPress: (a: BuildAction) => void
+  onDismiss?: () => void
+}) {
+  return (
+    <div
+      className={'action-result action-result-' + outcome.tone}
+      role={outcome.tone === 'done' ? 'status' : 'alert'}
+      data-testid="floor-action-result"
+      data-tone={outcome.tone}
+    >
+      <p className="action-result-text" data-testid="floor-action-result-text">
+        {outcome.text}
+      </p>
+      {next && (
+        <button
+          type="button"
+          className={'action-button action-result-next ' + (next.style === 'danger' ? 'action-danger' : 'action-secondary')}
+          data-testid="floor-action-result-next"
+          onClick={() => onPress(next)}
+        >
+          {next.label}
+        </button>
+      )}
+      {onDismiss && (
+        <button
+          type="button"
+          className="quiet icon-button action-result-close"
+          aria-label="Close this message"
+          data-testid="floor-action-result-close"
+          onClick={onDismiss}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function ActionBar({
   plan,
   placement,
   onRun,
   onSeePlans,
-  result,
-  error,
+  outcome,
+  onDismiss,
 }: {
   plan: ActionPlan
   placement: 'bar' | 'card'
   onRun: (id: ActionId) => void
   onSeePlans?: () => void
-  /** The one-line result of the last press. */
-  result?: string | null
-  /** The last press failed: what went wrong, in words. */
-  error?: string | null
+  /** What the last press said back: done, refused and why, or what went wrong. */
+  outcome?: ActionOutcome | null
+  /** Closes the result line. */
+  onDismiss?: () => void
 }) {
   const [moreOpen, setMoreOpen] = useState(false)
   const [confirming, setConfirming] = useState<BuildAction | null>(null)
@@ -237,14 +290,13 @@ export function ActionBar({
           </div>
         )}
       </div>
-      {(error || result) && (
-        <p
-          className={'action-result' + (error ? ' action-result-error' : '')}
-          role={error ? 'alert' : 'status'}
-          data-testid="floor-action-result"
-        >
-          {error || result}
-        </p>
+      {outcome && (
+        <OutcomeLine
+          outcome={outcome}
+          next={outcome.next ? findAction(plan, outcome.next) : null}
+          onPress={press}
+          onDismiss={onDismiss}
+        />
       )}
       {confirming?.confirm && (
         <ConfirmSheet
