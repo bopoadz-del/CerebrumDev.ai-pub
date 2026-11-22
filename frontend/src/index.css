@@ -316,12 +316,62 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .page-head p { margin: 6px 0 0; font-size: 13px; }
 
 /* floor chat */
-.floor { display: flex; flex-direction: column; height: 100%; padding: 28px 28px 0; }
-/* min-height: 0 lets this flex child shrink below its content's intrinsic
+.floor { display: flex; flex-direction: column; height: 100%; padding: 0; }
+/* The Floor is ONE scrolling stream: page head, conversation and build card
+   scroll together, so a tall build card can never squeeze the conversation to
+   a strip or push its own buttons off a phone screen. The choices line and the
+   composer stay pinned below it.
+   min-height: 0 lets this flex child shrink below its content's intrinsic
    height so it SCROLLS internally. Without it a tall Floor card (a stalled
    build's rework dump) expands .chat-scroll, pushing the composer past main's
    overflow:hidden boundary -- the input bar vanished off the bottom on a phone. */
-.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 16px; }
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 28px 28px 16px;
+}
+/* The pinned footer's top edge is the stream's boundary. */
+.floor-footer {
+  flex-shrink: 0;
+  padding: 10px 28px 0;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.floor-footer .composer { border-top: none; padding-top: 10px; }
+.notice-not-yet-wrap { margin: 6px 0 0; }
+/* The ref's copy control is a small inline chip inside the failure sentence;
+   a full-size button there covered the ref it copies. */
+/* Tags never break mid-word on a phone: the row wraps them to a new line
+   instead (the bubble's break-word otherwise splits "CONSTRUCTION"). */
+.bp-header strong, .bp-vertical, .bp-drafting-mode, .bp-strategy, .bp-cap-id {
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.bp-vertical, .bp-drafting-mode, .bp-strategy { white-space: nowrap; }
+.coder-failure-copy {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  vertical-align: baseline;
+  border-radius: 4px;
+}
+.notice-not-yet-link {
+  background: none;
+  border: none;
+  padding: 4px 0;
+  margin: 0;
+  color: var(--dim);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.notice-not-yet-link:hover { color: var(--text); }
 .bubble-row { display: flex; margin-bottom: 12px; }
 .bubble-row.user { justify-content: flex-end; }
 .bubble {
@@ -467,7 +517,9 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   .rail-foot-text { display: none; }
   .bubble { max-width: 92%; }
   .page { padding: 18px 14px; }
-  .floor { padding: 18px 14px 0; }
+  .floor { padding: 0; }
+  .floor .chat-scroll { padding: 18px 14px 12px; }
+  .floor-footer { padding: 6px 14px 0; }
   .kv { grid-template-columns: 120px 1fr; }
 }
 
@@ -611,6 +663,7 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 8px;
 }
 .bp-header strong {
@@ -925,6 +978,7 @@ button.coder-failure-copy { font-size: inherit; padding: 0 4px; margin-left: 6px
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   cursor: pointer;
 }
 .bp-cap-pick input[type='checkbox'] {
@@ -985,3 +1039,14 @@ button.coder-failure-copy { font-size: inherit; padding: 0 4px; margin-left: 6px
 .admin-key-row input, .admin-model-row input { flex: 1 1 180px; min-width: 0; }
 .admin-model-row select { flex: 0 0 auto; }
 .admin-ops .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+/* Reduced motion: no smooth scrolling and no animation (the Floor's own
+   scrolling also reads this preference, floorScroll.ts). */
+@media (prefers-reduced-motion: reduce) {
+  html, .chat-scroll { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, FrozenSet, List, Optional, Type
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,6 +22,45 @@ def connector_slug(text: Any) -> str:
     import re
 
     return re.sub(r"[^a-z0-9_]+", "_", str(text or "").lower()).strip("_")
+
+
+class SetBy(Enum):
+    """Who may set a blueprint field.
+
+    Every ``ProductBlueprint`` field declares exactly one, as
+    ``Annotated[<type>, SetBy.X]``. Whether a customer session may carry a
+    field is answered by that declaration -- never by a list of field names
+    kept somewhere else, and never by which route the blueprint came in on.
+    """
+
+    #: The customer's own typed choice on the Floor.
+    USER = auto()
+    #: Drafted for the customer inside their session.
+    ARCHITECT = auto()
+    #: Only an operator's own blueprint file. Never a customer session.
+    OPERATOR = auto()
+
+
+#: Whoever acts inside a customer session. A field that anyone else sets never
+#: enters a session, whatever carried it to the door.
+SESSION_SETTERS: FrozenSet[SetBy] = frozenset({SetBy.USER, SetBy.ARCHITECT})
+
+
+def field_setters(model: Type[BaseModel]) -> Dict[str, SetBy]:
+    """Each field's declared setter, read off the model itself.
+
+    A field with no ``SetBy`` mark -- or with two -- has no answer to "who may
+    set this?". Reading the declarations then fails instead of guessing one.
+    """
+    setters: Dict[str, SetBy] = {}
+    for name, info in model.model_fields.items():
+        marks = [mark for mark in info.metadata if isinstance(mark, SetBy)]
+        if len(marks) != 1:
+            raise BlueprintError(
+                f"blueprint field '{name}' must declare exactly one SetBy, found {len(marks)}"
+            )
+        setters[name] = marks[0]
+    return setters
 
 
 class CapabilityStrategyHint(str, Enum):
@@ -72,53 +111,59 @@ class CapabilitySpec(BaseModel):
 class ProductBlueprint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str
-    product_id: str
-    product_name: str
-    vertical: str
-    summary: str
-    capabilities: List[CapabilitySpec]
-    ui_modules: List[str] = Field(default_factory=list)
-    connectors: List[str] = Field(default_factory=list)
-    edge_profile: str = "standard"
+    # Every field says who may set it (``SetBy``). ``customer_settable`` reads
+    # these marks; a field added without one stops this module loading.
+    schema_version: Annotated[str, SetBy.ARCHITECT]
+    product_id: Annotated[str, SetBy.ARCHITECT]
+    product_name: Annotated[str, SetBy.ARCHITECT]
+    vertical: Annotated[str, SetBy.USER]
+    summary: Annotated[str, SetBy.ARCHITECT]
+    capabilities: Annotated[List[CapabilitySpec], SetBy.ARCHITECT]
+    ui_modules: Annotated[List[str], SetBy.ARCHITECT] = Field(default_factory=list)
+    connectors: Annotated[List[str], SetBy.ARCHITECT] = Field(default_factory=list)
+    edge_profile: Annotated[str, SetBy.ARCHITECT] = "standard"
     #: A GOLDEN blueprint lists the vertical hints it answers for; the
-    #: architect routes a hint by reading these, never a Factory table.
-    serves_verticals: List[str] = Field(default_factory=list)
+    #: architect routes a hint by reading these, never a Factory table. It is
+    #: the golden's own declaration, so it stays with the golden: operator-only.
+    serves_verticals: Annotated[List[str], SetBy.OPERATOR] = Field(default_factory=list)
     #: Directory under factory_outputs/ that keeps a stable copy of the last
-    #: finished build of this blueprint. Unset: no canonical copy.
-    canonical_output: Optional[str] = None
+    #: finished build of this blueprint. Unset: no canonical copy. It names a
+    #: server directory that is replaced after a build, so it is operator-only:
+    #: honoured on an operator's own run, never on a customer's
+    #: (``build_jobs.clone_canonical``).
+    canonical_output: Annotated[Optional[str], SetBy.OPERATOR] = None
     #: The BUILD LEVEL the user chose on the Floor (a typed field, like the
     #: vertical and the locale): prototype | light | pilot | production
     #: (app.factory.build.build_level). It decides where the run stops on the
     #: CODE -> PRODUCT -> STORE ladder and how strict its top rung is. None
     #: means undeclared -- the Floor refuses to start a build until the user
     #: chooses; it is never inferred from the brief and has no default.
-    build_level: Optional[str] = None
-    human_authority: bool = True
-    factory_scenario: FactoryScenario = FactoryScenario.CREATE_PRODUCT
+    build_level: Annotated[Optional[str], SetBy.USER] = None
+    human_authority: Annotated[bool, SetBy.ARCHITECT] = True
+    factory_scenario: Annotated[FactoryScenario, SetBy.ARCHITECT] = FactoryScenario.CREATE_PRODUCT
     # Provenance of the draft itself: "architect_llm" | "golden" (chosen by
     # structural overlap, see golden_match) | "keyword_fallback". The architect fails safe from
     # LLM to deterministic drafting, which is right for availability and
     # wrong to do silently —
     # a user whose LLM credit died must see that templates drafted this.
-    drafting_mode: Optional[str] = None
-    drafting_note: Optional[str] = None
+    drafting_mode: Annotated[Optional[str], SetBy.ARCHITECT] = None
+    drafting_note: Annotated[Optional[str], SetBy.ARCHITECT] = None
     #: A matching golden surfaced as a labelled accept/decline SUGGESTION —
     #: never substituted for the user's own draft. The base output is always
     #: the user's draft; whenever a golden's declared structure overlaps the
     #: draft above the kernel threshold the match rides here as
     #: {golden_id, golden_name, overlap, drafting_mode, label} for the user to
     #: accept or decline. None below the threshold or when nothing matched.
-    golden_suggestion: Optional[Dict[str, Any]] = None
+    golden_suggestion: Annotated[Optional[Dict[str, Any]], SetBy.ARCHITECT] = None
     #: How the client wants the platform delivered — chosen at request
     #: time, never after the build: "zip" (download in the Floor) or
     #: "github_repo" (pushed to a repo, URL returned on the build).
-    delivery_format: str = "zip"
+    delivery_format: Annotated[str, SetBy.USER] = "zip"
     #: The country / currency the USER declared on the Floor (typed fields,
     #: validated by shape only): {"country": "XX", "currency": "XXX"}.
     #: None when the user declared none -- money is then WITHHELD, never
     #: guessed (money_contract).
-    locale: Optional[Dict[str, str]] = None
+    locale: Annotated[Optional[Dict[str, str]], SetBy.USER] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -183,6 +228,33 @@ class ProductBlueprint(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate capability ids")
         return v
+
+
+#: The fields no customer session may carry, read off the declarations above
+#: when this module loads.
+OPERATOR_ONLY_FIELDS: FrozenSet[str] = frozenset(
+    name
+    for name, setter in field_setters(ProductBlueprint).items()
+    if setter not in SESSION_SETTERS
+)
+
+
+def customer_settable(blueprint: Any) -> Dict[str, Any]:
+    """The part of a blueprint a customer session may carry.
+
+    Called wherever a blueprint enters a session from outside it or from a
+    source sessions share: a request body, a golden, a cache entry. Every key
+    whose field only an operator may set is left out, so it is never stored on
+    the session. Keys the model does not know stay in, for the model itself to
+    refuse.
+    """
+    if isinstance(blueprint, ProductBlueprint):
+        blueprint = blueprint_to_dict(blueprint)
+    return {
+        key: value
+        for key, value in dict(blueprint).items()
+        if key not in OPERATOR_ONLY_FIELDS
+    }
 
 
 def load_blueprint(path: Path | str) -> ProductBlueprint:

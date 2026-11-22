@@ -47,6 +47,7 @@ import { LocalePicker } from './localePicker'
 import { IntakeLine } from './intakeLine'
 import { FloorUpload } from './FloorUpload'
 import { displayProductName, humanizeProductId, latestBlueprintIn } from './productDisplay'
+import { distanceFromBottom, scrollBehavior, settledKey, shouldFollow } from './floorScroll'
 
 interface Capability {
   id: string
@@ -669,7 +670,18 @@ export function Floor({
   const [confirmStartOver, setConfirmStartOver] = useState(false)
   const [refCopied, setRefCopied] = useState(false)
   const cliHonesty = useFactoryCodeCliHonesty()
-  const bottomRef = useRef<HTMLDivElement>(null)
+  // The Floor's one scroller (page head, conversation, build card).
+  const streamRef = useRef<HTMLDivElement>(null)
+  const takeoverRef = useRef<HTMLDivElement>(null)
+  // The reader's distance from the bottom at their last scroll, measured
+  // before new content lands, so it is the reader's position and not the new
+  // content's height. A fresh session starts at the bottom.
+  const readerDistanceRef = useRef(0)
+  const msgCountRef = useRef(0)
+  // A hydration replaces the opening message with the saved history; that is
+  // a reload, not a new message, so it is never followed.
+  const hydratedRef = useRef(false)
+  const settledRef = useRef<string | null>(null)
   // Approve appends a pending factory bubble before the generation SSE.
   // The msgs-sync effect must not treat that leftover blueprint card as
   // "still drafting" and tear down coding chrome before the first poll.
@@ -693,6 +705,7 @@ export function Floor({
         setMsgs((current) => {
           if (current.length > 1) return current
           applied = true
+          hydratedRef.current = true
           return hydrated.msgs
         })
         // Same turn as the hydrated generation card so the first watch
@@ -728,13 +741,39 @@ export function Floor({
     }
   }, [sessionId])
 
-  // Follow a new message and a change of build state. A status poll makes a
-  // new build object every few seconds; following that dragged a reader who
-  // had scrolled up to the chat back down to the status card.
-  const coderState = coderBuild?.state
+  // Follow a NEW message only when the reader is near the bottom. A streamed
+  // word changes the last message, not the count, so it never moves the reader;
+  // neither does a build status poll.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' })
-  }, [msgs, coderState])
+    const count = msgs.length
+    const grew = count > msgCountRef.current
+    msgCountRef.current = count
+    const el = streamRef.current
+    if (hydratedRef.current) {
+      // A reload lands on the TOP of the newest item (the build card, or the
+      // last message, e.g. a feature list waiting for Approve), never on the
+      // end of a long card.
+      hydratedRef.current = false
+      if (!el) return
+      const rows = el.querySelectorAll<HTMLElement>('.bubble-row')
+      const newest = takeoverRef.current ?? rows[rows.length - 1]
+      if (newest) {
+        const top = newest.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+        el.scrollTo?.({ top: Math.max(0, top - 8) })
+      }
+      readerDistanceRef.current = distanceFromBottom(el)
+      return
+    }
+    if (!grew || !el) return
+    if (!shouldFollow('new-message', readerDistanceRef.current)) return
+    el.scrollTo?.({ top: el.scrollHeight, behavior: scrollBehavior() })
+  }, [msgs])
+
+  const onStreamScroll = useCallback(() => {
+    const el = streamRef.current
+    if (!el) return
+    readerDistanceRef.current = distanceFromBottom(el)
+  }, [])
 
   useEffect(() => {
     const latest = latestProductCard(msgs)
@@ -771,6 +810,20 @@ export function Floor({
     ),
     nowMs,
   )
+  // When the build first reaches stopped or finished, bring the TOP of the
+  // build card into view once. A later poll in the same state does nothing.
+  const settled = coderActive ? settledKey(liveCoderBuild?.state) : null
+  useEffect(() => {
+    if (settled === settledRef.current) return
+    settledRef.current = settled
+    if (!settled) return
+    const stream = streamRef.current
+    const card = takeoverRef.current
+    if (!stream || !card) return
+    const top = card.getBoundingClientRect().top - stream.getBoundingClientRect().top + stream.scrollTop
+    stream.scrollTo?.({ top: Math.max(0, top - 8), behavior: scrollBehavior() })
+  }, [settled])
+
   useEffect(() => {
     if (liveCoderBuild?.state !== 'building') return
     const id = window.setInterval(() => setNowMs(Date.now()), 5000)
@@ -1152,28 +1205,525 @@ export function Floor({
 
   return (
     <div className="floor">
-      <header className="page-head">
-        <div className="page-head-row">
-          <h2>Factory Floor</h2>
-          {onNewSession && (
-            <button
-              type="button"
-              className="ghost"
-              data-testid="floor-new-session"
-              disabled={busy || newSessionBusy || accessPaused}
-              onClick={() => void startNewSession()}
-            >
-              {newSessionBusy ? 'Starting…' : 'New session'}
-            </button>
+      <div
+        className="chat-scroll floor-stream"
+        ref={streamRef}
+        onScroll={onStreamScroll}
+        data-testid="floor-stream"
+      >
+        <header className="page-head">
+          <div className="page-head-row">
+            <h2>Factory Floor</h2>
+            {onNewSession && (
+              <button
+                type="button"
+                className="ghost"
+                data-testid="floor-new-session"
+                disabled={busy || newSessionBusy || accessPaused}
+                onClick={() => void startNewSession()}
+              >
+                {newSessionBusy ? 'Starting…' : 'New session'}
+              </button>
+            )}
+          </div>
+          {notice && (
+            <div className="notice-box already-signed-in" role="status">
+              {notice}
+            </div>
           )}
-        </div>
-        {notice && (
-          <div className="notice-box already-signed-in" role="status">
-            {notice}
+          <p className="dim">Describe the platform. Approve the feature list. The coding agent takes over and writes it.</p>
+          <NotYetNotice />
+          <FactoryCodeCliStatus message={cliHonesty} testId="floor-factory-cli-status" />
+        </header>
+          {msgs.map((m, i) => {
+            // Terminal runs own the floor via the STOPPED/stalled panel.
+            // Hide teal "taken over" generation chrome so it cannot sit above it.
+            if (m.card === 'generation' && coderTerminal) return null
+            return (
+              <div key={i} className={'bubble-row ' + m.role}>
+                <div className={'bubble ' + m.role + ' ' + (m.card ?? '')}>
+                  {m.text || (m.role === 'factory' && busy && i === msgs.length - 1 ? <span className="typing">…</span> : null)}
+                  {m.card === 'blueprint' && m.blueprint && (
+                    <BlueprintCard
+                      blueprint={m.blueprint}
+                      busy={busy || coderActive}
+                      accessPaused={accessPaused}
+                      onApprove={(excludedIds, delivery) =>
+                  void approveWithSelection(excludedIds, delivery)
+                }
+                      onRefine={(typed) => void sendTyped(typed)}
+                      onAcceptGolden={() => void resolveGolden('accept')}
+                      onDeclineGolden={() => void resolveGolden('decline')}
+                    />
+                  )}
+                  {m.card === 'generation' && (
+                    <div className="card-actions">
+                      {m.engine === 'runner' && (
+                        <span
+                          className="bp-drafting-mode architect_llm"
+                          title="The coding agent took over after you approved the feature list"
+                        >
+                          coding agent
+                        </span>
+                      )}
+                      {m.triggeredBy === 'chat_llm' && (
+                        <span
+                          className="bp-drafting-mode architect_llm"
+                          title="The Floor chat LLM called start_coder"
+                        >
+                          chat LLM
+                        </span>
+                      )}
+                      {i === latestGenerationIdx && !coderBuilding && (
+                        <button type="button" onClick={goPlatforms}>
+                          Open Your Platforms
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        {coderActive && (
+          <div
+            ref={takeoverRef}
+            className={
+              'coder-takeover' +
+              (liveCoderBuild?.stale ||
+              liveCoderBuild?.state === 'stalled' ||
+              liveCoderBuild?.state === 'failed'
+                ? ' stale'
+                : '')
+            }
+            role="status"
+            data-testid="floor-coder-takeover"
+          >
+            <h3>
+              {liveCoderBuild?.state === 'succeeded' ? (
+                <>
+                  <span data-testid="floor-product-title">{productTitle}</span>{' '}
+                  <span className="mono" data-testid="floor-acceptance-score">
+                    {formatAcceptanceScore(liveCoderBuild)}
+                  </span>
+                  {' — '}
+                  {coderTakeoverHeading(liveCoderBuild)}
+                </>
+              ) : liveCoderBuild?.state === 'stalled' ? (
+                'Coding agent stalled'
+              ) : liveCoderBuild?.state === 'failed' ? (
+                'Coding agent stopped'
+              ) : (
+                'Coding agent has taken over'
+              )}
+            </h3>
+            <LevelGradeStrip build={liveCoderBuild} testIdPrefix="floor" />
+            <KernelStrip build={liveCoderBuild} />
+            {liveCoderBuild?.failure &&
+              (liveCoderBuild.state === 'failed' || liveCoderBuild.state === 'stalled' ? (
+                <p
+                  className={`coder-failure-line ${stopTone(liveCoderBuild.failure)}`}
+                  data-testid="floor-failure-line"
+                  role="alert"
+                >
+                  <strong>{stopHeadline(liveCoderBuild.failure)}</strong>
+                  {liveCoderBuild.failure.summary
+                    ? ` — ${liveCoderBuild.failure.summary}`
+                    : liveCoderBuild.failure.reason
+                      ? ` — ${liveCoderBuild.failure.reason}`
+                      : ''}
+                </p>
+              ) : (
+                // The run is still moving: a mid-fail is a rework round, not a
+                // stop. Orange status, no red alert -- red means it ended.
+                <p className="coder-rework-line" data-testid="floor-rework-line" role="status">
+                  <strong>
+                    {kernelName(
+                      liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'A phase',
+                    )}{' '}
+                    sent it back to the coder
+                  </strong>
+                  {liveCoderBuild.failure.summary
+                    ? ` — ${liveCoderBuild.failure.summary}`
+                    : liveCoderBuild.failure.reason
+                      ? ` — ${liveCoderBuild.failure.reason}`
+                      : ''}
+                  {liveCoderBuild.failure.ref ? ` (ref ${liveCoderBuild.failure.ref})` : ''}
+                  {' — rework in progress.'}
+                </p>
+              ))}
+            {/* The recovery actions sit directly under the failure sentence, so a
+                phone reaches them in the card's first screen. */}
+            {liveCoderBuild?.state === 'stalled' && (
+              <div className="card-actions">
+                <span className="status-pill status-pill-failed" data-testid="floor-stalled-pill">
+                  Build stalled
+                </span>
+                <button
+                  type="button"
+                  data-testid="floor-rerun-writer"
+                  disabled={busy || rerunBusy || accessPaused}
+                  onClick={() => void rerunWriter()}
+                >
+                  Re-run the writer
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={exportAffordance(liveCoderBuild).disabled || downloading}
+                  title={exportAffordance(liveCoderBuild).title}
+                  onClick={() => void download()}
+                >
+                  {exportAffordance(liveCoderBuild).label}
+                </button>
+                <button type="button" className="ghost" onClick={goPlatforms}>
+                  Open Your Platforms
+                </button>
+              </div>
+            )}
+            {coderFailed && (
+              // A FAILED build offers exactly three TYPED choices. Chat text
+              // never triggers any of them.
+              <div className="card-actions" data-testid="floor-failure-choices">
+                <span className="status-pill status-pill-failed" data-testid="floor-failed-pill">
+                  {liveCoderBuild?.failure ? stopHeadline(liveCoderBuild.failure) : 'Pilot suite failed'}
+                </span>
+                <button
+                  type="button"
+                  data-testid="floor-take-copy"
+                  title="Download the platform as it stands. The export is labelled FAILED and names the failing gate, check and finding; it is not certified."
+                  disabled={busy || downloading || accessPaused}
+                  onClick={() => void takeCopy()}
+                >
+                  {downloading ? 'Packing…' : 'Take a copy'}
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  data-testid="floor-continue-with-intake"
+                  title="Reopen the intake (country, currency, build level, vertical). Confirm resumes this platform's own branch with the rework budget it had left."
+                  disabled={busy || accessPaused}
+                  onClick={() => void sendTyped({ action: 'continue_with_intake' })}
+                >
+                  Continue with new answers
+                </button>
+                {!confirmStartOver ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    data-testid="floor-start-over"
+                    title="Build this platform again from the approved feature list on a fresh workspace. The current head is kept as an archive tag; nothing is deleted."
+                    disabled={busy || accessPaused}
+                    onClick={() => setConfirmStartOver(true)}
+                  >
+                    Start over
+                  </button>
+                ) : (
+                  <span className="start-over-confirm" data-testid="floor-start-over-confirm">
+                    <span className="muted" data-testid="floor-start-over-confirm-text">
+                      This rebuilds from scratch — the current work is archived. Continue instead?
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost"
+                      data-testid="floor-start-over-continue"
+                      title="Resume this platform at its failing stage with the rework budget it had left. Nothing is rebuilt from scratch."
+                      disabled={busy || accessPaused}
+                      onClick={() => {
+                        setConfirmStartOver(false)
+                        void sendTyped({ action: 'continue' })
+                      }}
+                    >
+                      Continue instead
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="floor-start-over-confirm-button"
+                      title="Confirm: archive the current head and rebuild from scratch on a fresh workspace. This cannot be undone."
+                      disabled={busy || accessPaused}
+                      onClick={() => {
+                        setConfirmStartOver(false)
+                        void sendTyped({ action: 'start_over', value: 'confirmed' })
+                      }}
+                    >
+                      Rebuild from scratch
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+            {coderFailed && liveCoderBuild?.next_continue && (
+              <p className="coder-next-line" data-testid="floor-next-continue">
+                {liveCoderBuild.next_continue}
+              </p>
+            )}
+            {fixRoundsLine(liveCoderBuild) && (
+              <p className="coder-rounds-line" data-testid="floor-fix-rounds">
+                {fixRoundsLine(liveCoderBuild)}
+              </p>
+            )}
+            {(liveCoderBuild?.failure?.ref ||
+              (coderFailed && (liveCoderBuild?.failed_label || liveCoderBuild?.failure_narrative?.text)) ||
+              (liveCoderBuild?.decisions?.length ?? 0) > 0) && (
+              // The machine detail: kept, but out of the headline -- the record's
+              // own FAILED(...) label, the ledger narrative and each rule decision
+              // with its check id and finding, which are written for the coder.
+              <details className="coder-technical" data-testid="floor-technical-detail">
+                <summary>Technical detail</summary>
+                {liveCoderBuild?.failure?.ref && (
+                  <p className="coder-failure-ref" data-testid="floor-failure-ref">
+                    Reference <code>{liveCoderBuild.failure.ref}</code>
+                    {typeof navigator !== 'undefined' && navigator.clipboard ? (
+                      <button
+                        type="button"
+                        className="link coder-failure-copy"
+                        onClick={() => {
+                          void navigator.clipboard
+                            .writeText(liveCoderBuild.failure?.ref || '')
+                            .then(() => setRefCopied(true))
+                        }}
+                      >
+                        {refCopied ? 'copied' : 'copy'}
+                      </button>
+                    ) : null}
+                  </p>
+                )}
+                {coderFailed && liveCoderBuild?.failed_label && (
+                  <p data-testid="floor-failed-label">{liveCoderBuild.failed_label}</p>
+                )}
+                {coderFailed && liveCoderBuild?.failure_narrative?.text && (
+                  <p data-testid="floor-failure-narrative">{liveCoderBuild.failure_narrative.text}</p>
+                )}
+                {(liveCoderBuild?.decisions?.length ?? 0) > 0 && (
+                  <ol className="coder-decisions" data-testid="floor-decisions">
+                    {liveCoderBuild!.decisions!.map((d, i) => (
+                      <li key={i} data-testid="floor-decision" data-class={d.class}>
+                        <strong>{d.class}</strong> {d.gate} round {d.round_gate}/{d.gate_budget}{' '}
+                        (build {d.round_build}/{d.build_ceiling}) — {d.check}
+                        {d.finding ? `: ${d.finding}` : ''}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </details>
+            )}
+            {(liveCoderBuild?.suggested_checks?.length ?? 0) > 0 && (
+              <SuggestedChecks checks={liveCoderBuild!.suggested_checks!} />
+            )}
+            {(liveCoderBuild?.not_delivered?.length ?? 0) > 0 && (
+              <p className="coder-not-delivered-line" data-testid="floor-not-delivered-line">
+                Not delivered (Store-block repair failures):{' '}
+                {liveCoderBuild!
+                  .not_delivered!.map(
+                    (row) => `${row.capabilities.join(', ')} (Store block ${row.block_id}: ${row.reason || 'repair failed'})`,
+                  )
+                  .join('; ')}
+              </p>
+            )}
+            {!liveCoderBuild?.failure && liveCoderBuild?.recovered_failure && (
+              <p className="coder-recovered-line" data-testid="floor-recovered-line">
+                Recovered in rework —{' '}
+                {liveCoderBuild.recovered_failure.location ||
+                  liveCoderBuild.recovered_failure.phase ||
+                  'a phase'}{' '}
+                failed once ({liveCoderBuild.recovered_failure.reason || 'unknown'}) and the
+                agent fixed it.
+              </p>
+            )}
+            {liveCoderBuild && liveCoderBuild.state === 'building' ? (
+              <>
+                <CoderProgress build={liveCoderBuild} nowMs={nowMs} />
+                <div className="card-actions coder-monitor-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    data-testid="floor-coder-pause"
+                    disabled={controlBusy || liveCoderBuild.coder_control === 'pause'}
+                    onClick={() => {
+                      setControlBusy(true)
+                      void product
+                        .coderControl(sessionId, 'pause')
+                        .finally(() => setControlBusy(false))
+                    }}
+                  >
+                    {liveCoderBuild.coder_control === 'pause' ? 'Paused' : 'Pause'}
+                  </button>
+                  {liveCoderBuild.coder_control === 'pause' && (
+                    <button
+                      type="button"
+                      className="ghost"
+                      data-testid="floor-coder-resume"
+                      disabled={controlBusy}
+                      onClick={() => {
+                        setControlBusy(true)
+                        void product
+                          .coderControl(sessionId, 'resume')
+                          .finally(() => setControlBusy(false))
+                      }}
+                    >
+                      Resume
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="floor-coder-stop"
+                    disabled={controlBusy || liveCoderBuild.coder_control === 'stop'}
+                    onClick={() => {
+                      setControlBusy(true)
+                      void product
+                        .coderControl(sessionId, 'stop')
+                        .finally(() => setControlBusy(false))
+                    }}
+                  >
+                    Stop
+                  </button>
+                </div>
+              </>
+            ) : coderTakeoverNote(liveCoderBuild) === '' ? null : (
+              <p>
+                {coderTakeoverNote(liveCoderBuild) ??
+                  'The feature list is approved. The coding agent is starting WORKERS now.'}
+              </p>
+            )}
+            {coderSucceeded && (
+              <div className="card-actions">
+                {!coderPilotReady && liveCoderBuild?.build_level?.stop_gate !== 'CODE' && (
+                  <button
+                    type="button"
+                    data-testid="continue-to-pilot"
+                    onClick={() => void sendTyped({ action: 'run_pilot' })}
+                    disabled={busy || accessPaused}
+                  >
+                    Continue to pilot
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={exportBtn.ghost ? 'ghost' : undefined}
+                  onClick={() => void download()}
+                  disabled={downloading || exportBtn.disabled}
+                  title={exportBtn.title}
+                >
+                  {downloading ? 'Packing…' : exportBtn.label}
+                </button>
+                {liveCoderBuild?.repo_url &&
+                  liveCoderBuild.repo_url.startsWith('http') && (
+                    <a
+                      className="ghost"
+                      href={liveCoderBuild.repo_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      data-testid="floor-repo-link"
+                    >
+                      Open repository
+                    </a>
+                  )}
+              </div>
+            )}
+            {downloadError && <div className="error-box">{downloadError}</div>}
+            {rerunError && <div className="error-box">{rerunError}</div>}
+            {newSessionError && <div className="error-box">{newSessionError}</div>}
           </div>
         )}
-        <p className="dim">Describe the platform. Approve the feature list. The coding agent takes over and writes it.</p>
-        <p className="dim notice-not-yet">
+      </div>
+      <div className="floor-footer">
+        <IntakeLine
+          intake={intake}
+          onTyped={(typed) => void sendTyped(typed)}
+          disabled={busy || coderBuilding || accessPaused}
+          editControls={
+            <>
+              <VerticalPicker
+                sessionId={sessionId}
+                value={vertical}
+                onChange={pickVertical}
+                onLoaded={syncVertical}
+                onLocaleLoaded={syncLocale}
+                disabled={busy || coderBuilding || accessPaused}
+              />
+              <LocalePicker
+                country={locale.country}
+                currency={locale.currency}
+                onChange={pickLocale}
+                disabled={busy || coderBuilding || accessPaused}
+              />
+            </>
+          }
+        />
+        <form
+          className="composer"
+          onSubmit={(e) => {
+            e.preventDefault()
+            send(input)
+          }}
+        >
+          <FloorUpload
+            sessionId={sessionId}
+            disabled={busy || coderBuilding || accessPaused}
+          />
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={
+              accessPaused
+                ? 'Factory access is paused'
+                : coderBuilding
+                  ? 'The coding agent has taken over this floor…'
+                  : 'Try: "Build me a secure multi-user platform for my team…"'
+            }
+            disabled={busy || coderBuilding || accessPaused}
+          />
+          <button type="submit" disabled={busy || coderBuilding || accessPaused || !input.trim()}>
+            Send
+          </button>
+        </form>
+        {accessPaused && (
+          <p className="dim composer-paused">Factory access is paused.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const NOT_YET_KEY = 'cerebrum.floor.notYetOpen'
+
+function readNotYetOpen(): boolean {
+  try {
+    return window.localStorage.getItem(NOT_YET_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * "What this is not yet" is a one-line link. Opening it shows the notice;
+ * closing it is remembered, so the notice stays a single line afterwards.
+ */
+export function NotYetNotice() {
+  const [open, setOpen] = useState(readNotYetOpen)
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    try {
+      window.localStorage.setItem(NOT_YET_KEY, next ? '1' : '0')
+    } catch {
+      // Storage refused (private mode): the choice lasts for this page only.
+    }
+  }
+  return (
+    <div className="notice-not-yet-wrap">
+      <button
+        type="button"
+        className="notice-not-yet-link"
+        aria-expanded={open}
+        aria-controls="floor-not-yet"
+        data-testid="floor-not-yet-link"
+        onClick={toggle}
+      >
+        What this is not yet <span aria-hidden="true">{open ? '\u25B4' : '\u203A'}</span>
+      </button>
+      {open && (
+        <p className="dim notice-not-yet" id="floor-not-yet" data-testid="floor-not-yet">
           What this is not yet: the factory generates a working prototype — real code,
           tests and deploy files — not a finished production system. Third-party
           integrations in generated products are stubs until you connect your own
@@ -1182,453 +1732,6 @@ export function Floor({
           daily chat and exports. Answers are grounding-checked: when a claim can't be
           verified it is withheld, not invented.
         </p>
-        <FactoryCodeCliStatus message={cliHonesty} testId="floor-factory-cli-status" />
-      </header>
-      <div className="chat-scroll">
-        {msgs.map((m, i) => {
-          // Terminal runs own the floor via the STOPPED/stalled panel.
-          // Hide teal "taken over" generation chrome so it cannot sit above it.
-          if (m.card === 'generation' && coderTerminal) return null
-          return (
-            <div key={i} className={'bubble-row ' + m.role}>
-              <div className={'bubble ' + m.role + ' ' + (m.card ?? '')}>
-                {m.text || (m.role === 'factory' && busy && i === msgs.length - 1 ? <span className="typing">…</span> : null)}
-                {m.card === 'blueprint' && m.blueprint && (
-                  <BlueprintCard
-                    blueprint={m.blueprint}
-                    busy={busy || coderActive}
-                    accessPaused={accessPaused}
-                    onApprove={(excludedIds, delivery) =>
-                void approveWithSelection(excludedIds, delivery)
-              }
-                    onRefine={(typed) => void sendTyped(typed)}
-                    onAcceptGolden={() => void resolveGolden('accept')}
-                    onDeclineGolden={() => void resolveGolden('decline')}
-                  />
-                )}
-                {m.card === 'generation' && (
-                  <div className="card-actions">
-                    {m.engine === 'runner' && (
-                      <span
-                        className="bp-drafting-mode architect_llm"
-                        title="The coding agent took over after you approved the feature list"
-                      >
-                        coding agent
-                      </span>
-                    )}
-                    {m.triggeredBy === 'chat_llm' && (
-                      <span
-                        className="bp-drafting-mode architect_llm"
-                        title="The Floor chat LLM called start_coder"
-                      >
-                        chat LLM
-                      </span>
-                    )}
-                    {i === latestGenerationIdx && !coderBuilding && (
-                      <button type="button" onClick={goPlatforms}>
-                        Open Your Platforms
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      {/* The status card scrolls WITH the chat. As a sibling under it, a tall
-          card took the whole column: the chat shrank to nothing and the
-          actions were clipped off the bottom of a phone with no way to scroll. */}
-      {coderActive && (
-        <div
-          className={
-            'coder-takeover' +
-            (liveCoderBuild?.stale ||
-            liveCoderBuild?.state === 'stalled' ||
-            liveCoderBuild?.state === 'failed'
-              ? ' stale'
-              : '')
-          }
-          role="status"
-          data-testid="floor-coder-takeover"
-        >
-          <h3>
-            {liveCoderBuild?.state === 'succeeded' ? (
-              <>
-                <span data-testid="floor-product-title">{productTitle}</span>{' '}
-                <span className="mono" data-testid="floor-acceptance-score">
-                  {formatAcceptanceScore(liveCoderBuild)}
-                </span>
-                {' — '}
-                {coderTakeoverHeading(liveCoderBuild)}
-              </>
-            ) : liveCoderBuild?.state === 'stalled' ? (
-              'Coding agent stalled'
-            ) : liveCoderBuild?.state === 'failed' ? (
-              'Coding agent stopped'
-            ) : (
-              'Coding agent has taken over'
-            )}
-          </h3>
-          <LevelGradeStrip build={liveCoderBuild} testIdPrefix="floor" />
-          <KernelStrip build={liveCoderBuild} />
-          {liveCoderBuild?.failure &&
-            (liveCoderBuild.state === 'failed' || liveCoderBuild.state === 'stalled' ? (
-              <p
-                className={`coder-failure-line ${stopTone(liveCoderBuild.failure)}`}
-                data-testid="floor-failure-line"
-                role="alert"
-              >
-                <strong>{stopHeadline(liveCoderBuild.failure)}</strong>
-                {liveCoderBuild.failure.summary
-                  ? ` — ${liveCoderBuild.failure.summary}`
-                  : liveCoderBuild.failure.reason
-                    ? ` — ${liveCoderBuild.failure.reason}`
-                    : ''}
-              </p>
-            ) : (
-              // The run is still moving: a mid-fail is a rework round, not a
-              // stop. Orange status, no red alert -- red means it ended.
-              <p className="coder-rework-line" data-testid="floor-rework-line" role="status">
-                <strong>
-                  {kernelName(
-                    liveCoderBuild.failure.location || liveCoderBuild.failure.phase || 'A phase',
-                  )}{' '}
-                  sent it back to the coder
-                </strong>
-                {liveCoderBuild.failure.summary
-                  ? ` — ${liveCoderBuild.failure.summary}`
-                  : liveCoderBuild.failure.reason
-                    ? ` — ${liveCoderBuild.failure.reason}`
-                    : ''}
-                {liveCoderBuild.failure.ref ? ` (ref ${liveCoderBuild.failure.ref})` : ''}
-                {' — rework in progress.'}
-              </p>
-            ))}
-          {coderFailed && liveCoderBuild?.next_continue && (
-            <p className="coder-next-line" data-testid="floor-next-continue">
-              {liveCoderBuild.next_continue}
-            </p>
-          )}
-          {fixRoundsLine(liveCoderBuild) && (
-            <p className="coder-rounds-line" data-testid="floor-fix-rounds">
-              {fixRoundsLine(liveCoderBuild)}
-            </p>
-          )}
-          {(liveCoderBuild?.failure?.ref ||
-            (coderFailed && (liveCoderBuild?.failed_label || liveCoderBuild?.failure_narrative?.text)) ||
-            (liveCoderBuild?.decisions?.length ?? 0) > 0) && (
-            // The machine detail: kept, but out of the headline -- the record's
-            // own FAILED(...) label, the ledger narrative and each rule decision
-            // with its check id and finding, which are written for the coder.
-            <details className="coder-technical" data-testid="floor-technical-detail">
-              <summary>Technical detail</summary>
-              {liveCoderBuild?.failure?.ref && (
-                <p className="coder-failure-ref" data-testid="floor-failure-ref">
-                  Reference <code>{liveCoderBuild.failure.ref}</code>
-                  {typeof navigator !== 'undefined' && navigator.clipboard ? (
-                    <button
-                      type="button"
-                      className="link coder-failure-copy"
-                      onClick={() => {
-                        void navigator.clipboard
-                          .writeText(liveCoderBuild.failure?.ref || '')
-                          .then(() => setRefCopied(true))
-                      }}
-                    >
-                      {refCopied ? 'copied' : 'copy'}
-                    </button>
-                  ) : null}
-                </p>
-              )}
-              {coderFailed && liveCoderBuild?.failed_label && (
-                <p data-testid="floor-failed-label">{liveCoderBuild.failed_label}</p>
-              )}
-              {coderFailed && liveCoderBuild?.failure_narrative?.text && (
-                <p data-testid="floor-failure-narrative">{liveCoderBuild.failure_narrative.text}</p>
-              )}
-              {(liveCoderBuild?.decisions?.length ?? 0) > 0 && (
-                <ol className="coder-decisions" data-testid="floor-decisions">
-                  {liveCoderBuild!.decisions!.map((d, i) => (
-                    <li key={i} data-testid="floor-decision" data-class={d.class}>
-                      <strong>{d.class}</strong> {d.gate} round {d.round_gate}/{d.gate_budget}{' '}
-                      (build {d.round_build}/{d.build_ceiling}) — {d.check}
-                      {d.finding ? `: ${d.finding}` : ''}
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </details>
-          )}
-          {(liveCoderBuild?.suggested_checks?.length ?? 0) > 0 && (
-            <SuggestedChecks checks={liveCoderBuild!.suggested_checks!} />
-          )}
-          {(liveCoderBuild?.not_delivered?.length ?? 0) > 0 && (
-            <p className="coder-not-delivered-line" data-testid="floor-not-delivered-line">
-              Not delivered (Store-block repair failures):{' '}
-              {liveCoderBuild!
-                .not_delivered!.map(
-                  (row) => `${row.capabilities.join(', ')} (Store block ${row.block_id}: ${row.reason || 'repair failed'})`,
-                )
-                .join('; ')}
-            </p>
-          )}
-          {!liveCoderBuild?.failure && liveCoderBuild?.recovered_failure && (
-            <p className="coder-recovered-line" data-testid="floor-recovered-line">
-              Recovered in rework —{' '}
-              {liveCoderBuild.recovered_failure.location ||
-                liveCoderBuild.recovered_failure.phase ||
-                'a phase'}{' '}
-              failed once ({liveCoderBuild.recovered_failure.reason || 'unknown'}) and the
-              agent fixed it.
-            </p>
-          )}
-          {liveCoderBuild && liveCoderBuild.state === 'building' ? (
-            <>
-              <CoderProgress build={liveCoderBuild} nowMs={nowMs} />
-              <div className="card-actions coder-monitor-actions">
-                <button
-                  type="button"
-                  className="ghost"
-                  data-testid="floor-coder-pause"
-                  disabled={controlBusy || liveCoderBuild.coder_control === 'pause'}
-                  onClick={() => {
-                    setControlBusy(true)
-                    void product
-                      .coderControl(sessionId, 'pause')
-                      .finally(() => setControlBusy(false))
-                  }}
-                >
-                  {liveCoderBuild.coder_control === 'pause' ? 'Paused' : 'Pause'}
-                </button>
-                {liveCoderBuild.coder_control === 'pause' && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    data-testid="floor-coder-resume"
-                    disabled={controlBusy}
-                    onClick={() => {
-                      setControlBusy(true)
-                      void product
-                        .coderControl(sessionId, 'resume')
-                        .finally(() => setControlBusy(false))
-                    }}
-                  >
-                    Resume
-                  </button>
-                )}
-                <button
-                  type="button"
-                  data-testid="floor-coder-stop"
-                  disabled={controlBusy || liveCoderBuild.coder_control === 'stop'}
-                  onClick={() => {
-                    setControlBusy(true)
-                    void product
-                      .coderControl(sessionId, 'stop')
-                      .finally(() => setControlBusy(false))
-                  }}
-                >
-                  Stop
-                </button>
-              </div>
-            </>
-          ) : coderTakeoverNote(liveCoderBuild) === '' ? null : (
-            <p>
-              {coderTakeoverNote(liveCoderBuild) ??
-                'The feature list is approved. The coding agent is starting WORKERS now.'}
-            </p>
-          )}
-          {coderSucceeded && (
-            <div className="card-actions">
-              {!coderPilotReady && liveCoderBuild?.build_level?.stop_gate !== 'CODE' && (
-                <button
-                  type="button"
-                  data-testid="continue-to-pilot"
-                  onClick={() => void sendTyped({ action: 'run_pilot' })}
-                  disabled={busy || accessPaused}
-                >
-                  Continue to pilot
-                </button>
-              )}
-              <button
-                type="button"
-                className={exportBtn.ghost ? 'ghost' : undefined}
-                onClick={() => void download()}
-                disabled={downloading || exportBtn.disabled}
-                title={exportBtn.title}
-              >
-                {downloading ? 'Packing…' : exportBtn.label}
-              </button>
-              {liveCoderBuild?.repo_url &&
-                liveCoderBuild.repo_url.startsWith('http') && (
-                  <a
-                    className="ghost"
-                    href={liveCoderBuild.repo_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    data-testid="floor-repo-link"
-                  >
-                    Open repository
-                  </a>
-                )}
-            </div>
-          )}
-          {liveCoderBuild?.state === 'stalled' && (
-            <div className="card-actions">
-              <span className="status-pill status-pill-failed" data-testid="floor-stalled-pill">
-                Build stalled
-              </span>
-              <button
-                type="button"
-                data-testid="floor-rerun-writer"
-                disabled={busy || rerunBusy || accessPaused}
-                onClick={() => void rerunWriter()}
-              >
-                Re-run the writer
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                disabled={exportAffordance(liveCoderBuild).disabled || downloading}
-                title={exportAffordance(liveCoderBuild).title}
-                onClick={() => void download()}
-              >
-                {exportAffordance(liveCoderBuild).label}
-              </button>
-              <button type="button" className="ghost" onClick={goPlatforms}>
-                Open Your Platforms
-              </button>
-            </div>
-          )}
-          {coderFailed && (
-            // A FAILED build offers exactly three TYPED choices. Chat text
-            // never triggers any of them.
-            <div className="card-actions" data-testid="floor-failure-choices">
-              <span className="status-pill status-pill-failed" data-testid="floor-failed-pill">
-                {liveCoderBuild?.failure ? stopHeadline(liveCoderBuild.failure) : 'Pilot suite failed'}
-              </span>
-              <button
-                type="button"
-                data-testid="floor-take-copy"
-                title="Download the platform as it stands. The export is labelled FAILED and names the failing gate, check and finding; it is not certified."
-                disabled={busy || downloading || accessPaused}
-                onClick={() => void takeCopy()}
-              >
-                {downloading ? 'Packing…' : 'Take a copy'}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                data-testid="floor-continue-with-intake"
-                title="Reopen the intake (country, currency, build level, vertical). Confirm resumes this platform's own branch with the rework budget it had left."
-                disabled={busy || accessPaused}
-                onClick={() => void sendTyped({ action: 'continue_with_intake' })}
-              >
-                Continue with new answers
-              </button>
-              {!confirmStartOver ? (
-                <button
-                  type="button"
-                  className="ghost"
-                  data-testid="floor-start-over"
-                  title="Build this platform again from the approved feature list on a fresh workspace. The current head is kept as an archive tag; nothing is deleted."
-                  disabled={busy || accessPaused}
-                  onClick={() => setConfirmStartOver(true)}
-                >
-                  Start over
-                </button>
-              ) : (
-                <span className="start-over-confirm" data-testid="floor-start-over-confirm">
-                  <span className="muted" data-testid="floor-start-over-confirm-text">
-                    This rebuilds from scratch — the current work is archived. Continue instead?
-                  </span>
-                  <button
-                    type="button"
-                    className="ghost"
-                    data-testid="floor-start-over-continue"
-                    title="Resume this platform at its failing stage with the rework budget it had left. Nothing is rebuilt from scratch."
-                    disabled={busy || accessPaused}
-                    onClick={() => {
-                      setConfirmStartOver(false)
-                      void sendTyped({ action: 'continue' })
-                    }}
-                  >
-                    Continue instead
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="floor-start-over-confirm-button"
-                    title="Confirm: archive the current head and rebuild from scratch on a fresh workspace. This cannot be undone."
-                    disabled={busy || accessPaused}
-                    onClick={() => {
-                      setConfirmStartOver(false)
-                      void sendTyped({ action: 'start_over', value: 'confirmed' })
-                    }}
-                  >
-                    Rebuild from scratch
-                  </button>
-                </span>
-              )}
-            </div>
-          )}
-          {downloadError && <div className="error-box">{downloadError}</div>}
-          {rerunError && <div className="error-box">{rerunError}</div>}
-          {newSessionError && <div className="error-box">{newSessionError}</div>}
-        </div>
-      )}
-        <div ref={bottomRef} />
-      </div>
-      <IntakeLine
-        intake={intake}
-        onTyped={(typed) => void sendTyped(typed)}
-        disabled={busy || coderBuilding || accessPaused}
-        editControls={
-          <>
-            <VerticalPicker
-              sessionId={sessionId}
-              value={vertical}
-              onChange={pickVertical}
-              onLoaded={syncVertical}
-              onLocaleLoaded={syncLocale}
-              disabled={busy || coderBuilding || accessPaused}
-            />
-            <LocalePicker
-              country={locale.country}
-              currency={locale.currency}
-              onChange={pickLocale}
-              disabled={busy || coderBuilding || accessPaused}
-            />
-          </>
-        }
-      />
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault()
-          send(input)
-        }}
-      >
-        <FloorUpload
-          sessionId={sessionId}
-          disabled={busy || coderBuilding || accessPaused}
-        />
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            accessPaused
-              ? 'Factory access is paused'
-              : coderBuilding
-                ? 'The coding agent has taken over this floor…'
-                : 'Try: "Build me a secure multi-user platform for my team…"'
-          }
-          disabled={busy || coderBuilding || accessPaused}
-        />
-        <button type="submit" disabled={busy || coderBuilding || accessPaused || !input.trim()}>
-          Send
-        </button>
-      </form>
-      {accessPaused && (
-        <p className="dim composer-paused">Factory access is paused.</p>
       )}
     </div>
   )

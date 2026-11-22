@@ -27,6 +27,7 @@ without a code change if a build regression appears in production.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -1727,36 +1728,136 @@ def _refund_generation_quota(output_dir: Path) -> None:
     _clear_quota_marker(output_dir)
 
 
-def clone_canonical(blueprint: Any, source_dir: Path | str) -> Optional[Path]:
+class CanonicalRefused(RuntimeError):
+    """A canonical copy was not written. ``reason`` is the typed token."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+
+
+#: Why a canonical copy is refused. One token per rule in ``clone_canonical``.
+CANONICAL_OPERATOR_ONLY = "canonical_operator_only"
+CANONICAL_UNSAFE_NAME = "canonical_unsafe_name"
+CANONICAL_OVERLAPS_SOURCE = "canonical_overlaps_source"
+CANONICAL_NOT_CREATED_HERE = "canonical_not_created_here"
+CANONICAL_OTHER_OWNER = "canonical_other_owner"
+
+#: Written into every canonical copy ``clone_canonical`` creates. It is the
+#: only proof a directory IS a canonical copy, and it names the product the
+#: copy belongs to. A directory without it was made by something else.
+CANONICAL_MARKER = ".canonical_copy.json"
+
+
+def _canonical_owner(dest: Path) -> Optional[str]:
+    """The product the canonical copy at ``dest`` belongs to.
+
+    None when ``dest`` is not a copy ``clone_canonical`` wrote: no marker, or
+    one that does not read as its own.
+    """
+    try:
+        data = json.loads((dest / CANONICAL_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    owner = data.get("product_id") if isinstance(data, dict) else None
+    return owner if isinstance(owner, str) and owner else None
+
+
+def is_operator_run(output_dir: Path | str, *, tenant_bound: bool) -> bool:
+    """Whether a build is an operator's own run and not a customer's.
+
+    A customer's build is bound to a tenant, or its workspace is a session's,
+    or both. Only a run that is neither may honour an operator-only blueprint
+    field (``clone_canonical``).
+    """
+    from app.factory.build.orphan_recovery import session_id_from_output
+
+    return not tenant_bound and session_id_from_output(output_dir) is None
+
+
+def clone_canonical(
+    blueprint: Any, source_dir: Path | str, *, operator_run: bool
+) -> Optional[Path]:
     """Copy a finished tree to factory_outputs/<canonical_output>.
 
     A blueprint that wants a stable canonical copy says so itself
     (``canonical_output``); no product is named here. A second runner used to
     start here and double LLM spend. Clone only.
+
+    ``canonical_output`` is an operator-only field (``blueprint.SetBy``), and
+    this is the one place that deletes and replaces a directory because of
+    it. So it writes only what is provably its own, and refuses the rest with
+    a typed reason (``CanonicalRefused``):
+
+    * a run that belongs to a customer (``operator_run`` is False, see
+      ``is_operator_run``) -- the field is not theirs to set, whatever
+      blueprint reached the build;
+    * a name that is not one plain directory directly under the outputs root
+      once resolved (``paths.canonical_copy_dir``);
+    * a target that is, holds, or sits inside the tree being copied;
+    * an existing directory this function did not create (no marker), or one
+      it created for another product.
+
+    ``operator_run`` has no default: every caller states whose run it is.
     """
-    from app.factory.paths import factory_outputs_root, is_safe_to_clean
+    from app.factory.paths import UnsafeOutputDir, canonical_copy_dir
 
     name = str(getattr(blueprint, "canonical_output", None) or "").strip()
     if not name:
         return None
-    if "/" in name or "\\" in name or name.startswith("."):
-        raise RuntimeError(f"canonical_output must be a directory name, got {name!r}")
-    src = Path(source_dir)
-    dest = factory_outputs_root() / name
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not operator_run:
+        raise CanonicalRefused(
+            CANONICAL_OPERATOR_ONLY,
+            "canonical_output is an operator-only field; this run belongs to a customer",
+        )
+    try:
+        dest = canonical_copy_dir(name)
+    except UnsafeOutputDir as exc:
+        raise CanonicalRefused(CANONICAL_UNSAFE_NAME, str(exc)) from exc
+    src = Path(source_dir).resolve()
+    if dest == src or dest in src.parents or src in dest.parents:
+        raise CanonicalRefused(
+            CANONICAL_OVERLAPS_SOURCE,
+            f"{dest} is, holds, or sits inside the tree being copied ({src})",
+        )
+    owner = str(getattr(blueprint, "product_id", "") or "")
     if dest.exists():
-        if not is_safe_to_clean(dest):
-            raise RuntimeError(f"refusing to replace unsafe canonical path {dest}")
+        held_by = _canonical_owner(dest)
+        if held_by is None:
+            raise CanonicalRefused(
+                CANONICAL_NOT_CREATED_HERE,
+                f"{dest} exists and is not a canonical copy this writer created; "
+                "it is left untouched",
+            )
+        if held_by != owner:
+            raise CanonicalRefused(
+                CANONICAL_OTHER_OWNER,
+                f"{dest} is the canonical copy of another product; it is left untouched",
+            )
         shutil.rmtree(dest)
-    shutil.copytree(src, dest)
+    # The marker lands before the tree, so a copy interrupted half-way is
+    # still recognisably this writer's and the next run can replace it. A
+    # marker inside the source is never carried over.
+    dest.mkdir(parents=True)
+    (dest / CANONICAL_MARKER).write_text(
+        json.dumps({"product_id": owner}), encoding="utf-8"
+    )
+    shutil.copytree(
+        src, dest, dirs_exist_ok=True, ignore=shutil.ignore_patterns(CANONICAL_MARKER)
+    )
     return dest
 
 
-def _maybe_clone_canonical(blueprint: Any, output_dir: Path) -> None:
+def _maybe_clone_canonical(
+    blueprint: Any, output_dir: Path, *, operator_run: bool
+) -> None:
     try:
-        dest = clone_canonical(blueprint, output_dir)
+        dest = clone_canonical(blueprint, output_dir, operator_run=operator_run)
         if dest is not None:
             logger.info("cloned canonical copy to %s", dest)
+    except CanonicalRefused as exc:
+        # A refusal is a decision, not a crash: one line, no traceback.
+        logger.warning("canonical copy refused from %s: %s", output_dir, exc)
     except Exception:  # noqa: BLE001 — clone must not fail the build record
         logger.exception("canonical clone failed from %s", output_dir)
 
@@ -1940,7 +2041,14 @@ def _run(
     if failed:
         _refund_generation_quota(output_dir)
         return
-    _maybe_clone_canonical(blueprint, output_dir)
+    # A build bound to a tenant store, or built in a session's workspace, is
+    # a customer's. Only an operator's own run may honour an operator-only
+    # blueprint field.
+    _maybe_clone_canonical(
+        blueprint,
+        output_dir,
+        operator_run=is_operator_run(output_dir, tenant_bound=tenant_store is not None),
+    )
     _clear_quota_marker(output_dir)
 
 
