@@ -40,15 +40,20 @@ class TestChatRefusesOutOfScope:
     async def test_refused_question_never_reaches_the_llm(self, tmp_path, monkeypatch):
         monkeypatch.setenv("STORAGE_PATH", str(tmp_path / "storage"))
         from app.core.session_store import create_session
+        from app.factory.floor_actions import FloorAction
         from app.routers.chat import _stream_response
 
         create_session("scope-test-session", "user-1")
         llm = AsyncMock(return_value={"message": "should never run", "chain": None, "rules": []})
         with patch("app.routers.chat.generate_chain_suggestion", new=llm):
             events = []
+            # The scope gate guards the surface where the Factory answers the
+            # question itself: the kit-chain configurator (typed ``chain``).
+            # Platform intake is not matched against it.
             async for evt in _stream_response(
                 "scope-test-session",
                 "What morphine dose should I administer to the patient?",
+                action=FloorAction.CHAIN,
             ):
                 events.append(evt)
 

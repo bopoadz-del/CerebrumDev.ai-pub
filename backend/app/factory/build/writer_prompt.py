@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.factory.build.formula_resolution import render_resolution_section
+from app.factory.build.money_contract import money_prompt_section
 from app.factory.build.acceptance_floor import (
     render_for_prompt as render_acceptance_floor,
 )
@@ -128,7 +129,7 @@ from app.factory.build.acceptance_floor import (
 #:   full INFRA/BACKEND/DEVOPS/FRONTEND/SECURITY rebuild). REWORK FINDINGS
 #:   now renders the work list (grader / gate findings) when one is set, and
 #:   states the checkout is not a blank slate.
-PROMPT_VERSION = "writer_worker_prompt.v17"
+PROMPT_VERSION = "writer_worker_prompt.v18"
 
 _TEMPLATE = """You are the WRITER role of the CerebrumDev factory, manufacturing a
 governed platform. Work headless in this checkout. Produce real, runnable
@@ -240,14 +241,7 @@ a BOQ, or any customer source of truth):
 - What you cannot parse (scans, unusual encodings) is a named blocker in
   your report, never a stub that stores the filename and pretends.
 
-MONEY (country, currency, tax):
-- Country, currency and every tax rate (VAT, sales tax, withholding) come
-  from the BRIEF. When the brief names them, use exactly those.
-- When the brief does not, do not choose one. Never hardcode a country's tax
-  rate or currency the brief did not give: make currency and each rate a
-  named setting read from the environment, with no default value, and list
-  every such setting in README.md as a value the operator must set before use.
-
+{money_rules}
 PROCESSES (you share this machine with the factory that is running you):
 - NEVER stop processes by name or pattern: no pkill, killall, "kill -9 -1",
   "fuser -k", and no killing of uvicorn / python / gunicorn / node in general.
@@ -618,6 +612,9 @@ def render_writer_prompt(
         # grades against. The agent used to be judged on thirteen checks it
         # was never shown, and discovered them one rework round at a time.
         acceptance_floor=render_acceptance_floor(blueprint),
+        # The money rule, rendered from money_contract's one table -- the
+        # same table the C-BRIEF lines and the gate's findings come from.
+        money_rules=money_prompt_section(),
         # K-F7: what already exists, in the order the ruling resolves it.
         formula_sources=render_resolution_section(kernel_index, store_index, store_sha),
     )
