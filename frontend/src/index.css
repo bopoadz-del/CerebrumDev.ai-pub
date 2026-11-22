@@ -1102,6 +1102,7 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   border: 1px solid var(--warning-text); border-radius: var(--radius);
   color: var(--text); font-size: var(--text-sm); line-height: var(--lh-sm);
 }
+.action-note { margin: 0; color: var(--warning-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
 .action-result { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
 .action-result-error { color: var(--danger-text); }
 .confirm-body { margin: 0; }

@@ -59,6 +59,8 @@ export interface ActionPlan {
   more: BuildAction[]
   /** Access is paused: a banner with "See plans" sits on top of any state. */
   accessPaused: boolean
+  /** A visible reason the state's usual action is not offered. */
+  note?: string | null
 }
 
 /** Why the build stopped, from typed facts only. */
@@ -99,6 +101,7 @@ export const START_OVER_CONFIRM: ConfirmSpec = {
 }
 
 const PAUSED = 'Access is paused.'
+const NOT_RELEASED = 'Not available yet: this build has not passed every check its level needs.'
 const WAIT = 'Wait for the current request to finish.'
 
 function startsWork(input: ActionInput): string | null {
@@ -205,9 +208,15 @@ function stoppedPlan(input: ActionInput, build: BuildStatus): Pick<ActionPlan, '
   }
 }
 
-function finishedPlan(input: ActionInput, build: BuildStatus): Pick<ActionPlan, 'bar' | 'more'> {
+function finishedPlan(input: ActionInput, build: BuildStatus): Pick<ActionPlan, 'bar' | 'more' | 'note'> {
   const aff = exportAffordance(build)
   const pilot = pilotPending(build)
+  if (aff.disabled) {
+    // The certified download is not released yet: no download button that
+    // would read as certified; the next step and the reason, in words.
+    const next = pilot ? runPilot(input, 'primary') : tryAgain(input, null, null)
+    return { bar: [next], more: [], note: NOT_RELEASED }
+  }
   if (aff.asIs) {
     // Finished, but the certified download is refused: the next step is a
     // pilot run where the level includes one, otherwise another attempt.
@@ -226,7 +235,7 @@ function finishedPlan(input: ActionInput, build: BuildStatus): Pick<ActionPlan, 
     label: prototype ? 'Download prototype (.zip)' : 'Download platform (.zip)',
     sub: prototype ? 'The prototype code as a zip. Not pilot-tested.' : 'The finished platform as a zip.',
     style: 'primary',
-    disabled: aff.disabled ? aff.title || aff.label : packing(input),
+    disabled: packing(input),
   }
   const repo = repoLink(build)
   if (repo) {

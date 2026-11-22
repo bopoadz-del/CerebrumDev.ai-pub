@@ -455,7 +455,7 @@ describe('App boot', () => {
     expect(window.location.search).toBe('')
     expect(screen.getByText(new RegExp(`session ${TEST_SESSION_A.slice(0, 12)}`))).toBeInTheDocument()
     expect(screen.queryByText(new RegExp(`session ${TEST_SESSION_B.slice(0, 12)}`))).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(createMock).not.toHaveBeenCalled()
   })
@@ -564,10 +564,9 @@ describe('App boot', () => {
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Export (.zip) — below full-pilot authorship floor' }),
-    ).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('floor-download-platform')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-action-note')).toHaveTextContent('Not available yet')
     expect(createMock).not.toHaveBeenCalled()
   })
 
@@ -584,7 +583,7 @@ describe('App boot', () => {
     expect(screen.getByText(/sess_not_in_list/)).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Factory Floor' })).not.toBeInTheDocument()
     expect(screen.queryByText(new RegExp(`session ${TEST_SESSION_B.slice(0, 12)}`))).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(createMock).not.toHaveBeenCalled()
 

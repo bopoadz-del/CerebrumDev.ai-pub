@@ -206,6 +206,11 @@ export function ActionBar({
           )}
         </div>
       )}
+      {plan.note && (
+        <p className="action-note" data-testid="floor-action-note">
+          {plan.note}
+        </p>
+      )}
       <div className="action-list">
         {plan.bar.map((a) => (
           <ActionItem key={a.id} action={a} onPress={press} />
