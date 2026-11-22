@@ -119,7 +119,7 @@ def _link_dir(link: Path, target: Path) -> None:
 
             _winapi.CreateJunction(str(target), str(link))
         except (ImportError, AttributeError, OSError):
-            pytest.skip("this platform cannot create a directory link here")
+            pytest.skip(reason="this platform cannot create a directory link here")
 
 
 @pytest.fixture()
