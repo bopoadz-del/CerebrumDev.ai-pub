@@ -120,7 +120,10 @@ def test_a_failed_build_exports_with_the_failed_fields(client, tmp_path):
         "finding": "tests/test_routes.py::test_every_capability failed",
     }
     assert status["failed_label"].startswith("FAILED(TESTER, suite_green, ")
-    assert "suite_green" in status["next_continue"]  # what Continue will fix
+    # What continuing does for a check that refused the work -- one sentence
+    # from the stop's class, never the check id or the raw finding.
+    assert status["next_continue"].startswith("Continuing runs this step again with what the check found")
+    assert "suite_green" not in status["next_continue"]
     assert status.get("pilot_ready") is False  # never shown green
 
     pkg = client.get("/v1/sessions/sess_plt_failed_export/product/package?as_is=1")

@@ -945,7 +945,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
         failed: { gate: 'STORE_MANAGER', check: 'metrics_served', finding: 'GET /metrics is 404' },
         failed_label: 'FAILED(STORE_MANAGER, metrics_served, GET /metrics is 404)',
         next_continue:
-          'Continue will resume this platform\'s branch at STORE_MANAGER and send the writer the failing check metrics_served: GET /metrics is 404',
+          'Continuing runs this step again with what the check found, using the fix rounds this build has left.',
       })
     })
     getMock.mockResolvedValue({
@@ -957,7 +957,12 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByTestId('floor-failed-label')).toHaveTextContent(
       'FAILED(STORE_MANAGER, metrics_served, GET /metrics is 404)',
     )
-    expect(screen.getByTestId('floor-next-continue')).toHaveTextContent(/Continue will resume/)
+    expect(screen.getByTestId('floor-next-continue')).toHaveTextContent(
+      /Continuing runs this step again/,
+    )
+    // The record's own FAILED(...) wording is kept, collapsed -- never a
+    // paragraph of the card.
+    expect(screen.getByTestId('floor-failed-label').closest('details')).not.toHaveAttribute('open')
     // Never green: the only export is the labelled as-is copy.
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
@@ -1429,17 +1434,22 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByRole('heading', { name: 'Coding agent stopped' })).toBeInTheDocument()
     // The red stage is the one the user was watching.
     expect(screen.getByTestId('floor-phase-failed-WRITER')).toBeInTheDocument()
-    // The pill names the phase, not a generic "pilot failed".
-    expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('WRITER failed')
-    // J2: the line shows a one-line summary and the ref the full detail is
-    // filed under -- not the raw payload. Stronger than before, never weaker.
+    // The pill names the phase, not a generic "pilot failed" -- by the same
+    // name its chip carries (WORKERS), never the raw id beside it.
+    expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('WORKERS failed')
+    // J2: the line shows a one-line summary -- not the raw payload.
     const failureLine = screen.getByTestId('floor-failure-line')
     expect(failureLine).toHaveTextContent(
-      'WRITER failed — The coder produced no output for this step.',
+      'WORKERS failed — The coder produced no output for this step.',
     )
-    // The ref is shown beside the summary (its own node, so the copy control's
-    // label does not bleed into this match).
-    expect(screen.getByTestId('floor-failure-ref')).toHaveTextContent('abc1234567')
+    // The ref the full detail is filed under sits on its own line in the
+    // collapsed technical detail: no copy button inside the sentence, and no
+    // bracket left alone when the line wraps on a phone.
+    const ref = screen.getByTestId('floor-failure-ref')
+    expect(ref).toHaveTextContent('abc1234567')
+    expect(ref.textContent).not.toMatch(/[()]/)
+    expect(failureLine).not.toContainElement(ref)
+    expect(ref.closest('details')).not.toHaveAttribute('open')
     // The detail that was photographed off the owner's phone must not leak.
     expect(failureLine).not.toHaveTextContent(
       'zero agent-authored artifacts in the workspace',
@@ -1552,19 +1562,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
         state: 'building',
         current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
         completed: ['COLLECTOR', 'CLONER'],
-        decisions: [
-          {
-            class: 'REWORK',
-            gate: 'WRITER',
-            gate_name: 'writer_contract',
-            round_gate: 1,
-            gate_budget: 1,
-            round_build: 1,
-            build_ceiling: 6,
-            check: 'money_assumed_without_a_brief',
-            finding: 'the declared code AE is a literal',
-          },
-        ],
+        // What the grader itself recorded: its hand-back, round 1 of 1.
+        grader: { state: 'sent_back', tier: 'NOT_CERTIFIED', round: 1, budget: 1 },
       })
     })
     getMock.mockResolvedValue({
@@ -1581,6 +1580,94 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // The strip still reports five build phases: the grader is not a sixth.
     expect(chip.className).not.toContain('done')
   })
+
+  it.each([
+    ['timeout', 2289, 38],
+    ['model_call_timeout', 3600, 60],
+  ])(
+    'says a wall timeout (%s) once, in plain words, with the record collapsed',
+    async (failureKind, wall, minutes) => {
+      // The owner's phone, 21 Nov: a writer_contract fix round, then the writer
+      // ran past its wall. The card read "WRITER was refused", "GRADER
+      // rejected", a raw FAILED(...) and the same machine sentence four times.
+      const raw = `codewhale_worker_failed: worker_timed_out: headless job exceeded its ${wall}s wall`
+      watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+        onProgress({
+          state: 'failed',
+          detail: `WRITER failed: ${raw}`,
+          completed: ['COLLECTOR', 'CLONER'],
+          failure: {
+            phase: 'WRITER',
+            location: 'WRITER',
+            reason: 'codewhale_worker_failed',
+            code: 'codewhale_worker_failed',
+            failure_kind: failureKind,
+            kind: 'out_of_time',
+            title: 'ran out of time',
+            summary: `The time allowance ended before this step finished (it had run for ${minutes} minutes). No check refused the work.`,
+            next: 'Continuing runs this step again with a new time allowance.',
+            ref: '7461cb639b',
+          },
+          grader: null,
+          decisions: [
+            {
+              class: 'REWORK',
+              gate: 'WRITER',
+              gate_name: 'writer_contract',
+              round_gate: 1,
+              gate_budget: 1,
+              round_build: 1,
+              build_ceiling: 6,
+              check: 'writer_contract',
+              finding: "app/actions/contract_settings.py:47: the declared code 'AE' is a literal",
+            },
+          ],
+          failed: { gate: 'WRITER', check: 'codewhale_worker_failed', finding: raw },
+          failed_label: `FAILED(WRITER, codewhale_worker_failed, ${raw})`,
+          next_continue: 'Continuing runs this step again with a new time allowance.',
+          failure_narrative: { text: `Where it stopped: WRITER. Why: WRITER failed: ${raw}`, source: 'ledger' },
+        })
+      })
+      getMock.mockResolvedValue({
+        blueprint: LLM_BLUEPRINT,
+        blueprint_approved: true,
+        generation: { engine: 'runner', product_id: 'construction', triggered_by: 'chat_llm' },
+      })
+      render(<Floor sessionId={`sess_timeout_${wall}`} goPlatforms={() => {}} />)
+
+      const line = await screen.findByTestId('floor-failure-line')
+      expect(line).toHaveTextContent(
+        `WORKERS ran out of time — The time allowance ended before this step finished (it had run for ${minutes} minutes).`,
+      )
+      expect(line.className).toContain('halted')
+      // A timeout is not a refusal: the stage is amber, and the grader -- which
+      // never saw this run -- says nothing coloured.
+      expect(screen.getByTestId('floor-phase-halted-WRITER')).toBeInTheDocument()
+      expect(screen.queryByTestId('floor-phase-failed-WRITER')).not.toBeInTheDocument()
+      expect(screen.getByTestId('floor-phase-grader-pending')).toHaveTextContent('not reached')
+      expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('WORKERS ran out of time')
+      expect(screen.getByTestId('floor-next-continue')).toHaveTextContent(
+        'Continuing runs this step again with a new time allowance.',
+      )
+      expect(screen.getByTestId('floor-fix-rounds')).toHaveTextContent(
+        'Fix rounds used: 1 of 6 (WORKERS: 1 of 1).',
+      )
+      // The machine text is kept, collapsed: it appears nowhere outside the
+      // closed disclosure -- no raw detail sentence, no FAILED(...) paragraph.
+      const card = screen.getByTestId('floor-coder-takeover')
+      const technical = screen.getByTestId('floor-technical-detail')
+      expect(technical).not.toHaveAttribute('open')
+      expect(technical).toHaveTextContent(`FAILED(WRITER, codewhale_worker_failed, ${raw})`)
+      const visible = card.cloneNode(true) as HTMLElement
+      visible.querySelector('[data-testid="floor-technical-detail"]')?.remove()
+      expect(visible.textContent).not.toContain('worker_timed_out')
+      expect(visible.textContent).not.toContain('FAILED(')
+      expect(visible.textContent).not.toContain('contract_settings.py')
+      expect(visible.textContent).not.toContain('The coding agent stopped:')
+      // The card scrolls with the chat, so the chat above it stays reachable.
+      expect(card.closest('.chat-scroll')).not.toBeNull()
+    },
+  )
 
   it('shows a failure the run recovered from as history, not a red alert', async () => {
     // sess_617f60024df24a4e: a 13/13 build showed "TESTER failed -- KeyError"
