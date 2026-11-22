@@ -108,6 +108,12 @@ for (const state of FLOOR_STATES) {
       test('every enabled action and the composer can be reached', async ({ page }) => {
         await openState(page, state)
         const report = await page.evaluate(() => {
+          // Open every collapsed section first: a control kept inside a closed
+          // <details> has a layout box but is not painted, so it must be
+          // measured as the user meets it -- revealed.
+          document.querySelectorAll('.floor details').forEach((d) => {
+            ;(d as HTMLDetailsElement).open = true
+          })
           const vh = window.innerHeight
           const vw = window.innerWidth
           const stream = document.querySelector('[data-testid="floor-stream"]') as HTMLElement
