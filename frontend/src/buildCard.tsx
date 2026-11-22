@@ -55,6 +55,11 @@ function stepOf(build: BuildStatus, phase: string | undefined | null): number | 
   return i >= 0 ? i + 1 : null
 }
 
+/** The step a stopped build stopped at, 1-based, from the run's own phase list. */
+export function stoppedAt(build: BuildStatus): number | null {
+  return stepOf(build, build.failure?.location || build.failure?.phase || build.current_phase?.id)
+}
+
 function stepTotal(build: BuildStatus): number | null {
   const n = build.phase_total ?? (phaseList(build).length || null)
   return typeof n === 'number' && n > 0 ? n : null
@@ -108,7 +113,7 @@ export function buildFace(build: BuildStatus | null): BuildFace {
     return { tone: 'success', word: 'Ready', where: null, sentence: '', fixRoundNow: null, fixRoundsUsed: null }
   }
   if (build.state === 'failed' || build.state === 'stalled') {
-    const at = stepOf(build, build.failure?.location || build.failure?.phase || build.current_phase?.id)
+    const at = stoppedAt(build)
     const where = at && total ? `step ${at} of ${total}` : null
     const kept = keptSentence(stepsKept(build))
     let why: string

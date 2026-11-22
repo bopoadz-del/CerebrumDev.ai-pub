@@ -1055,29 +1055,64 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   color: var(--warning-text);
   font-size: var(--text-sm); line-height: var(--lh-sm);
 }
-.build-actions-slot > .card-actions { margin-top: 0; }
-/* On a phone a stopped card's actions are a two-column grid: the first (the
-   state's primary) takes the full row, the others share rows, and a label
-   that does not fit wraps between words inside its own button. */
-@media (max-width: 767px) {
-  .build-actions-slot > .card-actions-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-2);
-  }
-  .build-actions-slot > .card-actions-grid > * { width: 100%; min-width: 0; margin: 0; }
-  .build-actions-slot > .card-actions-grid > :first-child,
-  .build-actions-slot > .card-actions-grid > .start-over-confirm { grid-column: 1 / -1; }
-  .build-actions-slot > .card-actions-grid > button,
-  .build-actions-slot > .card-actions-grid > a {
-    white-space: normal;
-    overflow-wrap: normal;
-    word-break: normal;
-    text-align: center;
-    justify-content: center;
-    padding-left: var(--space-2);
-    padding-right: var(--space-2);
-  }
+/* The action bar (PR-08): one list of the state's actions, each with one
+   visible line under its label. Pinned above the composer on phones; inside
+   the BUILD card from 768px. At most one gold button; danger is never gold. */
+.action-bar { display: grid; gap: var(--space-2); min-width: 0; }
+.action-bar-pinned { padding: var(--space-2) 0 0; }
+.action-list { display: grid; gap: var(--space-3); min-width: 0; }
+.action-item { display: grid; gap: var(--space-1); min-width: 0; }
+.action-bar .button-sub { text-align: left; overflow-wrap: anywhere; }
+.action-bar .button-sub-reason { color: var(--warning-text); }
+.action-button {
+  width: 100%;
+  min-height: var(--control-h);
+  margin: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  text-align: center; white-space: normal; overflow-wrap: normal;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius);
+  font-weight: var(--weight-strong);
+  font-size: var(--text-md); line-height: var(--lh-sm);
+  text-decoration: none;
+}
+a.action-button.action-primary { background: var(--accent); color: var(--on-accent); }
+button.action-secondary, a.action-button.action-secondary { background: transparent; color: var(--text); border: 1px solid var(--control-border); }
+button.action-danger { background: transparent; color: var(--danger-text); border: 1px solid var(--danger-edge); }
+button.action-quiet { background: transparent; color: var(--text-muted); border: 1px solid transparent; font-weight: var(--weight-regular); }
+button.action-secondary:active:not(:disabled) { background: var(--surface-3); }
+button.action-danger:active:not(:disabled) { background: var(--danger-fill); }
+button.action-quiet:active:not(:disabled) { background: var(--surface-3); color: var(--text); }
+button.action-secondary:disabled, button.action-danger:disabled, button.action-quiet:disabled { background: transparent; border-color: var(--divider); }
+@media (hover: hover) {
+  button.action-secondary:hover:not(:disabled) { background: var(--surface-3); border-color: var(--text-muted); }
+  button.action-danger:hover:not(:disabled) { background: var(--danger-fill); }
+  button.action-quiet:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+}
+.action-more { display: grid; gap: var(--space-2); min-width: 0; }
+.action-more-menu {
+  display: grid; gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--divider); border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.action-banner {
+  display: grid; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning-text); border-radius: var(--radius);
+  color: var(--text); font-size: var(--text-sm); line-height: var(--lh-sm);
+}
+.action-result { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.action-result-error { color: var(--danger-text); }
+.confirm-body { margin: 0; }
+.confirm-foot { gap: var(--space-2); }
+.confirm-foot > .action-button { flex: 1 1 0; min-width: 0; }
+/* From 768px the actions sit in the card on one row, each with its line. */
+@media (min-width: 768px) {
+  .action-bar-in-card .action-list { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-3); }
+  .action-bar-in-card .action-item { flex: 0 1 220px; }
+  .action-bar-in-card .action-more { flex: 1 1 100%; }
+  .action-bar-in-card .action-more-toggle { width: auto; justify-self: start; }
 }
 .build-steps-slot { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .build-steps-slot .kernel-strip { gap: var(--space-1); }
@@ -1225,9 +1260,6 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 }
 .coder-next {
   margin-left: 8px;
-}
-.coder-monitor-actions {
-  margin-top: 8px;
 }
 .coder-bar {
   height: 6px;

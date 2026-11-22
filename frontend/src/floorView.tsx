@@ -40,7 +40,9 @@ import {
   graderChip,
 } from './buildProgress'
 import { LevelGradeStrip } from './levelGradeView'
-import { BuildCard } from './buildCard'
+import { BuildCard, errorReport } from './buildCard'
+import { ActionBar, useWideLayout } from './actionBar'
+import { buildActions, type ActionId } from './buildActions'
 import { BriefCard, briefStatus } from './briefCard'
 import { BriefSheet, type BriefAnswers } from './briefSheet'
 import { FloorUpload } from './FloorUpload'
@@ -588,13 +590,15 @@ function definedOnly(fields: IntakeState['proposal']): Partial<NonNullable<Intak
 
 export function Floor({
   sessionId,
-  goPlatforms,
+  goPlans,
   accessPaused = false,
   notice = null,
   onNewSession,
 }: {
   sessionId: string
   goPlatforms: () => void
+  /** Opens the Plan tab (the "See plans" banner when access is paused). */
+  goPlans?: () => void
   accessPaused?: boolean
   notice?: string | null
   onNewSession?: () => void | Promise<void>
@@ -624,11 +628,12 @@ export function Floor({
   const [newSessionBusy, setNewSessionBusy] = useState(false)
   const [newSessionError, setNewSessionError] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const [controlBusy, setControlBusy] = useState(false)
-  // Start over rebuilds from scratch and cannot be undone, so the typed action
-  // is confirmed first: the button arms an inline confirm that offers Continue
-  // (resume at the failing stage) instead. Only the confirm sends start_over.
-  const [confirmStartOver, setConfirmStartOver] = useState(false)
+  // Stop was pressed and the build has not stopped yet; the result or the
+  // failure of the last action press, shown in the action bar.
+  const [stopping, setStopping] = useState(false)
+  const [actionResult, setActionResult] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const wide = useWideLayout()
   const cliHonesty = useFactoryCodeCliHonesty()
   // The Floor's one scroller (page head, conversation, build card).
   const streamRef = useRef<HTMLDivElement>(null)
@@ -803,6 +808,12 @@ export function Floor({
     const top = card.getBoundingClientRect().top - stream.getBoundingClientRect().top + stream.scrollTop
     stream.scrollTo?.({ top: Math.max(0, top - 8), behavior: scrollBehavior() })
   }, [settled])
+
+  // "Stopping…" holds until the build leaves building; a new run starts clean.
+  const runningNow = liveCoderBuild?.state === 'building'
+  useEffect(() => {
+    if (!runningNow) setStopping(false)
+  }, [runningNow])
 
   useEffect(() => {
     if (liveCoderBuild?.state !== 'building') return
@@ -1167,23 +1178,62 @@ export function Floor({
     }
   }
 
-  const [rerunBusy, setRerunBusy] = useState(false)
-  const [rerunError, setRerunError] = useState<string | null>(null)
-  async function rerunWriter() {
-    // The failed run's honest next action is a retry: POST /product/generate
-    // resumes the platform's own workspace at its stopped phase with a fresh
-    // rework budget. A fresh workspace is only ever the typed Start over.
-    setRerunBusy(true)
-    setRerunError(null)
-    try {
-      await product.generate(sessionId)
-      const s = await product.buildStatus(sessionId)
-      setCoderBuild((prev) => preferHonestBuild(s.build, prev))
-    } catch (e) {
-      setRerunError(e instanceof Error ? e.message : 'rerun failed')
-    } finally {
-      setRerunBusy(false)
+  // A copy of a build that did not pass: a FAILED build records the typed
+  // take_copy first; a stall or a refused finished build downloads as-is.
+  async function downloadCopy() {
+    if (liveCoderBuild?.state === 'failed') {
+      await takeCopy()
+      return
     }
+    setDownloading(true)
+    setDownloadError(null)
+    try {
+      await downloadProductPackage(sessionId, { asIs: true })
+    } catch (e) {
+      setDownloadError(e instanceof Error ? e.message : 'export failed')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  async function stopBuild() {
+    setStopping(true)
+    setActionError(null)
+    try {
+      await product.coderControl(sessionId, 'stop')
+    } catch (e) {
+      setStopping(false)
+      setActionError(`Could not stop the build: ${e instanceof Error ? e.message : 'the request failed'}`)
+    }
+  }
+
+  async function copyErrorReport() {
+    setActionError(null)
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('no clipboard')
+      await navigator.clipboard.writeText(
+        errorReport(liveCoderBuild, { sessionId, productTitle }),
+      )
+      setActionResult('Copied')
+    } catch {
+      setActionError('Could not copy. Open Technical detail and select the text instead.')
+    }
+  }
+
+  // Every press of the action bar goes through here: one action, one path.
+  // Try again is the typed continue for a failed build and a stall alike, so
+  // the generation event restarts the status watch either way.
+  function runAction(id: ActionId) {
+    setActionResult(null)
+    setActionError(null)
+    if (id === 'try_again') void sendTyped({ action: 'continue' })
+    else if (id === 'change_answers') void sendTyped({ action: 'continue_with_intake' })
+    else if (id === 'start_over') void sendTyped({ action: 'start_over', value: 'confirmed' })
+    else if (id === 'run_pilot') void sendTyped({ action: 'run_pilot' })
+    else if (id === 'stop') void stopBuild()
+    else if (id === 'download_copy') void downloadCopy()
+    else if (id === 'download_platform') void download()
+    else if (id === 'copy_report') void copyErrorReport()
   }
 
   const coderBuilding =
@@ -1192,17 +1242,8 @@ export function Floor({
     liveCoderBuild?.state !== 'failed' &&
     liveCoderBuild?.state !== 'stalled'
   const coderSucceeded = liveCoderBuild?.state === 'succeeded'
-  const coderFailed = liveCoderBuild?.state === 'failed'
-  const coderPilotReady = isPilotZipReady(liveCoderBuild)
   const coderTerminal =
     liveCoderBuild?.state === 'failed' || liveCoderBuild?.state === 'stalled'
-  const exportBtn = exportAffordance(liveCoderBuild)
-  const latestGenerationIdx = (() => {
-    for (let i = msgs.length - 1; i >= 0; i -= 1) {
-      if (msgs[i].card === 'generation') return i
-    }
-    return -1
-  })()
   const designBp = productDesign?.blueprint as
     | { product_name?: string; name?: string }
     | null
@@ -1234,6 +1275,22 @@ export function Floor({
   })
 
   const briefEditable = statusOfBrief === 'draft' || statusOfBrief === 'suggested by chat'
+
+  // One action bar, in exactly one place: pinned above the composer on
+  // phones, inside the BUILD card from 768px.
+  const actionPlan = coderActive
+    ? buildActions({ build: liveCoderBuild, accessPaused, busy, downloading, stopping })
+    : null
+  const actionBar = actionPlan ? (
+    <ActionBar
+      plan={actionPlan}
+      placement={wide ? 'card' : 'bar'}
+      onRun={runAction}
+      onSeePlans={goPlans}
+      result={actionResult}
+      error={actionError}
+    />
+  ) : null
 
   return (
     <div className="floor">
@@ -1333,11 +1390,6 @@ export function Floor({
                           chat LLM
                         </span>
                       )}
-                      {i === latestGenerationIdx && !coderBuilding && (
-                        <button type="button" onClick={goPlatforms}>
-                          Open Your Platforms
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -1363,186 +1415,7 @@ export function Floor({
               ) : undefined
             }
             note={coderSucceeded ? coderTakeoverNote(liveCoderBuild) : undefined}
-            actions={
-              <>
-                {/* The recovery actions sit directly under the sentence, so a
-                    phone reaches them in the card's first screen. */}
-                {liveCoderBuild?.state === 'stalled' && (
-                  <div className="card-actions card-actions-grid" data-testid="floor-stalled-choices">
-                    <button
-                      type="button"
-                      data-testid="floor-rerun-writer"
-                      disabled={busy || rerunBusy || accessPaused}
-                      onClick={() => void rerunWriter()}
-                    >
-                      Re-run the writer
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      disabled={exportAffordance(liveCoderBuild).disabled || downloading}
-                      title={exportAffordance(liveCoderBuild).title}
-                      onClick={() => void download()}
-                    >
-                      {exportAffordance(liveCoderBuild).label}
-                    </button>
-                    <button type="button" className="ghost" onClick={goPlatforms}>
-                      Open Your Platforms
-                    </button>
-                  </div>
-                )}
-                {coderFailed && (
-                  // A FAILED build offers exactly three TYPED choices. Chat text
-                  // never triggers any of them.
-                  <div className="card-actions card-actions-grid" data-testid="floor-failure-choices">
-                    <button
-                      type="button"
-                      data-testid="floor-take-copy"
-                      title="Download the platform as it stands. The export is labelled FAILED and names the failing gate, check and finding; it is not certified."
-                      disabled={busy || downloading || accessPaused}
-                      onClick={() => void takeCopy()}
-                    >
-                      {downloading ? 'Packing…' : 'Take a copy'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      data-testid="floor-continue-with-intake"
-                      title="Reopen the intake (country, currency, build level, vertical). Confirm resumes this platform's own branch with the rework budget it had left."
-                      disabled={busy || accessPaused}
-                      onClick={() => void sendTyped({ action: 'continue_with_intake' })}
-                    >
-                      Continue with new answers
-                    </button>
-                    {!confirmStartOver ? (
-                      <button
-                        type="button"
-                        className="ghost"
-                        data-testid="floor-start-over"
-                        title="Build this platform again from the approved feature list on a fresh workspace. The current head is kept as an archive tag; nothing is deleted."
-                        disabled={busy || accessPaused}
-                        onClick={() => setConfirmStartOver(true)}
-                      >
-                        Start over
-                      </button>
-                    ) : (
-                      <span className="start-over-confirm" data-testid="floor-start-over-confirm">
-                        <span className="muted" data-testid="floor-start-over-confirm-text">
-                          This rebuilds from scratch — the current work is archived. Continue instead?
-                        </span>
-                        <button
-                          type="button"
-                          className="ghost"
-                          data-testid="floor-start-over-continue"
-                          title="Resume this platform at its failing stage with the rework budget it had left. Nothing is rebuilt from scratch."
-                          disabled={busy || accessPaused}
-                          onClick={() => {
-                            setConfirmStartOver(false)
-                            void sendTyped({ action: 'continue' })
-                          }}
-                        >
-                          Continue instead
-                        </button>
-                        <button
-                          type="button"
-                          data-testid="floor-start-over-confirm-button"
-                          title="Confirm: archive the current head and rebuild from scratch on a fresh workspace. This cannot be undone."
-                          disabled={busy || accessPaused}
-                          onClick={() => {
-                            setConfirmStartOver(false)
-                            void sendTyped({ action: 'start_over', value: 'confirmed' })
-                          }}
-                        >
-                          Rebuild from scratch
-                        </button>
-                      </span>
-                    )}
-                  </div>
-                )}
-                {liveCoderBuild && liveCoderBuild.state === 'building' && (
-                  <div className="card-actions coder-monitor-actions">
-                    <button
-                      type="button"
-                      className="ghost"
-                      data-testid="floor-coder-pause"
-                      disabled={controlBusy || liveCoderBuild.coder_control === 'pause'}
-                      onClick={() => {
-                        setControlBusy(true)
-                        void product
-                          .coderControl(sessionId, 'pause')
-                          .finally(() => setControlBusy(false))
-                      }}
-                    >
-                      {liveCoderBuild.coder_control === 'pause' ? 'Paused' : 'Pause'}
-                    </button>
-                    {liveCoderBuild.coder_control === 'pause' && (
-                      <button
-                        type="button"
-                        className="ghost"
-                        data-testid="floor-coder-resume"
-                        disabled={controlBusy}
-                        onClick={() => {
-                          setControlBusy(true)
-                          void product
-                            .coderControl(sessionId, 'resume')
-                            .finally(() => setControlBusy(false))
-                        }}
-                      >
-                        Resume
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      data-testid="floor-coder-stop"
-                      disabled={controlBusy || liveCoderBuild.coder_control === 'stop'}
-                      onClick={() => {
-                        setControlBusy(true)
-                        void product
-                          .coderControl(sessionId, 'stop')
-                          .finally(() => setControlBusy(false))
-                      }}
-                    >
-                      Stop
-                    </button>
-                  </div>
-                )}
-                {coderSucceeded && (
-                  <div className="card-actions">
-                    {!coderPilotReady && liveCoderBuild?.build_level?.stop_gate !== 'CODE' && (
-                      <button
-                        type="button"
-                        data-testid="continue-to-pilot"
-                        onClick={() => void sendTyped({ action: 'run_pilot' })}
-                        disabled={busy || accessPaused}
-                      >
-                        Continue to pilot
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className={exportBtn.ghost ? 'ghost' : undefined}
-                      onClick={() => void download()}
-                      disabled={downloading || exportBtn.disabled}
-                      title={exportBtn.title}
-                    >
-                      {downloading ? 'Packing…' : exportBtn.label}
-                    </button>
-                    {liveCoderBuild?.repo_url &&
-                      liveCoderBuild.repo_url.startsWith('http') && (
-                        <a
-                          className="ghost"
-                          href={liveCoderBuild.repo_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          data-testid="floor-repo-link"
-                        >
-                          Open repository
-                        </a>
-                      )}
-                  </div>
-                )}
-              </>
-            }
+            actions={wide ? actionBar : undefined}
             steps={
               <>
                 {coderSucceeded && <LevelGradeStrip build={liveCoderBuild} testIdPrefix="floor" />}
@@ -1564,7 +1437,6 @@ export function Floor({
                   <SuggestedChecks checks={liveCoderBuild!.suggested_checks!} />
                 )}
                 {downloadError && <div className="error-box">{downloadError}</div>}
-                {rerunError && <div className="error-box">{rerunError}</div>}
                 {newSessionError && <div className="error-box">{newSessionError}</div>}
               </>
             }
@@ -1572,6 +1444,7 @@ export function Floor({
         )}
       </div>
       <div className="floor-footer">
+        {!wide && actionBar}
         <form
           className="composer"
           onSubmit={(e) => {
