@@ -363,7 +363,7 @@ export async function mockFloorStates(page: Page): Promise<void> {
       if (p === '/health') {
         return json({
           status: 'ok',
-          factory_code_cli: { available: true, credentials_file_present: true, requires_kimi_credentials: true },
+          factory_code_cli: { available: true, credentials_file_present: true },
         })
       }
       if (p === '/version') return json({})
