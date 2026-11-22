@@ -1,5 +1,6 @@
 /**
- * The support/legal contact in the shell footer. It renders nothing until an
+ * The support/legal contact: at the foot of the Sessions list and on the
+ * Account page (never in the phone header). It renders nothing until an
  * address is known, and the address comes from the operator's ``SUPPORT_EMAIL``
  * config (through ``/version``) — never from a hardcoded string here.
  */

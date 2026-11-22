@@ -2202,6 +2202,13 @@ test('narrow viewport keeps nav icons and accessible labels (no blank pills)', a
     expect((box?.width ?? 0) > 0 && (box?.height ?? 0) > 0).toBeTruthy()
     const text = (await btn.innerText()).trim()
     expect(text.length).toBeGreaterThan(0)
+    // UI revamp PR-02 (L1-21): a phone tab is a real target and its label is whole.
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(72)
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(48)
+    const cut = await btn
+      .locator('.nav-label-short')
+      .evaluate((el) => el.scrollWidth > el.clientWidth)
+    expect(cut, `${label} label is cut`).toBe(false)
   }
   await expect(page.getByRole('button', { name: 'Subscription' })).toHaveAttribute(
     'aria-current',

@@ -349,6 +349,9 @@ function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+/** A made-up operator address, so the shell's support link has something to show. */
+export const SUPPORT_EMAIL = 'help@example.test'
+
 /** Answer every request the Floor makes, from the fixtures above. */
 export async function mockFloorStates(page: Page): Promise<void> {
   const by = makeSessions()
@@ -373,7 +376,7 @@ export async function mockFloorStates(page: Page): Promise<void> {
           factory_code_cli: { available: true, credentials_file_present: true },
         })
       }
-      if (p === '/version') return json({})
+      if (p === '/version') return json({ support_email: SUPPORT_EMAIL })
       if (p === '/v1/auth/me') {
         return json({ email: EMAIL, email_verified: true, account_id: 'acct_e2e_phone' })
       }

@@ -183,6 +183,7 @@ export function SessionList({
   onOpen,
   onDelete,
   open = false,
+  supportEmail = null,
 }: {
   items: SessionListItem[]
   currentId: string | null
@@ -191,6 +192,8 @@ export function SessionList({
   onDelete?: (id: string) => Promise<void>
   /** On phones the list is a drawer; this opens it. Ignored on desktop. */
   open?: boolean
+  /** The operator's support address, shown once at the foot of the list. */
+  supportEmail?: string | null
 }) {
   // Two-step, inline: a browser confirm() blocks the page, and a one-click
   // delete of a session holding a generated platform is too easy to misfire.
@@ -213,6 +216,7 @@ export function SessionList({
               {confirming === s.session_id ? (
                 <div className="rail-session-confirm" role="group" aria-label={`Delete ${s.title || 'session'}?`}>
                   <span className="rail-session-confirm-q">Delete for good?</span>
+                  <span className="rail-session-confirm-name">{s.title || 'Untitled session'}</span>
                   <button
                     type="button"
                     className="rail-session-yes"
@@ -276,6 +280,11 @@ export function SessionList({
           )
         })}
       </ul>
+      {supportEmail ? (
+        <div className="rail-sessions-foot">
+          <SupportContact email={supportEmail} />
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -337,6 +346,7 @@ export default function App() {
   const [sessionList, setSessionList] = useState<SessionListItem[]>([])
   const [locationEpoch, setLocationEpoch] = useState(0)
   const [supportEmail, setSupportEmail] = useState<string | null>(null)
+  const [topNewBusy, setTopNewBusy] = useState(false)
   const sessionListRef = useRef<SessionListItem[]>([])
   sessionListRef.current = sessionList
 
@@ -675,6 +685,17 @@ export default function App() {
       </div>
     )
 
+  const currentSessionTitle =
+    sessionList.find((s) => s.session_id === sessionId)?.title || 'New session'
+  const newSession = accessPaused
+    ? undefined
+    : async () => {
+        const created = await sessions.create()
+        const fresh = created.session_id
+        if (fresh) rememberSession(fresh)
+        go('floor', fresh)
+      }
+
   return (
     <div className="shell">
       <aside className="rail">
@@ -687,18 +708,9 @@ export default function App() {
             <div className="brand-sub">the factory</div>
           </div>
         </div>
-        <nav aria-label="Factory navigation">
-          {NAV_ITEMS.map((item) => (
-            <NavBtn
-              key={item.view}
-              label={item.label}
-              shortLabel={item.shortLabel}
-              icon={item.icon}
-              active={view === item.view}
-              onClick={() => go(item.view)}
-            />
-          ))}
-        </nav>
+        <FactoryNav view={view} onGo={(v) => go(v)} />
+        {/* Phone top bar (under 768px): Sessions, the session's name, New session.
+            On wider screens these three are hidden and the rail shows the list. */}
         <button
           type="button"
           className="rail-sessions-toggle"
@@ -706,8 +718,26 @@ export default function App() {
           aria-label="Your sessions"
           onClick={() => setSessionsOpen((o) => !o)}
         >
-          <span aria-hidden="true">☰</span> Sessions
+          <span aria-hidden="true">☰</span>
         </button>
+        <div className="topbar-title" data-testid="topbar-title">
+          {currentSessionTitle}
+        </div>
+        {newSession ? (
+          <button
+            type="button"
+            className="topbar-new"
+            aria-label="Start a new session"
+            title="New session"
+            disabled={topNewBusy}
+            onClick={() => {
+              setTopNewBusy(true)
+              void Promise.resolve(newSession()).finally(() => setTopNewBusy(false))
+            }}
+          >
+            <span aria-hidden="true">+</span>
+          </button>
+        ) : null}
         {sessionsOpen && (
           <button
             type="button"
@@ -718,6 +748,7 @@ export default function App() {
         )}
         <SessionList
           open={sessionsOpen}
+          supportEmail={supportEmail}
           items={sessionList}
           currentId={sessionId}
           onOpen={(id) => {
@@ -744,9 +775,7 @@ export default function App() {
           }}
         />
         <div className="rail-foot">
-          <span className="dot" aria-hidden="true" />
           <span className="rail-foot-text">session {sessionId.slice(0, 12)}…</span>
-          <SupportContact email={supportEmail} />
         </div>
       </aside>
       <main>
@@ -757,16 +786,7 @@ export default function App() {
             goPlatforms={() => go('platforms')}
             accessPaused={accessPaused}
             notice={alreadySignedInNotice ? 'Already signed in.' : null}
-            onNewSession={
-              accessPaused
-                ? undefined
-                : async () => {
-                    const created = await sessions.create()
-                    const fresh = created.session_id
-                    if (fresh) rememberSession(fresh)
-                    go('floor', fresh)
-                  }
-            }
+            onNewSession={newSession}
           />
         )}
         {view === 'platforms' && (
@@ -776,6 +796,7 @@ export default function App() {
         {view === 'account' && (
           <Account
             initialMe={accountMe}
+            supportEmail={supportEmail}
             onLogout={() => {
               void signOut().then(() => setAuthed(false))
             }}
@@ -788,6 +809,27 @@ export default function App() {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * The four destinations. On wider screens a column in the rail; under 768px a
+ * bottom tab bar of four equal tabs, each showing its whole short label.
+ */
+export function FactoryNav({ view, onGo }: { view: View; onGo: (view: View) => void }) {
+  return (
+    <nav aria-label="Factory navigation">
+      {NAV_ITEMS.map((item) => (
+        <NavBtn
+          key={item.view}
+          label={item.label}
+          shortLabel={item.shortLabel}
+          icon={item.icon}
+          active={view === item.view}
+          onClick={() => onGo(item.view)}
+        />
+      ))}
+    </nav>
   )
 }
 
