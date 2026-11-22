@@ -823,3 +823,61 @@ test.describe('action results at 360x780', () => {
     await expect(page.getByTestId('floor-action-result')).toHaveCount(0)
   })
 })
+
+/*
+ * PR-10: the stepper and one name table. At 360px the steps are one row, at
+ * most 56px tall, with exactly one current step on a running or stopped
+ * build; no wire id or old step name is on the card's face; a finished
+ * prototype reads "Ready - Prototype", lists only the checks its level
+ * includes, shows no score it did not measure, and has one gold Download.
+ */
+test.describe('stepper at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  const STEP_WIRE = ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER', 'GRADER', 'RESEARCHER', 'WORKERS']
+
+  for (const state of BUILD_STATES) {
+    test(`${state}: one row, at most 56px tall, no wire id on the face`, async ({ page }) => {
+      await openState(page, state)
+      const row = page.getByTestId('floor-stepper-row')
+      await expect(row).toBeVisible()
+      const box = await row.boundingBox()
+      expect(box, 'stepper laid out').not.toBeNull()
+      expect(box!.height).toBeLessThanOrEqual(56)
+      // One row: every step's dot sits on the same line.
+      const tops = await row.locator('.stepper-dot').evaluateAll((dots) =>
+        dots.map((d) => Math.round(d.getBoundingClientRect().top)),
+      )
+      expect(tops.length).toBe(5)
+      expect(new Set(tops).size).toBe(1)
+      const atNow = row.locator('li[data-state="current"], li[data-state="fixing"], li[data-state="stopped"]')
+      if (state.startsWith('finished')) await expect(atNow).toHaveCount(0)
+      else await expect(atNow).toHaveCount(1)
+      const face = await page.getByTestId('floor-coder-takeover').evaluate((el) => {
+        const copy = el.cloneNode(true) as HTMLElement
+        copy.querySelector('[data-testid="floor-tech-detail"]')?.remove()
+        return copy.textContent ?? ''
+      })
+      for (const id of STEP_WIRE) expect(face).not.toContain(id)
+    })
+  }
+
+  test('finished prototype: "Ready - Prototype", only its checks, no unmeasured score, one gold Download', async ({
+    page,
+  }) => {
+    await openState(page, 'finished-prototype')
+    await expect(page.getByTestId('floor-build-state')).toContainText('Ready — Prototype')
+    await expect(page.getByTestId('floor-build-level')).toHaveText('Build level: Prototype')
+    await expect(page.getByTestId('floor-gate-code')).toContainText('Code checks passed')
+    await expect(page.getByTestId('floor-gate-product')).toHaveCount(0)
+    await expect(page.getByTestId('floor-gate-store')).toHaveCount(0)
+    await expect(page.getByTestId('floor-acceptance-score')).toHaveCount(0)
+    await expect(page.getByTestId('floor-build-sentence')).toHaveText(
+      'Prototype does not include the pilot tests or the Store check. For a higher level, start a new session.',
+    )
+    await expect(page.getByTestId('floor-stepper-caption')).toHaveText('5 of 5 steps done')
+    const gold = page.locator('.action-primary:visible')
+    await expect(gold).toHaveCount(1)
+    await expect(gold).toContainText('Download')
+  })
+})

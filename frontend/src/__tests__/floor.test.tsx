@@ -145,17 +145,16 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByText('coding agent')).toBeInTheDocument()
     expect(screen.getByText('chat LLM')).toBeInTheDocument()
     expect(await screen.findByRole('status')).toHaveTextContent(/Building/)
-    expect(await screen.findByText('COLLECTOR')).toBeInTheDocument()
-    expect(screen.getByText('Binding surveyor')).toBeInTheDocument()
-    expect(screen.getByText('WORKERS')).toBeInTheDocument()
-    expect(screen.getByText('Platform manufacturer')).toBeInTheDocument()
-    expect(screen.getByText('TESTER')).toBeInTheDocument()
-    expect(screen.getByText('Acceptance inspector')).toBeInTheDocument()
-    expect(screen.getByText('Block stocker')).toBeInTheDocument()
-    expect(screen.getByText('Store registrar')).toBeInTheDocument()
-    expect(await screen.findByText(/Writing your platform/)).toBeInTheDocument()
-    expect(screen.getByText('WORKERS 3/5')).toBeInTheDocument()
-    expect(screen.getByText(/then TESTER/)).toBeInTheDocument()
+    // PR-10: one stepper, one name per step; the wire ids stay in data-step.
+    expect(await screen.findByTestId('floor-stepper-caption')).toHaveTextContent('Write the code')
+    const stepper = screen.getByTestId('floor-stepper-row')
+    expect(stepper.querySelectorAll('li')).toHaveLength(5)
+    expect(stepper.querySelector('[data-step="WRITER"]')).toHaveAttribute('data-state', 'current')
+    for (const old of ['COLLECTOR', 'WORKERS', 'Binding surveyor', 'Platform manufacturer', 'Block stocker']) {
+      expect(screen.queryByText(old)).not.toBeInTheDocument()
+    }
+    expect(await screen.findByText('Step 3 of 5 — Writing the code')).toBeInTheDocument()
+    expect(screen.getByText(/next: Test/)).toBeInTheDocument()
     expect(screen.getByText('7/7 handlers')).toBeInTheDocument()
     expect(screen.getByText(/Last: wrote handler payments/)).toBeInTheDocument()
     expect(screen.getByText(/still working/)).toBeInTheDocument()
@@ -305,7 +304,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'automotive-retail', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_done" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Coding agent finished/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-product-title')).toHaveTextContent('Vineyard Platform')
     expect(screen.getByTestId('floor-acceptance-score')).toHaveTextContent('12/12')
     expect(screen.getByText('Finished — 22 artifacts; 6 templated. Download ready.')).toBeInTheDocument()
@@ -355,7 +354,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'residential-lettings', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_proto" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(
       screen.getByText(/Code-cycle prototype — 11 artifacts; 13 templated. Not yet pilot-ready/),
     ).toBeInTheDocument()
@@ -389,11 +388,11 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'residential-lettings', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_code_green" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-prototype-pill')).toHaveTextContent('Code-green (prototype)')
-    expect(screen.getByTestId('floor-gate-code')).toHaveTextContent('CODE PASS')
-    expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('PRODUCT NOT RUN')
-    expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('STORE NOT RUN')
+    expect(screen.getByTestId('floor-gate-code')).toHaveTextContent('Code checks passed')
+    expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('Pilot tests not run')
+    expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('Store check not run')
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
@@ -435,7 +434,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'veterinary-care', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_cec9a1345b2049bb" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-prototype-pill')).toHaveTextContent('Code-green (prototype)')
     expect(screen.getByText(/Code-cycle prototype — 6 artifacts; 18 templated/)).toBeInTheDocument()
     expect(screen.getByText(/Not yet pilot-ready/)).toBeInTheDocument()
@@ -473,10 +472,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'residential-lettings', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_founding" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Coding agent finished/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-pilot-ready-pill')).toHaveTextContent('Founding-customer-ready')
-    expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('PRODUCT PASS')
-    expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('STORE PASS')
+    expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('Pilot tests passed')
+    expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('Store check passed')
     expect(screen.getByText(/Founding-customer-ready. Download ready./)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Download platform (.zip)' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Run pilot checks' })).not.toBeInTheDocument()
@@ -541,7 +540,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'veterinary-care', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_c220986f67914681" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-prototype-pill')).toHaveTextContent('Code-green (prototype)')
     expect(screen.queryByText(/Founding-customer-ready\. Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
@@ -618,7 +617,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'veterinary-care', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_45729bb662cf4a5d" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Coding agent finished/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-pilot-ready-pill')).toHaveTextContent('Store-green')
     expect(screen.getByTestId('floor-pilot-ready-pill')).not.toHaveTextContent(
       'Founding-customer-ready',
@@ -652,11 +651,11 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'residential-lettings', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_lock" goPlatforms={() => {}} />)
-    expect(
-      await screen.findByRole('heading', { name: /Acceptance 0\/12 — not pilot-ready/ }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
+    // PR-10: no acceptance record, no score -- never a "0/12" made from defaults.
+    expect(screen.queryByTestId('floor-acceptance-score')).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-prototype-pill')).toHaveTextContent('Code-green (prototype)')
-    expect(screen.getByText(/Acceptance is 0\/12/)).toBeInTheDocument()
+    expect(screen.getByText(/Acceptance was not measured/)).toBeInTheDocument()
     expect(screen.getByText(/not a failed build/)).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
@@ -698,15 +697,15 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       },
     })
     render(<Floor sessionId="sess_4591d5cc45d04fe1" goPlatforms={() => {}} />)
-    expect(
-      await screen.findByRole('heading', { name: /Acceptance 0\/12 — not pilot-ready/ }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
+    // PR-10: no acceptance record, no score -- never a "0/12" made from defaults.
+    expect(screen.queryByTestId('floor-acceptance-score')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Code-cycle prototype ready/ })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-prototype-pill')).toHaveTextContent('Code-green (prototype)')
-    expect(screen.getByTestId('floor-gate-code')).toHaveTextContent('CODE PASS')
-    expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('PRODUCT PASS')
-    expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('STORE PASS')
-    expect(screen.getByText(/Acceptance is 0\/12/)).toBeInTheDocument()
+    expect(screen.getByTestId('floor-gate-code')).toHaveTextContent('Code checks passed')
+    expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('Pilot tests passed')
+    expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('Store check passed')
+    expect(screen.getByText(/Acceptance was not measured/)).toBeInTheDocument()
     expect(screen.getByText(/not a failed build/)).toBeInTheDocument()
     expect(screen.queryByText(/build failed/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
@@ -818,7 +817,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       })
     })
     render(<Floor sessionId="sess_pilot" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     fireEvent.change(screen.getByPlaceholderText(/Try:/), {
       target: { value: '(a) continue the existing lettings hub into its pilot cycle' },
     })
@@ -826,7 +825,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
-    expect(screen.getByText(/Writing your platform/)).toBeInTheDocument()
+    expect(screen.getByText(/^Step \d+ of \d+/)).toBeInTheDocument()
   })
 
   // PR-08 reverses the old pin "keeps only one Open Your Platforms CTA": the
@@ -869,7 +868,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_dup" goPlatforms={() => {}} />)
     // Wait for the succeeded snapshot — otherwise coderActive+null build
     // briefly disables the composer (pilot reopen race).
-    expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.queryAllByRole('button', { name: 'Open Your Platforms' })).toHaveLength(0)
     fireEvent.change(screen.getByPlaceholderText(/Try:/), {
       target: { value: '(a) continue the existing lettings hub into its pilot cycle' },
@@ -1187,7 +1186,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     })
     render(<Floor sessionId="sess_ledger" goPlatforms={() => {}} />)
     expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
-    expect(screen.queryByText(/Writing your platform/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Step \d+ of \d+/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
     fireEvent.click(screen.getByTestId('floor-action-more'))
@@ -1317,9 +1316,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_northbridge" goPlatforms={() => {}} />)
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     // Watch snapshot paints one tick after takeover chrome; wait for it
-    // the same way the WRITER takeover test waits for "Writing your platform".
-    expect(await screen.findByText(/Writing your platform/)).toBeInTheDocument()
-    expect(screen.getByText('COLLECTOR 1/5')).toBeInTheDocument()
+    // the same way the WRITER takeover test waits for its running line.
+    expect(await screen.findByText('Step 1 of 5 — Planning the parts')).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('floor-pilot-ready-pill')).not.toBeInTheDocument()
@@ -1349,7 +1347,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       })
     })
     render(<Floor sessionId="sess_redraft" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: /Coding agent finished/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Ready/ })).toBeInTheDocument()
     expect(screen.getByPlaceholderText(/Try:/)).toBeEnabled()
     fireEvent.change(screen.getByPlaceholderText(/Try:/), {
       target: { value: 'build me a tasting room for a family winery' },
@@ -1582,7 +1580,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
 
     // Orange rework chip, not the red failed chip.
     const chip = await screen.findByTestId('floor-phase-rework-TESTER')
-    expect(chip.className).toContain('rework')
+    expect(chip).toHaveAttribute('data-state', 'fixing')
     expect(screen.queryByTestId('floor-phase-failed-TESTER')).not.toBeInTheDocument()
     // PR-07: one amber line in plain words; the phase id and the reason
     // code move to Technical detail. No red alert.
@@ -1594,11 +1592,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByTestId('floor-failure-line')).not.toBeInTheDocument()
   })
 
-  it('shows the GRADER as its own stage: amber when it sent the work back', async () => {
-    // The grader is not one of BUILD_PHASES -- it runs inside the writer's
-    // gate -- so the five-chip strip had no place for it, and two grader
-    // rejections read as writer failures with no cause (live 21 Nov,
-    // plt_61e1edbf10e249e4). It belongs after WRITER, where it speaks.
+  it('a send-back from another gate is a fix round, not a Quality check (PR-10)', async () => {
+    // PR-10 reverses the old GRADER chip: any gate's send-back used to be
+    // painted as the grader's. A review state now comes only from the
+    // grader's own gate; the writer contract's send-back is a fix round.
     watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
       onProgress({
         state: 'building',
@@ -1626,12 +1623,51 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     })
     render(<Floor sessionId="sess_grader_chip" goPlatforms={() => {}} />)
 
-    const chip = await screen.findByTestId('floor-phase-grader-rework')
-    expect(chip.className).toContain('rework')
-    expect(chip).toHaveTextContent('GRADER')
-    expect(chip).toHaveTextContent('sent it back')
-    // The strip still reports five build phases: the grader is not a sixth.
-    expect(chip.className).not.toContain('done')
+    // Wait for the build to arrive: the caption names the current step.
+    const caption = await screen.findByTestId('floor-stepper-caption')
+    expect(caption).toHaveTextContent('Write the code')
+    expect(caption).not.toHaveTextContent('Quality check')
+    expect(screen.getByTestId('floor-stepper-row').querySelectorAll('li')).toHaveLength(5)
+    expect(screen.queryByTestId('floor-phase-grader-rework')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('floor-phase-grader-failed')).not.toBeInTheDocument()
+  })
+
+  it("the grader's own send-back is a count on step 3, not a sixth step", async () => {
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({
+        state: 'building',
+        current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
+        completed: ['COLLECTOR', 'CLONER'],
+        decisions: [
+          {
+            class: 'REWORK',
+            gate: 'WRITER',
+            gate_name: 'grader',
+            round_gate: 1,
+            gate_budget: 1,
+            round_build: 1,
+            build_ceiling: 6,
+            check: 'money_assumed_without_a_brief',
+            finding: 'the declared code AE is a literal',
+          },
+        ],
+      })
+    })
+    getMock.mockResolvedValue({
+      blueprint: LLM_BLUEPRINT,
+      blueprint_approved: true,
+      generation: { engine: 'runner', product_id: 'construction', triggered_by: 'chat_llm' },
+    })
+    render(<Floor sessionId="sess_grader_own" goPlatforms={() => {}} />)
+
+    const count = await screen.findByTestId('floor-phase-grader-rework')
+    expect(count).toHaveTextContent('1')
+    expect(count.closest('li')).toHaveAttribute('data-step', 'WRITER')
+    expect(screen.getByTestId('floor-stepper-row').querySelectorAll('li')).toHaveLength(5)
+    expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent(
+      'Write the code — Quality check sent work back once',
+    )
+    expect(screen.getByTestId('floor-stepper')).not.toHaveTextContent('GRADER')
   })
 
   it('shows a failure the run recovered from as history, not a red alert', async () => {

@@ -3,6 +3,7 @@ import type {
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
+import { REVIEW_GATE, stepRunning } from './stepNames'
 import {
   FACTORY_CODE_CLI_CREDENTIALS_MISSING,
   FACTORY_CODE_CLI_FAILED,
@@ -76,6 +77,20 @@ export function isAcceptanceKk(build: BuildStatus | null | undefined): boolean {
 
 export function formatAcceptanceScore(build: BuildStatus | null | undefined): string {
   const { passed, total } = acceptanceScore(build)
+  return `${passed}/${total}`
+}
+
+/**
+ * The acceptance score, only when one was measured: a record that is present,
+ * not marked missing, and carries its own counts. A missing record renders no
+ * score at all -- never a "0/12" made from defaults.
+ */
+export function measuredScore(build: BuildStatus | null | undefined): string | null {
+  const raw = acceptanceFrom(build)
+  if (!raw || raw.missing === true) return null
+  const passed = Number(raw.passed)
+  const total = Number(raw.total)
+  if (!Number.isFinite(passed) || !Number.isFinite(total) || total <= 0 || passed < 0) return null
   return `${passed}/${total}`
 }
 
@@ -214,92 +229,78 @@ export function formatFinishedAuthorship(
 }
 
 /**
- * What each kernel is CALLED, as distinct from the id it is recorded under.
+ * The review inside step 3 ("Quality check"), as the stepper can show it.
  *
- * The ids are the wire format: every build_ledger.jsonl ever written, every
- * stored session and every gate name carries 'CLONER' and 'WRITER' as
- * literal strings. Renaming those would rewrite history and break the
- * reading of builds that already happened, so the rename lives here, where
- * it is a label rather than an identity.
+ * The grader is NOT a build phase: it runs inside the writer's step and its
+ * verdict ends the run. A review state comes ONLY from a record that names
+ * the grader's own gate -- a decision whose ``gate_name`` is the review gate,
+ * or a reason code the runner files under it (``<gate>_<tier>``). Any other
+ * gate's send-back (the writer contract, the tester's suite) is a fix round,
+ * not a review, and a timeout is never a "did not pass" (live 21 Nov: a
+ * worker timeout after a contract send-back read "GRADER rejected").
+ *
+ * No record means no review state at all -- never a grey "not reached" and
+ * never a green the record cannot prove.
  */
-const KERNEL_NAMES: Record<string, string> = {
-  CLONER: 'RESEARCHER',
-  WRITER: 'WORKERS',
+export type ReviewStateName = 'sent_back' | 'not_passed'
+
+export interface ReviewState {
+  state: ReviewStateName
+  /** How many times the review sent work back on this run. */
+  rounds: number
+  /** The check and finding the review named, for Technical detail. */
+  technical: string
 }
 
-export function kernelName(phase: string): string {
-  return KERNEL_NAMES[phase] ?? phase
+const FIX_ROUND_CLASSES = new Set(['REWORK', 'REGENERATE_TEST', 'REPROMPT'])
+
+/** True when a gate name or a reason code is the review gate's own. */
+export function namesReviewGate(gateName?: string | null, code?: string | null): boolean {
+  const gate = String(gateName ?? '').trim().toLowerCase()
+  if (gate === REVIEW_GATE) return true
+  const reason = String(code ?? '').trim().toLowerCase()
+  return reason.startsWith(`${REVIEW_GATE}_`)
 }
 
-/**
- * The brief's grader, as the strip can show it.
- *
- * The grader is NOT a build phase: it runs inside the writer's gate and its
- * verdict arrives as a runner ``decision`` -- REWORK when it sends the work
- * back, STOP when it ends the run. So the five-phase strip had no chip for
- * it, and a build the grader sent back twice read as a writer that stopped
- * for no reason (live 21 Nov: two WRITER failures, both grader verdicts,
- * neither visible as a stage).
- *
- * Only what the ledger records is claimed. No decision means ``pending`` --
- * never a green "passed" the record cannot prove.
- */
-export type GraderChipState = 'pending' | 'rework' | 'failed'
-
-export interface GraderChip {
-  state: GraderChipState
-  /** What the chip says beside the stage name. */
-  detail: string
-  /** The tooltip: the gate that spoke and the finding it named. */
-  title: string
-}
-
-export function graderChip(build: BuildStatus | null | undefined): GraderChip | null {
+export function reviewState(build: BuildStatus | null | undefined): ReviewState | null {
   if (!build) return null
+  const review = (build.decisions ?? []).filter((d) => namesReviewGate(d.gate_name, d.check))
+  const rounds = review.filter((d) => FIX_ROUND_CLASSES.has(d.class)).length
+  const stopped = build.state === 'failed' || build.state === 'stalled'
   const decisions = build.decisions ?? []
   const last = decisions.length ? decisions[decisions.length - 1] : null
-  const stopped = build.state === 'failed' || build.state === 'stalled'
-  if (stopped && last) {
-    const gate = last.gate_name || last.gate || 'WRITER'
-    const why = last.check || last.finding || 'gate failed'
+  const endedByReview =
+    stopped &&
+    (namesReviewGate(null, build.failure?.code) ||
+      namesReviewGate(null, build.failed?.check) ||
+      (last !== null && last.class === 'STOP' && namesReviewGate(last.gate_name, last.check)))
+  if (endedByReview) {
+    const named = [...review].reverse().find((d) => d.check || d.finding)
     return {
-      state: 'failed',
-      detail: 'rejected',
-      title: `${gate} gate: ${why}`,
+      state: 'not_passed',
+      rounds,
+      technical: named
+        ? `${named.gate_name || named.gate}: ${named.check}${named.finding ? ` — ${named.finding}` : ''}`
+        : String(build.failed?.check || build.failure?.code || ''),
     }
   }
-  if (
-    last &&
-    (last.class === 'REWORK' ||
-      last.class === 'REGENERATE_TEST' ||
-      last.class === 'REPROMPT')
-  ) {
-    const gate = last.gate_name || last.gate || 'WRITER'
-    const round = last.round_gate
-      ? `round ${last.round_gate}/${last.gate_budget ?? 1}`
-      : 'fix round'
+  if (rounds > 0) {
+    const lastRound = [...review].reverse().find((d) => FIX_ROUND_CLASSES.has(d.class))!
     return {
-      state: 'rework',
-      detail: `sent it back \u2014 ${round}`,
-      title: `${gate} gate: ${last.check || last.finding || 'sent the work back'}`,
+      state: 'sent_back',
+      rounds,
+      technical: `${lastRound.gate_name || lastRound.gate}: ${lastRound.check}${lastRound.finding ? ` — ${lastRound.finding}` : ''}`,
     }
   }
-  const verdict = build.failed?.check || build.failure?.code
-  return {
-    state: 'pending',
-    detail: verdict === 'grader_not_certified' ? 'not certified' : 'not reached',
-    title: verdict
-      ? `the graded gate named: ${verdict}`
-      : 'the grader has not refused anything on this pass yet',
-  }
+  return null
 }
 
-/** Named current phase plus 1-based index: "WORKERS 3/5", not a bare "2/5". */
+/** Step number plus the step's running name: "Step 3 of 5 — Writing the code". */
 export function formatPhaseHeadline(build: BuildStatus): string {
   const id = build.current_phase?.id
   const index = build.phase_index ?? (build.phases_done ?? 0) + 1
   const total = build.phase_total ?? build.phases_total ?? 5
-  return id ? `${kernelName(id)} ${index}/${total}` : `${index}/${total}`
+  return id ? `Step ${index} of ${total} — ${stepRunning(id, index)}` : `Step ${index} of ${total}`
 }
 
 export function formatPhaseCounts(build: BuildStatus): string | null {

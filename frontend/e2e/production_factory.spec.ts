@@ -178,9 +178,11 @@ test('verified account: Floor brief, feature list, live Approve, billing honesty
     !(await composer.isEnabled().catch(() => true))
 
   if (composerLocked || (await takeover.isVisible().catch(() => false))) {
-    await expect(page.getByText('COLLECTOR')).toBeVisible()
-    await expect(page.getByText('STORE_MANAGER')).toBeVisible()
-    await expect(page.getByText('TESTER')).toBeVisible()
+    const stepper = page.getByTestId('floor-stepper-row')
+    await expect(stepper).toBeVisible()
+    for (const step of ['COLLECTOR', 'TESTER', 'STORE_MANAGER']) {
+      await expect(stepper.locator(`[data-step="${step}"]`)).toHaveCount(1)
+    }
     return
   }
 

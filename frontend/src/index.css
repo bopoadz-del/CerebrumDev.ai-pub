@@ -1138,13 +1138,96 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   .action-bar-in-card .action-more-toggle { width: auto; justify-self: start; }
 }
 .build-steps-slot { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
-.build-steps-slot .kernel-strip { gap: var(--space-1); }
-.build-steps-slot > .kernel-strip { margin: 0; }
-/* On a phone the step chips carry the step only (the one-name stepper is
-   PR-10); the grader chip keeps its word, so its state is never colour alone. */
-@media (max-width: 767px) {
-  .build-steps-slot .kernel-strip li:not([data-testid^="floor-phase-grader"]) .kernel-title,
-  .build-steps-slot .kernel-strip .kernel-agent { display: none; }
+/* The stepper (PR-10): the run's steps as numbered dots on one row. A label
+   only on the current or stopped step (the caption); an icon per state and a
+   screen-reader state word, so state is never colour alone. */
+.stepper { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.stepper-row {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 32px;
+}
+.stepper-step { position: relative; display: flex; align-items: center; flex: 1 1 0; min-width: 0; }
+.stepper-step:first-child { flex: 0 0 auto; }
+.stepper-line { flex: 1 1 auto; height: 2px; margin: 0 4px; background: var(--control-border); min-width: 8px; }
+.stepper-step.step-done .stepper-line,
+.stepper-step.step-current .stepper-line,
+.stepper-step.step-fixing .stepper-line,
+.stepper-step.step-stopped .stepper-line { background: var(--success-edge); }
+.stepper-dot {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--control-border);
+  color: var(--text-muted);
+  background: var(--surface-1);
+  font-size: var(--text-xs);
+  line-height: 1;
+  font-weight: var(--weight-strong);
+}
+.step-done .stepper-dot { border-color: var(--success-edge); color: var(--success-text); background: var(--success-fill); }
+.step-current .stepper-dot { border-color: var(--info-edge); color: var(--info-text); background: var(--info-fill); }
+.step-fixing .stepper-dot { border-color: var(--warning-edge); color: var(--warning-text); background: var(--warning-fill); }
+.step-stopped .stepper-dot { border-color: var(--danger-edge); color: var(--danger-text); background: var(--danger-fill); }
+/* The review inside step 3: a small count on its dot, never a sixth step. */
+.stepper-review {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  line-height: 18px;
+  text-align: center;
+  font-weight: var(--weight-strong);
+  color: var(--warning-text);
+  background: var(--warning-fill);
+  border: 1px solid var(--warning-edge);
+}
+.stepper-review.review-not_passed { color: var(--danger-text); background: var(--danger-fill); border-color: var(--danger-edge); }
+.stepper-caption { margin: 0; font-size: var(--text-sm); line-height: var(--lh-sm); color: var(--text); overflow-wrap: anywhere; }
+/* Badge (spec 4.6): a status word with a tone, always an icon and a word. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--control-border);
+  color: var(--text);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  font-weight: var(--weight-strong);
+  white-space: nowrap;
+}
+.badge-success { color: var(--success-text); border-color: var(--success-edge); background: var(--success-fill); }
+.badge-danger { color: var(--danger-text); border-color: var(--danger-edge); background: var(--danger-fill); }
+.badge-neutral { color: var(--text-muted); }
+/* "Ready — Prototype" stays on one line; the product name and the score
+   are their own items and wrap below it when the line is full. */
+.build-state-title:has(.build-state-level) { display: contents; }
+.build-state-level { white-space: nowrap; color: var(--text); font-weight: var(--weight-regular); }
+.build-state-product, .build-state-score { color: var(--text-muted); font-size: var(--text-sm); font-weight: 400; }
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 /* Technical detail: one closed row; the only home of machine text. */
 .tech-detail { border-top: 1px solid var(--divider); padding-top: var(--space-1); min-width: 0; }
@@ -1185,47 +1268,6 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
 }
 .tech-copy { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: inherit; }
 .tech-copy-result { color: var(--success-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
-.kernel-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  list-style: none;
-  margin: 0 0 10px;
-  padding: 0;
-}
-.kernel-strip li {
-  font-size: var(--text-xs); line-height: var(--lh-xs);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 2px 8px;
-  color: var(--dim);
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.kernel-strip li.done {
-  color: var(--success-text);
-  border-color: var(--success-edge);
-}
-.kernel-strip li.current {
-  color: var(--info-text);
-  border-color: var(--info-edge);
-  background: var(--info-fill);
-}
-.kernel-strip li.failed {
-  color: var(--danger-text);
-  border-color: var(--danger-edge);
-  background: var(--danger-fill);
-  font-weight: 600;
-}
-/* A mid-fail the run is still fixing: the phase sent the work back to the
-   coder. Orange = rework in progress; red is reserved for a stopped run. */
-.kernel-strip li.rework {
-  color: var(--warning-text);
-  border-color: var(--warning-edge);
-  background: var(--warning-fill);
-  font-weight: 600;
-}
 /* A failure the run recovered from. History, not an alert: muted, no red,
    so a green build never reads as a dead one. */
 .coder-recovered-line {
@@ -1295,19 +1337,6 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   display: block;
   height: 100%;
   background: var(--success-text);
-}
-.kernel-id {
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.kernel-title {
-  font-size: var(--text-xs); line-height: var(--lh-xs);
-  text-transform: none;
-  letter-spacing: 0;
-}
-.kernel-agent {
-  color: var(--success-text);
-  font-size: var(--text-xs); line-height: var(--lh-xs);
 }
 .bp-summary {
   color: var(--dim);

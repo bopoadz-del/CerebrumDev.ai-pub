@@ -24,7 +24,7 @@ import {
   formatHeartbeat,
   formatPhaseCounts,
   formatPhaseHeadline,
-  formatAcceptanceScore,
+  measuredScore,
   hasSourcedLevel,
   honestLevel,
   isAcceptancePendingPrototype,
@@ -36,10 +36,10 @@ import {
   stampBuildObservation,
   withClientStall,
   withResolvedNRequired,
-  kernelName,
-  graderChip,
 } from './buildProgress'
-import { LevelGradeStrip } from './levelGradeView'
+import { LevelGradeDetail, LevelGradeStrip } from './levelGradeView'
+import { Stepper } from './stepper'
+import { checksSkipped, CHECK_NAMES, levelWord, orList, stepLabel } from './stepNames'
 import { BuildCard, errorReport } from './buildCard'
 import { ActionBar, useWideLayout } from './actionBar'
 import { buildActions, type ActionId } from './buildActions'
@@ -308,91 +308,6 @@ export function BlueprintCard({
   )
 }
 
-const KERNEL_JOBS: Record<string, { title: string; agent: boolean }> = {
-  COLLECTOR: { title: 'Binding surveyor', agent: true },
-  CLONER: { title: 'Block stocker', agent: false },
-  WRITER: { title: 'Platform manufacturer', agent: true },
-  TESTER: { title: 'Acceptance inspector', agent: false },
-  STORE_MANAGER: { title: 'Store registrar', agent: false },
-}
-
-
-function KernelStrip({ build }: { build: BuildStatus | null }) {
-  const phases = build?.phases?.length
-    ? build.phases
-    : ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER']
-  const done = new Set(build?.completed ?? [])
-  // The grader is not one of BUILD_PHASES -- it runs inside the writer's
-  // gate -- so without a chip of its own a run the grader sent back twice
-  // reads as a writer that stopped for no reason. It sits after WRITER
-  // because that is where it speaks, and its state comes from the run's own
-  // decision record: no decision reads "not reached", never a green the
-  // ledger cannot prove.
-  const grader = graderChip(build)
-  const strip = phases.flatMap((p) =>
-    p === 'WRITER' && grader ? [p, 'GRADER'] : [p],
-  )
-  const current = build?.current_phase?.id
-  const failedAt = build?.failure?.location || build?.failure?.phase
-  const failedReason = build?.failure?.reason || 'unknown'
-  // J2: the title shows the one-line summary, never the raw payload.
-  const failedSummary = build?.failure?.summary || failedReason
-  // A failure on a run that is still moving is a rework round -- the phase
-  // sent the work back and the machine is fixing it. Red is reserved for a
-  // run that actually stopped; live 2026-09-30 TESTER suite_red painted the
-  // same red as a dead build while WORKERS were still writing.
-  const stopped = build?.state === 'failed' || build?.state === 'stalled'
-  return (
-    <ol className="kernel-strip">
-      {strip.map((phase) => {
-        if (phase === 'GRADER' && grader) {
-          return (
-            <li
-              key="GRADER"
-              className={grader.state === 'pending' ? undefined : grader.state}
-              title={grader.title}
-              data-testid={`floor-phase-grader-${grader.state}`}
-            >
-              <span className="kernel-id">GRADER</span>
-              <span className="kernel-title">{grader.detail}</span>
-            </li>
-          )
-        }
-        const job = KERNEL_JOBS[phase]
-        const cls = done.has(phase) ? 'done' : phase === current ? 'current' : undefined
-        const failed = phase === failedAt && stopped
-        const rework = phase === failedAt && !stopped
-        return (
-          <li
-            key={phase}
-            className={[cls, failed ? 'failed' : undefined, rework ? 'rework' : undefined]
-              .filter(Boolean)
-              .join(' ')}
-            title={
-              failed
-                ? `${kernelName(phase)} failed — ${failedSummary}`
-                : rework
-                  ? `${kernelName(phase)} sent it back to the coder — ${failedSummary}`
-                  : undefined
-            }
-            data-testid={
-              failed
-                ? `floor-phase-failed-${phase}`
-                : rework
-                  ? `floor-phase-rework-${phase}`
-                  : undefined
-            }
-          >
-            <span className="kernel-id">{kernelName(phase)}</span>
-            {job ? <span className="kernel-title">{job.title}</span> : null}
-            {job?.agent ? <span className="kernel-agent">agent</span> : null}
-          </li>
-        )
-      })}
-    </ol>
-  )
-}
-
 function CoderProgress({ build, nowMs }: { build: BuildStatus; nowMs: number }) {
   const headline = formatPhaseHeadline(build)
   const counts = formatPhaseCounts(build)
@@ -405,11 +320,8 @@ function CoderProgress({ build, nowMs }: { build: BuildStatus; nowMs: number }) 
   return (
     <div className="coder-progress">
       <p className="coder-phase">
-        Writing your platform — <strong>{headline}</strong>
-        {build.current_phase?.label ? (
-          <span className="coder-phase-label"> — {build.current_phase.label}</span>
-        ) : null}
-        {next ? <span className="coder-next"> then {next}</span> : null}
+        <strong>{headline}</strong>
+        {next ? <span className="coder-next"> · next: {stepLabel(next)}</span> : null}
       </p>
       {build.queued ? (
         <p className="coder-queued" role="status">
@@ -436,15 +348,17 @@ function CoderProgress({ build, nowMs }: { build: BuildStatus; nowMs: number }) 
   )
 }
 
-function coderTakeoverHeading(build: BuildStatus | null): string {
-  if (build?.state === 'succeeded') {
-    if (isPilotZipReady(build)) return 'Coding agent finished'
-    if (isAcceptancePendingPrototype(build)) {
-      return `Acceptance ${formatAcceptanceScore(build)} — not pilot-ready`
-    }
-    return 'Code-cycle prototype ready'
-  }
-  return 'Coding agent has taken over'
+/**
+ * The finished build's one sentence when its level stops before the last
+ * check: what the level leaves out, in the user's word for the level, and
+ * the way to a higher one. Null when the level includes every check.
+ */
+function levelSkipSentence(build: BuildStatus): string | null {
+  const level = levelWord(build.build_level?.build_level)
+  const skipped = checksSkipped(build.build_level?.stop_gate)
+  if (!level || !build.build_level?.stop_gate || skipped.length === 0) return null
+  const phrases = skipped.map((id) => CHECK_NAMES[id].phrase)
+  return `${level} does not include ${orList(phrases)}. For a higher level, start a new session.`
 }
 
 function coderTakeoverNote(build: BuildStatus | null): string | null {
@@ -467,17 +381,19 @@ function coderTakeoverNote(build: BuildStatus | null): string | null {
       return finished ?? 'Coding agent finished. Download it from Your Platforms.'
     }
     if (isAcceptancePendingPrototype(build)) {
-      const score = formatAcceptanceScore(build)
+      const score = measuredScore(build)
       const pending =
-        `Acceptance is ${score} — not k/k. Every platform must pass these 21 measured ` +
+        (score ? `Acceptance is ${score} — not k/k. ` : 'Acceptance was not measured. ') +
+        'Every platform must pass these 21 measured ' +
         'checks before export, and export stays closed until scripts/acceptance.py passes ' +
         'inside the Store-built image. This is a code-green prototype, not a failed build.'
       return finished ? `${finished}. ${pending}` : pending
     }
-    if (build.build_level?.stop_gate === 'CODE') {
-      // The user chose prototype: CODE_GREEN is this build's finish line.
-      const done = `Built to ${build.build_level.build_level}: done at CODE_GREEN — the pilot suite and the Store gate do not run at this level.`
-      return finished ? `${finished}. ${done}` : done
+    const skip = levelSkipSentence(build)
+    if (skip) {
+      // The user chose a level that stops early: this is the build's finish
+      // line, said once, in one sentence.
+      return skip
     }
     if (finished) {
       return (
@@ -1514,12 +1430,20 @@ export function Floor({
             title={
               liveCoderBuild?.state === 'succeeded' ? (
                 <>
-                  <span data-testid="floor-product-title">{productTitle}</span>{' '}
-                  <span className="mono" data-testid="floor-acceptance-score">
-                    {formatAcceptanceScore(liveCoderBuild)}
+                  {levelWord(liveCoderBuild.build_level?.build_level) ? (
+                    <span className="build-state-level" data-testid="floor-ready-level">
+                      {' — '}
+                      {levelWord(liveCoderBuild.build_level?.build_level)}
+                    </span>
+                  ) : null}{' '}
+                  <span className="build-state-product" data-testid="floor-product-title">
+                    {productTitle}
                   </span>
-                  {' — '}
-                  {coderTakeoverHeading(liveCoderBuild)}
+                  {measuredScore(liveCoderBuild) ? (
+                    <span className="build-state-score" data-testid="floor-acceptance-score">
+                      {' '}Acceptance {measuredScore(liveCoderBuild)}
+                    </span>
+                  ) : null}
                 </>
               ) : undefined
             }
@@ -1528,17 +1452,15 @@ export function Floor({
             steps={
               <>
                 {coderSucceeded && <LevelGradeStrip build={liveCoderBuild} testIdPrefix="floor" />}
-                <KernelStrip build={liveCoderBuild} />
+                <Stepper build={liveCoderBuild} />
                 {liveCoderBuild && liveCoderBuild.state === 'building' && (
                   <CoderProgress build={liveCoderBuild} nowMs={nowMs} />
                 )}
               </>
             }
             detail={
-              // A stopped build's gate chips are gate ids: Technical detail.
-              coderSucceeded ? undefined : (
-                <LevelGradeStrip build={liveCoderBuild} testIdPrefix="floor" />
-              )
+              // Grade names, the stop gate and raw gate verdicts: Technical detail only.
+              <LevelGradeDetail build={liveCoderBuild} testIdPrefix="floor" />
             }
             footer={
               <>

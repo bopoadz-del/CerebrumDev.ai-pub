@@ -75,7 +75,7 @@ const LETTINGS_BUILDING = {
 async function expectNoGoldFinished(page: Page) {
   await expect(page.getByText(/Finished —/)).toHaveCount(0)
   await expect(page.getByText(/Download ready/)).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /Finished/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
 }
@@ -233,7 +233,7 @@ test('Floor drafts a feature list and Approve & build starts the coding agent', 
   await expect(page.getByText('coding agent', { exact: true })).toBeVisible()
   await expect(page.getByText('chat LLM', { exact: true })).toBeVisible()
   await expect(page.getByRole('status')).toContainText(/Coding agent has taken over/)
-  await expect(page.getByText('WORKERS', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Write the code')
   await expect(page.getByPlaceholder(/coding agent has taken over/i)).toBeDisabled()
 })
 
@@ -535,7 +535,7 @@ test('legacy ?session= thin VetCare matches Floor honesty — no Finished+Downlo
   await page.goto(`/?session=${thinId}`)
   await expect(page).toHaveURL(new RegExp(`/floor/${thinId}$`))
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByRole('heading', { name: 'Code-cycle prototype ready' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible()
   await expect(page.getByTestId('floor-prototype-pill')).toHaveText('Code-green (prototype)')
   await expect(page.getByText('session sess_cec9a13…')).toBeVisible()
   await expect(page.getByText('session sess_45729bb…')).toHaveCount(0)
@@ -630,7 +630,7 @@ test('legacy ?session= overclaim Store-green thin VetCare still refuses gold Dow
 
   await page.goto(`/?session=${thinId}`)
   await expect(page).toHaveURL(new RegExp(`/floor/${thinId}$`))
-  await expect(page.getByRole('heading', { name: 'Code-cycle prototype ready' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByTestId('floor-prototype-pill')).toHaveText('Code-green (prototype)')
@@ -677,7 +677,7 @@ test('legacy ?session= pilot-ready kit still offers Download on the canonical Fl
   await page.goto(`/?session=${readyId}`)
   await expect(page).toHaveURL(new RegExp(`/floor/${readyId}$`))
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible()
   await expect(page.getByTestId('floor-pilot-ready-pill')).toHaveText('Store-green')
   const download = page.getByRole('button', { name: 'Download platform (.zip)' })
   await expect(download).toBeVisible()
@@ -781,7 +781,7 @@ test('WRITER session A bound → /floor/{B} hydrates finished B, not A', async (
   await page.goto(`/floor/${writerA}`)
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('session sess_d10dfc2…')).toBeVisible()
-  await expect(page.getByText(/WORKERS 3\/5/)).toBeVisible()
+  await expect(page.getByText(/Step 3 of 5 — Writing the code/)).toBeVisible()
   await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
 
   await page.evaluate((id) => {
@@ -790,9 +790,9 @@ test('WRITER session A bound → /floor/{B} hydrates finished B, not A', async (
 
   await expect(page.getByText('session sess_cec9a13…')).toBeVisible()
   await expect(page.getByText('session sess_d10dfc2…')).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible()
   await expect(page.getByTestId('floor-pilot-ready-pill')).toContainText('Store-green')
-  await expect(page.getByText(/WORKERS 3\/5/)).toHaveCount(0)
+  await expect(page.getByText(/Step 3 of 5 — Writing the code/)).toHaveCount(0)
   await expect(page.getByRole('heading', { name: /^Building/ })).toHaveCount(0)
 })
 
@@ -835,7 +835,7 @@ test('Floor finished state offers the zip download on the generate surface', asy
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByText('Finished — 13 artifacts; 6 templated. Download ready.')).toBeVisible()
@@ -904,13 +904,13 @@ test('Floor code-cycle SUCCESS is a prototype with Continue to pilot — never F
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Code-cycle prototype ready' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByText(/Code-cycle prototype — 11 artifacts; 13 templated. Not yet pilot-ready/)).toBeVisible()
   await expect(page.getByText(/Finished —/)).toHaveCount(0)
   await expect(page.getByText(/Download ready/)).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /Finished/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Download prototype (.zip)' })).toBeEnabled()
   await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Run pilot checks' }).click()
@@ -1298,7 +1298,7 @@ test('Floor refuses gold Download when CLI-billing keep-path is below the author
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Code-cycle prototype ready' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByTestId('floor-prototype-pill')).toHaveText('Code-green (prototype)')
@@ -1535,7 +1535,7 @@ test('Floor sess_45729 0639 thin Store-green never claims founding', async ({ pa
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByTestId('floor-pilot-ready-pill')).toHaveText('Store-green')
@@ -1589,11 +1589,11 @@ test('Floor CODE_GREEN level_grade never says Finished or founding-ready', async
     })
   })
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Code-cycle prototype ready' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByTestId('floor-prototype-pill')).toContainText('Code-green (prototype)')
-  await expect(page.getByTestId('floor-gate-product')).toContainText('PRODUCT NOT RUN')
+  await expect(page.getByTestId('floor-gate-product')).toContainText('Pilot tests not run')
   await expect(page.getByText(/Finished —/)).toHaveCount(0)
   await expect(page.getByText(/Download ready/)).toHaveCount(0)
   await expect(page.getByText(/Founding-customer-ready/)).toHaveCount(0)
@@ -1649,8 +1649,8 @@ test('Your Platforms FOUNDING_CUSTOMER_READY shows founding chip and gold export
   await expect(page.getByTestId('platforms-pilot-ready-pill')).toContainText('Founding-customer-ready', {
     timeout: 20_000,
   })
-  await expect(page.getByTestId('platforms-gate-product')).toContainText('PRODUCT PASS')
-  await expect(page.getByTestId('platforms-gate-store')).toContainText('STORE PASS')
+  await expect(page.getByTestId('platforms-gate-product')).toContainText('Pilot tests passed')
+  await expect(page.getByTestId('platforms-gate-store')).toContainText('Store check passed')
   await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
 })
 
@@ -1768,7 +1768,7 @@ test('Floor keeps coding chrome after golden lettings Approve before the first s
   await expect(page.getByTestId('floor-coder-takeover')).toBeVisible()
   await expectNoGoldFinished(page)
   releaseStatus?.()
-  await expect(page.getByText('WORKERS', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Write the code')
   await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
   await expectNoGoldFinished(page)
 })
