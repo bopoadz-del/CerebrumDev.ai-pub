@@ -118,7 +118,11 @@ for (const state of FLOOR_STATES) {
           const shown = (el: Element) => {
             const r = el.getBoundingClientRect()
             const cs = getComputedStyle(el)
-            return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'
+            // checkVisibility() is false inside a skipped subtree, e.g. the
+            // body of a closed <details> (PR-07's Technical detail): those
+            // controls are not rendered until the row is opened.
+            const rendered = typeof el.checkVisibility === 'function' ? el.checkVisibility() : true
+            return rendered && r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'
           }
           const unreachable: string[] = []
           const controls = [...document.querySelectorAll('.floor button, .floor input:not([type=file]), .floor select, .floor a')]
@@ -569,5 +573,68 @@ test.describe('edit-brief sheet at 360x780', () => {
     await openState(page, 'building')
     await expect(page.getByTestId('brief-lock')).toBeVisible()
     await expect(page.getByTestId('intake-change')).toHaveCount(0)
+  })
+})
+
+/**
+ * PR-07: the BUILD card -- state line, one sentence, actions, steps and a
+ * closed Technical detail. At 360px the stopped card is at most 360px tall
+ * with Technical detail closed, and a stopped build's title is not green.
+ */
+test.describe('build card at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  const GREEN = ['rgb(125, 211, 160)']
+
+  for (const state of ['stopped', 'stalled'] as const) {
+    test(`${state}: the card is at most 360px tall and its title is not green`, async ({ page }) => {
+      await openState(page, state)
+      const card = page.getByTestId('floor-coder-takeover')
+      const detail = page.getByTestId('floor-tech-detail')
+      if (await detail.count()) {
+        expect(await detail.evaluate((el) => (el as HTMLDetailsElement).open)).toBe(false)
+      }
+      const box = await card.boundingBox()
+      expect(box, 'card laid out').not.toBeNull()
+      expect(box!.height).toBeLessThanOrEqual(360)
+      const title = page.getByTestId('floor-build-state')
+      await expect(title).toContainText('Stopped')
+      const colour = await title.evaluate((el) => getComputedStyle(el).color)
+      expect(GREEN).not.toContain(colour)
+      await expect(card).toHaveAttribute('data-tone', 'danger')
+    })
+  }
+
+  test('stopped: no wire id or FAILED( text on the face; one raw message inside Technical detail', async ({
+    page,
+  }) => {
+    await openState(page, 'stopped')
+    const face = await page.getByTestId('floor-coder-takeover').evaluate((el) => {
+      const copy = el.cloneNode(true) as HTMLElement
+      copy.querySelector('[data-testid="floor-tech-detail"]')?.remove()
+      copy.querySelector('[data-testid="floor-build-steps"]')?.remove()
+      return copy.textContent ?? ''
+    })
+    for (const id of ['codewhale_worker_failed', 'worker_timed_out', 'writer_contract', 'REWORK', 'FAILED(', '7461cb639b']) {
+      expect(face).not.toContain(id)
+    }
+    const detail = page.getByTestId('floor-tech-detail')
+    await detail.locator('summary').click()
+    await expect(detail.getByTestId('floor-failed-label')).toBeVisible()
+    const text = (await detail.textContent()) ?? ''
+    expect(text.split('headless job exceeded').length - 1).toBe(1)
+    await expect(detail.getByRole('button', { name: 'Copy error report' })).toBeVisible()
+    // Open, Technical detail scrolls inside itself and never widens the page.
+    const overflow = await page.evaluate(() => document.scrollingElement!.scrollWidth - document.scrollingElement!.clientWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+  })
+
+  test('fix round: one amber line, no reason code on the face', async ({ page }) => {
+    await openState(page, 'fix-round')
+    const line = page.getByTestId('floor-rework-line')
+    await expect(line).toBeVisible()
+    await expect(line).toContainText('A quality check sent work back')
+    await expect(line).not.toContainText('writer_contract')
+    await expect(page.getByTestId('floor-coder-takeover')).toHaveAttribute('data-tone', 'warning')
   })
 })

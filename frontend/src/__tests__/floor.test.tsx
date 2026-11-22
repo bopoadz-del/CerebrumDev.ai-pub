@@ -144,7 +144,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve & build' }))
     expect(await screen.findByText('coding agent')).toBeInTheDocument()
     expect(screen.getByText('chat LLM')).toBeInTheDocument()
-    expect(await screen.findByRole('status')).toHaveTextContent(/Coding agent has taken over/)
+    expect(await screen.findByRole('status')).toHaveTextContent(/Building/)
     expect(await screen.findByText('COLLECTOR')).toBeInTheDocument()
     expect(screen.getByText('Binding surveyor')).toBeInTheDocument()
     expect(screen.getByText('WORKERS')).toBeInTheDocument()
@@ -235,7 +235,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_hydrate" goPlatforms={() => {}} />)
     expect(await screen.findByText('coding agent')).toBeInTheDocument()
     expect(screen.getByText('chat LLM')).toBeInTheDocument()
-    expect(await screen.findByRole('status')).toHaveTextContent(/Coding agent has taken over/)
+    expect(await screen.findByRole('status')).toHaveTextContent(/Building/)
     expect(screen.getByPlaceholderText(/coding agent has taken over/i)).toBeDisabled()
   })
 
@@ -258,7 +258,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       ],
     })
     render(<Floor sessionId="sess_history" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('status')).toHaveTextContent(/Coding agent has taken over/)
+    expect(await screen.findByRole('status')).toHaveTextContent(/Building/)
     // The owner's brief and the drafting exchange are still on the floor...
     expect(screen.getByText('Build me a vineyard management platform')).toBeInTheDocument()
     expect(screen.getByText(/Blueprint drafted: Vineyard Platform/)).toBeInTheDocument()
@@ -311,7 +311,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByText('Finished — 22 artifacts; 6 templated. Download ready.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
     expect(screen.queryByText(/22 of 28/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Coding agent has taken over' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText(/Try:/)).toBeEnabled()
   })
 
@@ -577,8 +577,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'veterinary-care', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_45729bb662cf4a5d" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: 'Coding agent stopped' })).toBeInTheDocument()
-    expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('Pilot suite failed')
+    expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
+    // PR-07: the state line says the state; the pill left the button row.
+    expect(screen.getByTestId('floor-build-state')).toHaveTextContent('Stopped')
+    expect(screen.queryByTestId('floor-failed-pill')).not.toBeInTheDocument()
     expect(screen.getByText(/FACTORY_CODE_CLI_FAILED: CLI exited 1/)).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
@@ -752,7 +754,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_cta" goPlatforms={() => {}} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Continue to pilot' }))
     await waitFor(() => expect(chatStreamMock).toHaveBeenCalledWith('sess_cta', '', expect.any(Function), undefined, undefined, { action: 'run_pilot' }))
-    expect(await screen.findByRole('heading', { name: 'Coding agent has taken over' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
   })
 
@@ -820,7 +822,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       target: { value: '(a) continue the existing lettings hub into its pilot cycle' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    expect(await screen.findByRole('heading', { name: 'Coding agent has taken over' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByText(/Writing your platform/)).toBeInTheDocument()
@@ -914,8 +916,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(
       <Floor sessionId="sess_red" goPlatforms={() => {}} onNewSession={onNewSession} />,
     )
-    expect(await screen.findByRole('heading', { name: 'Coding agent stopped' })).toBeInTheDocument()
-    expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('Pilot suite failed')
+    expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
+    // PR-07: the state line says the state; the pill left the button row.
+    expect(screen.getByTestId('floor-build-state')).toHaveTextContent('Stopped')
+    expect(screen.queryByTestId('floor-failed-pill')).not.toBeInTheDocument()
     expect(screen.getByText(/rework budget of 3 exhausted/)).toBeInTheDocument()
     expect(screen.queryByText(/taken over the floor/i)).not.toBeInTheDocument()
     expect(screen.queryByText('coding agent')).not.toBeInTheDocument()
@@ -957,7 +961,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByTestId('floor-failed-label')).toHaveTextContent(
       'FAILED(STORE_MANAGER, metrics_served, GET /metrics is 404)',
     )
-    expect(screen.getByTestId('floor-next-continue')).toHaveTextContent(/Continue will resume/)
+    // PR-07: the grey 'what Continue will fix' paragraph is off the card;
+    // the raw FAILED tuple is shown once, in Technical detail.
+    expect(screen.queryByTestId('floor-next-continue')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-tech-detail')).toContainElement(screen.getByTestId('floor-failed-label'))
     // Never green: the only export is the labelled as-is copy.
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
@@ -1036,8 +1043,16 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     })
     downloadMock.mockResolvedValue(undefined)
     render(<Floor sessionId="sess_f5" goPlatforms={() => {}} />)
-    expect(await screen.findByTestId('floor-failure-narrative')).toHaveTextContent(
-      'Where it stopped: TESTER (product_gate).',
+    // PR-07: the narrative paragraph is off the card; the stop is said once
+    // on the face and the raw tuple once in Technical detail.
+    await waitFor(() =>
+      expect(screen.getByTestId('floor-build-sentence')).toHaveTextContent(
+        'The build stopped before it finished.',
+      ),
+    )
+    expect(screen.queryByTestId('floor-failure-narrative')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-failed-label')).toHaveTextContent(
+      'FAILED(TESTER, product_gate, tide_relay refused its own schema)',
     )
     fireEvent.click(screen.getByTestId('floor-take-copy'))
     await waitFor(() =>
@@ -1120,8 +1135,11 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'veterinary-care', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_stall" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: 'Coding agent stalled' })).toBeInTheDocument()
-    expect(screen.getByTestId('floor-stalled-pill')).toHaveTextContent('Build stalled')
+    expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
+    // PR-07: a stall is one kind of Stopped; the pill left the button row.
+    expect(screen.getByTestId('floor-build-state')).toHaveTextContent('Stopped')
+    expect(screen.getByTestId('floor-build-sentence')).toHaveTextContent('No update from the build')
+    expect(screen.queryByTestId('floor-stalled-pill')).not.toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Download platform export (.zip)' }),
     ).not.toBeInTheDocument()
@@ -1147,9 +1165,9 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'veterinary-care', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_ledger" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: 'Coding agent stopped' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
     expect(screen.queryByText(/Writing your platform/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Coding agent has taken over' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
     expect(screen.getByTestId('floor-continue-with-intake')).toBeEnabled()
   })
@@ -1209,7 +1227,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_hold" goPlatforms={() => {}} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Approve & build' }))
     expect(await screen.findByTestId('floor-coder-takeover')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Coding agent has taken over' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
@@ -1248,7 +1266,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       expect(screen.getByRole('button', { name: 'Approve & build' })).toBeEnabled(),
     )
     fireEvent.click(screen.getByRole('button', { name: 'Approve & build' }))
-    expect(await screen.findByRole('heading', { name: 'Coding agent has taken over' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
   })
 
@@ -1275,7 +1293,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'property-management', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_northbridge" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: 'Coding agent has taken over' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     // Watch snapshot paints one tick after takeover chrome; wait for it
     // the same way the WRITER takeover test waits for "Writing your platform".
     expect(await screen.findByText(/Writing your platform/)).toBeInTheDocument()
@@ -1426,11 +1444,13 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'retal', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_f4_failure" goPlatforms={() => {}} />)
-    expect(await screen.findByRole('heading', { name: 'Coding agent stopped' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
     // The red stage is the one the user was watching.
     expect(screen.getByTestId('floor-phase-failed-WRITER')).toBeInTheDocument()
-    // The pill names the phase, not a generic "pilot failed".
-    expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('WRITER failed')
+    // PR-07: the state line names where it stopped (step 3 of 5); the
+    // phase id lives in Technical detail with the summary and the ref.
+    expect(screen.getByTestId('floor-build-state')).toHaveTextContent('Stopped at step 3 of 5')
+    expect(screen.getByTestId('floor-build-state')).not.toHaveTextContent('WRITER')
     // J2: the line shows a one-line summary and the ref the full detail is
     // filed under -- not the raw payload. Stronger than before, never weaker.
     const failureLine = screen.getByTestId('floor-failure-line')
@@ -1535,10 +1555,13 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     const chip = await screen.findByTestId('floor-phase-rework-TESTER')
     expect(chip.className).toContain('rework')
     expect(screen.queryByTestId('floor-phase-failed-TESTER')).not.toBeInTheDocument()
-    // The note says the work went back to the coder; no red alert.
+    // PR-07: one amber line in plain words; the phase id and the reason
+    // code move to Technical detail. No red alert.
     const note = screen.getByTestId('floor-rework-line')
-    expect(note).toHaveTextContent('TESTER sent it back to the coder')
-    expect(note).toHaveTextContent('suite_red')
+    expect(note).toHaveTextContent('A quality check sent work back. The Factory is fixing it now.')
+    expect(note).not.toHaveTextContent('suite_red')
+    expect(screen.getByTestId('floor-rework-detail')).toHaveTextContent('TESTER sent it back')
+    expect(screen.getByTestId('floor-tech-detail')).toHaveTextContent('suite_red')
     expect(screen.queryByTestId('floor-failure-line')).not.toBeInTheDocument()
   })
 
