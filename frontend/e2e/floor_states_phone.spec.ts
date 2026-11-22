@@ -108,6 +108,12 @@ for (const state of FLOOR_STATES) {
       test('every enabled action and the composer can be reached', async ({ page }) => {
         await openState(page, state)
         const report = await page.evaluate(() => {
+          // Open every collapsed section first: a control kept inside a closed
+          // <details> has a layout box but is not painted, so it must be
+          // measured as the user meets it -- revealed.
+          document.querySelectorAll('.floor details').forEach((d) => {
+            ;(d as HTMLDetailsElement).open = true
+          })
           const vh = window.innerHeight
           const vw = window.innerWidth
           const stream = document.querySelector('[data-testid="floor-stream"]') as HTMLElement
@@ -340,3 +346,81 @@ for (const vp of [
     })
   })
 }
+
+/**
+ * PR-03: tokens and base controls. Every button, field and select is at
+ * least 44px tall, on the Floor, the sign-in screen and the Account page;
+ * an outline button keeps its own look under the pointer (it never turns
+ * into a gold primary).
+ */
+const CONTROLS =
+  'button, select, textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"])'
+
+async function shortControls(page: Page): Promise<string[]> {
+  return page.evaluate((sel) => {
+    return [...document.querySelectorAll(sel)]
+      .filter((el) => {
+        const r = el.getBoundingClientRect()
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'
+      })
+      .filter((el) => el.getBoundingClientRect().height < 44 - 0.5)
+      .map((el) => {
+        const label = (el.getAttribute('aria-label') || el.textContent || el.getAttribute('name') || '').trim()
+        return `${el.tagName.toLowerCase()}.${(el as HTMLElement).className || '-'} "${label.slice(0, 30)}" ${Math.round(el.getBoundingClientRect().height)}px`
+      })
+  }, CONTROLS)
+}
+
+test.describe('base controls at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  for (const state of ['new-session', 'feature-list-pending', 'building', 'stopped', 'finished-pilot'] as const) {
+    test(`every control on the Floor (${state}) is at least 44px tall`, async ({ page }) => {
+      await openState(page, state)
+      expect(await shortControls(page)).toEqual([])
+    })
+  }
+
+  test('every control on the Account page is at least 44px tall', async ({ page }) => {
+    await openState(page, 'stopped')
+    await page.getByRole('button', { name: 'Account', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible()
+    await page.waitForTimeout(300)
+    expect(await shortControls(page)).toEqual([])
+  })
+
+  test('every control on the sign-in screen is at least 44px tall', async ({ page }) => {
+    await mockFloorStates(page)
+    // Registered last, so it wins: nobody is signed in.
+    await page.route('**/v1/auth/me', (route) =>
+      route.fulfill({ status: 401, contentType: 'application/json', body: '{"detail":"not signed in"}' }),
+    )
+    await page.goto('/')
+    await expect(page.locator('.auth-panel')).toBeVisible()
+    const n = await page.locator(`.auth-panel :is(${CONTROLS})`).count()
+    expect(n).toBeGreaterThan(1)
+    expect(await shortControls(page)).toEqual([])
+  })
+})
+
+test.describe('pointer hover at 360x780', () => {
+  // A pointer device: (hover: hover) matches, so the hover rules apply.
+  test.use({ viewport: { width: 360, height: 780 } })
+
+  test('hovering an outline button does not turn it gold', async ({ page }) => {
+    await openState(page, 'stopped')
+    const ghost = page.locator('[data-testid="floor-coder-takeover"] button.ghost:not(:disabled)').first()
+    await ghost.scrollIntoViewIfNeeded()
+    const before = await ghost.evaluate((el) => getComputedStyle(el).backgroundColor)
+    await ghost.hover()
+    await page.waitForTimeout(250)
+    const after = await ghost.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      return { bg: cs.backgroundColor, fg: cs.color }
+    })
+    const gold = ['rgb(240, 180, 41)', 'rgb(217, 154, 18)']
+    expect(gold, `hover background ${after.bg} (was ${before})`).not.toContain(after.bg)
+    // The label stays in the main ink, readable on the hover fill.
+    expect(after.fg).toBe('rgb(232, 236, 241)')
+  })
+})
