@@ -176,6 +176,9 @@ const BUILD_FIX_ROUND: BuildStatus = {
 const TIMEOUT =
   'codewhale_worker_failed: worker_timed_out: headless job exceeded its 1800s wall (dispatched with 1800.0s)'
 
+const STOPPED_NEXT =
+  'Continuing runs this step again with a new time allowance; steps that already passed are not repeated, and the coder carries on from its saved files where it can.'
+
 const BUILD_STOPPED: BuildStatus = {
   state: 'failed',
   cycle: 'code',
@@ -200,14 +203,18 @@ const BUILD_STOPPED: BuildStatus = {
     outcome: 'failed',
     reason: 'codewhale_worker_failed',
     code: 'codewhale_worker_failed',
-    summary: 'WRITER was refused during the build; the full detail is in the build record.',
+    // The stop view the server attaches (failure_record.stop_view): a worker
+    // timeout is the out_of_time class, never "refused".
+    kind: 'out_of_time',
+    title: 'ran out of time',
+    summary:
+      'The time allowance ended before this step finished (it had run for 30 minutes). No check refused the work.',
+    next: STOPPED_NEXT,
     ref: '7461cb639b',
   },
   failed: { gate: 'WRITER', check: 'codewhale_worker_failed', finding: TIMEOUT },
   failed_label: `FAILED(WRITER, codewhale_worker_failed, ${TIMEOUT})`,
-  next_continue:
-    "Continue will resume this platform's branch at WRITER and send the writer the failing check codewhale_worker_failed: " +
-    TIMEOUT,
+  next_continue: STOPPED_NEXT,
   failure_narrative: {
     text:
       'What was tried: the run passed COLLECTOR and CLONER. It ran 1 rework round (WRITER/writer_contract). Where it stopped: WRITER. Why: WRITER failed: ' +
@@ -382,7 +389,7 @@ export async function mockFloorStates(page: Page): Promise<void> {
       if (p === '/health') {
         return json({
           status: 'ok',
-          factory_code_cli: { available: true, credentials_file_present: true, requires_kimi_credentials: true },
+          factory_code_cli: { available: true, credentials_file_present: true },
         })
       }
       if (p === '/version') return json({ support_email: SUPPORT_EMAIL })

@@ -1,5 +1,6 @@
 import type {
   BuildAuthorship,
+  BuildFailure,
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
@@ -234,17 +235,15 @@ export function kernelName(phase: string): string {
 /**
  * The brief's grader, as the strip can show it.
  *
- * The grader is NOT a build phase: it runs inside the writer's gate and its
- * verdict arrives as a runner ``decision`` -- REWORK when it sends the work
- * back, STOP when it ends the run. So the five-phase strip had no chip for
- * it, and a build the grader sent back twice read as a writer that stopped
- * for no reason (live 21 Nov: two WRITER failures, both grader verdicts,
- * neither visible as a stage).
- *
- * Only what the ledger records is claimed. No decision means ``pending`` --
- * never a green "passed" the record cannot prove.
+ * The grader is NOT a build phase: it runs inside the writer's gate, so the
+ * five-phase strip had no chip for it. The chip speaks ONLY for what the
+ * grader itself recorded (``build.grader``, read from the ledger events that
+ * name the grader's gate). The runner rule's ``decisions`` belong to the
+ * WRITER / TESTER / STORE_MANAGER gates and the run state can be a timeout or
+ * the owner's Stop, so neither is read here: a writer that ran out of time
+ * never reads "GRADER rejected".
  */
-export type GraderChipState = 'pending' | 'rework' | 'failed'
+export type GraderChipState = 'pending' | 'done' | 'rework' | 'failed'
 
 export interface GraderChip {
   state: GraderChipState
@@ -256,42 +255,55 @@ export interface GraderChip {
 
 export function graderChip(build: BuildStatus | null | undefined): GraderChip | null {
   if (!build) return null
-  const decisions = build.decisions ?? []
-  const last = decisions.length ? decisions[decisions.length - 1] : null
-  const stopped = build.state === 'failed' || build.state === 'stalled'
-  if (stopped && last) {
-    const gate = last.gate_name || last.gate || 'WRITER'
-    const why = last.check || last.finding || 'gate failed'
+  const grader = build.grader
+  if (!grader) {
+    return {
+      state: 'pending',
+      detail: 'not reached',
+      title: 'The grader has not judged this attempt.',
+    }
+  }
+  if (grader.state === 'certified') {
+    return { state: 'done', detail: 'certified', title: 'The grader certified the work.' }
+  }
+  if (grader.state === 'stopped') {
     return {
       state: 'failed',
-      detail: 'rejected',
-      title: `${gate} gate: ${why}`,
+      detail: grader.tier === 'ERROR' ? 'could not grade' : 'not certified',
+      title: 'The grader ended this build.',
     }
   }
-  if (
-    last &&
-    (last.class === 'REWORK' ||
-      last.class === 'REGENERATE_TEST' ||
-      last.class === 'REPROMPT')
-  ) {
-    const gate = last.gate_name || last.gate || 'WRITER'
-    const round = last.round_gate
-      ? `round ${last.round_gate}/${last.gate_budget ?? 1}`
-      : 'fix round'
-    return {
-      state: 'rework',
-      detail: `sent it back \u2014 ${round}`,
-      title: `${gate} gate: ${last.check || last.finding || 'sent the work back'}`,
-    }
-  }
-  const verdict = build.failed?.check || build.failure?.code
+  const round = grader.round ? `round ${grader.round}/${grader.budget ?? 1}` : 'fix round'
   return {
-    state: 'pending',
-    detail: verdict === 'grader_not_certified' ? 'not certified' : 'not reached',
-    title: verdict
-      ? `the graded gate named: ${verdict}`
-      : 'the grader has not refused anything on this pass yet',
+    state: 'rework',
+    detail: grader.state === 'sent_back' ? `sent it back \u2014 ${round}` : 'not certified',
+    title: 'The grader sent the work back to the coder.',
   }
+}
+
+/** "WORKERS ran out of time": the stage as the strip names it plus the stop
+ *  class's own words. One label source, so the red box, the chip tooltip and
+ *  the pill never call one stage by two names. */
+export function stopHeadline(failure: BuildFailure | null | undefined): string {
+  const where = failure?.location || failure?.phase
+  return `${where ? kernelName(where) : 'Build'} ${failure?.title || 'failed'}`
+}
+
+/** Red is for a check that refused the work. A stop nothing judged -- time
+ *  ran out, the step could not run, the owner pressed Stop -- is ``halted``. */
+export function stopTone(failure: BuildFailure | null | undefined): 'failed' | 'halted' {
+  const kind = failure?.kind
+  return !kind || kind === 'check_refused' || kind === 'rounds_spent' ? 'failed' : 'halted'
+}
+
+/** Fix rounds as history, in one line from the decision's typed numbers --
+ *  never its check id or its finding, which are written for the coder. */
+export function fixRoundsLine(build: BuildStatus | null | undefined): string | null {
+  const rounds = (build?.decisions ?? []).filter((d) => d.class === 'REWORK')
+  const last = rounds[rounds.length - 1]
+  if (!last) return null
+  const step = `${kernelName(last.gate)}: ${last.round_gate} of ${last.gate_budget}`
+  return `Fix rounds used: ${last.round_build} of ${last.build_ceiling} (${step}).`
 }
 
 /** Named current phase plus 1-based index: "WORKERS 3/5", not a bare "2/5". */
