@@ -521,7 +521,135 @@ def _with_level_grade(status: Dict[str, Any], output_dir: Path | str) -> Dict[st
     the strip runs after it. Import late to avoid a cycle."""
     from app.factory.build.level_grade import attach_level_grade
 
-    return _strip_floor_detail(attach_level_grade(status, output_dir))
+    graded = attach_level_grade(status, output_dir)
+    stop = stop_record(graded, output_dir)
+    if stop is not None:
+        graded["stop"] = stop
+    return _strip_floor_detail(graded)
+
+
+def _event_name(value: Any) -> str:
+    return str(getattr(value, "value", value) or "")
+
+
+def last_failure_event(events: Sequence[Any]) -> Any:
+    """The LAST failure in the ledger (a gate refusal or an aborted phase).
+
+    A designed handoff is not a failure: a STORE refusal for a host without
+    docker followed by its handoff NOTE is cleared, exactly as the phase
+    trail clears it."""
+    last = None
+    for event in events:
+        kind = _event_name(getattr(event, "kind", None))
+        role = getattr(event, "role", None)
+        if role is None:
+            continue
+        payload = getattr(event, "payload", None) or {}
+        if kind in ("GATE_FAILED", "PHASE_ABORTED"):
+            last = event
+        elif (
+            kind == "NOTE"
+            and payload.get("handoff")
+            and last is not None
+            and getattr(last, "role", None) == role
+            and (last.payload or {}).get("reason") == "docker_unavailable"
+        ):
+            last = None
+    return last
+
+
+def _elapsed_s(events: Sequence[Any]) -> Optional[int]:
+    """Seconds from the first ledger event to the last."""
+    stamps = [_event_epoch(getattr(e, "ts", "")) for e in events]
+    stamps = [s for s in stamps if s is not None]
+    if len(stamps) < 2:
+        return None
+    return int(max(stamps) - min(stamps))
+
+
+def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict[str, Any]]:
+    """The one "ended because" record of a build that ended early, or None.
+
+    ``kind`` is one of a closed set (failure_record.STOP_KINDS); ``step`` is
+    the wire id of the step it ended in; ``steps_done``, ``fix_rounds`` and
+    ``elapsed_s`` are counts. ``plain`` is one sentence with no ids in it.
+    The raw message, the reason chain and the reference live under
+    ``technical``. A run that wrote its terminal event is read from that
+    event and the LAST failure before it; a run that never wrote one (a
+    crash, a restart, a quiet build) is read from the status's own marker."""
+    from app.factory.build import failure_record as fr
+    from app.factory.build.authority import BUILD_PHASES
+    from app.factory.build.ledger import BuildLedger
+    from app.factory.build.sanitize import sanitize_for_status
+
+    state = status.get("state")
+    if state not in ("failed", "stalled"):
+        return None
+    try:
+        ledger = BuildLedger(_ledger_path(output_dir))
+        events = ledger.events()
+        terminal = ledger.terminal_event()
+    except Exception:  # noqa: BLE001 -- an unreadable ledger is read from the status marker
+        events, terminal = [], None
+    honesty = str(status.get("honesty") or "")
+    last = last_failure_event(events)
+    payload = (getattr(last, "payload", None) or {}) if last is not None else {}
+    chain = fr.reason_chain(payload.get("reason"), getattr(last, "detail", "")) if last is not None else []
+    if terminal is not None:
+        tp = terminal.payload or {}
+        kind, plain, code = fr.stop_kind(
+            outcome=tp.get("outcome"),
+            markers=fr.reason_chain(tp.get("reason"), terminal.detail),
+            failure_kind=payload.get("failure_kind"),
+            chain=chain,
+            gate_failed=_event_name(getattr(last, "kind", None)) == "GATE_FAILED",
+        )
+    elif honesty in fr.STOP_ENTRIES:
+        kind, plain = fr.STOP_ENTRIES[honesty]
+        code = honesty
+    elif state == "stalled":
+        kind, plain, code = fr.STOP_NO_PROGRESS, fr.NO_PROGRESS_PLAIN, ""
+    else:
+        # The one failed state with no terminal event and no marker is a
+        # coder call that outlived its deadline (_model_call_overdue).
+        kind, plain = fr.STOP_ENTRIES["model_call_timeout"]
+        code = "model_call_timeout"
+    phases = [p.value for p in BUILD_PHASES]
+    step = ""
+    if last is not None and terminal is not None:
+        step = _event_name(last.role)
+    if not step:
+        current = status.get("current_phase") or {}
+        step = str(current.get("id") or "") if isinstance(current, dict) else ""
+    if not step and terminal is not None:
+        step = _event_name(getattr(terminal, "role", None))
+    reference = ""
+    if last is not None:
+        reference = _failure_ref(
+            {
+                "phase": _event_name(last.role),
+                "location": sanitize_for_status(payload.get("location")) or _event_name(last.role),
+                "timestamp": last.ts,
+                "reason": sanitize_for_status(payload.get("reason")) or "",
+            }
+        )
+    message = getattr(last, "detail", "") if last is not None else (status.get("detail") or "")
+    return {
+        "kind": kind,
+        "plain": plain,
+        "step": step,
+        "step_index": phases.index(step) + 1 if step in phases else None,
+        "steps_total": len(phases),
+        "steps_done": int(status.get("phases_done") or 0),
+        "fix_rounds": fr.fix_rounds_used(status.get("decisions")),
+        "elapsed_s": _elapsed_s(events),
+        "technical": {
+            "code": code,
+            "reason_chain": chain,
+            "message": _floor_safe_text(sanitize_for_status(message) or ""),
+            "reference": reference,
+        },
+    }
 
 
 def _cycle_fields(ledger: Any, terminal: Any) -> Dict[str, Any]:
@@ -1550,6 +1678,47 @@ def build_status(
         {"state": "building", "detail": "build in progress", **progress, **activity},
         output_dir,
     )
+
+
+#: What the session list says of a session's build, one word each.
+OUTCOME_BUILDING = "building"
+OUTCOME_STOPPED = "stopped"
+OUTCOME_READY = "ready"
+OUTCOME_NOT_FOUND = "not_found"
+
+
+def build_outcome(output_dir: Path | str) -> Optional[str]:
+    """Building, stopped, ready or not found, for the session list.
+
+    A light read of the ledger's terminal event and its age -- no grading,
+    no authorship scan -- because it runs once per listed session. None when
+    the workspace has no runner ledger (a template build)."""
+    import time
+
+    from app.factory.build.ledger import BuildLedger, EventKind
+
+    out = Path(output_dir)
+    if not out.is_dir():
+        return OUTCOME_NOT_FOUND
+    path = _ledger_path(out)
+    if not path.is_file():
+        return None
+    try:
+        terminal = BuildLedger(path).terminal_event()
+        idle_s = time.time() - path.stat().st_mtime
+    except Exception:  # noqa: BLE001 -- a torn ledger is a stopped build
+        return OUTCOME_STOPPED
+    if terminal is not None and terminal.kind is EventKind.RUN_SUCCEEDED:
+        return OUTCOME_READY
+    if terminal is not None:
+        from app.factory.build.n3_store_gate import handoff_awaiting_n3
+
+        return OUTCOME_BUILDING if handoff_awaiting_n3(out) else OUTCOME_STOPPED
+    if _live_runner_thread(out):
+        return OUTCOME_BUILDING
+    if _crash_marker_path(out).is_file() or idle_s > _ORPHAN_AFTER_S:
+        return OUTCOME_STOPPED
+    return OUTCOME_BUILDING
 
 
 def is_build_complete(output_dir: Path | str) -> bool:

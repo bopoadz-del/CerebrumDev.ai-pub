@@ -197,3 +197,63 @@ def require_build_level(product_design: Any) -> Optional[dict]:
         "awaiting_action": FloorAction.SET_BUILD_LEVEL.value,
         "stream_delta": True,
     }
+
+
+#: The state a build-status read reports when the session names a workspace
+#: that is not on the server.
+BUILD_NOT_FOUND = "not_found"
+
+#: The build actions a state can offer, by the ids the Floor's action bar
+#: uses. Each one names the door the server accepts it at: the chat's typed
+#: action (``try_again`` = continue, ``download_copy`` = take_copy then the
+#: as-is package, ``change_answers`` = continue_with_intake, ``start_over``,
+#: ``run_pilot``), the coder-control route (``stop``), the package route
+#: (``download_platform``), the repository link (``open_repo``) or a fresh
+#: status read (``check_again``).
+BUILD_ACTION_IDS = (
+    "stop",
+    "try_again",
+    "change_answers",
+    "download_copy",
+    "start_over",
+    "download_platform",
+    "open_repo",
+    "run_pilot",
+    "check_again",
+)
+
+
+def allowed_build_actions(build: Any, *, reaches_pilot: Optional[bool] = None) -> list:
+    """The ordered build actions the server will accept in this state.
+
+    Read from typed fields only -- the state, the stop record's kind, the
+    pilot flag and the delivery link -- and kept in step with the doors that
+    accept them: ``take_copy`` and ``continue_with_intake`` answer only a
+    failed run, so a stalled one offers neither; a finished run offers no
+    stopped-build action at all. ``reaches_pilot`` is the session's build
+    level (False: the level stops at code, so no pilot checks are offered)."""
+    if not isinstance(build, dict):
+        return []
+    state = build.get("state")
+    if state == BUILD_NOT_FOUND:
+        return ["check_again", "start_over"]
+    if state == "building":
+        return ["try_again"] if build.get("n3_waiting") else ["stop"]
+    if state == "stalled":
+        return ["try_again", "start_over"]
+    if state == "failed":
+        kind = str((build.get("stop") or {}).get("kind") or "")
+        if kind == "user_stopped":
+            return ["try_again", "download_copy", "start_over"]
+        if kind == "check_failed":
+            return ["try_again", "change_answers", "download_copy", "start_over"]
+        return ["try_again", "download_copy", "change_answers", "start_over"]
+    if state == "succeeded":
+        actions = []
+        if build.get("repo_url") and build.get("delivery_format") != "zip":
+            actions.append("open_repo")
+        actions.append("download_platform")
+        if not build.get("pilot_ready") and reaches_pilot is not False:
+            actions.append("run_pilot")
+        return actions
+    return []

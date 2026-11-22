@@ -716,19 +716,60 @@ def get_build_status(
     """
     response.headers["Cache-Control"] = "no-store"
     from app.factory.build_jobs import build_status
+    from app.factory.floor_actions import allowed_build_actions
 
     state = _require_session(session_id, principal)
     gen = state.product_design.generation
     if not gen or not gen.get("output_dir"):
-        return {"ok": True, "build": {"state": "not_started"}}
-    blueprint, plan = _session_product_inputs(state)
+        return {"ok": True, "build": {"state": "not_started"}, "actions": []}
+    out = Path(gen["output_dir"])
+    if not out.is_dir():
+        build = not_found_build_status()
+    else:
+        blueprint, plan = _session_product_inputs(state)
+        build = build_status(out, blueprint=blueprint, plan=plan)
     return {
         "ok": True,
         "product_id": gen.get("product_id"),
-        "build": build_status(
-            Path(gen["output_dir"]), blueprint=blueprint, plan=plan
+        "build": build,
+        "actions": allowed_build_actions(
+            build, reaches_pilot=_level_reaches_pilot(state.product_design)
         ),
     }
+
+
+def not_found_build_status() -> Dict[str, Any]:
+    """The build state for a session whose workspace is not on the server: a
+    state of its own with its stop record, never "unknown" (which reads as a
+    template build) and never "building"."""
+    from app.factory.build import failure_record as fr
+    from app.factory.floor_actions import BUILD_NOT_FOUND
+
+    return {
+        "state": BUILD_NOT_FOUND,
+        "stop": {
+            "kind": fr.STOP_NOT_FOUND,
+            "plain": fr.NOT_FOUND_PLAIN,
+            "step": "",
+            "step_index": None,
+            "steps_total": None,
+            "steps_done": 0,
+            "fix_rounds": 0,
+            "elapsed_s": None,
+            "technical": {"code": "", "reason_chain": [], "message": "", "reference": ""},
+        },
+    }
+
+
+def _level_reaches_pilot(product_design: Any) -> Optional[bool]:
+    """Whether the session's build level runs past code; None when unset."""
+    from app.factory.build.build_level import BARS, BuildLevelError, parse_build_level
+
+    try:
+        level = parse_build_level(getattr(product_design, "build_level", None))
+    except BuildLevelError:
+        return None
+    return BARS[level].reaches_pilot
 
 
 @router.get("/{session_id}/product/ledger")
