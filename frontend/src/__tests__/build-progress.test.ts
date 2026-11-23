@@ -11,7 +11,8 @@ import {
   formatHeartbeat,
   formatPhaseCounts,
   formatPhaseHeadline,
-  graderChip,
+  reviewState,
+  measuredScore,
   fixRoundsLine,
   stopHeadline,
   stopTone,
@@ -62,7 +63,7 @@ const cloner: BuildStatus = {
 
 describe('build progress copy', () => {
   it('names the current phase instead of a bare 2/5', () => {
-    expect(formatPhaseHeadline(cloner)).toBe('RESEARCHER 2/5')
+    expect(formatPhaseHeadline(cloner)).toBe('Step 2 of 5 — Gathering building blocks')
     expect(formatPhaseCounts(cloner)).toBe('3/7 blocks')
     expect(phaseBarFraction(cloner)).toBeCloseTo(0.429)
     expect(formatHeartbeat(cloner)).toBe('still working · 12s ago')
@@ -1245,38 +1246,98 @@ describe('build progress copy', () => {
         phases_done: 2,
         phases_total: 5,
       }),
-    ).toBe('3/5')
+    ).toBe('Step 3 of 5')
   })
 })
 
-describe('graderChip: the grader is a stage, and only its record is claimed', () => {
-  it('is absent when there is no build at all', () => {
-    expect(graderChip(null)).toBeNull()
+// PR-10 reverses the old graderChip pins: there is no grey "not reached"
+// state any more, and a send-back from any gate other than the grader's own
+// is a fix round, not a review.
+describe('reviewState: a review state comes only from the grader gate', () => {
+  const contractRework = {
+    class: 'REWORK',
+    gate: 'WRITER',
+    gate_name: 'writer_contract',
+    round_gate: 1,
+    gate_budget: 1,
+    round_build: 1,
+    build_ceiling: 6,
+    check: 'money_assumed_without_a_brief',
+    finding: 'the declared code AE is a literal',
+  }
+
+  it('is absent with no build and with no review record', () => {
+    expect(reviewState(null)).toBeNull()
+    expect(
+      reviewState({
+        state: 'building',
+        current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
+      }),
+    ).toBeNull()
   })
 
-  it('reads not-reached before any gate has refused anything', () => {
-    const chip = graderChip({
-      state: 'building',
-      current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
-    })
-    expect(chip?.state).toBe('pending')
-    expect(chip?.detail).toBe('not reached')
+  it("never reads another gate's send-back as a review", () => {
+    expect(reviewState({ state: 'building', decisions: [contractRework] })).toBeNull()
   })
 
-  it('never claims a pass it cannot prove', () => {
-    // A writer that finished its own gate without a grader verdict leaves
-    // no decision; the chip must stay neutral rather than paint green.
-    const chip = graderChip({
-      state: 'building',
+  it('a timeout that carries a contract send-back is not a "did not pass"', () => {
+    const timeout = {
+      state: 'failed' as const,
+      phases: ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER'],
       completed: ['COLLECTOR', 'CLONER'],
-      current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
-      phase_trail: [],
-    })
-    expect(chip?.state).toBe('pending')
+      failure: {
+        phase: 'WRITER',
+        location: 'WRITER',
+        reason: 'codewhale_worker_failed',
+        code: 'codewhale_worker_failed',
+      },
+      failed: { gate: 'WRITER', check: 'codewhale_worker_failed', finding: 'worker_timed_out' },
+      decisions: [{ ...contractRework, check: 'writer_contract' }],
+    }
+    expect(reviewState(timeout)).toBeNull()
   })
 
-  // The writer's own contract gate sending the pass back: a runner decision
-  // of the WRITER gate. The grader wrote none of it.
+  it("counts the grader's own send-backs", () => {
+    const review = reviewState({
+      state: 'building',
+      decisions: [{ ...contractRework, gate_name: 'grader' }, { ...contractRework, gate_name: 'grader' }],
+    })
+    expect(review?.state).toBe('sent_back')
+    expect(review?.rounds).toBe(2)
+    expect(review?.technical).toContain('money_assumed_without_a_brief')
+  })
+
+  it('reads "did not pass" only when the run ended on the grader\'s own reason', () => {
+    const stopped = reviewState({
+      state: 'failed',
+      failure: { phase: 'WRITER', code: 'grader_not_certified', reason: 'grader_not_certified' },
+    })
+    expect(stopped?.state).toBe('not_passed')
+    const live = reviewState({
+      state: 'building',
+      failure: { phase: 'WRITER', code: 'grader_not_certified', reason: 'grader_not_certified' },
+    })
+    expect(live).toBeNull()
+  })
+})
+
+describe('measuredScore: a score only when one was measured', () => {
+  it('renders no score for a missing record', () => {
+    expect(measuredScore({ state: 'succeeded' })).toBeNull()
+    expect(
+      measuredScore({ state: 'succeeded', acceptance: { passed: 0, total: 12, ok: false, missing: true } }),
+    ).toBeNull()
+  })
+
+  it('renders the measured counts', () => {
+    expect(measuredScore({ state: 'succeeded', acceptance: { passed: 12, total: 12, ok: true } })).toBe('12/12')
+  })
+})
+
+// Ported from the stop-panel work on master onto PR-10's review state: the
+// review speaks for the grader's own record (``build.grader``) and for
+// nothing another gate, a timeout or the owner's Stop wrote.
+describe("reviewState reads the grader's own record first", () => {
   const writerGateRework = {
     class: 'REWORK',
     gate: 'WRITER',
@@ -1289,21 +1350,6 @@ describe('graderChip: the grader is a stage, and only its record is claimed', ()
     finding: 'the declared code AE is a literal',
   }
 
-  it('shows the fix round only when the GRADER itself sent the work back', () => {
-    const otherGate = graderChip({ state: 'building', decisions: [writerGateRework] })
-    expect(otherGate?.state).toBe('pending')
-    expect(otherGate?.detail).toBe('not reached')
-    const chip = graderChip({
-      state: 'building',
-      decisions: [writerGateRework],
-      grader: { state: 'sent_back', tier: 'NOT_CERTIFIED', round: 1, budget: 1 },
-    })
-    expect(chip?.state).toBe('rework')
-    expect(chip?.detail).toBe('sent it back \u2014 round 1/1')
-    // The tooltip speaks for the grader, never for another gate's check.
-    expect(chip?.title).not.toContain('money_assumed_without_a_brief')
-  })
-
   it.each([
     // The photographed run: a writer_contract fix round, then a wall timeout.
     { state: 'failed' as const, decisions: [writerGateRework], failure: { kind: 'out_of_time' } },
@@ -1312,30 +1358,36 @@ describe('graderChip: the grader is a stage, and only its record is claimed', ()
     { state: 'failed' as const, decisions: [writerGateRework], failure: { kind: 'stopped_by_owner' } },
     // A STOP the runner rule wrote for the TESTER gate.
     { state: 'failed' as const, decisions: [{ ...writerGateRework, class: 'STOP', gate: 'TESTER' }] },
-  ])('never reads rejected for a stop the grader did not write (%#)', (build) => {
-    const chip = graderChip(build)
-    expect(chip?.state).toBe('pending')
-    expect(chip?.detail).toBe('not reached')
+  ])('has no review state for a stop the grader did not write (%#)', (build) => {
+    expect(reviewState(build)).toBeNull()
   })
 
   it.each([
-    [{ state: 'stopped', tier: 'NOT_CERTIFIED' }, 'failed', 'not certified'],
-    [{ state: 'stopped', tier: 'ERROR' }, 'failed', 'could not grade'],
-    [{ state: 'refused', tier: 'NOT_CERTIFIED' }, 'rework', 'not certified'],
-    [{ state: 'certified', tier: 'CERTIFIED' }, 'done', 'certified'],
-    [{ state: 'sent_back', tier: 'NOT_CERTIFIED' }, 'rework', 'sent it back \u2014 fix round'],
-  ])('renders the grader\'s own record %j as %s / %s', (grader, state, detail) => {
-    const chip = graderChip({ state: 'failed', grader })
-    expect(chip?.state).toBe(state)
-    expect(chip?.detail).toBe(detail)
+    [{ state: 'stopped', tier: 'NOT_CERTIFIED' }, 'not_passed'],
+    [{ state: 'stopped', tier: 'ERROR' }, 'not_passed'],
+    [{ state: 'refused', tier: 'NOT_CERTIFIED' }, 'sent_back'],
+    [{ state: 'sent_back', tier: 'NOT_CERTIFIED', round: 2, budget: 2 }, 'sent_back'],
+  ])("renders the grader's own record %j as %s", (grader, state) => {
+    const review = reviewState({ state: 'failed', decisions: [writerGateRework], grader })
+    expect(review?.state).toBe(state)
+    // Technical detail speaks for the grader, never for another gate's check.
+    expect(review?.technical).not.toContain('money_assumed_without_a_brief')
+  })
+
+  it('counts the rounds the grader recorded', () => {
+    expect(reviewState({ state: 'building', grader: { state: 'sent_back', round: 2, budget: 2 } })?.rounds).toBe(2)
+  })
+
+  it('has no review state once the grader certified the work', () => {
+    expect(reviewState({ state: 'succeeded', grader: { state: 'certified', tier: 'CERTIFIED' } })).toBeNull()
   })
 })
 
-describe('the stop, said once: one stage name, one tone, fix rounds as history', () => {
+describe('the stop, said once: one step name, one tone, fix rounds as history', () => {
   it.each([
-    [{ phase: 'WRITER', location: 'WRITER', title: 'ran out of time' }, 'WORKERS ran out of time'],
-    [{ phase: 'CLONER', title: 'could not finish' }, 'RESEARCHER could not finish'],
-    [{ phase: 'TESTER', location: 'TESTER' }, 'TESTER failed'],
+    [{ phase: 'WRITER', location: 'WRITER', title: 'ran out of time' }, 'The "Write the code" step ran out of time'],
+    [{ phase: 'CLONER', title: 'could not finish' }, 'The "Gather building blocks" step could not finish'],
+    [{ phase: 'TESTER', location: 'TESTER' }, 'The "Test" step failed'],
     [{ phase: '', location: '', title: 'was stopped by you' }, 'Build was stopped by you'],
     [null, 'Build failed'],
   ])('stopHeadline(%j) is %s', (failure, expected) => {
@@ -1366,10 +1418,10 @@ describe('the stop, said once: one stage name, one tone, fix rounds as history',
   }
 
   it.each([
-    [[rework], 'Fix rounds used: 1 of 6 (WORKERS: 1 of 1).'],
+    [[rework], 'Fix rounds used: 1 of 6 (Write the code: 1 of 1).'],
     [
       [rework, { ...rework, gate: 'TESTER', round_gate: 2, gate_budget: 2, round_build: 3 }],
-      'Fix rounds used: 3 of 6 (TESTER: 2 of 2).',
+      'Fix rounds used: 3 of 6 (Test: 2 of 2).',
     ],
   ])('fixRoundsLine says the rounds in typed numbers, never the finding (%#)', (decisions, line) => {
     expect(fixRoundsLine({ state: 'failed', decisions })).toBe(line)

@@ -33,7 +33,7 @@ import {
   withResolvedNRequired,
 } from './buildProgress'
 import { FactoryCodeCliStatus, useFactoryCodeCliHonesty } from './factoryReadinessView'
-import { LevelGradeStrip } from './levelGradeView'
+import { LevelGradePill, LevelGradeStrip } from './levelGradeView'
 import { LoadingSkeleton } from './LoadingSkeleton'
 import { platformCardTitle } from './productDisplay'
 import { secretFieldProps } from './secretFields'
@@ -277,6 +277,7 @@ export function Platforms({
               Pilot suite failed
             </span>
           )}
+          <LevelGradePill build={liveBuild} testIdPrefix="platforms" />
           <LevelGradeStrip build={liveBuild} testIdPrefix="platforms" />
           <dl className="kv">
             <dt>Blueprint</dt>

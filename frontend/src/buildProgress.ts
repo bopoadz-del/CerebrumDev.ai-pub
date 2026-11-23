@@ -4,6 +4,7 @@ import type {
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
+import { REVIEW_GATE, stepLabel, stepRunning } from './stepNames'
 import {
   FACTORY_CODE_CLI_CREDENTIALS_MISSING,
   FACTORY_CODE_CLI_FAILED,
@@ -77,6 +78,20 @@ export function isAcceptanceKk(build: BuildStatus | null | undefined): boolean {
 
 export function formatAcceptanceScore(build: BuildStatus | null | undefined): string {
   const { passed, total } = acceptanceScore(build)
+  return `${passed}/${total}`
+}
+
+/**
+ * The acceptance score, only when one was measured: a record that is present,
+ * not marked missing, and carries its own counts. A missing record renders no
+ * score at all -- never a "0/12" made from defaults.
+ */
+export function measuredScore(build: BuildStatus | null | undefined): string | null {
+  const raw = acceptanceFrom(build)
+  if (!raw || raw.missing === true) return null
+  const passed = Number(raw.passed)
+  const total = Number(raw.total)
+  if (!Number.isFinite(passed) || !Number.isFinite(total) || total <= 0 || passed < 0) return null
   return `${passed}/${total}`
 }
 
@@ -215,78 +230,88 @@ export function formatFinishedAuthorship(
 }
 
 /**
- * What each kernel is CALLED, as distinct from the id it is recorded under.
+ * The review inside step 3 ("Quality check"), as the stepper can show it.
  *
- * The ids are the wire format: every build_ledger.jsonl ever written, every
- * stored session and every gate name carries 'CLONER' and 'WRITER' as
- * literal strings. Renaming those would rewrite history and break the
- * reading of builds that already happened, so the rename lives here, where
- * it is a label rather than an identity.
- */
-const KERNEL_NAMES: Record<string, string> = {
-  CLONER: 'RESEARCHER',
-  WRITER: 'WORKERS',
-}
-
-export function kernelName(phase: string): string {
-  return KERNEL_NAMES[phase] ?? phase
-}
-
-/**
- * The brief's grader, as the strip can show it.
+ * The grader is NOT a build phase: it runs inside the writer's step and its
+ * verdict ends the run. A review state comes ONLY from a record that names
+ * the grader's own gate -- a decision whose ``gate_name`` is the review gate,
+ * or a reason code the runner files under it (``<gate>_<tier>``). Any other
+ * gate's send-back (the writer contract, the tester's suite) is a fix round,
+ * not a review, and a timeout is never a "did not pass" (live 21 Nov: a
+ * worker timeout after a contract send-back read "GRADER rejected").
  *
- * The grader is NOT a build phase: it runs inside the writer's gate, so the
- * five-phase strip had no chip for it. The chip speaks ONLY for what the
- * grader itself recorded (``build.grader``, read from the ledger events that
- * name the grader's gate). The runner rule's ``decisions`` belong to the
- * WRITER / TESTER / STORE_MANAGER gates and the run state can be a timeout or
- * the owner's Stop, so neither is read here: a writer that ran out of time
- * never reads "GRADER rejected".
+ * No record means no review state at all -- never a grey "not reached" and
+ * never a green the record cannot prove.
  */
-export type GraderChipState = 'pending' | 'done' | 'rework' | 'failed'
+export type ReviewStateName = 'sent_back' | 'not_passed'
 
-export interface GraderChip {
-  state: GraderChipState
-  /** What the chip says beside the stage name. */
-  detail: string
-  /** The tooltip: the gate that spoke and the finding it named. */
-  title: string
+export interface ReviewState {
+  state: ReviewStateName
+  /** How many times the review sent work back on this run. */
+  rounds: number
+  /** The check and finding the review named, for Technical detail. */
+  technical: string
 }
 
-export function graderChip(build: BuildStatus | null | undefined): GraderChip | null {
+const FIX_ROUND_CLASSES = new Set(['REWORK', 'REGENERATE_TEST', 'REPROMPT'])
+
+/** True when a gate name or a reason code is the review gate's own. */
+export function namesReviewGate(gateName?: string | null, code?: string | null): boolean {
+  const gate = String(gateName ?? '').trim().toLowerCase()
+  if (gate === REVIEW_GATE) return true
+  const reason = String(code ?? '').trim().toLowerCase()
+  return reason.startsWith(`${REVIEW_GATE}_`)
+}
+
+export function reviewState(build: BuildStatus | null | undefined): ReviewState | null {
   if (!build) return null
-  const grader = build.grader
-  if (!grader) {
+  // The grader's own record, when the server read one from the ledger, is the
+  // first word: it names only events filed under the review gate.
+  const own = build.grader
+  if (own?.state === 'certified') return null
+  if (own) {
+    const technical = `${REVIEW_GATE}: ${own.tier || own.state}`
+    if (own.state === 'stopped') return { state: 'not_passed', rounds: own.round ?? 0, technical }
+    return { state: 'sent_back', rounds: Math.max(own.round ?? 1, 1), technical }
+  }
+  const review = (build.decisions ?? []).filter((d) => namesReviewGate(d.gate_name, d.check))
+  const rounds = review.filter((d) => FIX_ROUND_CLASSES.has(d.class)).length
+  const stopped = build.state === 'failed' || build.state === 'stalled'
+  const decisions = build.decisions ?? []
+  const last = decisions.length ? decisions[decisions.length - 1] : null
+  const endedByReview =
+    stopped &&
+    (namesReviewGate(null, build.failure?.code) ||
+      namesReviewGate(null, build.failed?.check) ||
+      (last !== null && last.class === 'STOP' && namesReviewGate(last.gate_name, last.check)))
+  if (endedByReview) {
+    const named = [...review].reverse().find((d) => d.check || d.finding)
     return {
-      state: 'pending',
-      detail: 'not reached',
-      title: 'The grader has not judged this attempt.',
+      state: 'not_passed',
+      rounds,
+      technical: named
+        ? `${named.gate_name || named.gate}: ${named.check}${named.finding ? ` — ${named.finding}` : ''}`
+        : String(build.failed?.check || build.failure?.code || ''),
     }
   }
-  if (grader.state === 'certified') {
-    return { state: 'done', detail: 'certified', title: 'The grader certified the work.' }
-  }
-  if (grader.state === 'stopped') {
+  if (rounds > 0) {
+    const lastRound = [...review].reverse().find((d) => FIX_ROUND_CLASSES.has(d.class))!
     return {
-      state: 'failed',
-      detail: grader.tier === 'ERROR' ? 'could not grade' : 'not certified',
-      title: 'The grader ended this build.',
+      state: 'sent_back',
+      rounds,
+      technical: `${lastRound.gate_name || lastRound.gate}: ${lastRound.check}${lastRound.finding ? ` — ${lastRound.finding}` : ''}`,
     }
   }
-  const round = grader.round ? `round ${grader.round}/${grader.budget ?? 1}` : 'fix round'
-  return {
-    state: 'rework',
-    detail: grader.state === 'sent_back' ? `sent it back \u2014 ${round}` : 'not certified',
-    title: 'The grader sent the work back to the coder.',
-  }
+  return null
 }
 
-/** "WORKERS ran out of time": the stage as the strip names it plus the stop
- *  class's own words. One label source, so the red box, the chip tooltip and
- *  the pill never call one stage by two names. */
+/** 'The "Write the code" step ran out of time': the step as the name table
+ *  calls it plus the stop class's own words. One label source, so the
+ *  stepper, the detail line and the pill never call one step by two names. */
 export function stopHeadline(failure: BuildFailure | null | undefined): string {
   const where = failure?.location || failure?.phase
-  return `${where ? kernelName(where) : 'Build'} ${failure?.title || 'failed'}`
+  const title = failure?.title || 'failed'
+  return where ? `The "${stepLabel(where)}" step ${title}` : `Build ${title}`
 }
 
 /** Red is for a check that refused the work. A stop nothing judged -- time
@@ -302,16 +327,16 @@ export function fixRoundsLine(build: BuildStatus | null | undefined): string | n
   const rounds = (build?.decisions ?? []).filter((d) => d.class === 'REWORK')
   const last = rounds[rounds.length - 1]
   if (!last) return null
-  const step = `${kernelName(last.gate)}: ${last.round_gate} of ${last.gate_budget}`
+  const step = `${stepLabel(last.gate)}: ${last.round_gate} of ${last.gate_budget}`
   return `Fix rounds used: ${last.round_build} of ${last.build_ceiling} (${step}).`
 }
 
-/** Named current phase plus 1-based index: "WORKERS 3/5", not a bare "2/5". */
+/** Step number plus the step's running name: "Step 3 of 5 — Writing the code". */
 export function formatPhaseHeadline(build: BuildStatus): string {
   const id = build.current_phase?.id
   const index = build.phase_index ?? (build.phases_done ?? 0) + 1
   const total = build.phase_total ?? build.phases_total ?? 5
-  return id ? `${kernelName(id)} ${index}/${total}` : `${index}/${total}`
+  return id ? `Step ${index} of ${total} — ${stepRunning(id, index)}` : `Step ${index} of ${total}`
 }
 
 export function formatPhaseCounts(build: BuildStatus): string | null {

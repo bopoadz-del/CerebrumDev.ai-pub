@@ -189,7 +189,7 @@ describe('buildFace', () => {
     // Said once: the longer summary lives only in the closed Technical detail.
     expect(text).not.toContain(summary)
     expect(screen.getByTestId('floor-coder-takeover').textContent?.split(summary).length).toBe(2)
-    expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(`WORKERS ${title} — ${summary}`)
+    expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(`The "Write the code" step ${title} — ${summary}`)
     expect(screen.getByTestId('floor-failure-line').closest('details')).not.toHaveAttribute('open')
   })
 

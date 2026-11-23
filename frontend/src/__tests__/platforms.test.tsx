@@ -128,7 +128,7 @@ describe('Your Platforms — coding-agent build', () => {
       'Vineyard Platform',
     )
     expect(screen.getByText('runner')).toBeInTheDocument()
-    expect(await screen.findByText(/Coding agent at work — WORKERS 3\/5/)).toBeInTheDocument()
+    expect(await screen.findByText(/Coding agent at work — Step 3 of 5 — Writing the code/)).toBeInTheDocument()
     expect(screen.getByText(/2\/4 handlers/)).toBeInTheDocument()
     const building = screen.getByRole('button', { name: 'Building…' })
     expect(building).toBeDisabled()
@@ -157,7 +157,7 @@ describe('Your Platforms — coding-agent build', () => {
       })
     })
     render(<Platforms sessionId="sess_ui" />)
-    expect(await screen.findByText(/Coding agent at work — COLLECTOR 1\/5/)).toBeInTheDocument()
+    expect(await screen.findByText(/Coding agent at work — Step 1 of 5 — Planning the parts/)).toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('platforms-pilot-ready-pill')).not.toBeInTheDocument()
@@ -196,7 +196,7 @@ describe('Your Platforms — coding-agent build', () => {
     render(<Platforms sessionId="sess_ui" />)
     expect(await screen.findByText('runner')).toBeInTheDocument()
     expect(
-      await screen.findByText(/Coding agent at work — 3\/5 · last: WRITER handler 2\/4 · still working/),
+      await screen.findByText(/Coding agent at work — Step 3 of 5 · last: WRITER handler 2\/4 · still working/),
     ).toBeInTheDocument()
     expect(getMock).toHaveBeenCalledTimes(1)
     expect(buildStatusMock).not.toHaveBeenCalled()
@@ -211,7 +211,7 @@ describe('Your Platforms — coding-agent build', () => {
     expect(getMock).toHaveBeenNthCalledWith(2, 'sess_ui')
     expect(buildStatusMock).toHaveBeenNthCalledWith(1, 'sess_ui')
     expect(
-      await screen.findByText(/Coding agent at work — 4\/5 · last: TESTER gate · still working/),
+      await screen.findByText(/Coding agent at work — Step 4 of 5 · last: TESTER gate · still working/),
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Building…' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
@@ -357,9 +357,9 @@ describe('Your Platforms — coding-agent build', () => {
       'Code-green (prototype)',
     )
     expect(screen.getByTestId('platforms-acceptance-score')).toHaveTextContent('0/12')
-    expect(screen.getByTestId('platforms-gate-code')).toHaveTextContent('CODE PASS')
-    expect(screen.getByTestId('platforms-gate-product')).toHaveTextContent('PRODUCT PASS')
-    expect(screen.getByTestId('platforms-gate-store')).toHaveTextContent('STORE PASS')
+    expect(screen.getByTestId('platforms-gate-code')).toHaveTextContent('Code checks passed')
+    expect(screen.getByTestId('platforms-gate-product')).toHaveTextContent('Pilot tests passed')
+    expect(screen.getByTestId('platforms-gate-store')).toHaveTextContent('Store check passed')
     expect(screen.getByRole('button', { name: 'Export (.zip) — acceptance 0/12' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByTestId('platforms-lead')).toHaveTextContent(/Acceptance is 0\/12/)
@@ -392,7 +392,7 @@ describe('Your Platforms — coding-agent build', () => {
     expect(await screen.findByTestId('platforms-prototype-pill')).toHaveTextContent(
       'Code-green (prototype)',
     )
-    expect(screen.getByTestId('platforms-gate-product')).toHaveTextContent('PRODUCT NOT RUN')
+    expect(screen.getByTestId('platforms-gate-product')).toHaveTextContent('Pilot tests not run')
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('platforms-pilot-ready-pill')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Download code-cycle prototype (.zip)' })).toBeEnabled()
@@ -438,7 +438,7 @@ describe('Your Platforms — coding-agent build', () => {
     })
     render(<Platforms sessionId="sess_failed" />)
     expect(await screen.findByTestId('platforms-failed-pill')).toHaveTextContent('Pilot suite failed')
-    expect(screen.getByTestId('platforms-gate-product')).toHaveTextContent('PRODUCT FAIL')
+    expect(screen.getByTestId('platforms-gate-product')).toHaveTextContent('Pilot tests failed')
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
     const refused = screen.getByRole('button', { name: 'Download as-is (failed gates)' })
