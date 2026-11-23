@@ -385,6 +385,22 @@ def test_edit_intake_returns_none_when_nothing_changes(fields):
     assert pd.intake_proposal is None
 
 
+@pytest.mark.parametrize("action", ["zorblat", "approve_everything"])
+def test_an_action_that_is_not_a_floor_action_is_refused_422_and_starts_nothing(client, action):
+    sid = "sess_pr05_bad_action_" + action
+    _open_session(sid, {"build_level": "pilot"})
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/chat",
+        json={"message": "", "action": action},
+    )
+    assert resp.status_code == 422, resp.text
+    assert action in resp.json()["detail"]
+    pd = get_session(sid).product_design
+    assert (pd.build_level, pd.blueprint) == (None, None)
+    assert pd.intake_proposal == {"build_level": "pilot"}
+
+
 # -- acceptance 4: the action spec, and one sentence per level ----------------
 
 

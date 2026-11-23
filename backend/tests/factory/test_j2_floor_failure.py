@@ -57,9 +57,10 @@ def test_mapped_code_gets_its_sentence(code, expected):
 
 def test_unmapped_code_falls_back_to_a_generic_sentence_with_no_payload():
     f = _floor_failure(_row(reason="some_brand_new_kind", location="PACKAGER"))
-    # A code with no table entry still gets a clean sentence -- the generic
-    # fallback names the step, never the payload.
-    assert "PACKAGER" in f["summary"]
+    # A code with no table entry still gets a clean sentence: its stop CLASS's
+    # own, never the payload. It names no stage id -- the Floor puts its one
+    # stage label in front, so a stage is never called by two names.
+    assert "PACKAGER" not in f["summary"]
     assert f["summary"].endswith(".")
     assert "{" not in f["summary"] and "RuntimeError" not in f["summary"]
 
