@@ -13,6 +13,7 @@ Docker image (Dockerfile copies ``backend/app`` → ``/app/app``)::
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 
@@ -118,6 +119,35 @@ def safe_output_dir(candidate: Path | str | None, product_id: str) -> Path:
             f"output_dir must resolve inside {root}; refusing {candidate!r}"
         )
     return Path(candidate).resolve()
+
+
+#: One plain directory name: letters, digits, ``.``, ``_`` and ``-``, starting
+#: and ending with a letter or digit. No separator, no leading dot, no ``..``.
+_ONE_PLAIN_SEGMENT = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+
+
+def canonical_copy_dir(name: str) -> Path:
+    """Where the canonical copy called ``name`` lives, or a refusal.
+
+    A canonical copy is ONE directory directly under the outputs root, and the
+    writer deletes and replaces it (``build_jobs.clone_canonical``). So the
+    name is checked twice before anything is created or removed: it must be a
+    single plain segment, and the path it RESOLVES to must still be a direct
+    child of the root -- which is what stops a link standing in for a
+    directory somewhere else. Whether the directory is the caller's to replace
+    is the writer's own check, not this one.
+    """
+    if not _ONE_PLAIN_SEGMENT.fullmatch(str(name or "")):
+        raise UnsafeOutputDir(
+            f"a canonical copy needs one plain directory name; refusing {name!r}"
+        )
+    root = factory_outputs_root().resolve()
+    resolved = (root / name).resolve()
+    if resolved.parent != root:
+        raise UnsafeOutputDir(
+            f"a canonical copy must sit directly under {root}; {name!r} resolves to {resolved}"
+        )
+    return resolved
 
 
 class UnsafeProductRoot(ValueError):

@@ -110,6 +110,12 @@ for (const state of FLOOR_STATES) {
       test('every enabled action and the composer can be reached', async ({ page }) => {
         await openState(page, state)
         const report = await page.evaluate(() => {
+          // Open every collapsed section first: a control kept inside a closed
+          // <details> has a layout box but is not painted, so it must be
+          // measured as the user meets it -- revealed.
+          document.querySelectorAll('.floor details').forEach((d) => {
+            ;(d as HTMLDetailsElement).open = true
+          })
           const vh = window.innerHeight
           const vw = window.innerWidth
           const stream = document.querySelector('[data-testid="floor-stream"]') as HTMLElement
@@ -586,6 +592,9 @@ test.describe('build card at 360x780', () => {
 
   const GREEN = ['rgb(125, 211, 160)']
 
+  // The fixture's stopped build is a timeout (failure.kind out_of_time): a
+  // stop no check judged is amber (#283); a stalled build stays red.
+  const TONE = { stopped: 'warning', stalled: 'danger' } as const
   for (const state of ['stopped', 'stalled'] as const) {
     test(`${state}: the card is at most 360px tall and its title is not green`, async ({ page }) => {
       await openState(page, state)
@@ -601,7 +610,7 @@ test.describe('build card at 360x780', () => {
       await expect(title).toContainText('Stopped')
       const colour = await title.evaluate((el) => getComputedStyle(el).color)
       expect(GREEN).not.toContain(colour)
-      await expect(card).toHaveAttribute('data-tone', 'danger')
+      await expect(card).toHaveAttribute('data-tone', TONE[state])
     })
   }
 

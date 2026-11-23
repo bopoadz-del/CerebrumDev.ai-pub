@@ -949,7 +949,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
         failed: { gate: 'STORE_MANAGER', check: 'metrics_served', finding: 'GET /metrics is 404' },
         failed_label: 'FAILED(STORE_MANAGER, metrics_served, GET /metrics is 404)',
         next_continue:
-          'Continue will resume this platform\'s branch at STORE_MANAGER and send the writer the failing check metrics_served: GET /metrics is 404',
+          'Continuing runs this step again with what the check found, using the fix rounds this build has left.',
       })
     })
     getMock.mockResolvedValue({
@@ -1455,11 +1455,16 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // filed under -- not the raw payload. Stronger than before, never weaker.
     const failureLine = screen.getByTestId('floor-failure-line')
     expect(failureLine).toHaveTextContent(
-      'WRITER failed — The coder produced no output for this step.',
+      'WORKERS failed — The coder produced no output for this step.',
     )
-    // The ref is shown beside the summary (its own node, so the copy control's
-    // label does not bleed into this match).
-    expect(screen.getByTestId('floor-failure-ref')).toHaveTextContent('abc1234567')
+    // The ref the full detail is filed under sits on its own line in the
+    // collapsed technical detail: no copy button inside the sentence, and no
+    // bracket left alone when the line wraps on a phone.
+    const ref = screen.getByTestId('floor-failure-ref')
+    expect(ref).toHaveTextContent('abc1234567')
+    expect(ref.textContent).not.toMatch(/[()]/)
+    expect(failureLine).not.toContainElement(ref)
+    expect(ref.closest('details')).not.toHaveAttribute('open')
     // The detail that was photographed off the owner's phone must not leak.
     expect(failureLine).not.toHaveTextContent(
       'zero agent-authored artifacts in the workspace',
@@ -1575,19 +1580,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
         state: 'building',
         current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
         completed: ['COLLECTOR', 'CLONER'],
-        decisions: [
-          {
-            class: 'REWORK',
-            gate: 'WRITER',
-            gate_name: 'writer_contract',
-            round_gate: 1,
-            gate_budget: 1,
-            round_build: 1,
-            build_ceiling: 6,
-            check: 'money_assumed_without_a_brief',
-            finding: 'the declared code AE is a literal',
-          },
-        ],
+        // What the grader itself recorded: its hand-back, round 1 of 1.
+        grader: { state: 'sent_back', tier: 'NOT_CERTIFIED', round: 1, budget: 1 },
       })
     })
     getMock.mockResolvedValue({
@@ -1604,6 +1598,98 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // The strip still reports five build phases: the grader is not a sixth.
     expect(chip.className).not.toContain('done')
   })
+
+  it.each([
+    ['timeout', 2289, 38],
+    ['model_call_timeout', 3600, 60],
+  ])(
+    'says a wall timeout (%s) once, in plain words, with the record collapsed',
+    async (failureKind, wall, minutes) => {
+      // The owner's phone, 21 Nov: a writer_contract fix round, then the writer
+      // ran past its wall. The card read "WRITER was refused", "GRADER
+      // rejected", a raw FAILED(...) and the same machine sentence four times.
+      const raw = `codewhale_worker_failed: worker_timed_out: headless job exceeded its ${wall}s wall`
+      watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+        onProgress({
+          state: 'failed',
+          detail: `WRITER failed: ${raw}`,
+          completed: ['COLLECTOR', 'CLONER'],
+          failure: {
+            phase: 'WRITER',
+            location: 'WRITER',
+            reason: 'codewhale_worker_failed',
+            code: 'codewhale_worker_failed',
+            failure_kind: failureKind,
+            kind: 'out_of_time',
+            title: 'ran out of time',
+            summary: `The time allowance ended before this step finished (it had run for ${minutes} minutes). No check refused the work.`,
+            next: 'Continuing runs this step again with a new time allowance.',
+            ref: '7461cb639b',
+          },
+          grader: null,
+          decisions: [
+            {
+              class: 'REWORK',
+              gate: 'WRITER',
+              gate_name: 'writer_contract',
+              round_gate: 1,
+              gate_budget: 1,
+              round_build: 1,
+              build_ceiling: 6,
+              check: 'writer_contract',
+              finding: "app/actions/contract_settings.py:47: the declared code 'AE' is a literal",
+            },
+          ],
+          failed: { gate: 'WRITER', check: 'codewhale_worker_failed', finding: raw },
+          failed_label: `FAILED(WRITER, codewhale_worker_failed, ${raw})`,
+          next_continue: 'Continuing runs this step again with a new time allowance.',
+          failure_narrative: { text: `Where it stopped: WRITER. Why: WRITER failed: ${raw}`, source: 'ledger' },
+        })
+      })
+      getMock.mockResolvedValue({
+        blueprint: LLM_BLUEPRINT,
+        blueprint_approved: true,
+        generation: { engine: 'runner', product_id: 'construction', triggered_by: 'chat_llm' },
+      })
+      render(<Floor sessionId={`sess_timeout_${wall}`} goPlatforms={() => {}} />)
+
+      // PR-07 build card: the face says the timeout once, in plain words, in
+      // the amber (halted) tone -- the stage name and the record stay in the
+      // closed Technical detail. The pill and the grey next-continue
+      // paragraph are off the card (PR-07 reverses those).
+      const card = await screen.findByTestId('floor-coder-takeover')
+      await waitFor(() => expect(card).toHaveAttribute('data-tone', 'warning'))
+      expect(screen.getByTestId('floor-build-sentence')).toHaveTextContent(
+        'This step ran out of time. Steps 1 and 2 are done and kept.',
+      )
+      expect(card.textContent?.split('The time allowance ended').length).toBe(2)
+      expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(
+        `WORKERS ran out of time — The time allowance ended before this step finished (it had run for ${minutes} minutes).`,
+      )
+      // A timeout is not a refusal: the stage is amber, and the grader -- which
+      // never saw this run -- says nothing coloured.
+      expect(screen.getByTestId('floor-phase-halted-WRITER')).toBeInTheDocument()
+      expect(screen.queryByTestId('floor-phase-failed-WRITER')).not.toBeInTheDocument()
+      expect(screen.getByTestId('floor-phase-grader-pending')).toHaveTextContent('not reached')
+      expect(screen.queryByTestId('floor-failed-pill')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('floor-next-continue')).not.toBeInTheDocument()
+      expect(screen.getByTestId('floor-fix-rounds')).toHaveTextContent('1 fix round used (of 1)')
+      // The machine text is kept, collapsed: it appears nowhere outside the
+      // closed disclosure -- no raw detail sentence, no FAILED(...) paragraph.
+      const technical = screen.getByTestId('floor-tech-detail')
+      expect(technical).not.toHaveAttribute('open')
+      expect(technical).toHaveTextContent(`FAILED(WRITER, codewhale_worker_failed, ${raw})`)
+      const visible = card.cloneNode(true) as HTMLElement
+      visible.querySelector('[data-testid="floor-tech-detail"]')?.remove()
+      expect(visible.textContent).not.toContain('worker_timed_out')
+      expect(visible.textContent).not.toContain('FAILED(')
+      expect(visible.textContent).not.toContain('contract_settings.py')
+      expect(visible.textContent).not.toContain('The coding agent stopped:')
+      expect(visible.textContent).not.toContain('WRITER')
+      // The card scrolls with the chat, so the chat above it stays reachable.
+      expect(card.closest('.chat-scroll')).not.toBeNull()
+    },
+  )
 
   it('shows a failure the run recovered from as history, not a red alert', async () => {
     // sess_617f60024df24a4e: a 13/13 build showed "TESTER failed -- KeyError"

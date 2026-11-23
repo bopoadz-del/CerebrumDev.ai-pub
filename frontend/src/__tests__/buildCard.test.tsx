@@ -171,6 +171,43 @@ describe('buildFace', () => {
     expect(face.sentence).toBe(sentence)
   })
 
+  // The stop classes the server types (failure_record.STOP_TEXT): the face
+  // names the class, and a stop no check judged is amber, never red.
+  it.each([
+    ['out_of_time', 'ran out of time', 'The time allowance ended before this step finished. No check refused the work.', 'warning'],
+    ['could_not_run', 'could not finish', 'This step stopped before it finished. No check judged the work.', 'warning'],
+    ['check_refused', 'did not pass its check', 'A check looked at the work and did not pass it.', 'danger'],
+    ['rounds_spent', 'used up its fix rounds', 'A check still did not pass the work.', 'danger'],
+  ])('a classified stop (%s) is named by its class and toned by it', (kind, title, summary, tone) => {
+    const build: BuildStatus = { ...OWNER_STOP, failure: { ...OWNER_STOP.failure, kind, title, summary } }
+    const face = buildFace(build)
+    expect(face.tone).toBe(tone)
+    expect(face.sentence).toBe(`This step ${title}. Steps 1 and 2 are done and kept.`)
+    render(<BuildCard build={build} sessionId="sess_owner" />)
+    const text = faceText()
+    for (const id of WIRE) expect(text).not.toContain(id)
+    // Said once: the longer summary lives only in the closed Technical detail.
+    expect(text).not.toContain(summary)
+    expect(screen.getByTestId('floor-coder-takeover').textContent?.split(summary).length).toBe(2)
+    expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(`WORKERS ${title} — ${summary}`)
+    expect(screen.getByTestId('floor-failure-line').closest('details')).not.toHaveAttribute('open')
+  })
+
+  it('the copy action sits outside the capped, scrolling detail body', () => {
+    render(<BuildCard build={OWNER_STOP} sessionId="sess_owner" />)
+    const copy = screen.getByTestId('floor-copy-error-report')
+    expect(copy.closest('.tech-body')).toBeNull()
+    expect(copy.closest('details')).toBe(screen.getByTestId('floor-tech-detail'))
+  })
+
+  it('a stop without a class keeps the plain sentence and the red tone', () => {
+    const build: BuildStatus = { ...OWNER_STOP, failure: { ...OWNER_STOP.failure, kind: 'out_of_time' } }
+    expect(buildFace(build)).toMatchObject({
+      tone: 'danger',
+      sentence: 'The build stopped before it finished. Steps 1 and 2 are done and kept.',
+    })
+  })
+
   it.each([
     [0, 'No step was finished yet.'],
     [1, 'Step 1 is done and kept.'],

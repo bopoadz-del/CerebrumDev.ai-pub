@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { BuildDecision, BuildStatus } from './api/factory'
+import { stopHeadline, stopTone } from './buildProgress'
 
 /**
  * The BUILD card: five slots in one order for every state.
@@ -112,6 +113,11 @@ export function buildFace(build: BuildStatus | null): BuildFace {
     const where = at && total ? `step ${at} of ${total}` : null
     const kept = keptSentence(stepsKept(build))
     let why: string
+    // A stop the record classified (failure.kind / title / summary, typed
+    // by the server) is named by that class: a timeout reads as a timeout,
+    // and a stop no check judged is amber, not red.
+    const failure = build.failure
+    const classified = Boolean(failure?.kind && failure.title)
     if (build.coder_control === 'stop') {
       why = at ? `You stopped this build at step ${at}.` : 'You stopped this build.'
     } else if (build.state === 'stalled') {
@@ -119,11 +125,15 @@ export function buildFace(build: BuildStatus | null): BuildFace {
         typeof build.last_event_age_s === 'number'
           ? `No update from the build for ${minutes(build.last_event_age_s)} minutes.`
           : 'No update from the build for a long time.'
+    } else if (classified) {
+      // The class only: the stage's name and the server's longer summary are
+      // in Technical detail; the state line already says the step.
+      why = `This step ${failure?.title}.`
     } else {
       why = 'The build stopped before it finished.'
     }
     return {
-      tone: 'danger',
+      tone: classified && stopTone(failure) === 'halted' ? 'warning' : 'danger',
       word: 'Stopped',
       where,
       sentence: `${why} ${kept}`,
@@ -263,7 +273,7 @@ export function TechnicalDetail({
             className="tech-line"
             data-testid={stopped ? 'floor-failure-line' : 'floor-rework-detail'}
           >
-            {failure.location || failure.phase || 'Build'} {stopped ? 'failed' : 'sent it back'}
+            {stopped ? stopHeadline(failure) : `${failure.location || failure.phase || 'Build'} sent it back`}
             {failure.summary ? ` — ${failure.summary}` : failure.code && failure.code !== raw ? ` — ${failure.code}` : ''}
           </p>
         )}
@@ -321,10 +331,10 @@ export function TechnicalDetail({
             {build.coder_log || 'Coder session starting…'}
           </pre>
         )}
-        {(failure || raw) && (
-          <CopyErrorReport text={errorReport(build, { sessionId, productTitle })} />
-        )}
       </div>
+      {/* Outside the capped, scrolling body: the copy action is reachable
+          however long the record is. */}
+      {(failure || raw) && <CopyErrorReport text={errorReport(build, { sessionId, productTitle })} />}
     </details>
   )
 }

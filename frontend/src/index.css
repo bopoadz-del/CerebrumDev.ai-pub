@@ -1125,7 +1125,7 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   font: inherit;
   color: var(--text-muted);
 }
-.tech-copy { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: inherit; }
+.tech-copy { margin-top: var(--space-2); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: inherit; }
 .tech-copy-result { color: var(--success-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
 .kernel-strip {
   display: flex;
@@ -1162,7 +1162,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 }
 /* A mid-fail the run is still fixing: the phase sent the work back to the
    coder. Orange = rework in progress; red is reserved for a stopped run. */
-.kernel-strip li.rework {
+.kernel-strip li.rework,
+.kernel-strip li.halted {
   color: var(--warning-text);
   border-color: var(--warning-edge);
   background: var(--warning-fill);
@@ -1185,7 +1186,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   font-size: var(--text-sm); line-height: var(--lh-sm);
   margin: 0 0 10px;
 }
-.coder-rework-line {
+.coder-rework-line,
+.coder-failure-line.halted {
   color: var(--warning-text);
   background: var(--warning-fill);
   border: 1px solid var(--warning-edge);
