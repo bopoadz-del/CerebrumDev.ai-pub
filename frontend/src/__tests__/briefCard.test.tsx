@@ -45,7 +45,7 @@ function brief(intake: IntakeState, status: BriefStatus, features: string[] | nu
       delivery="zip"
       firstAsk="A ledger for dock bookings."
       onTyped={vi.fn()}
-      editControls={null}
+      onEdit={vi.fn()}
     />,
   )
 }
@@ -154,6 +154,7 @@ describe('the Floor restores the approved features from GET /product', () => {
     expect(screen.getByTestId('brief-status')).toHaveTextContent('locked')
     expect(screen.getByTestId('brief-values')).toHaveTextContent('NOK')
     expect(screen.queryByTestId('intake-change')).toBeNull()
+    expect(screen.getByTestId('brief-lock')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('brief-expand'))
     const list = screen.getByTestId('brief-features')
     expect(within(list).getByText('Berth plan')).toBeInTheDocument()

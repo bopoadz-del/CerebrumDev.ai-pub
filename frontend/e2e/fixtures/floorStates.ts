@@ -425,6 +425,22 @@ export async function mockFloorStates(page: Page): Promise<void> {
         if (rest === '/product/coder-control') return json({ ok: true, control: { action: 'run' } })
         if (rest === '/upload/allowed') return json(UPLOAD)
         if (rest === '/chat') {
+          // The edit sheet's Save: the answers and the typed Confirm in one
+          // request. Like the server, Confirm stores the suggestion with the
+          // changed answers laid over it; an empty country or currency is
+          // "not changed".
+          const sent = (req.postDataJSON() ?? {}) as Record<string, string | undefined>
+          if (sent.action === 'confirm_intake') {
+            const changed = Object.fromEntries(
+              (['vertical', 'country', 'currency', 'build_level'] as const)
+                .filter((k) => sent[k] !== undefined && (k === 'vertical' || sent[k]))
+                .map((k) => [k, sent[k] || null]),
+            )
+            w.intake = {
+              declared: { ...w.intake.declared, ...(w.intake.proposal ?? {}), ...changed },
+              proposal: null,
+            }
+          }
           const summary = 'Noted.'
           return route.fulfill({
             status: 200,

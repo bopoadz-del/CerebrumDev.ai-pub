@@ -199,13 +199,13 @@ test('verified account: Floor brief, feature list, live Approve, billing honesty
 
   await expect(approve).toBeEnabled()
   await expect(page.getByText(/architect LLM|Capabilities/i).first()).toBeVisible()
-  // The build waits for the user's typed level (no default): choose it on
-  // the intake line, as a user would, before Approve.
+  // The build waits for the user's typed level (no default): choose it in
+  // the edit-brief sheet, as a user would, before Approve. The sheet's one
+  // Save sends the answers with the typed Confirm, which stores them.
   await page.getByTestId('intake-change').click()
-  await page.getByTestId('intake-build-level').selectOption('prototype')
-  // Change only proposes; Confirm stores it.
-  await page.getByTestId('intake-confirm').click()
-  await expect(page.getByText(/Confirmed: build level prototype/).first()).toBeVisible({
+  await page.getByRole('dialog', { name: 'Your brief' }).getByRole('radio', { name: /Prototype/ }).check()
+  await page.getByTestId('brief-save').click()
+  await expect(page.getByText(/Confirmed: .*build level prototype/).first()).toBeVisible({
     timeout: 30_000,
   })
   await approve.click()

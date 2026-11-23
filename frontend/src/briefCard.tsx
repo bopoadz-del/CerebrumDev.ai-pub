@@ -1,6 +1,5 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useId, useState } from 'react'
 import type { IntakeFields, IntakeState, TypedFloorAction } from './api/factory'
-import { IntakeEdit } from './intakeLine'
 
 /** The answers a build cannot start without (the vertical is optional). */
 const REQUIRED: (keyof IntakeFields)[] = ['country', 'currency', 'build_level']
@@ -98,8 +97,9 @@ const DELIVERY_NAMES: Record<string, string> = {
  * it is the status word and one line of values with real names; expanded it
  * lists every answer by label, the feature list by name and the delivery.
  * Missing answers read "Not set". A chat suggestion is its own strip with
- * "Confirm these" and never replaces the confirmed values. After approval
- * the brief is read-only until the intake is reopened.
+ * "Confirm these" and never replaces the confirmed values. "Edit brief"
+ * opens the edit sheet. After approval the brief is read-only, with a lock,
+ * until the intake is reopened.
  */
 export function BriefCard({
   intake,
@@ -111,7 +111,7 @@ export function BriefCard({
   firstAsk,
   onShowConversation,
   onTyped,
-  editControls,
+  onEdit,
   disabled,
 }: {
   intake: IntakeState
@@ -124,13 +124,12 @@ export function BriefCard({
   /** The user's first message: what they asked for. */
   firstAsk?: string | null
   onShowConversation?: () => void
-  /** Sends a typed Floor action (confirm_intake / set_build_level). */
+  /** Sends a typed Floor action (confirm_intake). */
   onTyped: (typed: TypedFloorAction) => void
-  /** The vertical and locale pickers, shown only after "Edit brief". */
-  editControls: ReactNode
+  /** Opens the edit-brief sheet. */
+  onEdit: () => void
   disabled?: boolean
 }) {
-  const [editing, setEditing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const detailsId = useId()
   const declared = intake.declared ?? {}
@@ -149,6 +148,11 @@ export function BriefCard({
       <div className="brief-head">
         <h2 className="brief-title">Your brief</h2>
         <span className="brief-status" data-testid="brief-status">
+          {!editable && (
+            <svg className="brief-lock" data-testid="brief-lock" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M5 7V5a3 3 0 0 1 6 0v2h1v7H4V7h1zm1.5 0h3V5a1.5 1.5 0 0 0-3 0v2z" />
+            </svg>
+          )}
           {status}
         </span>
       </div>
@@ -198,22 +202,14 @@ export function BriefCard({
             type="button"
             className="quiet"
             data-testid="intake-change"
-            aria-expanded={editing}
+            aria-haspopup="dialog"
             disabled={disabled}
-            onClick={() => setEditing((e) => !e)}
+            onClick={onEdit}
           >
-            {editing ? 'Done' : 'Edit brief'}
+            Edit brief
           </button>
         )}
       </div>
-      {editing && editable && (
-        <IntakeEdit
-          declared={declared}
-          onTyped={onTyped}
-          editControls={editControls}
-          disabled={disabled}
-        />
-      )}
       {expanded && (
         <dl className="brief-details" id={detailsId} data-testid="brief-details">
           {firstAsk && (

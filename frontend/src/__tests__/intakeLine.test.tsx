@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { BriefCard } from '../briefCard'
+import { BuildLevelCards } from '../intakeLine'
 import type { IntakeState } from '../api/factory'
 
 // The intake used to be one line under the chat; since PR-04 it lives in the
@@ -9,7 +10,10 @@ import type { IntakeState } from '../api/factory'
 // proposes, only the typed Confirm stores, the edit controls appear only on
 // request, the levels come from the shared spec, and a declared intake reads
 // back as declared. Only the wording moved (label and value, not one line).
-function renderBrief(intake: IntakeState, onTyped = vi.fn(), editControls: React.ReactNode = null) {
+// Since PR-06 "Edit brief" opens the edit sheet (onEdit) and the level is
+// four option cards there, not a select that sends set_build_level at once:
+// the sheet's one Save sends it (briefSheet.test.tsx).
+function renderBrief(intake: IntakeState, onTyped = vi.fn(), onEdit = vi.fn()) {
   render(
     <BriefCard
       intake={intake}
@@ -17,7 +21,7 @@ function renderBrief(intake: IntakeState, onTyped = vi.fn(), editControls: React
       features={null}
       featuresApproved={false}
       onTyped={onTyped}
-      editControls={editControls}
+      onEdit={onEdit}
     />,
   )
   return onTyped
@@ -42,31 +46,27 @@ describe('the intake in the brief card: the chat proposes, the user confirms', (
   })
 
   it('has no always-visible boxes: the edit controls appear only on Edit brief', () => {
-    const onTyped = renderBrief(
-      { declared: {}, proposal: null },
-      vi.fn(),
-      <span data-testid="pickers">pickers</span>,
-    )
+    const onEdit = vi.fn()
+    const onTyped = renderBrief({ declared: {}, proposal: null }, vi.fn(), onEdit)
     expect(screen.getByTestId('intake-declared')).toHaveTextContent(
       'Not set: country, currency, build level',
     )
-    expect(screen.queryByTestId('pickers')).toBeNull()
-    expect(screen.queryByTestId('intake-build-level')).toBeNull()
+    expect(screen.queryByRole('radio')).toBeNull()
+    expect(screen.queryByRole('textbox')).toBeNull()
     fireEvent.click(screen.getByTestId('intake-change'))
-    expect(screen.getByTestId('pickers')).toBeInTheDocument()
-    fireEvent.change(screen.getByTestId('intake-build-level'), { target: { value: 'prototype' } })
-    expect(onTyped).toHaveBeenLastCalledWith({ action: 'set_build_level', value: 'prototype' })
+    expect(onEdit).toHaveBeenCalledTimes(1)
+    // Opening the sheet stores nothing.
+    expect(onTyped).not.toHaveBeenCalled()
   })
 
   it('offers exactly the levels the shared spec defines, with no level preselected', () => {
-    renderBrief({ declared: {}, proposal: null })
-    fireEvent.click(screen.getByTestId('intake-change'))
-    const select = screen.getByTestId('intake-build-level') as HTMLSelectElement
-    expect(select.value).toBe('')
-    const offered = Array.from(select.options)
-      .filter((o) => !o.disabled)
-      .map((o) => o.value)
-    expect(offered).toEqual(['prototype', 'light', 'pilot', 'production'])
+    const onChange = vi.fn()
+    render(<BuildLevelCards value="" onChange={onChange} />)
+    const radios = screen.getAllByRole('radio') as HTMLInputElement[]
+    expect(radios.map((r) => r.value)).toEqual(['prototype', 'light', 'pilot', 'production'])
+    expect(radios.some((r) => r.checked)).toBe(false)
+    fireEvent.click(radios[0])
+    expect(onChange).toHaveBeenLastCalledWith('prototype')
   })
 
   it('a declared intake reads back as the user declared it', () => {
