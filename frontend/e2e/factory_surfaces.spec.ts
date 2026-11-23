@@ -231,7 +231,8 @@ test('Floor drafts a feature list and Approve & build starts the coding agent', 
   await page.getByRole('button', { name: 'Approve & build' }).click()
   await expect(page.getByText('coding agent', { exact: true })).toBeVisible()
   await expect(page.getByText('chat LLM', { exact: true })).toBeVisible()
-  await expect(page.getByRole('status')).toContainText(/Coding agent has taken over/)
+  // PR-07 (L5-09): the card names the state, not the actor.
+  await expect(page.getByRole('status')).toContainText(/Building at step 3 of 5/)
   await expect(page.getByText('WORKERS', { exact: true })).toBeVisible()
   await expect(page.getByPlaceholder(/coding agent has taken over/i)).toBeDisabled()
 })
@@ -301,8 +302,8 @@ test('Floor New session starts a clean workspace after a failed run', async ({ p
 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByRole('heading', { name: 'Coding agent stopped' })).toBeVisible()
-  await expect(page.getByTestId('floor-failed-pill')).toContainText('Pilot suite failed')
+  await expect(page.getByRole('heading', { name: /^Stopped/ })).toBeVisible()
+  await expect(page.getByTestId('floor-build-state')).toContainText('Stopped')
   await expect(page.getByText(/taken over the floor/i)).toHaveCount(0)
   await expect(page.locator('.bp-drafting-mode', { hasText: 'coding agent' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
@@ -312,8 +313,8 @@ test('Floor New session starts a clean workspace after a failed run', async ({ p
   await expect(page.getByTestId('floor-failure-choices').getByRole('button')).toHaveCount(3)
   await page.getByRole('button', { name: 'New session' }).click()
   await expect.poll(() => created).toEqual(['sess_e2e_fresh'])
-  await expect(page.getByRole('heading', { name: 'Coding agent stopped' })).toHaveCount(0)
-  await expect(page.getByTestId('floor-failed-pill')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /^Stopped/ })).toHaveCount(0)
+  await expect(page.getByTestId('floor-build-state')).toHaveCount(0)
   await expect(page.getByPlaceholder(/Try:/)).toBeEnabled()
   await expect(page.getByText('session sess_e2e_fre…')).toBeVisible()
 })
@@ -404,8 +405,8 @@ test('Floor ?session= deep-link selects that session — not list[0] Download', 
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('session sess_d5789a9…')).toBeVisible()
   await expect(page.getByText('session sess_45729bb…')).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Coding agent stopped' })).toBeVisible()
-  await expect(page.getByTestId('floor-failed-pill')).toContainText('Pilot suite failed')
+  await expect(page.getByRole('heading', { name: /^Stopped/ })).toBeVisible()
+  await expect(page.getByTestId('floor-build-state')).toContainText('Stopped')
   await expectNoGoldFinished(page)
   // Failed panel offers the three typed choices: an as-is copy, Continue
   // with new answers, Start over.
@@ -781,7 +782,7 @@ test('WRITER session A bound → /floor/{B} hydrates finished B, not A', async (
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('session sess_d10dfc2…')).toBeVisible()
   await expect(page.getByText(/WORKERS 3\/5/)).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Coding agent has taken over' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
 
   await page.evaluate((id) => {
     window.history.pushState(null, '', `/floor/${id}`)
@@ -792,7 +793,7 @@ test('WRITER session A bound → /floor/{B} hydrates finished B, not A', async (
   await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toBeVisible()
   await expect(page.getByTestId('floor-pilot-ready-pill')).toContainText('Store-green')
   await expect(page.getByText(/WORKERS 3\/5/)).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Coding agent has taken over' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /^Building/ })).toHaveCount(0)
 })
 
 test('Floor finished state offers the zip download on the generate surface', async ({ page }) => {
@@ -1760,7 +1761,7 @@ test('Floor keeps coding chrome after golden lettings Approve before the first s
   })
   await page.getByRole('button', { name: 'Approve & build' }).click()
   await expect(page.getByTestId('floor-coder-takeover')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Coding agent has taken over' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
   await expectNoGoldFinished(page)
   releaseChat?.()
   await expect(page.getByText('coding agent', { exact: true })).toBeVisible()
@@ -1768,7 +1769,7 @@ test('Floor keeps coding chrome after golden lettings Approve before the first s
   await expectNoGoldFinished(page)
   releaseStatus?.()
   await expect(page.getByText('WORKERS', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Coding agent has taken over' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
   await expectNoGoldFinished(page)
 })
 
@@ -1818,9 +1819,9 @@ test('Floor 510s coder call inside the 40 min wall stays Building — never STOP
 
   await page.goto('/')
   await expect(page.getByTestId('floor-coder-takeover')).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByRole('heading', { name: 'Coding agent has taken over' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
   await expect(page.getByText(/still inside 2400s watchdog/)).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Coding agent stopped' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /^Stopped/ })).toHaveCount(0)
   await expect(page.getByText(/coder LLM timed out/)).toHaveCount(0)
   await expectNoGoldFinished(page)
 
@@ -1869,7 +1870,7 @@ test('Floor overdue coder call is STOPPED and Platforms refuses export', async (
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Coding agent stopped' })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^Stopped/ })).toBeVisible({
     timeout: 20_000,
   })
   await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
@@ -1913,7 +1914,7 @@ test('Your Platforms stays Building after golden lettings Approve — never a go
 
   await page.goto('/')
   await expect(page.getByTestId('floor-coder-takeover')).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByRole('heading', { name: 'Coding agent has taken over' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
   await expectNoGoldFinished(page)
 
   await page.getByRole('button', { name: 'Your Platforms', exact: true }).click()

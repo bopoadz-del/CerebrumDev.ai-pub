@@ -602,8 +602,6 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   overflow: hidden;
 }
 .brief-features { margin: 0; padding-left: 1.1em; }
-/* The ref's copy control sits inline in the failure sentence as a quiet
-   secondary chip; its hit area is the 44px control height, its look is small. */
 /* Tags never break mid-word on a phone: the row wraps them to a new line
    instead (the bubble's break-word otherwise splits "CONSTRUCTION"). */
 .bp-header strong, .bp-vertical, .bp-drafting-mode, .bp-strategy, .bp-cap-id {
@@ -611,17 +609,6 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   overflow-wrap: normal;
 }
 .bp-vertical, .bp-drafting-mode, .bp-strategy { white-space: nowrap; }
-.coder-failure-copy {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--control-h);
-  padding: 0 var(--space-2);
-  margin: 0 2px;
-  font-size: var(--text-xs);
-  line-height: var(--lh-xs);
-  vertical-align: middle;
-  border-radius: var(--radius-sm);
-}
 .notice-not-yet-link {
   background: none;
   border: none;
@@ -670,15 +657,12 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .composer input { flex: 1 1 140px; min-width: 0; }
 .composer button[type='submit'] { flex-shrink: 0; }
 .floor-upload { display: inline-flex; align-items: center; flex-shrink: 0; }
-/* Attach and the ref's copy chip are secondary controls, not gold primaries:
-   one gold button per screen. */
-.floor-upload__add,
-.coder-failure-copy { background: transparent; color: var(--text); border-color: var(--control-border); }
-.floor-upload__add:active:not(:disabled),
-.coder-failure-copy:active:not(:disabled) { background: var(--surface-3); }
+/* Attach is a secondary control, not a gold primary: one gold button per
+   screen. */
+.floor-upload__add { background: transparent; color: var(--text); border-color: var(--control-border); }
+.floor-upload__add:active:not(:disabled) { background: var(--surface-3); }
 @media (hover: hover) {
-  .floor-upload__add:hover:not(:disabled),
-  .coder-failure-copy:hover:not(:disabled) { background: var(--surface-3); border-color: var(--text-muted); }
+  .floor-upload__add:hover:not(:disabled) { background: var(--surface-3); border-color: var(--text-muted); }
 }
 /* An upload status / error / result takes a FULL row of its own, above the
    controls (100% basis wraps it; order -1 lifts it over the input row), so it
@@ -1024,25 +1008,125 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   margin: 0 0 8px;
   color: var(--info-text);
 }
-.coder-takeover {
-  border: 1px solid var(--success-edge);
-  background: var(--success-fill);
+/* The BUILD card (buildCard.tsx): five slots -- state line, one sentence,
+   actions, steps, Technical detail. The tone sets the edge, the state line's
+   colour and its icon together; the body text stays --text. */
+.build-card {
+  border: 1px solid var(--control-border);
+  background: var(--surface-2);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: var(--space-4);
   margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
 }
-.coder-takeover h3 {
-  margin: 0 0 6px;
-  font-size: var(--text-sm); line-height: var(--lh-sm);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--success-text);
+@media (max-width: 400px) {
+  .build-card { padding: var(--space-3); }
 }
-.coder-takeover p {
+.build-card.tone-info { border-color: var(--info-edge); }
+.build-card.tone-warning { border-color: var(--warning-edge); }
+.build-card.tone-danger { border-color: var(--danger-edge); background: var(--danger-fill); }
+.build-card.tone-success { border-color: var(--success-edge); background: var(--success-fill); }
+.build-state {
   margin: 0;
-  color: var(--dim);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-lg); line-height: var(--lh-lg);
+  font-weight: var(--weight-strong);
+}
+.tone-info .build-state { color: var(--info-text); }
+.tone-warning .build-state { color: var(--warning-text); }
+.tone-danger .build-state { color: var(--danger-text); }
+.tone-success .build-state { color: var(--success-text); }
+.build-state-icon { flex: 0 0 auto; }
+.build-state-title { color: var(--text); font-weight: var(--weight-regular); min-width: 0; overflow-wrap: anywhere; }
+.build-sentence {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-md); line-height: var(--lh-md);
+  overflow-wrap: anywhere;
+}
+.build-fix-round {
+  margin: 0;
+  color: var(--warning-text);
   font-size: var(--text-sm); line-height: var(--lh-sm);
 }
+.build-actions-slot > .card-actions { margin-top: 0; }
+/* On a phone a stopped card's actions are a two-column grid: the first (the
+   state's primary) takes the full row, the others share rows, and a label
+   that does not fit wraps between words inside its own button. */
+@media (max-width: 767px) {
+  .build-actions-slot > .card-actions-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-2);
+  }
+  .build-actions-slot > .card-actions-grid > * { width: 100%; min-width: 0; margin: 0; }
+  .build-actions-slot > .card-actions-grid > :first-child,
+  .build-actions-slot > .card-actions-grid > .start-over-confirm { grid-column: 1 / -1; }
+  .build-actions-slot > .card-actions-grid > button,
+  .build-actions-slot > .card-actions-grid > a {
+    white-space: normal;
+    overflow-wrap: normal;
+    word-break: normal;
+    text-align: center;
+    justify-content: center;
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+  }
+}
+.build-steps-slot { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.build-steps-slot .kernel-strip { gap: var(--space-1); }
+.build-steps-slot > .kernel-strip { margin: 0; }
+/* On a phone the step chips carry the step only (the one-name stepper is
+   PR-10); the grader chip keeps its word, so its state is never colour alone. */
+@media (max-width: 767px) {
+  .build-steps-slot .kernel-strip li:not([data-testid^="floor-phase-grader"]) .kernel-title,
+  .build-steps-slot .kernel-strip .kernel-agent { display: none; }
+}
+/* Technical detail: one closed row; the only home of machine text. */
+.tech-detail { border-top: 1px solid var(--divider); padding-top: var(--space-1); min-width: 0; }
+.tech-detail > summary {
+  min-height: var(--control-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+}
+.tech-summary-note { color: var(--text-muted); }
+.tech-detail > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tech-body {
+  max-height: 40vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--text-xs); line-height: var(--lh-xs);
+  color: var(--text-muted);
+  user-select: text;
+}
+.tech-line, .tech-label { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.tech-label { color: var(--text); font-weight: var(--weight-strong); }
+.tech-list { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+.tech-log {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  color: var(--text-muted);
+}
+.tech-copy { margin-top: var(--space-2); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: inherit; }
+.tech-copy-result { color: var(--success-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
 .kernel-strip {
   display: flex;
   flex-wrap: wrap;
@@ -1122,29 +1206,6 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   max-width: 100%;
   min-width: 0;
 }
-.coder-takeover.stale {
-  border-color: var(--warning-edge);
-}
-.coder-takeover .coder-next-line,
-.coder-takeover .coder-rounds-line {
-  margin: 0 0 8px;
-  overflow-wrap: anywhere;
-}
-.coder-takeover .coder-next-line { color: var(--text); }
-/* The record's own wording, collapsed: every line at the card's small text
-   size and wrapping, so a path or a check id never widens a phone column. */
-.coder-technical { margin: 0 0 10px; font-size: 12px; color: var(--dim); }
-.coder-technical summary { cursor: pointer; }
-.coder-takeover .coder-technical p,
-.coder-technical .coder-decisions {
-  margin: 6px 0 0;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.coder-technical .coder-decisions { padding-left: 18px; }
-/* A text-sized link beside the reference -- never the page's primary button
-   dropped inside a sentence. */
-button.coder-failure-copy { font-size: inherit; padding: 0 4px; margin-left: 6px; }
 .coder-progress {
   display: flex;
   flex-direction: column;
@@ -1166,59 +1227,6 @@ button.coder-failure-copy { font-size: inherit; padding: 0 4px; margin-left: 6px
 }
 .coder-next {
   margin-left: 8px;
-}
-/* The coding agent's live narration. A single replaced sentence could not
-   tell a working agent from a wedged one; this is the tail of its own STEP
-   lines, newest last and highlighted. Scrolls inside itself so a long pass
-   never grows the panel. */
-.coder-activity {
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  list-style: none;
-  max-height: 168px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: var(--bg);
-  border: 1px solid var(--divider);
-  border-radius: var(--radius-sm);
-}
-.coder-activity li {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  font-size: var(--text-xs); line-height: var(--lh-xs);
-  color: var(--dim);
-}
-.coder-activity-role {
-  flex: 0 0 auto;
-  font-size: var(--text-xs); line-height: var(--lh-xs);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.coder-activity-text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.coder-activity-now .coder-activity-text {
-  color: var(--text);
-}
-
-.coder-session-log {
-  margin: 8px 0 0;
-  max-height: 220px;
-  overflow: auto;
-  padding: 8px 10px;
-  background: var(--bg);
-  border: 1px solid var(--divider);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-size: var(--text-xs); line-height: var(--lh-xs);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 .coder-monitor-actions {
   margin-top: 8px;

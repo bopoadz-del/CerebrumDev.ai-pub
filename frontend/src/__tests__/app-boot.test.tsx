@@ -696,9 +696,11 @@ describe('App boot', () => {
     render(<App />)
     expect(await screen.findByText(new RegExp(`session ${TEST_SESSION_E.slice(0, 12)}`))).toBeInTheDocument()
     expect(screen.queryByText(/session sess_cec9a13/)).not.toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: 'Coding agent stopped' })).toBeInTheDocument()
-    expect(screen.getByTestId('floor-failed-pill')).toHaveTextContent('Pilot suite failed')
-    expect(screen.queryByRole('heading', { name: 'Coding agent has taken over' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /^Stopped/ })).toBeInTheDocument()
+    // PR-07: the state line says the state; the pill left the button row.
+    expect(screen.getByTestId('floor-build-state')).toHaveTextContent('Stopped')
+    expect(screen.queryByTestId('floor-failed-pill')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(productGetMock).toHaveBeenCalledWith(`${TEST_SESSION_E}`)
     expect(createMock).not.toHaveBeenCalled()
   })
@@ -894,7 +896,7 @@ describe('App boot', () => {
     render(<App />)
     expect(await screen.findByText(new RegExp(`session ${TEST_SESSION_F.slice(0, 12)}`))).toBeInTheDocument()
     expect(await screen.findByText(/WORKERS 3\/5/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Coding agent has taken over' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /^Building/ })).toBeInTheDocument()
 
     // Live deep-link writes the path without a PopStateEvent. The in-flight
     // WRITER occupant must not keep the Floor.
@@ -905,7 +907,7 @@ describe('App boot', () => {
     expect(await screen.findByRole('heading', { name: /Coding agent finished/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-pilot-ready-pill')).toHaveTextContent('Store-green')
     expect(screen.queryByText(/WORKERS 3\/5/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Coding agent has taken over' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(productGetMock).toHaveBeenCalledWith(finishedB)
     expect(createMock).not.toHaveBeenCalled()
   })

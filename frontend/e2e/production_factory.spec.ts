@@ -165,7 +165,7 @@ test('verified account: Floor brief, feature list, live Approve, billing honesty
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible()
 
   const approve = page.getByRole('button', { name: /Approve & build/ })
-  const takeover = page.getByRole('heading', { name: 'Coding agent has taken over' }).or(
+  const takeover = page.getByRole('heading', { name: /^Building/ }).or(
     page.getByText(/coding agent has taken over/i),
   )
   const composer = page.getByPlaceholder(/Try:|coding agent has taken over/i)
