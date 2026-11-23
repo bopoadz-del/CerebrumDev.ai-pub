@@ -38,7 +38,7 @@ from app.factory.build.builds_push import (
     is_exported,
 )
 from app.factory.blocks_source import resolve_blocks_root
-from app.factory.blueprint import BlueprintError, ProductBlueprint
+from app.factory.blueprint import BlueprintError, ProductBlueprint, customer_settable
 from app.factory.dual_registry import DualRegistryError
 from app.factory.floor_actions import require_build_level
 from app.factory.locale_choice import intake_state
@@ -879,7 +879,9 @@ def draft_product(
             _cached = load_blueprint(_bp_key)
             if _cached is not None:
                 try:
-                    bp = ProductBlueprint.model_validate(_cached)
+                    # The cache is shared by every session: an entry lands on
+                    # this one as the part a session may carry, no more.
+                    bp = ProductBlueprint.model_validate(customer_settable(_cached))
                     _bp_resumed = True
                 except Exception:  # noqa: BLE001 -- a bad cache entry: re-draft
                     bp = None
@@ -980,6 +982,10 @@ def accept_golden(
                 detail="the golden offered on this draft is no longer the one "
                 "that resolves for it — re-draft before accepting",
             )
+        # A golden is a shared blueprint an operator wrote. What lands on the
+        # customer's session is the part a session may carry; the golden's
+        # operator-only fields stay with the golden (blueprint.SetBy).
+        accepted = ProductBlueprint.model_validate(customer_settable(accepted))
         state.product_design.blueprint = accepted.model_dump(mode="json")
         state.product_design.blueprint_approved = False
         state.product_design.plan = None
@@ -1058,12 +1064,19 @@ def approve_blueprint(
     session_id: str, body: ApproveBody, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    ignored_fields: list[str] = []
     if body.blueprint is not None:
         try:
-            bp = ProductBlueprint.model_validate(body.blueprint)
+            # A blueprint in the request body comes from outside the session.
+            # Only the part a customer session may carry is validated and
+            # stored; a field only an operator may set is dropped here and the
+            # response says which (blueprint.SetBy).
+            settable = customer_settable(body.blueprint)
+            bp = ProductBlueprint.model_validate(settable)
             state.product_design.blueprint = bp.model_dump(mode="json")
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ignored_fields = sorted(set(body.blueprint) - set(settable))
     if not state.product_design.blueprint:
         raise HTTPException(status_code=400, detail="no blueprint to approve")
     from app.factory.locale_choice import sync_blueprint_intake
@@ -1077,6 +1090,7 @@ def approve_blueprint(
     return {
         "ok": True,
         "blueprint_approved": state.product_design.blueprint_approved,
+        "ignored_fields": ignored_fields,
     }
 
 

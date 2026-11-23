@@ -27,6 +27,7 @@ without a code change if a build regression appears in production.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -752,11 +753,25 @@ def _reevaluate_thin_authorship_failure(
 def _phase_trail(
     events: Sequence[Any],
 ) -> tuple[list, "dict | None"]:
-    """F3: per-phase trail from ledger events, plus the first failure.
+    """F3: the per-phase trail plus the FIRST failure (history). What the
+    Floor says stopped a build is ``_trail``'s standing failure, never this."""
+    trail, history, _standing = _trail(events)
+    return trail, (history[0] if history else None)
+
+
+def _trail(
+    events: Sequence[Any],
+) -> tuple[list, list, "dict | None"]:
+    """F3: per-phase trail, every failed verdict in order, and the one STANDING.
 
     One row per build phase in BUILD_PHASES order — never one concatenated
     string. A row carries outcome, named reason token, location, timestamp
     and detail so the Floor can render "WRITER failed — writer_no_output".
+
+    A failed verdict stops standing when its phase passes, when a designed
+    handoff replaces it, or when the run is resumed (a phase starting after a
+    run verdict with no rework between them: the old stop is history). Each
+    failure carries its event's typed ``failure_kind`` and the phase's run time.
     """
     from app.factory.build.authority import BUILD_PHASES
     from app.factory.build.sanitize import sanitize_for_status
@@ -773,18 +788,28 @@ def _phase_trail(
         }
         for p in phases
     }
-    failure: Optional[Dict[str, Any]] = None
+    history: List[Dict[str, Any]] = []
+    standing: Optional[Dict[str, Any]] = None
+    started: Dict[str, Any] = {}
+    ended = False
     for event in events:
         role = getattr(event, "role", None)
         kind = getattr(event, "kind", None)
+        kind_name = kind.value if hasattr(kind, "value") else str(kind)
+        if kind_name in ("RUN_FAILED", "RUN_SUCCEEDED"):
+            ended = True
+        elif kind_name == "REWORK":
+            ended = False
         if role is None:
             continue
         role_name = role.value if hasattr(role, "value") else str(role)
-        kind_name = kind.value if hasattr(kind, "value") else str(kind)
         entry = state.get(role_name)
         if entry is None:
             continue
         if kind_name == "PHASE_STARTED":
+            if ended:
+                standing, ended = None, False
+            started[role_name] = event.ts
             # A re-opened phase starts clean. Carrying the previous round's
             # failure text forward would render a running phase next to the
             # sentence that ended its last attempt.
@@ -805,6 +830,8 @@ def _phase_trail(
             entry["reason"] = ""
             entry["location"] = ""
             entry["detail"] = sanitize_for_status(event.detail) or ""
+            if standing is not None and standing.get("phase") == role_name:
+                standing = None
         elif kind_name in ("GATE_FAILED", "PHASE_ABORTED"):
             payload = event.payload or {}
             entry["outcome"] = "failed" if kind_name == "GATE_FAILED" else "aborted"
@@ -812,8 +839,13 @@ def _phase_trail(
             entry["location"] = sanitize_for_status(payload.get("location")) or role_name
             entry["timestamp"] = event.ts
             entry["detail"] = sanitize_for_status(event.detail) or ""
-            if failure is None:
-                failure = dict(entry)
+            began, stopped = _event_epoch(started.get(role_name) or ""), _event_epoch(event.ts)
+            standing = {
+                **entry,
+                "failure_kind": str(payload.get("failure_kind") or ""),
+                "ran_s": round(stopped - began) if began is not None and stopped is not None else None,
+            }
+            history.append(standing)
         elif kind_name == "NOTE" and (event.payload or {}).get("handoff"):
             # A designed handoff is not a failure. On a host without docker
             # the STORE gate refuses ("will not pass on a host-side skip")
@@ -824,18 +856,17 @@ def _phase_trail(
             # "STORE_MANAGER failed" for the whole CI wait on a build that
             # went on to pass 13/13 -- read by the owner as a dead build.
             if entry.get("reason") == "docker_unavailable":
-                was_the_failure = (
-                    failure is not None and failure.get("phase") == role_name
-                    and failure.get("reason") == "docker_unavailable"
-                )
+                # The newest failure of this phase is the verdict handed off.
+                handed = next((f for f in reversed(history) if f.get("phase") == role_name), None)
+                history = [f for f in history if f is not handed]
+                if standing is handed:
+                    standing = None
                 entry["outcome"] = "handed_off"
                 entry["reason"] = ""
                 entry["location"] = ""
                 entry["timestamp"] = event.ts
                 entry["detail"] = sanitize_for_status(event.detail) or ""
-                if was_the_failure:
-                    failure = None
-    return [state[p] for p in phases], failure
+    return [state[p] for p in phases], history, standing
 
 
 def _crash_failure(trail: list) -> "Dict[str, Any] | None":
@@ -854,16 +885,49 @@ def _crash_failure(trail: list) -> "Dict[str, Any] | None":
     running["reason"] = "build_thread_crashed"
     running["location"] = running.get("location") or running.get("phase") or ""
     running["detail"] = "build thread crashed; see service logs"
-    return dict(running)
+    return {**running, "outcome": "crashed"}  # the trail row stays "aborted"
+
+
+def _stop_row(terminal: Any, trail: list, standing: "Dict[str, Any] | None") -> Dict[str, Any]:
+    """The row a FAILED run stopped on: the standing failure of the phase the
+    terminal event names, else the terminal event itself -- a stop with no
+    per-phase verdict (time budget, stage halt, checkpoint, a Stop between
+    phases) is neither a crash nor nothing. Only an event with no typed
+    ``outcome``, the crash handler's, is read as a crashed thread."""
+    from app.factory.build.sanitize import sanitize_for_status
+
+    payload = terminal.payload or {}
+    role = terminal.role.value if getattr(terminal, "role", None) is not None else ""
+    detail = sanitize_for_status(terminal.detail) or ""
+    if not payload.get("outcome"):
+        crashed = _crash_failure(trail)
+        if crashed is not None:  # its detail is the exception the handler stamped
+            return {**crashed, "detail": detail or crashed.get("detail") or ""}
+        if standing is not None:
+            return standing
+    elif standing is not None and role in ("", standing.get("phase")):
+        return standing
+    # ``phase`` names a phase verdict; a stop between phases has none, only a
+    # ``location`` -- so no gate is graded as failed for a step nothing judged.
+    in_flight = any(row["phase"] == role and row["outcome"] == "running" for row in trail)
+    return {
+        "phase": role if in_flight else "",
+        "outcome": "aborted",
+        "reason": str(payload.get("outcome") or "").lower(),
+        "location": role,
+        "timestamp": terminal.ts,
+        "detail": detail,
+    }
 
 
 # J2 (ORDERS_04NOV_2000Z): the Floor shows a plain-English SUMMARY and a REF, not
-# the raw payload. The map is keyed by the reason CODE; an unmapped code falls
-# back to a generic sentence + the ref (never the payload) and logs the code so
-# the table grows from evidence. The code is an OPEN set -- reason tokens are
-# produced across 20+ modules under app/factory/, not a declarable enum
-# (ORDERS_04NOV_2300Z s4). The full detail is filed in the ledger (the record),
-# read back by failure_records(); the wire strips it (_strip_floor_detail).
+# the raw payload. The sentence comes from the stop's CLASS (failure_record: a
+# closed set read from typed fields); the reason CODE is an OPEN set written
+# across 20+ modules and names the outermost wrapper, not the cause. This map
+# only REFINES the class sentence for a code that says more; a code without an
+# entry is logged once so the map can grow from evidence. The full detail is
+# filed in the ledger (the record), read back by failure_records(); the wire
+# strips it (_strip_floor_detail).
 _FAILURE_SUMMARIES = {
     "docker_unavailable": "The build could not reach Docker to package the product.",
     "build_thread_crashed": "The build stopped unexpectedly; the full cause is in the record.",
@@ -893,34 +957,47 @@ def _failure_ref(failure: Dict[str, Any]) -> str:
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
 
 
-def _floor_failure(failure: "Dict[str, Any] | None") -> "Dict[str, Any] | None":
-    """Attach the Floor's code / summary / ref to a failure row (J2). ``code`` is
-    the stable reason token; ``summary`` is one sentence from ``_FAILURE_SUMMARIES``
-    or a generic fallback that names neither the payload nor a brace; ``ref`` is
-    where the full detail is filed. ``detail`` is deliberately LEFT on the row
-    here -- failure_triple (build_jobs.py:1264) reads it as its finding fallback
-    and runs before the wire boundary -- and is removed from the Floor-facing
-    status at that boundary by ``_strip_floor_detail`` (via _with_level_grade)."""
+#: Refs whose unmapped code was logged: one line per failure, not per read.
+_LOGGED_FAILURE_REFS: set = set()
+
+
+def _floor_failure(
+    failure: "Dict[str, Any] | None",
+    terminal_payload: "Dict[str, Any] | None" = None,
+) -> "Dict[str, Any] | None":
+    """Attach what the Floor says about a failure row (J2): ``code`` (the
+    stable reason token), ``ref`` (where the full detail is filed) and the stop
+    view ``kind`` / ``title`` / ``summary`` / ``next``, chosen by the stop's
+    class (failure_record.stop_class), never by the code. ``detail`` is LEFT on
+    the row -- failure_triple reads it before the wire boundary, where
+    ``_strip_floor_detail`` removes it."""
     if not failure:
         return failure
+    from app.factory.build import failure_record as fr
+
     code = _failure_code(failure.get("reason"))
     failure["code"] = code
     failure["ref"] = _failure_ref(failure)
-    summary = _FAILURE_SUMMARIES.get(code)
-    if not summary:
-        # The code is an open set -- reason tokens are produced across 20+
-        # modules under app/factory/, so the generic fallback is the product
-        # for an unmapped code, not an error path (ORDERS_04NOV_2300Z s4). But
-        # it is never SILENT: log the code so the table grows from the kinds
-        # that actually occur, through the same "full reporting in the code"
-        # channel J3 writes. The Floor still never crashes on an unknown code.
+    payload = terminal_payload or {}
+    failure.update(
+        fr.stop_view(
+            fr.stop_class(payload, failure),
+            ran_s=failure.get("ran_s"),
+            findings=len(payload.get("findings") or ()),
+        )
+    )
+    refined = _FAILURE_SUMMARIES.get(code)
+    if refined and failure["kind"] in (fr.CHECK_REFUSED, fr.COULD_NOT_RUN, fr.UNEXPECTED):
+        # Only where the failing event decided the class: a Stop or a
+        # timeout is never described by an older event's code.
+        failure["summary"] = refined
+    elif not refined and failure["ref"] not in _LOGGED_FAILURE_REFS:
+        _LOGGED_FAILURE_REFS.add(failure["ref"])
         logger.info(
-            "floor failure summary fell back to generic",
+            "floor failure code %s has no sentence of its own (class %s, ref %s)",
+            code, failure["kind"], failure["ref"],
             extra={"code": code, "ref": failure["ref"], "phase": failure.get("phase")},
         )
-        where = str(failure.get("location") or failure.get("phase") or "A build step").strip()
-        summary = f"{where} was refused during the build; the full detail is in the build record."
-    failure["summary"] = summary
     return failure
 
 
@@ -935,17 +1012,23 @@ def failure_records(output_dir: Path | str) -> List[Dict[str, Any]]:
                       if r["ref"] == ref)
 
     Secrets are redacted (sanitize_for_status), nothing is truncated."""
-    from app.factory.build.ledger import BuildLedger
+    from app.factory.build.ledger import BuildLedger, EventKind
 
-    path = _ledger_path(output_dir)
+    ledger = BuildLedger(_ledger_path(output_dir))
     try:
-        events = BuildLedger(path).events()
+        events = ledger.events()
+        terminal = ledger.terminal_event()
     except Exception:  # noqa: BLE001 -- no ledger yet, or a torn one: no record, not a 500
         return []
-    trail, _ = _phase_trail(events)
+    # One record per failure EVENT, not per phase, so a ref shown before the
+    # phase failed again still resolves; plus a verdict-less stop's own row.
+    trail, rows, standing = _trail(events)
+    if terminal is not None and terminal.kind is EventKind.RUN_FAILED:
+        stop = _stop_row(terminal, trail, standing)
+        rows = rows + [stop] if all(stop is not row for row in rows) else rows
     records: List[Dict[str, Any]] = []
-    for entry in trail:
-        if entry.get("outcome") in ("failed", "aborted") and entry.get("detail"):
+    for entry in rows:
+        if entry.get("detail"):
             rec = dict(entry)
             rec["ref"] = _failure_ref(entry)
             rec["code"] = _failure_code(entry.get("reason"))
@@ -972,6 +1055,54 @@ def _floor_safe_text(value: Any) -> Any:
     if len(out) > 200:
         out = out[:200].rstrip(" :-—\t").strip()
     return out
+
+
+def _redacted(value: Any) -> Any:
+    """``value`` with keys and auth headers redacted from every string (F5)."""
+    from app.factory.build.sanitize import sanitize_for_status
+
+    if isinstance(value, str):
+        return sanitize_for_status(value)
+    if isinstance(value, dict):
+        return {key: _redacted(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redacted(item) for item in value]
+    return value
+
+
+def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
+    """What the GRADER itself recorded in the attempt now standing, else None.
+
+    Only an event naming the grader's gate counts: its verdict NOTE, its
+    hand-back REWORK, its stop. Another gate's decision, a timeout and the
+    owner's Stop carry no such name, so none can read as a grader verdict. A
+    phase starting after a run verdict is a resume the grader has not judged."""
+    from app.factory.build.grader import CERTIFIED, GRADER_GATE
+    from app.factory.build.runner import REWORK_BUDGET
+
+    view: Optional[Dict[str, Any]] = None
+    ended = False
+    for event in events:
+        kind = getattr(event.kind, "value", str(event.kind))
+        if kind in ("RUN_FAILED", "RUN_SUCCEEDED"):
+            ended = True
+            continue
+        if kind == "PHASE_STARTED" and ended:
+            view, ended = None, False
+        payload = event.payload or {}
+        if GRADER_GATE not in (payload.get("gate"), payload.get("grader_gate")):
+            continue
+        tier = str(payload.get("grader_tier") or (view or {}).get("tier") or "")
+        state = {"REWORK": "sent_back", "GATE_FAILED": "stopped"}.get(
+            kind, "certified" if tier == CERTIFIED else "refused"
+        )
+        view = {
+            "state": state,
+            "tier": tier,
+            "round": int(payload.get("round") or (view or {}).get("round") or 0),
+            "budget": REWORK_BUDGET,
+        }
+    return view
 
 
 def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:
@@ -1033,6 +1164,11 @@ def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:
                 for f, v in list(d.items()):
                     if isinstance(v, str):
                         d[f] = _floor_safe_text(v)
+    # F5 at the wire: the stop prose is redacted here, once, whichever event
+    # it was copied from -- not only the trail rows someone remembered.
+    for key in ("detail", "findings", "failed", "failed_label", "failure_narrative", "decisions", "stopped"):
+        if key in status:
+            status[key] = _redacted(status[key])
     return status
 
 
@@ -1138,7 +1274,7 @@ def build_status(
         and _crash_marker_path(output_dir).is_file()
         and not _live_runner_thread(output_dir)
     ):
-        trail, failure = _phase_trail(events)
+        trail, _history, failure = _trail(events)
         failure = _floor_failure(failure or _crash_failure(trail))
         return _with_level_grade(
             {
@@ -1264,38 +1400,33 @@ def build_status(
 
     from app.factory.build.coder_session_status import session_status
 
-    phase_trail, failure = _phase_trail(events)
-    # F: a crashed thread (RUN_FAILED with no per-phase verdict) must still
-    # name the phase it died in — otherwise the Floor cannot say 'why'.
-    if failure is None and terminal is not None and terminal.kind is EventKind.RUN_FAILED:
-        tp = terminal.payload or {}
-        if not tp.get("reason") or tp.get("reason") == "build_thread_crashed":
-            failure = _crash_failure(phase_trail)
-            if failure is not None:
-                # The crash handler stamps the actual exception into the
-                # terminal detail — show it, not the generic marker text.
-                failure["detail"] = sanitize_for_status(terminal.detail) or (
-                    failure.get("detail") or ""
-                )
+    # The failure shown is the verdict STANDING now, never the first one the
+    # ledger saw; a stopped run reads the row its NEWEST verdict stopped on,
+    # so the label, the red chip, the Continue line and the ref agree.
+    phase_trail, history, failure = _trail(events)
+    stop_payload: Dict[str, Any] = {}
+    from app.factory.build.n3_store_gate import handoff_awaiting_n3
+
+    # A designed handoff ends its cycle with a terminal event too; it is a
+    # wait for the Store gate, not a stop, and gets no stop row.
+    handing_off = (
+        terminal is not None
+        and terminal.kind is EventKind.RUN_FAILED
+        and handoff_awaiting_n3(output_dir)
+    )
+    if terminal is not None and terminal.kind is EventKind.RUN_FAILED and not handing_off:
+        stop_payload = dict(terminal.payload or {})
+        failure = _stop_row(terminal, phase_trail, failure)
     # J2: the Floor failure row carries code / summary / ref; the raw detail
     # stays on the row for the build record (J3), never in the Floor string.
-    failure = _floor_failure(failure)
-    # A run whose verdict is SUCCESS has no current failure. _phase_trail
-    # keeps the FIRST failure on purpose -- while the build runs, what went
-    # wrong in round 1 is what the operator needs -- but once the run ends
-    # green that entry is history, and the Floor rendered it as a red
-    # role="alert" line with the phase painted red. sess_617f60024df24a4e
-    # showed "TESTER failed -- KeyError" under a 13/13, CODE/PRODUCT/STORE
-    # PASS header, for a KeyError the agent had fixed in rework ten minutes
-    # earlier. Keep it, named for what it is. terminal_event() is None while
-    # a pilot cycle is open, so a live failure is never moved here.
+    failure = _floor_failure(failure, stop_payload)
+    # A run whose verdict is SUCCESS has no current failure; the first one it
+    # recovered from is history, named for what it is (sess_617f60024df24a4e
+    # showed a red "TESTER failed -- KeyError" under a 13/13 PASS header).
     recovered_failure = None
-    if (
-        failure is not None
-        and terminal is not None
-        and terminal.kind is EventKind.RUN_SUCCEEDED
-    ):
-        recovered_failure, failure = failure, None
+    if terminal is not None and terminal.kind is EventKind.RUN_SUCCEEDED:
+        recovered_failure = _floor_failure(dict(history[0])) if history else None
+        failure = None
     progress = {
         "phases": phases,
         "completed": [p for p in phases if p in completed],
@@ -1317,11 +1448,16 @@ def build_status(
         "not_delivered": _not_delivered(events),
         # The runner rule's every decision (gate, class, round n/2 and build
         # n/6, check, finding) and, when it stopped the build, the stop.
+        # Only records carrying the rule's CLASS: the owner-stop and
+        # time-budget records share the key and rendered as a blank row.
         "decisions": [
             dict((e.payload or {})["decision"])
             for e in events
             if isinstance((e.payload or {}).get("decision"), dict)
+            and (e.payload or {})["decision"].get("class")
         ],
+        # The grader's state, from the events the grader itself wrote.
+        "grader": _grader_view(events),
         "stopped": stopped_by_rule(output_dir),
         # The build's own declared end (server clock); a poller waits on
         # this, never on a number of its own.
@@ -1375,9 +1511,7 @@ def build_status(
         return _with_level_grade(succeeded, output_dir)
     if terminal is not None and terminal.kind is EventKind.RUN_FAILED:
         payload = terminal.payload or {}
-        from app.factory.build.n3_store_gate import handoff_awaiting_n3
-
-        if handoff_awaiting_n3(output_dir):
+        if handing_off:
             # Receipt accepted; N3 store-gate is the next green. Do not paint
             # this as a terminal coding failure or unlock package.
             waiting = {
@@ -1409,11 +1543,7 @@ def build_status(
                 if payload.get(key):
                     waiting[key] = payload[key]
             return _with_level_grade(waiting, output_dir)
-        from app.factory.build.failure_record import (
-            failed_label,
-            failure_triple,
-            next_continue_line,
-        )
+        from app.factory.build.failure_record import failed_label, failure_triple
         from app.factory.build.failure_narrative import read_narrative
 
         triple = failure_triple(payload, progress.get("failure"))
@@ -1433,7 +1563,8 @@ def build_status(
             "certified": False,
             "failed": triple,
             "failed_label": failed_label(triple) if triple else None,
-            "next_continue": next_continue_line(triple),
+            # What continuing does for THIS kind of stop -- never a check id.
+            "next_continue": (progress.get("failure") or {}).get("next") or "",
             # F5: what was tried, where it stopped, why -- from the ledger.
             "failure_narrative": read_narrative(output_dir),
         }
@@ -1597,36 +1728,136 @@ def _refund_generation_quota(output_dir: Path) -> None:
     _clear_quota_marker(output_dir)
 
 
-def clone_canonical(blueprint: Any, source_dir: Path | str) -> Optional[Path]:
+class CanonicalRefused(RuntimeError):
+    """A canonical copy was not written. ``reason`` is the typed token."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+
+
+#: Why a canonical copy is refused. One token per rule in ``clone_canonical``.
+CANONICAL_OPERATOR_ONLY = "canonical_operator_only"
+CANONICAL_UNSAFE_NAME = "canonical_unsafe_name"
+CANONICAL_OVERLAPS_SOURCE = "canonical_overlaps_source"
+CANONICAL_NOT_CREATED_HERE = "canonical_not_created_here"
+CANONICAL_OTHER_OWNER = "canonical_other_owner"
+
+#: Written into every canonical copy ``clone_canonical`` creates. It is the
+#: only proof a directory IS a canonical copy, and it names the product the
+#: copy belongs to. A directory without it was made by something else.
+CANONICAL_MARKER = ".canonical_copy.json"
+
+
+def _canonical_owner(dest: Path) -> Optional[str]:
+    """The product the canonical copy at ``dest`` belongs to.
+
+    None when ``dest`` is not a copy ``clone_canonical`` wrote: no marker, or
+    one that does not read as its own.
+    """
+    try:
+        data = json.loads((dest / CANONICAL_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    owner = data.get("product_id") if isinstance(data, dict) else None
+    return owner if isinstance(owner, str) and owner else None
+
+
+def is_operator_run(output_dir: Path | str, *, tenant_bound: bool) -> bool:
+    """Whether a build is an operator's own run and not a customer's.
+
+    A customer's build is bound to a tenant, or its workspace is a session's,
+    or both. Only a run that is neither may honour an operator-only blueprint
+    field (``clone_canonical``).
+    """
+    from app.factory.build.orphan_recovery import session_id_from_output
+
+    return not tenant_bound and session_id_from_output(output_dir) is None
+
+
+def clone_canonical(
+    blueprint: Any, source_dir: Path | str, *, operator_run: bool
+) -> Optional[Path]:
     """Copy a finished tree to factory_outputs/<canonical_output>.
 
     A blueprint that wants a stable canonical copy says so itself
     (``canonical_output``); no product is named here. A second runner used to
     start here and double LLM spend. Clone only.
+
+    ``canonical_output`` is an operator-only field (``blueprint.SetBy``), and
+    this is the one place that deletes and replaces a directory because of
+    it. So it writes only what is provably its own, and refuses the rest with
+    a typed reason (``CanonicalRefused``):
+
+    * a run that belongs to a customer (``operator_run`` is False, see
+      ``is_operator_run``) -- the field is not theirs to set, whatever
+      blueprint reached the build;
+    * a name that is not one plain directory directly under the outputs root
+      once resolved (``paths.canonical_copy_dir``);
+    * a target that is, holds, or sits inside the tree being copied;
+    * an existing directory this function did not create (no marker), or one
+      it created for another product.
+
+    ``operator_run`` has no default: every caller states whose run it is.
     """
-    from app.factory.paths import factory_outputs_root, is_safe_to_clean
+    from app.factory.paths import UnsafeOutputDir, canonical_copy_dir
 
     name = str(getattr(blueprint, "canonical_output", None) or "").strip()
     if not name:
         return None
-    if "/" in name or "\\" in name or name.startswith("."):
-        raise RuntimeError(f"canonical_output must be a directory name, got {name!r}")
-    src = Path(source_dir)
-    dest = factory_outputs_root() / name
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not operator_run:
+        raise CanonicalRefused(
+            CANONICAL_OPERATOR_ONLY,
+            "canonical_output is an operator-only field; this run belongs to a customer",
+        )
+    try:
+        dest = canonical_copy_dir(name)
+    except UnsafeOutputDir as exc:
+        raise CanonicalRefused(CANONICAL_UNSAFE_NAME, str(exc)) from exc
+    src = Path(source_dir).resolve()
+    if dest == src or dest in src.parents or src in dest.parents:
+        raise CanonicalRefused(
+            CANONICAL_OVERLAPS_SOURCE,
+            f"{dest} is, holds, or sits inside the tree being copied ({src})",
+        )
+    owner = str(getattr(blueprint, "product_id", "") or "")
     if dest.exists():
-        if not is_safe_to_clean(dest):
-            raise RuntimeError(f"refusing to replace unsafe canonical path {dest}")
+        held_by = _canonical_owner(dest)
+        if held_by is None:
+            raise CanonicalRefused(
+                CANONICAL_NOT_CREATED_HERE,
+                f"{dest} exists and is not a canonical copy this writer created; "
+                "it is left untouched",
+            )
+        if held_by != owner:
+            raise CanonicalRefused(
+                CANONICAL_OTHER_OWNER,
+                f"{dest} is the canonical copy of another product; it is left untouched",
+            )
         shutil.rmtree(dest)
-    shutil.copytree(src, dest)
+    # The marker lands before the tree, so a copy interrupted half-way is
+    # still recognisably this writer's and the next run can replace it. A
+    # marker inside the source is never carried over.
+    dest.mkdir(parents=True)
+    (dest / CANONICAL_MARKER).write_text(
+        json.dumps({"product_id": owner}), encoding="utf-8"
+    )
+    shutil.copytree(
+        src, dest, dirs_exist_ok=True, ignore=shutil.ignore_patterns(CANONICAL_MARKER)
+    )
     return dest
 
 
-def _maybe_clone_canonical(blueprint: Any, output_dir: Path) -> None:
+def _maybe_clone_canonical(
+    blueprint: Any, output_dir: Path, *, operator_run: bool
+) -> None:
     try:
-        dest = clone_canonical(blueprint, output_dir)
+        dest = clone_canonical(blueprint, output_dir, operator_run=operator_run)
         if dest is not None:
             logger.info("cloned canonical copy to %s", dest)
+    except CanonicalRefused as exc:
+        # A refusal is a decision, not a crash: one line, no traceback.
+        logger.warning("canonical copy refused from %s: %s", output_dir, exc)
     except Exception:  # noqa: BLE001 — clone must not fail the build record
         logger.exception("canonical clone failed from %s", output_dir)
 
@@ -1810,7 +2041,14 @@ def _run(
     if failed:
         _refund_generation_quota(output_dir)
         return
-    _maybe_clone_canonical(blueprint, output_dir)
+    # A build bound to a tenant store, or built in a session's workspace, is
+    # a customer's. Only an operator's own run may honour an operator-only
+    # blueprint field.
+    _maybe_clone_canonical(
+        blueprint,
+        output_dir,
+        operator_run=is_operator_run(output_dir, tenant_bound=tenant_store is not None),
+    )
     _clear_quota_marker(output_dir)
 
 

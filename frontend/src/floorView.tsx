@@ -38,6 +38,8 @@ import {
   withResolvedNRequired,
   kernelName,
   graderChip,
+  stopHeadline,
+  stopTone,
 } from './buildProgress'
 import { LevelGradeStrip } from './levelGradeView'
 import { BuildCard, errorReport } from './buildCard'
@@ -325,9 +327,8 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
   // The grader is not one of BUILD_PHASES -- it runs inside the writer's
   // gate -- so without a chip of its own a run the grader sent back twice
   // reads as a writer that stopped for no reason. It sits after WRITER
-  // because that is where it speaks, and its state comes from the run's own
-  // decision record: no decision reads "not reached", never a green the
-  // ledger cannot prove.
+  // because that is where it speaks, and its state comes only from what the
+  // grader itself recorded: nothing recorded reads "not reached".
   const grader = graderChip(build)
   const strip = phases.flatMap((p) =>
     p === 'WRITER' && grader ? [p, 'GRADER'] : [p],
@@ -337,6 +338,8 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
   const failedReason = build?.failure?.reason || 'unknown'
   // J2: the title shows the one-line summary, never the raw payload.
   const failedSummary = build?.failure?.summary || failedReason
+  // Red only for a check that refused the work; a timeout or a Stop is halted.
+  const tone = stopTone(build?.failure)
   // A failure on a run that is still moving is a rework round -- the phase
   // sent the work back and the machine is fixing it. Red is reserved for a
   // run that actually stopped; live 2026-09-30 TESTER suite_red painted the
@@ -365,19 +368,19 @@ function KernelStrip({ build }: { build: BuildStatus | null }) {
         return (
           <li
             key={phase}
-            className={[cls, failed ? 'failed' : undefined, rework ? 'rework' : undefined]
+            className={[cls, failed ? tone : undefined, rework ? 'rework' : undefined]
               .filter(Boolean)
               .join(' ')}
             title={
               failed
-                ? `${kernelName(phase)} failed — ${failedSummary}`
+                ? `${stopHeadline(build?.failure)} — ${failedSummary}`
                 : rework
                   ? `${kernelName(phase)} sent it back to the coder — ${failedSummary}`
                   : undefined
             }
             data-testid={
               failed
-                ? `floor-phase-failed-${phase}`
+                ? `floor-phase-${tone}-${phase}`
                 : rework
                   ? `floor-phase-rework-${phase}`
                   : undefined
