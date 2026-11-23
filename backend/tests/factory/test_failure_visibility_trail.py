@@ -401,14 +401,33 @@ class TestARecoveredFailureIsNotAnAlert:
         assert status["recovered_failure"]["reason"] == "suite_red"
 
     def test_a_running_pilot_cycle_keeps_its_failure_live(self, tmp_path):
-        """terminal_event() is None once PILOT_OPENED reopens the run."""
+        """terminal_event() is None once PILOT_OPENED reopens the run.
+
+        The failure a live run keeps is the one STANDING. The code cycle's
+        failure was fixed -- its phase passed -- so the reopened run shows no
+        live failure for it; one the pilot cycle itself hits is kept live and
+        never filed as recovered."""
         ledger = self._failed_then_passed(tmp_path)
         ledger.append(EventKind.RUN_SUCCEEDED, detail="SUCCESS", payload={"cycle": "code"})
         ledger.open_pilot_cycle(reason="code-phase SUCCESS; opening Store-green cycle")
 
+        reopened = build_status(tmp_path / "build")
+
+        assert reopened["failure"] is None, "a failure whose phase passed is not standing"
+        assert reopened["recovered_failure"] is None
+
+        ledger.append(EventKind.PHASE_STARTED, role=BuildRole.TESTER, detail="TESTER")
+        ledger.append(
+            EventKind.GATE_FAILED,
+            role=BuildRole.TESTER,
+            detail="acceptance is not k/k",
+            payload={"reason": "acceptance_not_kk", "location": "TESTER"},
+        )
+
         status = build_status(tmp_path / "build")
 
         assert status["failure"] is not None, "a live run must keep its failure"
+        assert status["failure"]["reason"] == "acceptance_not_kk"
         assert status["recovered_failure"] is None
 
     def test_a_failed_run_keeps_its_failure_as_the_alert(self, tmp_path):

@@ -1079,7 +1079,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 }
 /* A mid-fail the run is still fixing: the phase sent the work back to the
    coder. Orange = rework in progress; red is reserved for a stopped run. */
-.kernel-strip li.rework {
+.kernel-strip li.rework,
+.kernel-strip li.halted {
   color: var(--warning-text);
   border-color: var(--warning-edge);
   background: var(--warning-fill);
@@ -1102,7 +1103,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   font-size: var(--text-sm); line-height: var(--lh-sm);
   margin: 0 0 10px;
 }
-.coder-rework-line {
+.coder-rework-line,
+.coder-failure-line.halted {
   color: var(--warning-text);
   background: var(--warning-fill);
   border: 1px solid var(--warning-edge);
@@ -1124,6 +1126,26 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .coder-takeover.stale {
   border-color: var(--warning-edge);
 }
+.coder-takeover .coder-next-line,
+.coder-takeover .coder-rounds-line {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.coder-takeover .coder-next-line { color: var(--text); }
+/* The record's own wording, collapsed: every line at the card's small text
+   size and wrapping, so a path or a check id never widens a phone column. */
+.coder-technical { margin: 0 0 10px; font-size: 12px; color: var(--dim); }
+.coder-technical summary { cursor: pointer; }
+.coder-takeover .coder-technical p,
+.coder-technical .coder-decisions {
+  margin: 6px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.coder-technical .coder-decisions { padding-left: 18px; }
+/* A text-sized link beside the reference -- never the page's primary button
+   dropped inside a sentence. */
+button.coder-failure-copy { font-size: inherit; padding: 0 4px; margin-left: 6px; }
 .coder-progress {
   display: flex;
   flex-direction: column;

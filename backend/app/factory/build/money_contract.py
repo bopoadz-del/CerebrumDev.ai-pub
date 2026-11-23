@@ -36,7 +36,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 MONEY_ASSUMED = "money_assumed_without_a_brief"
 
@@ -62,6 +62,111 @@ _CURRENCY_SHAPE = re.compile(r"[A-Z]{3}")
 
 #: Factors that do not change an amount's scale (identity / zeroing).
 _IDENTITY_FACTORS = frozenset({0, 1})
+
+
+# -- the rule table ------------------------------------------------------------
+#
+# ONE source for the money rule. The writer prompt's MONEY section, the
+# C-BRIEF's MONEY lines, the acceptance-floor line and every finding the gate
+# hands a rework round are rendered from this table, so what the writer is
+# told is exactly what writer_contract checks. A rule carries no country,
+# currency or rate: the declared pair is data, read at run time.
+
+
+@dataclass(frozen=True)
+class MoneyRule:
+    key: str
+    #: The sentence the writer is told (prompt, brief, rework finding).
+    rule: str
+    #: The rule in a few words, for the acceptance-floor line.
+    short: str
+
+
+#: A declared code written into source.
+RULE_CODE_LITERAL = "code_literal"
+#: A money value scaled by a number typed into source.
+RULE_RATE_LITERAL = "rate_literal"
+#: A money value scaled by a factor the settings module did not serve.
+RULE_UNSOURCED_FACTOR = "unsourced_factor"
+#: Money and quantity fields declared by type, which the gate reads.
+RULE_DECLARED_FIELDS = "declared_fields"
+
+MONEY_RULES: Tuple[MoneyRule, ...] = (
+    MoneyRule(
+        RULE_CODE_LITERAL,
+        "Never write the declared country or currency code as a string literal "
+        f"under app/: read it where it is used from {MONEY_SETTINGS_MODULE} "
+        "(country(), currency()).",
+        "no declared country or currency code is a literal",
+    ),
+    MoneyRule(
+        RULE_RATE_LITERAL,
+        "Never scale a money value by a number typed into the code (only 0 and 1 "
+        f"are exempt): a tax rate is {MONEY_SETTINGS_MODULE}.tax_rate(), and any "
+        "other rate the customer owns (a fee, an fx rate, a discount) is "
+        f"{MONEY_SETTINGS_MODULE}.rate('<name>'), which the operator sets as "
+        f"{RATE_ENV_PREFIX}<NAME>.",
+        "no money value is scaled by a typed number",
+    ),
+    MoneyRule(
+        RULE_UNSOURCED_FACTOR,
+        "Scale a money value only by a factor read from "
+        f"{MONEY_SETTINGS_MODULE} (tax_rate(), or rate('<name>') for a rate the "
+        "customer owns), by another money value (a ratio), or by a field "
+        "declared with type quantity; a scaled amount that is only compared is "
+        "a threshold and is allowed. Dividing or multiplying a money value by a "
+        "plain number or an undeclared variable is refused.",
+        f"every factor that scales money is read from {MONEY_SETTINGS_MODULE}, "
+        "another money value or a declared quantity",
+    ),
+    MoneyRule(
+        RULE_DECLARED_FIELDS,
+        "Declare every money field with type money in its model spec (the "
+        "emitted model lists them in MONEY_FIELDS), and every count, duration or "
+        "number of units a money value is divided or multiplied by with type "
+        "quantity (QUANTITY_FIELDS): money divided by a quantity is a per-unit "
+        "rate, money multiplied by a quantity is a total.",
+        "money and quantity fields are declared by type",
+    ),
+)
+
+_RULES_BY_KEY: Dict[str, MoneyRule] = {r.key: r for r in MONEY_RULES}
+
+
+def money_rule(key: str) -> str:
+    """The writer-facing sentence of one rule (KeyError for an unknown key)."""
+    return _RULES_BY_KEY[key].rule
+
+
+def money_finding(key: str, where: str, what: str) -> str:
+    """A gate finding: where, what the code did, and the rule it broke --
+    the same sentence the writer was told before the pass."""
+    return f"{where}: {what} -- {money_rule(key)}"
+
+
+def money_prompt_section() -> str:
+    """The writer prompt's MONEY section. It names the accessors, never a
+    value: the declared pair reaches the writer only in the brief's typed
+    MONEY lines."""
+    lines = [
+        "MONEY (country, currency, tax):",
+        "- The country and currency come from the BRIEF's typed MONEY lines (the "
+        "customer's declared choice). Those lines override any country, currency "
+        "or rate named in the customer's own words.",
+        f"- Never hardcode a country's tax rate or currency. {MONEY_SETTINGS_MODULE} "
+        "is shipped by the Factory and serves them at run time: the deploy "
+        f"environment ({COUNTRY_ENV}, {CURRENCY_ENV}, {TAX_RATE_ENV}, "
+        f"{RATE_ENV_PREFIX}<NAME>) first, then the declared record, with no "
+        "default value. List every such setting your code needs in README.md as "
+        "a value the operator must set before use.",
+    ]
+    lines.extend(f"- {r.rule}" for r in MONEY_RULES)
+    return "\n".join(lines) + "\n"
+
+
+def money_acceptance_text() -> str:
+    """The money clause of the writer_contract acceptance-floor line."""
+    return "; ".join(r.short for r in MONEY_RULES) + f": money is read from {MONEY_SETTINGS_MODULE}"
 
 
 def shaped_country(raw: Any) -> Optional[str]:
@@ -222,8 +327,8 @@ def emit_money_artifacts(workspace: Any, blueprint: Any) -> None:
 def money_brief_lines(blueprint: Any) -> List[str]:
     """What the writer builds for money, rendered into the C-BRIEF (BUILD).
 
-    States the declared pair (or that none was declared) and the structure to
-    build; the gate below measures exactly that structure.
+    States the declared pair (or that none was declared), then every rule of
+    MONEY_RULES -- the table the gate's findings are rendered from.
     """
     locale = locale_of(blueprint)
     declared = (
@@ -238,23 +343,7 @@ def money_brief_lines(blueprint: Any) -> List[str]:
             "money check reads WITHHELD (no currency declared)."
         )
     )
-    return [
-        "- MONEY: " + declared,
-        "- MONEY: declare every money field with type money in its model spec "
-        "(the emitted model lists them in MONEY_FIELDS). Take currency, "
-        f"country and every rate from {MONEY_SETTINGS_MODULE} at the point of use: "
-        "tax_rate() for tax, rate('<name>') for any other rate the customer owns "
-        f"(a fee, an fx rate, a discount -- the operator sets {RATE_ENV_PREFIX}<NAME>). "
-        "Scale an amount only by a factor read from it; keep codes and rates "
-        "out of the source.",
-        "- MONEY: a per-unit rate is a derivation, not a typed rate: a money "
-        "field divided by a QUANTITY is allowed, and a money field multiplied by "
-        "a QUANTITY is a total. Declare every such divisor/multiplier with type "
-        "quantity in its model spec (a count, a duration, a number of units -- "
-        "the emitted model lists them in QUANTITY_FIELDS). Dividing or "
-        "multiplying a money value by a plain number or an undeclared variable "
-        "is still refused.",
-    ]
+    return ["- MONEY: " + declared, *(f"- MONEY: {r.rule}" for r in MONEY_RULES)]
 
 
 # -- the verdict ---------------------------------------------------------------
@@ -405,7 +494,7 @@ def _module_findings(
     codes = {locale["currency"], locale["country"]}
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in codes:
-            found.append(f"{rel}:{node.lineno}: the declared code {node.value!r} is a literal -- read it from {MONEY_SETTINGS_MODULE}")
+            found.append(money_finding(RULE_CODE_LITERAL, f"{rel}:{node.lineno}", f"the declared code {node.value!r} is a literal"))
     # The empty-money case needs no early return: when `money` is empty,
     # `terms` is empty too (`_money_locals` yields `{}`), so the scaling loop
     # below adds no findings and `found` is returned unchanged by the loop.
@@ -438,15 +527,18 @@ def _module_findings(
         if isinstance(factor, ast.Constant) and isinstance(factor.value, (int, float)) and not isinstance(factor.value, bool):
             if factor.value in _IDENTITY_FACTORS:
                 continue
-            found.append(f"{rel}:{node.lineno}: a money value is scaled by the literal {factor.value!r} -- a rate is a setting ({MONEY_SETTINGS_MODULE}.tax_rate())")
+            found.append(money_finding(RULE_RATE_LITERAL, f"{rel}:{node.lineno}", f"a money value is scaled by the literal {factor.value!r}"))
             continue
         if not _reads_settings(factor, aliases):
             if _is_only_compared(node, parents):
                 continue
             found.append(
-                f"{rel}:{node.lineno}: a money value is scaled by a factor not taken from {MONEY_SETTINGS_MODULE}"
-                f" -- `{_snippet(node)}` scales a money value by `{_snippet(factor)}`; read that factor from "
-                f"{MONEY_SETTINGS_MODULE} (tax_rate(), or rate('<name>') for a rate the customer owns)"
+                money_finding(
+                    RULE_UNSOURCED_FACTOR,
+                    f"{rel}:{node.lineno}",
+                    f"a money value is scaled by a factor not taken from {MONEY_SETTINGS_MODULE}"
+                    f" -- `{_snippet(node)}` scales a money value by `{_snippet(factor)}`",
+                )
             )
     # A nested expression (a * b / c) is visited once per operator on one line:
     # one finding per distinct line and text.
