@@ -423,6 +423,9 @@ export async function mockFloorStates(page: Page): Promise<void> {
           return json({ ok: true, product_id: w.productId, build: w.build ?? { state: 'not_started' } })
         }
         if (rest === '/product/coder-control') return json({ ok: true, control: { action: 'run' } })
+        if (rest === '/product/package') {
+          return route.fulfill({ status: 200, contentType: 'application/zip', body: Buffer.from('PK') })
+        }
         if (rest === '/upload/allowed') return json(UPLOAD)
         if (rest === '/chat') {
           // The edit sheet's Save: the answers and the typed Confirm in one
@@ -440,6 +443,11 @@ export async function mockFloorStates(page: Page): Promise<void> {
               declared: { ...w.intake.declared, ...(w.intake.proposal ?? {}), ...changed },
               proposal: null,
             }
+          }
+          if (sent.action === 'continue_with_intake') {
+            // Like the server: the intake opens again, pre-filled with the
+            // declared answers, and nothing runs until Confirm.
+            w.intake = { declared: w.intake.declared, proposal: { ...w.intake.declared }, reopened: true }
           }
           const summary = 'Noted.'
           return route.fulfill({

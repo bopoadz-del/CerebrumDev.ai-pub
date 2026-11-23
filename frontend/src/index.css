@@ -647,7 +647,20 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   gap: 10px;
   flex-wrap: wrap;
 }
-.typing { color: var(--info-text); letter-spacing: 2px; }
+/* A reply is on its way: three moving dots and a label. */
+.typing { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--info-text); }
+.typing-dots { display: inline-flex; gap: 4px; }
+.typing-dots i {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+.typing-dots i:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing-dot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .typing-dots i { animation: none; opacity: 0.6; } }
+.new-session-error { display: flex; align-items: flex-start; gap: var(--space-2); }
+.new-session-error > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.new-session-error > button { flex: 0 0 auto; min-width: 44px; min-height: 44px; margin: -12px -8px -12px 0; }
 /* The composer is one wrapping flex row. The text input is the only item
    allowed to flex, and min-width: 0 lets it shrink below its intrinsic
    placeholder width — without it the long "Try: …" placeholder forces the row
@@ -1103,8 +1116,17 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   color: var(--text); font-size: var(--text-sm); line-height: var(--lh-sm);
 }
 .action-note { margin: 0; color: var(--warning-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
-.action-result { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+/* What the last press said back: one line, a next step when the server
+   names one, and a close control. */
+.action-result {
+  display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--space-2);
+  margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm);
+}
+.action-result-text { margin: 0; flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.action-result-refused { color: var(--warning-text); }
 .action-result-error { color: var(--danger-text); }
+.action-result-next { flex: 1 1 100%; order: 3; }
+.action-result-close { flex: 0 0 auto; min-width: 44px; min-height: 44px; margin: -12px -8px -12px 0; }
 .confirm-body { margin: 0; }
 .confirm-foot { gap: var(--space-2); }
 .confirm-foot > .action-button { flex: 1 1 0; min-width: 0; }
@@ -1433,14 +1455,19 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   border-bottom: 1px solid var(--divider);
 }
 .sheet-title { margin: 0; font-size: var(--text-lg); line-height: var(--lh-lg); font-weight: var(--weight-strong); }
-.sheet button.icon-button {
+/* A quiet close control: never gold, at least 44px to press. */
+button.icon-button {
+  border-color: transparent;
   min-width: var(--control-h);
   padding: 0;
   background: none;
   color: var(--text-muted);
   font-size: var(--text-xl);
 }
-.sheet button.icon-button:active:not(:disabled) { background: none; color: var(--text); }
+button.icon-button:active:not(:disabled) { background: none; color: var(--text); }
+@media (hover: hover) {
+  button.icon-button:hover:not(:disabled) { background: none; color: var(--text); }
+}
 .sheet-body { overflow-y: auto; padding: var(--space-3) var(--space-4); display: grid; gap: var(--space-4); overscroll-behavior: contain; }
 .sheet-field { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: var(--space-2); }
 .field-label { display: block; padding: 0; color: var(--text); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-strong); }

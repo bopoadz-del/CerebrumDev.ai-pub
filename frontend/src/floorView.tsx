@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   awaitBuild,
   chatEventText,
@@ -45,6 +45,7 @@ import { LevelGradeStrip } from './levelGradeView'
 import { BuildCard, errorReport } from './buildCard'
 import { ActionBar, useWideLayout } from './actionBar'
 import { buildActions, type ActionId } from './buildActions'
+import { actionOutcome, doneText, holdCardTop, humanError, type ActionOutcome, type InfoReply } from './actionResult'
 import { BriefCard, briefStatus } from './briefCard'
 import { BriefSheet, type BriefAnswers } from './briefSheet'
 import { FloorUpload } from './FloorUpload'
@@ -62,6 +63,8 @@ interface ChatMsg {
   role: 'user' | 'factory' | 'system'
   text: string
   card?: 'blueprint' | 'generation' | 'error' | 'info'
+  /** A message that failed to send: the error bubble offers to send it again. */
+  retry?: string
   engine?: string
   triggeredBy?: string
   blueprint?: {
@@ -627,15 +630,22 @@ export function Floor({
   const [coderActive, setCoderActive] = useState(false)
   const [watchEpoch, setWatchEpoch] = useState(0)
   const [downloading, setDownloading] = useState(false)
-  const [downloadError, setDownloadError] = useState<string | null>(null)
   const [newSessionBusy, setNewSessionBusy] = useState(false)
   const [newSessionError, setNewSessionError] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
-  // Stop was pressed and the build has not stopped yet; the result or the
-  // failure of the last action press, shown in the action bar.
+  // Stop was pressed and the build has not stopped yet; the action whose
+  // press is in flight; what the last press said back, in the action bar.
   const [stopping, setStopping] = useState(false)
-  const [actionResult, setActionResult] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [pending, setPending] = useState<ActionId | null>(null)
+  // Counts finished presses; the render that bumps it releases the card hold.
+  const [pressesEnded, setPressesEnded] = useState(0)
+  const [outcome, setOutcome] = useState<ActionOutcome | null>(null)
+  // A press of the action bar adds its line to the conversation without
+  // moving the reader away from the buttons.
+  const actionPressRef = useRef(false)
+  // Where the build card sat on screen when a button was pressed: until the
+  // answer has landed it is held there, whatever grows above it.
+  const pressAnchorRef = useRef<number | null>(null)
   const wide = useWideLayout()
   const cliHonesty = useFactoryCodeCliHonesty()
   // The Floor's one scroller (page head, conversation, build card).
@@ -752,7 +762,7 @@ export function Floor({
       readerDistanceRef.current = distanceFromBottom(el)
       return
     }
-    if (!grew || !el) return
+    if (!grew || !el || actionPressRef.current) return
     if (!shouldFollow('new-message', readerDistanceRef.current)) return
     el.scrollTo?.({ top: el.scrollHeight, behavior: scrollBehavior() })
   }, [msgs])
@@ -829,9 +839,18 @@ export function Floor({
       message: string,
       typed?: TypedFloorAction,
       answers?: BriefAnswers,
-    ): Promise<{ runnerStarted: boolean; refused: string | null }> => {
+    ): Promise<{
+      runnerStarted: boolean
+      refused: string | null
+      info: InfoReply | null
+      reopened: boolean
+      failed: string | null
+    }> => {
       let runnerStarted = false
       let refused: string | null = null
+      let info: InfoReply | null = null
+      let reopened = false
+      let failed: string | null = null
       // A typed action shows what the user pressed; it is not chat text.
       const shown = typed
         ? typedActionLabel(typed)
@@ -870,17 +889,29 @@ export function Floor({
             return
           }
           if (ev.event === 'info') {
-            const d = (typeof ev.data === 'string' ? safeJson(ev.data) : ev.data) as {
-              ok?: boolean
-              summary?: string
-            } | null
-            if (d && d.ok === false) refused = d.summary || 'Refused.'
+            const d = (typeof ev.data === 'string' ? safeJson(ev.data) : ev.data) as InfoReply | null
+            if (!d || typeof d !== 'object') return
+            info = d
+            if (d.ok === false) refused = d.summary || 'Refused.'
+            // A reply whose words are not streamed is never an empty bubble.
+            if (d.stream_delta === false && d.summary) {
+              const text = d.summary
+              setMsgs((m) => {
+                const copy = [...m]
+                const last = copy[copy.length - 1]
+                if (last?.role === 'factory' && !last.text.trim() && !last.card) {
+                  copy[copy.length - 1] = { ...last, text, card: 'info' }
+                }
+                return copy
+              })
+            }
             return
           }
           if (ev.event === 'intake') {
             const d = (typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data) as IntakeState | null
             if (d && typeof d === 'object' && d.declared) {
-              setIntake({ declared: d.declared, proposal: d.proposal ?? null, reopened: Boolean(d.reopened) })
+              reopened = Boolean(d.reopened)
+              setIntake({ declared: d.declared, proposal: d.proposal ?? null, reopened })
             }
             return
           }
@@ -962,12 +993,20 @@ export function Floor({
           ...trailing,
         )
       } catch (e) {
+        failed = humanError(e, 'The message did not reach the Factory. Try again.')
+        const errorText = failed
         setMsgs((m) => [
           ...m.slice(0, -1),
-          { role: 'factory', text: e instanceof Error ? e.message : 'chat failed', card: 'error' },
+          { role: 'factory', text: errorText, card: 'error', retry: typed ? undefined : message },
         ])
       }
-      return { runnerStarted, refused }
+      // A reply that ended with no words and no card leaves no empty bubble.
+      setMsgs((m) => {
+        const last = m[m.length - 1]
+        if (last?.role !== 'factory' || last.text.trim() || last.card) return m
+        return m.slice(0, -1)
+      })
+      return { runnerStarted, refused, info, reopened, failed }
     },
     [sessionId],
   )
@@ -979,7 +1018,9 @@ export function Floor({
       setInput('')
       setBusy(true)
       try {
-        await sendCore(message)
+        const { failed } = await sendCore(message)
+        // A failed send puts the words back, unless something new was typed.
+        if (failed) setInput((now) => (now ? now : message))
       } finally {
         setBusy(false)
       }
@@ -996,22 +1037,26 @@ export function Floor({
       setBusy(true)
       setSheetError(null)
       try {
-        const { refused } = await sendCore('', { action: 'confirm_intake' }, answers)
-        if (refused) setSheetError(refused)
-        else setSheetOpen(false)
+        const resume = Boolean(intake.reopened)
+        const { refused, failed, runnerStarted } = await sendCore('', { action: 'confirm_intake' }, answers)
+        if (refused || failed) setSheetError(refused || failed)
+        else {
+          setSheetOpen(false)
+          if (resume && runnerStarted) setOutcome({ tone: 'done', text: 'Saved. Started again.', next: null })
+        }
       } finally {
         setBusy(false)
       }
     },
-    [accessPaused, busy, sendCore],
+    [accessPaused, busy, intake.reopened, sendCore],
   )
 
   const sendTyped = useCallback(
     async (typed: TypedFloorAction) => {
-      if (busy || accessPaused) return
+      if (busy || accessPaused) return null
       setBusy(true)
       try {
-        await sendCore('', typed)
+        return await sendCore('', typed)
       } finally {
         setBusy(false)
       }
@@ -1128,38 +1173,44 @@ export function Floor({
     try {
       await onNewSession()
     } catch (e) {
-      setNewSessionError(e instanceof Error ? e.message : 'Could not start a new session')
+      setNewSessionError(humanError(e, 'Could not start a new session. Try again.'))
     } finally {
       setNewSessionBusy(false)
     }
   }
 
-  async function takeCopy() {
-    // The typed take_copy records the choice; the copy is the as-is export,
-    // its MANIFEST naming FAILED(gate, check, finding), never certified.
-    await sendTyped({ action: 'take_copy' })
+  const EXPORT_FAILED = 'The download could not be made. Try again.'
+
+  // A copy of a build that did not pass. A FAILED build records the typed
+  // take_copy first (its MANIFEST names FAILED(gate, check, finding), never
+  // certified); a stall or a refused finished build downloads as-is.
+  async function downloadCopy(): Promise<ActionOutcome> {
+    if (liveCoderBuild?.state === 'failed') {
+      const reply = await sendTyped({ action: 'take_copy' })
+      if (reply?.failed) return { tone: 'error', text: reply.failed, next: null }
+      if (reply?.info?.ok === false) return actionOutcome('download_copy', reply.info)
+    }
     setDownloading(true)
-    setDownloadError(null)
     try {
       await downloadProductPackage(sessionId, { asIs: true })
+      return { tone: 'done', text: doneText('download_copy'), next: null }
     } catch (e) {
-      setDownloadError(e instanceof Error ? e.message : 'export failed')
+      return { tone: 'error', text: humanError(e, EXPORT_FAILED), next: null }
     } finally {
       setDownloading(false)
     }
   }
 
-  async function download() {
+  async function download(): Promise<ActionOutcome | null> {
     const aff = exportAffordance(liveCoderBuild)
-    if (aff.disabled) return
+    if (aff.disabled) return null
     setDownloading(true)
-    setDownloadError(null)
     try {
       if (aff.asIs) {
         // Gate-failed build, owner asked anyway: the server ships it loudly
         // labeled as-is. No waiting on a build that already ended.
         await downloadProductPackage(sessionId, { asIs: true })
-        return
+        return { tone: 'done', text: doneText('download_copy'), next: null }
       }
       const status =
         liveCoderBuild?.state === 'succeeded'
@@ -1168,76 +1219,113 @@ export function Floor({
               setCoderBuild((prev) => preferHonestBuild(s, prev)),
             )
       if (status.state === 'failed' || status.state === 'stalled') {
-        setDownloadError(
-          `The build did not pass its gates, so it will not be shipped: ${status.detail ?? 'unknown reason'}`,
-        )
-        return
+        return {
+          tone: 'refused',
+          text: 'Refused: the build did not pass its checks, so it is not shipped as certified.',
+          next: null,
+        }
       }
       await downloadProductPackage(sessionId)
+      return { tone: 'done', text: doneText('download_platform'), next: null }
     } catch (e) {
-      setDownloadError(e instanceof Error ? e.message : 'export failed')
+      return { tone: 'error', text: humanError(e, EXPORT_FAILED), next: null }
     } finally {
       setDownloading(false)
     }
   }
 
-  // A copy of a build that did not pass: a FAILED build records the typed
-  // take_copy first; a stall or a refused finished build downloads as-is.
-  async function downloadCopy() {
-    if (liveCoderBuild?.state === 'failed') {
-      await takeCopy()
-      return
-    }
-    setDownloading(true)
-    setDownloadError(null)
-    try {
-      await downloadProductPackage(sessionId, { asIs: true })
-    } catch (e) {
-      setDownloadError(e instanceof Error ? e.message : 'export failed')
-    } finally {
-      setDownloading(false)
-    }
-  }
-
-  async function stopBuild() {
+  async function stopBuild(): Promise<ActionOutcome> {
     setStopping(true)
-    setActionError(null)
     try {
       await product.coderControl(sessionId, 'stop')
+      return { tone: 'done', text: doneText('stop'), next: null }
     } catch (e) {
       setStopping(false)
-      setActionError(`Could not stop the build: ${e instanceof Error ? e.message : 'the request failed'}`)
+      return { tone: 'error', text: `Could not stop the build. ${humanError(e, 'Try again.')}`, next: null }
     }
   }
 
-  async function copyErrorReport() {
-    setActionError(null)
+  async function copyErrorReport(): Promise<ActionOutcome> {
     try {
       if (!navigator.clipboard?.writeText) throw new Error('no clipboard')
       await navigator.clipboard.writeText(
         errorReport(liveCoderBuild, { sessionId, productTitle }),
       )
-      setActionResult('Copied')
+      return { tone: 'done', text: doneText('copy_report'), next: null }
     } catch {
-      setActionError('Could not copy. Open Technical detail and select the text instead.')
+      return {
+        tone: 'error',
+        text: 'Could not copy. Open Technical detail and select the text instead.',
+        next: null,
+      }
     }
   }
 
+  // A typed press: refused and why, or done. "Change answers" opens the
+  // brief sheet only when the server's reply reopened the intake.
+  async function typedPress(id: ActionId, typed: TypedFloorAction): Promise<ActionOutcome | null> {
+    const reply = await sendTyped(typed)
+    if (!reply) return null
+    if (reply.failed) return { tone: 'error', text: reply.failed, next: null }
+    const result = actionOutcome(id, reply.info)
+    if (id === 'change_answers' && result.tone === 'done') {
+      if (!reply.reopened) {
+        return { tone: 'refused', text: 'Refused: the brief could not be reopened.', next: null }
+      }
+      setSheetError(null)
+      setSheetOpen(true)
+    }
+    return result
+  }
+
+  function pressOf(id: ActionId): Promise<ActionOutcome | null> {
+    if (id === 'try_again') return typedPress(id, { action: 'continue' })
+    if (id === 'change_answers') return typedPress(id, { action: 'continue_with_intake' })
+    if (id === 'start_over') return typedPress(id, { action: 'start_over', value: 'confirmed' })
+    if (id === 'run_pilot') return typedPress(id, { action: 'run_pilot' })
+    if (id === 'stop') return stopBuild()
+    if (id === 'download_copy') return downloadCopy()
+    if (id === 'download_platform') return download()
+    if (id === 'copy_report') return copyErrorReport()
+    return Promise.resolve(null)
+  }
+
   // Every press of the action bar goes through here: one action, one path.
+  // The pressed button shows its busy label; the result lands in the bar.
   // Try again is the typed continue for a failed build and a stall alike, so
   // the generation event restarts the status watch either way.
-  function runAction(id: ActionId) {
-    setActionResult(null)
-    setActionError(null)
-    if (id === 'try_again') void sendTyped({ action: 'continue' })
-    else if (id === 'change_answers') void sendTyped({ action: 'continue_with_intake' })
-    else if (id === 'start_over') void sendTyped({ action: 'start_over', value: 'confirmed' })
-    else if (id === 'run_pilot') void sendTyped({ action: 'run_pilot' })
-    else if (id === 'stop') void stopBuild()
-    else if (id === 'download_copy') void downloadCopy()
-    else if (id === 'download_platform') void download()
-    else if (id === 'copy_report') void copyErrorReport()
+  async function runAction(id: ActionId) {
+    if (pending) return
+    setOutcome(null)
+    setPending(id)
+    actionPressRef.current = true
+    pressAnchorRef.current = takeoverRef.current?.getBoundingClientRect().top ?? null
+    try {
+      setOutcome(await pressOf(id))
+    } finally {
+      actionPressRef.current = false
+      setPending(null)
+      // The render that carries this count releases the hold (below).
+      setPressesEnded((n) => n + 1)
+    }
   }
+
+  // Hold the build card where it was pressed: new lines in the conversation,
+  // a reopened brief or the result line never move the reader.
+  const holdCard = useCallback(() => {
+    const stream = streamRef.current
+    const card = takeoverRef.current
+    if (!stream || !card) return
+    holdCardTop(stream, card.getBoundingClientRect().top, pressAnchorRef.current)
+  }, [])
+  useLayoutEffect(holdCard)
+  // Release the hold from the render that ends the press, not on a timer: that
+  // render carries every line the press wrote (a reply replacing its typing
+  // dots included), and the layout effect above has already held the card for
+  // it. A timed release can land before those lines are drawn.
+  useLayoutEffect(() => {
+    pressAnchorRef.current = null
+  }, [pressesEnded])
 
   const coderBuilding =
     coderActive &&
@@ -1282,16 +1370,16 @@ export function Floor({
   // One action bar, in exactly one place: pinned above the composer on
   // phones, inside the BUILD card from 768px.
   const actionPlan = coderActive
-    ? buildActions({ build: liveCoderBuild, accessPaused, busy, downloading, stopping })
+    ? buildActions({ build: liveCoderBuild, accessPaused, busy, downloading, stopping, pending })
     : null
   const actionBar = actionPlan ? (
     <ActionBar
       plan={actionPlan}
       placement={wide ? 'card' : 'bar'}
-      onRun={runAction}
+      onRun={(id) => void runAction(id)}
       onSeePlans={goPlans}
-      result={actionResult}
-      error={actionError}
+      outcome={outcome}
+      onDismiss={() => setOutcome(null)}
     />
   ) : null
 
@@ -1345,6 +1433,19 @@ export function Floor({
               </button>
             )}
           </div>
+          {newSessionError && (
+            <div className="error-box new-session-error" role="alert" data-testid="floor-new-session-error">
+              <span>{newSessionError}</span>
+              <button
+                type="button"
+                className="quiet icon-button"
+                aria-label="Close this message"
+                onClick={() => setNewSessionError(null)}
+              >
+                ×
+              </button>
+            </div>
+          )}
           {notice && (
             <div className="notice-box already-signed-in" role="status">
               {notice}
@@ -1361,7 +1462,21 @@ export function Floor({
             return (
               <div key={i} className={'bubble-row ' + m.role}>
                 <div className={'bubble ' + m.role + ' ' + (m.card ?? '')}>
-                  {m.text || (m.role === 'factory' && busy && i === msgs.length - 1 ? <span className="typing">…</span> : null)}
+                  {m.text ||
+                    (m.role === 'factory' && busy && i === msgs.length - 1 ? <WaitingMark /> : null)}
+                  {m.card === 'error' && m.retry && (
+                    <div className="card-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        data-testid="chat-error-retry"
+                        disabled={busy || accessPaused}
+                        onClick={() => void send(m.retry!)}
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  )}
                   {m.card === 'blueprint' && m.blueprint && (
                     <BlueprintCard
                       blueprint={m.blueprint}
@@ -1439,8 +1554,6 @@ export function Floor({
                 {(liveCoderBuild?.suggested_checks?.length ?? 0) > 0 && (
                   <SuggestedChecks checks={liveCoderBuild!.suggested_checks!} />
                 )}
-                {downloadError && <div className="error-box">{downloadError}</div>}
-                {newSessionError && <div className="error-box">{newSessionError}</div>}
               </>
             }
           />
@@ -1480,6 +1593,20 @@ export function Floor({
         )}
       </div>
     </div>
+  )
+}
+
+/** A reply is on its way: a moving, labelled mark (still under reduced motion). */
+export function WaitingMark() {
+  return (
+    <span className="typing" role="status" data-testid="chat-waiting">
+      <span className="typing-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+      <span className="typing-label">The Factory is answering…</span>
+    </span>
   )
 }
 

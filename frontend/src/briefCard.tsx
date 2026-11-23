@@ -29,12 +29,27 @@ export function briefStatus(input: {
     if (buildState === 'failed' || buildState === 'stalled') return 'stopped'
     if (approved) return 'locked'
   }
-  if (hasValues(intake.proposal)) return 'suggested by chat'
+  if (suggestion(intake)) return 'suggested by chat'
   return 'draft'
 }
 
 function hasValues(fields: IntakeFields | null | undefined): fields is IntakeFields {
   return Boolean(fields && Object.values(fields).some((v) => v))
+}
+
+/**
+ * The pending proposal when it would change an answer; null otherwise. A
+ * reopened brief is pre-filled with the declared answers, and a proposal that
+ * changes nothing is not a suggestion: no "Confirm these" for it.
+ */
+export function suggestion(intake: IntakeState): IntakeFields | null {
+  const proposal = intake.proposal
+  if (!hasValues(proposal)) return null
+  const declared = intake.declared ?? {}
+  const changes = (Object.keys(proposal) as (keyof IntakeFields)[]).some(
+    (k) => proposal[k] && proposal[k] !== declared[k],
+  )
+  return changes ? proposal : null
 }
 
 /** "construction" -> "Construction"; "contract_settings" -> "Contract settings". */
@@ -133,7 +148,7 @@ export function BriefCard({
   const [expanded, setExpanded] = useState(false)
   const detailsId = useId()
   const declared = intake.declared ?? {}
-  const proposal = hasValues(intake.proposal) ? intake.proposal : null
+  const proposal = suggestion(intake)
   const editable = status === 'draft' || status === 'suggested by chat'
   const missing = REQUIRED.filter((k) => !declared[k])
   const values = oneLine(declared)
