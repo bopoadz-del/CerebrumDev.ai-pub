@@ -44,7 +44,7 @@ import {
 import { LevelGradeStrip } from './levelGradeView'
 import { VerticalPicker } from './verticalPicker'
 import { LocalePicker } from './localePicker'
-import { IntakeLine } from './intakeLine'
+import { BriefCard, briefStatus } from './briefCard'
 import { FloorUpload } from './FloorUpload'
 import { displayProductName, humanizeProductId, latestBlueprintIn } from './productDisplay'
 import { distanceFromBottom, scrollBehavior, settledKey, shouldFollow } from './floorScroll'
@@ -741,6 +741,28 @@ export function Floor({
     }
   }, [sessionId])
 
+  // A build started in this session: re-read the saved design, so the brief
+  // lists the approved feature list (the draft card still holds the features
+  // the user left out). Read again as the build moves on, until the saved
+  // design says approved.
+  const designApproved = Boolean(productDesign?.blueprint_approved)
+  const buildStep = coderBuild?.phases_done ?? 0
+  useEffect(() => {
+    if (!coderActive || designApproved) return
+    let cancelled = false
+    Promise.resolve()
+      .then(() => product.get(sessionId))
+      .then((design) => {
+        // Only an approved design replaces the one on screen: an older,
+        // not-yet-approved copy must never undo a newer local resolve.
+        if (!cancelled && design?.blueprint_approved) setProductDesign(design)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [coderActive, designApproved, buildStep, sessionId])
+
   // Follow a NEW message only when the reader is near the bottom. A streamed
   // word changes the last message, not the count, so it never moves the reader;
   // neither does a build status poll.
@@ -872,7 +894,7 @@ export function Floor({
           if (ev.event === 'intake') {
             const d = (typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data) as IntakeState | null
             if (d && typeof d === 'object' && d.declared) {
-              setIntake({ declared: d.declared, proposal: d.proposal ?? null })
+              setIntake({ declared: d.declared, proposal: d.proposal ?? null, reopened: Boolean(d.reopened) })
             }
             return
           }
@@ -1203,8 +1225,57 @@ export function Floor({
     productId: productDesign?.generation?.product_id,
   })
 
+  // The brief's features: the saved list once approved (also after a
+  // reload), otherwise the newest draft in the conversation.
+  const designCaps = (productDesign?.blueprint as { capabilities?: Capability[] } | null | undefined)
+    ?.capabilities
+  const featuresApproved = Boolean(productDesign?.blueprint_approved && designCaps)
+  const briefCaps = featuresApproved ? designCaps : cardBp?.capabilities ?? designCaps
+  const briefFeatures = briefCaps ? briefCaps.map((c) => c.id) : null
+  const briefDelivery =
+    liveCoderBuild?.delivery_format ??
+    (productDesign?.blueprint as { delivery_format?: string } | null | undefined)?.delivery_format ??
+    null
+  const firstAsk = msgs.find((m) => m.role === 'user' && m.text.trim())?.text ?? null
+  const hasBlueprint = Boolean(designBp || cardBp)
+  const statusOfBrief = briefStatus({
+    intake,
+    approved: Boolean(productDesign?.blueprint_approved) || coderActive,
+    buildState: coderActive ? liveCoderBuild?.state : null,
+  })
+
   return (
     <div className="floor">
+      <BriefCard
+        intake={intake}
+        status={statusOfBrief}
+        features={briefFeatures}
+        featuresApproved={featuresApproved}
+        productName={hasBlueprint ? productTitle : null}
+        delivery={briefDelivery}
+        firstAsk={firstAsk}
+        onShowConversation={() => streamRef.current?.scrollTo?.({ top: 0 })}
+        onTyped={(typed) => void sendTyped(typed)}
+        disabled={busy || accessPaused}
+        editControls={
+          <>
+            <VerticalPicker
+              sessionId={sessionId}
+              value={vertical}
+              onChange={pickVertical}
+              onLoaded={syncVertical}
+              onLocaleLoaded={syncLocale}
+              disabled={busy || coderBuilding || accessPaused}
+            />
+            <LocalePicker
+              country={locale.country}
+              currency={locale.currency}
+              onChange={pickLocale}
+              disabled={busy || coderBuilding || accessPaused}
+            />
+          </>
+        }
+      />
       <div
         className="chat-scroll floor-stream"
         ref={streamRef}
@@ -1627,29 +1698,6 @@ export function Floor({
         )}
       </div>
       <div className="floor-footer">
-        <IntakeLine
-          intake={intake}
-          onTyped={(typed) => void sendTyped(typed)}
-          disabled={busy || coderBuilding || accessPaused}
-          editControls={
-            <>
-              <VerticalPicker
-                sessionId={sessionId}
-                value={vertical}
-                onChange={pickVertical}
-                onLoaded={syncVertical}
-                onLocaleLoaded={syncLocale}
-                disabled={busy || coderBuilding || accessPaused}
-              />
-              <LocalePicker
-                country={locale.country}
-                currency={locale.currency}
-                onChange={pickLocale}
-                disabled={busy || coderBuilding || accessPaused}
-              />
-            </>
-          }
-        />
         <form
           className="composer"
           onSubmit={(e) => {

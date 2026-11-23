@@ -530,6 +530,79 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 }
 .floor-footer .composer { border-top: none; padding-top: 10px; }
 .notice-not-yet-wrap { margin: 6px 0 0; }
+
+/* "Your brief" (PR-04): pinned above the stream in every state. Never greyed:
+   a locked brief keeps full-contrast values and loses only its edit control. */
+.brief-card {
+  flex-shrink: 0;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: var(--space-2) 28px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text);
+}
+.brief-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.brief-title {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  font-weight: var(--weight-strong);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.brief-status { font-size: var(--text-xs); line-height: var(--lh-xs); color: var(--text-muted); white-space: nowrap; }
+.brief-values {
+  margin: 2px 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+.brief-missing { color: var(--warning-text); }
+.brief-suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--info-edge);
+  border-radius: var(--radius-sm);
+  background: var(--info-fill);
+}
+.brief-suggestion-text { flex: 1 1 200px; margin: 0; font-size: var(--text-sm); line-height: var(--lh-sm); }
+.brief-suggestion-label { color: var(--info-text); }
+.brief-row-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.brief-card button.quiet {
+  min-height: var(--control-h);
+  padding: 0 var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text);
+  font-weight: var(--weight-regular);
+  font-size: var(--text-sm);
+}
+.brief-card button.quiet:active:not(:disabled) { background: none; color: var(--text-muted); }
+@media (hover: hover) {
+  .brief-card button.quiet:hover:not(:disabled) { background: none; text-decoration: underline; }
+}
+.brief-card button.brief-expand { display: inline-flex; align-items: center; gap: var(--space-2); text-align: left; padding-left: 0; }
+.brief-chevron { color: var(--text-muted); }
+.brief-card .intake-edit { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); padding-bottom: var(--space-2); }
+.brief-card .intake-edit label { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); }
+.brief-details { margin: 0 0 var(--space-2); display: grid; gap: var(--space-2); }
+.brief-detail { display: grid; grid-template-columns: 9.5em 1fr; gap: var(--space-3); }
+.brief-detail dt { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.brief-detail dd { margin: 0; font-size: var(--text-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; min-width: 0; }
+.brief-ask {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.brief-features { margin: 0; padding-left: 1.1em; }
 /* The ref's copy control sits inline in the failure sentence as a quiet
    secondary chip; its hit area is the 44px control height, its look is small. */
 /* Tags never break mid-word on a phone: the row wraps them to a new line
@@ -757,6 +830,8 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   .floor { padding: 0; }
   .floor .chat-scroll { padding: 18px 14px 12px; }
   .floor-footer { padding: 6px 14px 0; }
+  .brief-card { padding: var(--space-2) 14px 0; }
+  .brief-detail { grid-template-columns: 1fr; gap: 0; }
   .kv { grid-template-columns: 120px 1fr; }
 }
 /* A tab never keeps a hover box after a tap, even on a narrow window that hovers. */

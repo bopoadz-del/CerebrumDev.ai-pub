@@ -8,7 +8,8 @@
  *      on the stream moves it and brings that bubble into view;
  *   4. every enabled action button and the composer are inside the viewport,
  *      or reachable by scrolling the stream.
- * (Check 2, the brief card, starts with PR-04.)
+ *   2. the "Your brief" card is inside the viewport and shows the fixture's
+ *      country, currency, build level and feature count (from PR-04).
  *
  * PR-02 adds the phone shell: the bottom tab bar, the top bar, the Sessions
  * drawer and its delete control, and no sideways scroll on any tab.
@@ -19,6 +20,7 @@ import {
   FLOOR_STATES,
   SID,
   SUPPORT_EMAIL,
+  briefFixture,
   mockFloorStates,
   type FloorState,
 } from './fixtures/floorStates'
@@ -157,6 +159,45 @@ for (const state of FLOOR_STATES) {
         expect(report.streamOnScreen, `stream ${report.streamHeight}px`).toBe(true)
         expect(report.composerInView).toBe(true)
         expect(report.unreachable).toEqual([])
+      })
+
+      test('the brief card is on screen and shows the brief', async ({ page }) => {
+        await openState(page, state)
+        const card = page.getByTestId('brief-card')
+        await expect(card).toBeVisible()
+        const box = await card.boundingBox()
+        expect(box, 'brief card laid out').not.toBeNull()
+        expect(box!.y).toBeGreaterThanOrEqual(0)
+        expect(box!.y + box!.height).toBeLessThanOrEqual(vp.height)
+        expect(box!.x).toBeGreaterThanOrEqual(0)
+        expect(box!.x + box!.width).toBeLessThanOrEqual(vp.width + 1)
+        const want = briefFixture(state)
+        if (want.fields.country) {
+          // The country by name, from the browser's own data.
+          const name = await page.evaluate(
+            (code) => new Intl.DisplayNames(undefined, { type: 'region' }).of(code) ?? code,
+            want.fields.country,
+          )
+          await expect(card).toContainText(name)
+        } else {
+          await expect(card).toContainText('Not set')
+        }
+        if (want.fields.currency) await expect(card).toContainText(want.fields.currency)
+        if (want.fields.build_level) {
+          const level = want.fields.build_level
+          await expect(card).toContainText(level[0].toUpperCase() + level.slice(1))
+        }
+        if (want.suggested) await expect(card.getByRole('button', { name: 'Confirm these' })).toBeVisible()
+        await expect(page.getByTestId('brief-feature-count')).toContainText(
+          want.features === null ? 'No feature list yet' : `${want.features} features`,
+        )
+        // Never greyed: the values keep full-contrast ink.
+        const ink = await page.getByTestId('intake-declared').evaluate((el) => getComputedStyle(el).color)
+        const muted = await page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim(),
+        )
+        expect(ink).not.toBe(muted)
+        expect(await card.evaluate((el) => getComputedStyle(el).opacity)).toBe('1')
       })
 
       if (state !== 'new-session') {
