@@ -655,6 +655,22 @@ export type BuildFailure = {
   code?: string
   summary?: string
   ref?: string
+  /** How the build stopped, from typed ledger fields: out_of_time,
+   *  check_refused, rounds_spent, could_not_run, stopped_by_owner, unexpected. */
+  kind?: string
+  /** The class's short verb phrase ("ran out of time"); the Floor puts its
+   *  own stage label in front. */
+  title?: string
+  /** One sentence: what continuing does for this kind of stop. */
+  next?: string
+}
+
+/** What the grader itself recorded in the attempt now standing. */
+export type BuildGrader = {
+  state: 'certified' | 'refused' | 'sent_back' | 'stopped' | string
+  tier?: string
+  round?: number
+  budget?: number
 }
 
 /** One line of the coding agent's own narration. */
@@ -737,14 +753,16 @@ export type BuildStatus = {
   phase_progress?: BuildPhaseProgress
   /** F3: per-phase outcome trail; the red stage the user is watching. */
   phase_trail?: PhaseTrailEntry[]
-  /** F3: exact location + named reason of the failure, if any. */
+  /** F3: the failed verdict standing now (never the first one seen). */
   failure?: BuildFailure | null
+  /** Null until the grader has spoken in this attempt. */
+  grader?: BuildGrader | null
   /** A FAILED build is still a product: never certified, never green. */
   certified?: boolean
   /** FAILED(gate, check, finding), read once from the run's terminal event. */
   failed?: { gate: string; check: string; finding: string } | null
   failed_label?: string | null
-  /** One line: what the next Continue will try to fix. */
+  /** One sentence: what continuing does for this kind of stop. */
   next_continue?: string
   /** F5: what was tried, where it stopped, why -- read from the ledger;
    *  ``source`` is ``ledger`` (rendered by code) or ``model`` (validated

@@ -40,6 +40,20 @@ const WIRE_ACTION: Record<string, ActionId> = {
 }
 
 /** The bar action for a wire action the server is waiting on; null when it has none. */
+/**
+ * Hold the build card where the reader pressed: scroll the stream by however
+ * far the card's top has moved from `anchor`. No anchor (no press in flight)
+ * or a move under one pixel leaves the stream alone. Returns the distance
+ * scrolled.
+ */
+export function holdCardTop(stream: { scrollTop: number }, cardTop: number, anchor: number | null): number {
+  if (anchor === null) return 0
+  const delta = cardTop - anchor
+  if (Math.abs(delta) < 1) return 0
+  stream.scrollTop += delta
+  return delta
+}
+
 export function nextActionFor(awaiting: string | null | undefined): ActionId | null {
   if (!awaiting) return null
   return Object.prototype.hasOwnProperty.call(WIRE_ACTION, awaiting) ? WIRE_ACTION[awaiting] : null

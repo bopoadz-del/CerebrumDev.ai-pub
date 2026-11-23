@@ -1,5 +1,5 @@
 import type { BuildStatus } from './api/factory'
-import { reviewState, type ReviewState } from './buildProgress'
+import { reviewState, stopTone, type ReviewState } from './buildProgress'
 import { REVIEW_NAME, STEP_ORDER, stepLabel } from './stepNames'
 
 /**
@@ -86,6 +86,8 @@ function reviewStep(steps: StepView[]): StepView | undefined {
 export function Stepper({ build }: { build: BuildStatus | null }) {
   const steps = stepViews(build)
   const review = reviewState(build)
+  // Red only for a check that refused the work; a timeout or a Stop is halted.
+  const tone = stopTone(build?.failure)
   const reviewAt = review ? reviewStep(steps) : undefined
   const focus = steps.find((s) => s.state === 'current' || s.state === 'stopped' || s.state === 'fixing')
   const doneCount = steps.filter((s) => s.state === 'done').length
@@ -102,13 +104,13 @@ export function Stepper({ build }: { build: BuildStatus | null }) {
           return (
             <li
               key={s.id}
-              className={`stepper-step step-${s.state}`}
+              className={`stepper-step step-${s.state}${s.state === 'stopped' ? ` stop-${tone}` : ''}`}
               data-step={s.id}
               data-state={s.state}
               aria-current={s.state === 'current' || s.state === 'fixing' ? 'step' : undefined}
               data-testid={
                 s.state === 'stopped'
-                  ? `floor-phase-failed-${s.id}`
+                  ? `floor-phase-${tone}-${s.id}`
                   : s.state === 'fixing'
                     ? `floor-phase-rework-${s.id}`
                     : undefined
