@@ -107,11 +107,13 @@ def test_a_timeout_after_a_contract_send_back_is_time_ran_out(tmp_path, reason, 
     assert stop["step_index"] == 3
     assert stop["steps_done"] == 2
     assert stop["fix_rounds"] == 1
-    # The reference is the LAST failure's, as filed in the build record; the
-    # Floor row still carries the first failure, which is history now.
+    # The reference is the LAST failure's, as filed in the build record, and
+    # the Floor row quotes that same newest failure, not the first one.
     writer_refs = [r["ref"] for r in failure_records(out) if r["phase"] == "WRITER"]
+    assert len(writer_refs) >= 2
     assert stop["technical"]["reference"] == writer_refs[-1]
-    assert stop["technical"]["reference"] != status["failure"]["ref"]
+    assert stop["technical"]["reference"] != writer_refs[0]
+    assert stop["technical"]["reference"] == status["failure"]["ref"]
     assert "_" not in stop["plain"]
     assert isinstance(stop["elapsed_s"], int) and stop["elapsed_s"] >= 0
 

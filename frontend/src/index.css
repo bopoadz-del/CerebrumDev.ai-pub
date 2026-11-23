@@ -1176,6 +1176,9 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
 .step-current .stepper-dot { border-color: var(--info-edge); color: var(--info-text); background: var(--info-fill); }
 .step-fixing .stepper-dot { border-color: var(--warning-edge); color: var(--warning-text); background: var(--warning-fill); }
 .step-stopped .stepper-dot { border-color: var(--danger-edge); color: var(--danger-text); background: var(--danger-fill); }
+/* A stop no check judged (time ran out, the step could not run, the owner
+   pressed Stop) is halted: amber, never the red of a refusal. */
+.step-stopped.stop-halted .stepper-dot { border-color: var(--warning-edge); color: var(--warning-text); background: var(--warning-fill); }
 /* The review inside step 3: a small count on its dot, never a sixth step. */
 .stepper-review {
   position: absolute;
@@ -1266,7 +1269,7 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   font: inherit;
   color: var(--text-muted);
 }
-.tech-copy { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: inherit; }
+.tech-copy { margin-top: var(--space-2); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-family: inherit; }
 .tech-copy-result { color: var(--success-text); font-size: var(--text-sm); line-height: var(--lh-sm); }
 /* A failure the run recovered from. History, not an alert: muted, no red,
    so a green build never reads as a dead one. */
@@ -1285,7 +1288,8 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   font-size: var(--text-sm); line-height: var(--lh-sm);
   margin: 0 0 10px;
 }
-.coder-rework-line {
+.coder-rework-line,
+.coder-failure-line.halted {
   color: var(--warning-text);
   background: var(--warning-fill);
   border: 1px solid var(--warning-edge);

@@ -1,9 +1,10 @@
 import type {
   BuildAuthorship,
+  BuildFailure,
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
-import { REVIEW_GATE, stepRunning } from './stepNames'
+import { REVIEW_GATE, stepLabel, stepRunning } from './stepNames'
 import {
   FACTORY_CODE_CLI_CREDENTIALS_MISSING,
   FACTORY_CODE_CLI_FAILED,
@@ -264,6 +265,15 @@ export function namesReviewGate(gateName?: string | null, code?: string | null):
 
 export function reviewState(build: BuildStatus | null | undefined): ReviewState | null {
   if (!build) return null
+  // The grader's own record, when the server read one from the ledger, is the
+  // first word: it names only events filed under the review gate.
+  const own = build.grader
+  if (own?.state === 'certified') return null
+  if (own) {
+    const technical = `${REVIEW_GATE}: ${own.tier || own.state}`
+    if (own.state === 'stopped') return { state: 'not_passed', rounds: own.round ?? 0, technical }
+    return { state: 'sent_back', rounds: Math.max(own.round ?? 1, 1), technical }
+  }
   const review = (build.decisions ?? []).filter((d) => namesReviewGate(d.gate_name, d.check))
   const rounds = review.filter((d) => FIX_ROUND_CLASSES.has(d.class)).length
   const stopped = build.state === 'failed' || build.state === 'stalled'
@@ -293,6 +303,32 @@ export function reviewState(build: BuildStatus | null | undefined): ReviewState 
     }
   }
   return null
+}
+
+/** 'The "Write the code" step ran out of time': the step as the name table
+ *  calls it plus the stop class's own words. One label source, so the
+ *  stepper, the detail line and the pill never call one step by two names. */
+export function stopHeadline(failure: BuildFailure | null | undefined): string {
+  const where = failure?.location || failure?.phase
+  const title = failure?.title || 'failed'
+  return where ? `The "${stepLabel(where)}" step ${title}` : `Build ${title}`
+}
+
+/** Red is for a check that refused the work. A stop nothing judged -- time
+ *  ran out, the step could not run, the owner pressed Stop -- is ``halted``. */
+export function stopTone(failure: BuildFailure | null | undefined): 'failed' | 'halted' {
+  const kind = failure?.kind
+  return !kind || kind === 'check_refused' || kind === 'rounds_spent' ? 'failed' : 'halted'
+}
+
+/** Fix rounds as history, in one line from the decision's typed numbers --
+ *  never its check id or its finding, which are written for the coder. */
+export function fixRoundsLine(build: BuildStatus | null | undefined): string | null {
+  const rounds = (build?.decisions ?? []).filter((d) => d.class === 'REWORK')
+  const last = rounds[rounds.length - 1]
+  if (!last) return null
+  const step = `${stepLabel(last.gate)}: ${last.round_gate} of ${last.gate_budget}`
+  return `Fix rounds used: ${last.round_build} of ${last.build_ceiling} (${step}).`
 }
 
 /** Step number plus the step's running name: "Step 3 of 5 — Writing the code". */

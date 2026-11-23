@@ -13,6 +13,9 @@ import {
   formatPhaseHeadline,
   reviewState,
   measuredScore,
+  fixRoundsLine,
+  stopHeadline,
+  stopTone,
   ACCEPTANCE_KK,
   ACCEPTANCE_REQUIRED,
   formatAcceptanceScore,
@@ -1328,5 +1331,108 @@ describe('measuredScore: a score only when one was measured', () => {
 
   it('renders the measured counts', () => {
     expect(measuredScore({ state: 'succeeded', acceptance: { passed: 12, total: 12, ok: true } })).toBe('12/12')
+  })
+})
+
+// Ported from the stop-panel work on master onto PR-10's review state: the
+// review speaks for the grader's own record (``build.grader``) and for
+// nothing another gate, a timeout or the owner's Stop wrote.
+describe("reviewState reads the grader's own record first", () => {
+  const writerGateRework = {
+    class: 'REWORK',
+    gate: 'WRITER',
+    gate_name: 'writer_contract',
+    round_gate: 1,
+    gate_budget: 1,
+    round_build: 1,
+    build_ceiling: 6,
+    check: 'money_assumed_without_a_brief',
+    finding: 'the declared code AE is a literal',
+  }
+
+  it.each([
+    // The photographed run: a writer_contract fix round, then a wall timeout.
+    { state: 'failed' as const, decisions: [writerGateRework], failure: { kind: 'out_of_time' } },
+    // A stall and the owner's Stop, with another gate's decision on record.
+    { state: 'stalled' as const, decisions: [writerGateRework] },
+    { state: 'failed' as const, decisions: [writerGateRework], failure: { kind: 'stopped_by_owner' } },
+    // A STOP the runner rule wrote for the TESTER gate.
+    { state: 'failed' as const, decisions: [{ ...writerGateRework, class: 'STOP', gate: 'TESTER' }] },
+  ])('has no review state for a stop the grader did not write (%#)', (build) => {
+    expect(reviewState(build)).toBeNull()
+  })
+
+  it.each([
+    [{ state: 'stopped', tier: 'NOT_CERTIFIED' }, 'not_passed'],
+    [{ state: 'stopped', tier: 'ERROR' }, 'not_passed'],
+    [{ state: 'refused', tier: 'NOT_CERTIFIED' }, 'sent_back'],
+    [{ state: 'sent_back', tier: 'NOT_CERTIFIED', round: 2, budget: 2 }, 'sent_back'],
+  ])("renders the grader's own record %j as %s", (grader, state) => {
+    const review = reviewState({ state: 'failed', decisions: [writerGateRework], grader })
+    expect(review?.state).toBe(state)
+    // Technical detail speaks for the grader, never for another gate's check.
+    expect(review?.technical).not.toContain('money_assumed_without_a_brief')
+  })
+
+  it('counts the rounds the grader recorded', () => {
+    expect(reviewState({ state: 'building', grader: { state: 'sent_back', round: 2, budget: 2 } })?.rounds).toBe(2)
+  })
+
+  it('has no review state once the grader certified the work', () => {
+    expect(reviewState({ state: 'succeeded', grader: { state: 'certified', tier: 'CERTIFIED' } })).toBeNull()
+  })
+})
+
+describe('the stop, said once: one step name, one tone, fix rounds as history', () => {
+  it.each([
+    [{ phase: 'WRITER', location: 'WRITER', title: 'ran out of time' }, 'The "Write the code" step ran out of time'],
+    [{ phase: 'CLONER', title: 'could not finish' }, 'The "Gather building blocks" step could not finish'],
+    [{ phase: 'TESTER', location: 'TESTER' }, 'The "Test" step failed'],
+    [{ phase: '', location: '', title: 'was stopped by you' }, 'Build was stopped by you'],
+    [null, 'Build failed'],
+  ])('stopHeadline(%j) is %s', (failure, expected) => {
+    expect(stopHeadline(failure)).toBe(expected)
+  })
+
+  it.each([
+    ['check_refused', 'failed'],
+    ['rounds_spent', 'failed'],
+    [undefined, 'failed'],
+    ['out_of_time', 'halted'],
+    ['could_not_run', 'halted'],
+    ['stopped_by_owner', 'halted'],
+    ['unexpected', 'halted'],
+  ])('stopTone for %s is %s: red is for a check that refused the work', (kind, tone) => {
+    expect(stopTone(kind ? { kind } : {})).toBe(tone)
+  })
+
+  const rework = {
+    class: 'REWORK',
+    gate: 'WRITER',
+    round_gate: 1,
+    gate_budget: 1,
+    round_build: 1,
+    build_ceiling: 6,
+    check: 'writer_contract',
+    finding: "app/actions/contract_settings.py:47: the declared code 'AE' is a literal",
+  }
+
+  it.each([
+    [[rework], 'Fix rounds used: 1 of 6 (Write the code: 1 of 1).'],
+    [
+      [rework, { ...rework, gate: 'TESTER', round_gate: 2, gate_budget: 2, round_build: 3 }],
+      'Fix rounds used: 3 of 6 (Test: 2 of 2).',
+    ],
+  ])('fixRoundsLine says the rounds in typed numbers, never the finding (%#)', (decisions, line) => {
+    expect(fixRoundsLine({ state: 'failed', decisions })).toBe(line)
+  })
+
+  it.each([
+    [undefined],
+    [[]],
+    // ADVISORY and STOP records are not fix rounds.
+    [[{ ...rework, class: 'ADVISORY' }, { ...rework, class: 'STOP' }]],
+  ])('fixRoundsLine is absent when no fix round ran (%#)', (decisions) => {
+    expect(fixRoundsLine({ state: 'failed', decisions })).toBeNull()
   })
 })

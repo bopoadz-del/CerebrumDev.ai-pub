@@ -232,7 +232,9 @@ test('Floor drafts a feature list and Approve & build starts the coding agent', 
   await page.getByRole('button', { name: 'Approve & build' }).click()
   await expect(page.getByText('coding agent', { exact: true })).toBeVisible()
   await expect(page.getByText('chat LLM', { exact: true })).toBeVisible()
-  await expect(page.getByRole('status')).toContainText(/Coding agent has taken over/)
+  // PR-07 (L5-09): the card names the state, not the actor; PR-10: the
+  // stepper names the step from the name table, never an old kernel label.
+  await expect(page.getByRole('status')).toContainText(/Building at step 3 of 5/)
   await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Write the code')
   await expect(page.getByPlaceholder(/coding agent has taken over/i)).toBeDisabled()
 })

@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Floor } from '../App'
 import { ApiError } from '../api/factory'
-import { actionOutcome, humanError, messageFromBody, nextActionFor } from '../actionResult'
+import { actionOutcome, holdCardTop, humanError, messageFromBody, nextActionFor } from '../actionResult'
 import { buildActions } from '../buildActions'
 
 const chatStreamMock = vi.fn()
@@ -240,5 +240,38 @@ describe('the result contract (pure)', () => {
     expect(retry.disabled).toBe('Starting…')
     const change = plan.bar.find((a) => a.id === 'change_answers')!
     expect(change.label).toBe('Change answers')
+  })
+})
+
+describe('holding the build card where it was pressed (pure)', () => {
+  it('scrolls the stream by the distance the card moved, up or down', () => {
+    const up = { scrollTop: 1492 }
+    expect(holdCardTop(up, 179, 182)).toBe(-3)
+    expect(up.scrollTop).toBe(1489)
+    const down = { scrollTop: 1375 }
+    expect(holdCardTop(down, 299, 182)).toBe(117)
+    expect(down.scrollTop).toBe(1492)
+  })
+
+  it('leaves the stream alone with no press in flight', () => {
+    const stream = { scrollTop: 1492 }
+    expect(holdCardTop(stream, 179, null)).toBe(0)
+    expect(stream.scrollTop).toBe(1492)
+  })
+
+  it('ignores a move under one pixel and acts on exactly one pixel', () => {
+    const still = { scrollTop: 100 }
+    expect(holdCardTop(still, 182.5, 182)).toBe(0)
+    expect(holdCardTop(still, 181.5, 182)).toBe(0)
+    expect(still.scrollTop).toBe(100)
+    const moved = { scrollTop: 100 }
+    expect(holdCardTop(moved, 181, 182)).toBe(-1)
+    expect(moved.scrollTop).toBe(99)
+  })
+
+  it('holds a card anchored at the very top of the viewport', () => {
+    const stream = { scrollTop: 50 }
+    expect(holdCardTop(stream, 4, 0)).toBe(4)
+    expect(stream.scrollTop).toBe(54)
   })
 })

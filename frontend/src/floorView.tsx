@@ -43,7 +43,7 @@ import { checksSkipped, CHECK_NAMES, levelWord, orList, stepLabel } from './step
 import { BuildCard, errorReport } from './buildCard'
 import { ActionBar, useWideLayout } from './actionBar'
 import { buildActions, type ActionId } from './buildActions'
-import { actionOutcome, doneText, humanError, type ActionOutcome, type InfoReply } from './actionResult'
+import { actionOutcome, doneText, holdCardTop, humanError, type ActionOutcome, type InfoReply } from './actionResult'
 import { BriefCard, briefStatus } from './briefCard'
 import { BriefSheet, type BriefAnswers } from './briefSheet'
 import { FloorUpload } from './FloorUpload'
@@ -550,6 +550,8 @@ export function Floor({
   // press is in flight; what the last press said back, in the action bar.
   const [stopping, setStopping] = useState(false)
   const [pending, setPending] = useState<ActionId | null>(null)
+  // Counts finished presses; the render that bumps it releases the card hold.
+  const [pressesEnded, setPressesEnded] = useState(0)
   const [outcome, setOutcome] = useState<ActionOutcome | null>(null)
   // A press of the action bar adds its line to the conversation without
   // moving the reader away from the buttons.
@@ -1216,23 +1218,27 @@ export function Floor({
     } finally {
       actionPressRef.current = false
       setPending(null)
-      // The answer's own render keeps the anchor; release it after that paint.
-      window.requestAnimationFrame(() => {
-        pressAnchorRef.current = null
-      })
+      // The render that carries this count releases the hold (below).
+      setPressesEnded((n) => n + 1)
     }
   }
 
   // Hold the build card where it was pressed: new lines in the conversation,
   // a reopened brief or the result line never move the reader.
-  useLayoutEffect(() => {
-    const anchor = pressAnchorRef.current
+  const holdCard = useCallback(() => {
     const stream = streamRef.current
     const card = takeoverRef.current
-    if (anchor === null || !stream || !card) return
-    const delta = card.getBoundingClientRect().top - anchor
-    if (Math.abs(delta) >= 1) stream.scrollTop += delta
-  })
+    if (!stream || !card) return
+    holdCardTop(stream, card.getBoundingClientRect().top, pressAnchorRef.current)
+  }, [])
+  useLayoutEffect(holdCard)
+  // Release the hold from the render that ends the press, not on a timer: that
+  // render carries every line the press wrote (a reply replacing its typing
+  // dots included), and the layout effect above has already held the card for
+  // it. A timed release can land before those lines are drawn.
+  useLayoutEffect(() => {
+    pressAnchorRef.current = null
+  }, [pressesEnded])
 
   const coderBuilding =
     coderActive &&
