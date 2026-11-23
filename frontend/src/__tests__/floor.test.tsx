@@ -309,7 +309,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByTestId('floor-product-title')).toHaveTextContent('Vineyard Platform')
     expect(screen.getByTestId('floor-acceptance-score')).toHaveTextContent('12/12')
     expect(screen.getByText('Finished — 22 artifacts; 6 templated. Download ready.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Download platform (.zip)' })).toBeEnabled()
     expect(screen.queryByText(/22 of 28/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText(/Try:/)).toBeEnabled()
@@ -362,8 +362,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download code-cycle prototype (.zip)' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Continue to pilot' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Download prototype (.zip)' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Run pilot checks' })).toBeEnabled()
     expect(screen.getByPlaceholderText(/Try:/)).toBeEnabled()
   })
 
@@ -397,8 +397,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download code-cycle prototype (.zip)' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download prototype (.zip)' })).toBeEnabled()
   })
 
   it('sess_cec9a 1449 photograph: thin VetCare never claims Finished / Store-green / Download', async () => {
@@ -443,11 +443,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Export (.zip) — below full-pilot authorship floor' }),
-    ).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Continue to pilot' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('floor-download-platform')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-action-note')).toHaveTextContent('Not available yet')
+    expect(screen.getByRole('button', { name: 'Run pilot checks' })).toBeEnabled()
   })
 
   it('surfaces FOUNDING_CUSTOMER_READY and keeps the gold export enabled', async () => {
@@ -479,8 +478,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByTestId('floor-gate-product')).toHaveTextContent('PRODUCT PASS')
     expect(screen.getByTestId('floor-gate-store')).toHaveTextContent('STORE PASS')
     expect(screen.getByText(/Founding-customer-ready. Download ready./)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
-    expect(screen.queryByRole('button', { name: 'Continue to pilot' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download platform (.zip)' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Run pilot checks' })).not.toBeInTheDocument()
   })
 
   it('does not gild a STORE_GREEN zip as founding-customer-ready', async () => {
@@ -510,7 +509,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByTestId('floor-pilot-ready-pill')).toHaveTextContent('Store-green')
     expect(screen.getByText(/Store-green zip ready — not founding-customer-ready/)).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Download platform (.zip)' })).toBeEnabled()
   })
 
   it('refuses Floor Store-green Download when CLI-failed keep-path is below the authorship floor', async () => {
@@ -545,10 +544,9 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
     expect(screen.getByTestId('floor-prototype-pill')).toHaveTextContent('Code-green (prototype)')
     expect(screen.queryByText(/Founding-customer-ready\. Download ready/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Export (.zip) — below full-pilot authorship floor' }),
-    ).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('floor-download-platform')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-action-note')).toHaveTextContent('Not available yet')
   })
 
   it('refuses Floor Download when CLI-failed card is not actually pilot-ready', async () => {
@@ -585,10 +583,12 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    // F5: a gate-failed build offers exactly the three typed choices -- an
-    // honest as-is copy, Continue with new answers, Start over.
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    // PR-08: a stopped build offers Try again first, an honest as-is copy,
+    // and in More: Change answers and Start from scratch. Every one typed.
+    expect(screen.getByTestId('floor-try-again')).toBeEnabled()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('floor-action-more'))
     expect(screen.getByTestId('floor-continue-with-intake')).toBeEnabled()
     expect(screen.getByTestId('floor-start-over')).toBeEnabled()
     expect(screen.queryByTestId('floor-rerun-writer')).not.toBeInTheDocument()
@@ -628,7 +628,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText('Founding-customer-ready', { exact: true })).not.toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready\. Download ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Download platform (.zip)' })).toBeEnabled()
   })
 
   it('honesty-locks a founding claim when pilot_ready is false', async () => {
@@ -660,7 +660,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByText(/not a failed build/)).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
   })
 
   it('live sess_4591d5cc 1551 Floor photograph is acceptance-pending, not a failed build', async () => {
@@ -710,9 +710,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByText(/not a failed build/)).toBeInTheDocument()
     expect(screen.queryByText(/build failed/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Export (.zip) — acceptance 0/12' })).toBeDisabled()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Continue to pilot' })).toBeEnabled()
+    expect(screen.queryByTestId('floor-download-platform')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-action-note')).toHaveTextContent('Not available yet')
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run pilot checks' })).toBeEnabled()
   })
 
   it('Continue to pilot sends continue when auto-pilot is blocked', async () => {
@@ -752,7 +753,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'residential-lettings', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_cta" goPlatforms={() => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue to pilot' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Run pilot checks' }))
     await waitFor(() => expect(chatStreamMock).toHaveBeenCalledWith('sess_cta', '', expect.any(Function), undefined, undefined, { action: 'run_pilot' }))
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
@@ -775,7 +776,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'vineyard', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_dl" goPlatforms={() => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Download platform export (.zip)' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Download platform (.zip)' }))
     await waitFor(() => expect(downloadMock).toHaveBeenCalledWith('sess_dl'))
   })
 
@@ -824,11 +825,13 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByText(/Writing your platform/)).toBeInTheDocument()
   })
 
-  it('keeps only one Open Your Platforms CTA after a second generation card', async () => {
+  // PR-08 reverses the old pin "keeps only one Open Your Platforms CTA": the
+  // button matrix removes both copies of that button from the Floor.
+  it('never shows Open Your Platforms on the Floor, before or after a second generation card', async () => {
     watchBuildMock
       .mockImplementationOnce(async (_sid: string, onProgress: (s: object) => void) => {
         onProgress({
@@ -867,14 +870,13 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // Wait for the succeeded snapshot — otherwise coderActive+null build
     // briefly disables the composer (pilot reopen race).
     expect(await screen.findByRole('heading', { name: /Code-cycle prototype ready/ })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Open Your Platforms' })).toHaveLength(1)
+    expect(screen.queryAllByRole('button', { name: 'Open Your Platforms' })).toHaveLength(0)
     fireEvent.change(screen.getByPlaceholderText(/Try:/), {
       target: { value: '(a) continue the existing lettings hub into its pilot cycle' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await screen.findByText('Opening pilot cycle.')
-    // The second card is mid-build, so the CTA is hidden rather than
-    // duplicated — never more than one, and none while building.
+    // The second card is mid-build: still none.
     expect(screen.queryAllByRole('button', { name: 'Open Your Platforms' })).toHaveLength(0)
   })
 
@@ -924,11 +926,17 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/taken over the floor/i)).not.toBeInTheDocument()
     expect(screen.queryByText('coding agent')).not.toBeInTheDocument()
     expect(screen.queryByText('chat LLM')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    const choices = screen.getByTestId('floor-failure-choices')
-    // Exactly three choices on a FAILED build (the status pill is not one).
-    expect(choices.querySelectorAll('button')).toHaveLength(3)
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    // PR-08: a stopped build without the runner's STOP decision offers Try
+    // again (the one primary) and Download copy; Change answers and Start
+    // from scratch sit in More. The bar holds the state's actions only.
+    const bar = screen.getByTestId('floor-action-bar')
+    expect(
+      Array.from(bar.querySelectorAll('.action-list > .action-item button')).map((b) => b.textContent),
+    ).toEqual(['Try again', 'Download copy'])
+    expect(screen.getByTestId('floor-try-again')).toBeEnabled()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('floor-action-more'))
     expect(screen.getByTestId('floor-continue-with-intake')).toBeEnabled()
     expect(screen.getByTestId('floor-start-over')).toBeEnabled()
     expect(screen.queryByRole('heading', { name: /Coding agent finished/ })).not.toBeInTheDocument()
@@ -966,21 +974,22 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByTestId('floor-next-continue')).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-tech-detail')).toContainElement(screen.getByTestId('floor-failed-label'))
     // Never green: the only export is the labelled as-is copy.
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
-    // Start over is confirmed first: the button arms an inline confirm that
-    // offers Continue instead; the first click must NOT send start_over.
+    // PR-08: Start from scratch sits in More and asks first in a confirm
+    // sheet whose default is Cancel; the first click must NOT send start_over.
+    fireEvent.click(screen.getByTestId('floor-action-more'))
     const startOver = screen.getByTestId('floor-start-over')
     fireEvent.click(startOver)
-    expect(await screen.findByTestId('floor-start-over-confirm')).toHaveTextContent(
-      /rebuilds from scratch/i,
+    expect(await screen.findByTestId('floor-confirm-sheet')).toHaveTextContent(
+      /built again in a fresh workspace/i,
     )
     expect(chatStreamMock).not.toHaveBeenCalledWith(
       'sess_failed_platform', '', expect.any(Function), undefined, undefined,
       expect.objectContaining({ action: 'start_over' }),
     )
     // Only the confirming click rebuilds, and it carries the confirm token.
-    fireEvent.click(screen.getByTestId('floor-start-over-confirm-button'))
+    fireEvent.click(screen.getByTestId('floor-confirm-go'))
     await waitFor(() =>
       expect(chatStreamMock).toHaveBeenCalledWith(
         'sess_failed_platform', '', expect.any(Function), undefined, undefined,
@@ -989,7 +998,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     )
   })
 
-  it('Start over: Continue instead resumes (continue), never a fresh workspace', async () => {
+  // PR-08 reverses the old pin "Start over: Continue instead resumes": the
+  // matrix removes "Continue instead"; Try again is the first-level resume,
+  // and Start from scratch then Cancel sends nothing.
+  it('Try again resumes (continue); Start from scratch then Cancel sends nothing', async () => {
     watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
       onProgress({
         state: 'failed',
@@ -1007,8 +1019,12 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       generation: { engine: 'runner', product_id: 'vineyard', triggered_by: 'chat_llm' },
     })
     render(<Floor sessionId="sess_failed_resume" goPlatforms={() => {}} />)
+    fireEvent.click(await screen.findByTestId('floor-action-more'))
     fireEvent.click(await screen.findByTestId('floor-start-over'))
-    fireEvent.click(await screen.findByTestId('floor-start-over-continue'))
+    fireEvent.click(await screen.findByTestId('floor-confirm-keep'))
+    expect(screen.queryByTestId('floor-confirm-sheet')).not.toBeInTheDocument()
+    expect(chatStreamMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('floor-try-again'))
     await waitFor(() =>
       expect(chatStreamMock).toHaveBeenCalledWith(
         'sess_failed_resume', '', expect.any(Function), undefined, undefined, { action: 'continue' },
@@ -1061,6 +1077,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       ),
     )
     await waitFor(() => expect(downloadMock).toHaveBeenCalledWith('sess_f5', { asIs: true }))
+    fireEvent.click(screen.getByTestId('floor-action-more'))
     fireEvent.click(screen.getByTestId('floor-continue-with-intake'))
     await waitFor(() =>
       expect(chatStreamMock).toHaveBeenCalledWith(
@@ -1141,14 +1158,18 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByTestId('floor-build-sentence')).toHaveTextContent('No update from the build')
     expect(screen.queryByTestId('floor-stalled-pill')).not.toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: 'Download platform export (.zip)' }),
+      screen.queryByRole('button', { name: 'Download platform (.zip)' }),
     ).not.toBeInTheDocument()
     // A stalled build is a gate-failed artifact too: retry it, or take the
-    // tree honestly labeled as-is — never a "ready" download.
-    const exportBtn = screen.getByRole('button', { name: 'Download as-is (failed gates)' })
+    // tree honestly labeled as-is — never a "ready" download. PR-08: the
+    // same verbs as any stopped build; Try again is the one primary, and the
+    // copy is a secondary button.
+    const exportBtn = screen.getByRole('button', { name: 'Download copy' })
     expect(exportBtn).toBeEnabled()
-    expect(exportBtn).toHaveClass('ghost')
-    expect(screen.getByTestId('floor-rerun-writer')).toBeEnabled()
+    expect(exportBtn).toHaveClass('action-secondary')
+    expect(screen.getByTestId('floor-try-again')).toBeEnabled()
+    expect(screen.getByTestId('floor-try-again')).toHaveClass('action-primary')
+    expect(screen.queryByTestId('floor-rerun-writer')).not.toBeInTheDocument()
   })
 
   it('stops the takeover chrome when the ledger is unreadable', async () => {
@@ -1169,6 +1190,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/Writing your platform/)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /^Building/ })).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-take-copy')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('floor-action-more'))
     expect(screen.getByTestId('floor-continue-with-intake')).toBeEnabled()
   })
 
@@ -1230,7 +1252,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     expect(screen.queryByText(/Finished —/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Download ready/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
     releaseApprove?.()
     expect(await screen.findByText('coding agent')).toBeInTheDocument()
     // The generation event re-renders the takeover panel; a synchronous query
@@ -1267,7 +1289,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Approve & build' }))
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
   })
 
   it('does not gold-label Store-green or founding while COLLECTOR is still running', async () => {
@@ -1301,8 +1323,8 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('floor-pilot-ready-pill')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download platform export (.zip)' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Download code-cycle prototype (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download platform (.zip)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Download prototype (.zip)' })).not.toBeInTheDocument()
   })
 
   it('clears coder takeover when a new blueprint is drafted after a runner', async () => {
@@ -1387,7 +1409,10 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByText('Factory access is paused.')).toBeInTheDocument()
   })
 
-  it('streams the coder session log and Pause/Stop call coder-control', async () => {
+  // PR-08 reverses the old pin "Pause/Stop call coder-control": Pause and
+  // Resume are hidden until a test shows Pause holds a build; Stop build
+  // asks first, and only its confirm calls coder-control.
+  it('streams the coder session log; Stop build asks first, then calls coder-control', async () => {
     getMock.mockResolvedValue({
       blueprint: LLM_BLUEPRINT,
       blueprint_approved: true,
@@ -1396,16 +1421,20 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     render(<Floor sessionId="sess_monitor" goPlatforms={() => {}} />)
     expect(await screen.findByTestId('floor-coder-log')).toBeInTheDocument()
     expect(screen.getByTestId('floor-coder-log')).toHaveTextContent('STEP 0 inventory ok')
-    expect(screen.getByTestId('floor-coder-pause')).toBeEnabled()
+    expect(screen.queryByTestId('floor-coder-pause')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('floor-coder-resume')).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-coder-stop')).toBeEnabled()
-    fireEvent.click(screen.getByTestId('floor-coder-pause'))
-    await waitFor(() =>
-      expect(coderControlMock).toHaveBeenCalledWith('sess_monitor', 'pause'),
-    )
+    expect(screen.getByTestId('floor-coder-stop')).toHaveTextContent('Stop build')
     fireEvent.click(screen.getByTestId('floor-coder-stop'))
+    fireEvent.click(screen.getByTestId('floor-confirm-keep'))
+    expect(coderControlMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('floor-coder-stop'))
+    fireEvent.click(screen.getByTestId('floor-confirm-go'))
     await waitFor(() =>
       expect(coderControlMock).toHaveBeenCalledWith('sess_monitor', 'stop'),
     )
+    expect(await screen.findByTestId('floor-coder-stop')).toHaveTextContent('Stopping…')
+    expect(screen.getByTestId('floor-coder-stop')).toBeDisabled()
   })
 
   it('names the failed stage and its reason when build-status carries a failure', async () => {

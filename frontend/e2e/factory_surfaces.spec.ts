@@ -77,6 +77,7 @@ async function expectNoGoldFinished(page: Page) {
   await expect(page.getByText(/Download ready/)).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
 }
 
 async function mockVerifiedFactory(
@@ -306,11 +307,13 @@ test('Floor New session starts a clean workspace after a failed run', async ({ p
   await expect(page.getByTestId('floor-build-state')).toContainText('Stopped')
   await expect(page.getByText(/taken over the floor/i)).toHaveCount(0)
   await expect(page.locator('.bp-drafting-mode', { hasText: 'coding agent' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'New session' })).toBeEnabled()
-  // A new product is the header's New session; the failure panel offers
-  // only its three typed choices.
-  await expect(page.getByTestId('floor-failure-choices').getByRole('button')).toHaveCount(3)
+  // A new product is the header's New session; the action bar offers the
+  // stopped state's two actions and More (PR-08's button matrix).
+  await expect(
+    page.getByTestId('floor-action-bar').locator('.action-list > .action-item').getByRole('button'),
+  ).toHaveText(['Try again', 'Download copy'])
   await page.getByRole('button', { name: 'New session' }).click()
   await expect.poll(() => created).toEqual(['sess_e2e_fresh'])
   await expect(page.getByRole('heading', { name: /^Stopped/ })).toHaveCount(0)
@@ -408,9 +411,11 @@ test('Floor ?session= deep-link selects that session — not list[0] Download', 
   await expect(page.getByRole('heading', { name: /^Stopped/ })).toBeVisible()
   await expect(page.getByTestId('floor-build-state')).toContainText('Stopped')
   await expectNoGoldFinished(page)
-  // Failed panel offers the three typed choices: an as-is copy, Continue
-  // with new answers, Start over.
+  // PR-08: Try again first, an as-is copy; Change answers and Start from
+  // scratch in More.
+  await expect(page.getByTestId('floor-try-again')).toBeEnabled()
   await expect(page.getByTestId('floor-take-copy')).toBeEnabled()
+  await page.getByTestId('floor-action-more').click()
   await expect(page.getByTestId('floor-continue-with-intake')).toBeEnabled()
   await expect(page.getByTestId('floor-start-over')).toBeEnabled()
 })
@@ -540,12 +545,10 @@ test('legacy ?session= thin VetCare matches Floor honesty — no Finished+Downlo
   await expectNoGoldFinished(page)
   await expect(page.getByText(/Store-green/)).toHaveCount(0)
   await expect(page.getByText(/Founding-customer-ready/)).toHaveCount(0)
-  const refused = page.getByRole('button', {
-    name: 'Export (.zip) — below full-pilot authorship floor',
-  })
-  await expect(refused).toBeVisible()
-  await expect(refused).toBeDisabled()
-  await expect(page.getByRole('button', { name: 'Continue to pilot' })).toBeEnabled()
+  // PR-08: a refused certified download is not a button; its reason is visible.
+  await expect(page.getByTestId('floor-download-platform')).toHaveCount(0)
+  await expect(page.getByTestId('floor-action-note')).toContainText('Not available yet')
+  await expect(page.getByRole('button', { name: 'Run pilot checks' })).toBeEnabled()
 })
 
 test('legacy ?session= overclaim Store-green thin VetCare still refuses gold Download', async ({
@@ -634,11 +637,9 @@ test('legacy ?session= overclaim Store-green thin VetCare still refuses gold Dow
   await expect(page.getByTestId('floor-prototype-pill')).toHaveText('Code-green (prototype)')
   await expectNoGoldFinished(page)
   await expect(page.getByText(/Store-green/)).toHaveCount(0)
-  const refused = page.getByRole('button', {
-    name: 'Export (.zip) — below full-pilot authorship floor',
-  })
-  await expect(refused).toBeVisible()
-  await expect(refused).toBeDisabled()
+  // PR-08: a refused certified download is not a button; its reason is visible.
+  await expect(page.getByTestId('floor-download-platform')).toHaveCount(0)
+  await expect(page.getByTestId('floor-action-note')).toContainText('Not available yet')
 })
 
 test('legacy ?session= pilot-ready kit still offers Download on the canonical Floor', async ({
@@ -679,7 +680,7 @@ test('legacy ?session= pilot-ready kit still offers Download on the canonical Fl
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toBeVisible()
   await expect(page.getByTestId('floor-pilot-ready-pill')).toHaveText('Store-green')
-  const download = page.getByRole('button', { name: 'Download platform export (.zip)' })
+  const download = page.getByRole('button', { name: 'Download platform (.zip)' })
   await expect(download).toBeVisible()
   await expect(download).toBeEnabled()
 })
@@ -839,9 +840,9 @@ test('Floor finished state offers the zip download on the generate surface', asy
     timeout: 20_000,
   })
   await expect(page.getByText('Finished — 13 artifacts; 6 templated. Download ready.')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toBeEnabled()
-  await expect(page.getByRole('button', { name: 'Open Your Platforms' })).toBeEnabled()
-  await expect(page.getByRole('button', { name: 'Continue to pilot' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Open Your Platforms' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Run pilot checks' })).toHaveCount(0)
 })
 
 test('Floor code-cycle SUCCESS is a prototype with Continue to pilot — never Finished', async ({
@@ -911,9 +912,9 @@ test('Floor code-cycle SUCCESS is a prototype with Continue to pilot — never F
   await expect(page.getByText(/Finished —/)).toHaveCount(0)
   await expect(page.getByText(/Download ready/)).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Coding agent finished' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Download code-cycle prototype (.zip)' })).toBeEnabled()
-  await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Continue to pilot' }).click()
+  await expect(page.getByRole('button', { name: 'Download prototype (.zip)' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Run pilot checks' }).click()
   await expect(page.getByText('Opening pilot cycle for residential-lettings')).toBeVisible()
   // The button opens the pilot cycle: the typed run_pilot action (#637),
   // not the resume action and never the word in the message.
@@ -1303,10 +1304,10 @@ test('Floor refuses gold Download when CLI-billing keep-path is below the author
   })
   await expect(page.getByTestId('floor-prototype-pill')).toHaveText('Code-green (prototype)')
   await expect(page.getByText('Founding-customer-ready', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
-  const refused = page.getByRole('button', { name: 'Export (.zip) — below full-pilot authorship floor' })
-  await expect(refused).toBeVisible()
-  await expect(refused).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
+  // PR-08: a refused certified download is not a button; its reason is visible.
+  await expect(page.getByTestId('floor-download-platform')).toHaveCount(0)
+  await expect(page.getByTestId('floor-action-note')).toContainText('Not available yet')
 })
 
 test('Your Platforms keeps Export on a CLI-failed keep-path that meets the authorship floor', async ({
@@ -1543,7 +1544,7 @@ test('Floor sess_45729 0639 thin Store-green never claims founding', async ({ pa
   await expect(page.getByText(/Pilot-ready — 8 artifacts; 16 templated/)).toBeVisible()
   await expect(page.getByText(/Store-green zip ready — not founding-customer-ready/)).toBeVisible()
   await expect(page.getByText(/Finished —/)).toHaveCount(0)
-  const download = page.getByRole('button', { name: 'Download platform export (.zip)' })
+  const download = page.getByRole('button', { name: 'Download platform (.zip)' })
   await expect(download).toBeVisible()
   await expect(download).toBeEnabled()
 })
@@ -1597,8 +1598,8 @@ test('Floor CODE_GREEN level_grade never says Finished or founding-ready', async
   await expect(page.getByText(/Finished —/)).toHaveCount(0)
   await expect(page.getByText(/Download ready/)).toHaveCount(0)
   await expect(page.getByText(/Founding-customer-ready/)).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Download code-cycle prototype (.zip)' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Download prototype (.zip)' })).toBeEnabled()
 })
 
 test('Your Platforms FOUNDING_CUSTOMER_READY shows founding chip and gold export', async ({
@@ -1873,7 +1874,7 @@ test('Floor overdue coder call is STOPPED and Platforms refuses export', async (
   await expect(page.getByRole('heading', { name: /^Stopped/ })).toBeVisible({
     timeout: 20_000,
   })
-  await expect(page.getByRole('button', { name: 'Download platform export (.zip)' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Download platform (.zip)' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Building…' })).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Your Platforms', exact: true }).click()

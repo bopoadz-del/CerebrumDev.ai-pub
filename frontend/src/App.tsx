@@ -784,6 +784,7 @@ export default function App() {
             key={sessionId}
             sessionId={sessionId}
             goPlatforms={() => go('platforms')}
+            goPlans={() => go('subscription')}
             accessPaused={accessPaused}
             notice={alreadySignedInNotice ? 'Already signed in.' : null}
             onNewSession={newSession}
