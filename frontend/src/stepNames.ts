@@ -52,6 +52,15 @@ export function unitName(unit: string | null | undefined): string {
   return UNIT_NAMES[String(unit ?? '').trim().toLowerCase()] ?? 'parts'
 }
 
+/**
+ * Whether a progress unit is one the screen counts by name. A stage marker
+ * the table does not name (a model call in flight reports done/total of its
+ * own) is not a count of anything the user knows, so no count is shown.
+ */
+export function isCountedUnit(unit: string | null | undefined): boolean {
+  return String(unit ?? '').trim().toLowerCase() in UNIT_NAMES
+}
+
 /** The three kinds of check, keyed by their wire id, in the order they run. */
 export const CHECK_NAMES: Readonly<Record<string, { label: string; phrase: string }>> = {
   CODE: { label: 'Code checks', phrase: 'the code checks' },

@@ -183,6 +183,24 @@ describe('stopKind', () => {
     expect(stopKind(BUILDS.checkFailed)).toBe('check')
     expect(stopKind(BUILDS.timedOut)).toBe('our_side')
   })
+
+  // OPUSGRADE F295 5698ca8, fault 4: the record's kind decides on its own,
+  // with no other field (no coder_control, no stopped flag) to lean on.
+  it.each([
+    ['user_stopped', 'by_you'],
+    ['check_failed', 'check'],
+    ['time_ran_out', 'our_side'],
+    ['service_interrupted', 'our_side'],
+    ['nothing_produced', 'our_side'],
+    ['no_progress', 'our_side'],
+  ])('the stop record kind %s alone reads as %s', (kind, expected) => {
+    expect(stopKind({ state: 'failed', stop: { kind } } as BuildStatus)).toBe(expected)
+  })
+
+  it('the record overrides a stop flag that would say otherwise', () => {
+    expect(stopKind({ state: 'failed', stopped: STOP_DECISION, stop: { kind: 'user_stopped' } } as BuildStatus)).toBe('by_you')
+    expect(stopKind({ state: 'failed', coder_control: 'stop', stop: { kind: 'time_ran_out' } } as BuildStatus)).toBe('our_side')
+  })
 })
 
 /**

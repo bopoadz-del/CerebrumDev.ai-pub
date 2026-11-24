@@ -971,5 +971,8 @@ test.describe('stop words and the running line at 360x780', () => {
     await check.click()
     await expect.poll(() => reads).toBeGreaterThanOrEqual(1)
     await expect(page.getByTestId('floor-action-result')).toContainText('Still not found')
+    // One press is one read: past the 4 s poll interval, no watch has resumed.
+    await page.waitForTimeout(5000)
+    expect(reads).toBe(1)
   })
 })

@@ -74,7 +74,10 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
   const where = at && total ? `step ${at} of ${total}` : null
   const knownStep = Boolean(stop.step) || at != null
   const running = knownStep ? stepRunning(stop.step, at) : null
-  const kept = keptSentence(stop.steps_done ?? 0)
+  // The step it stopped at is not done: the kept steps end before it, so the
+  // sentence never says step 3 is kept while it reads "Stopped at step 3".
+  const done = Math.max(0, stop.steps_done ?? 0)
+  const kept = keptSentence(at ? Math.min(done, at - 1) : done)
   const elapsed = typeof stop.elapsed_s === 'number' && stop.elapsed_s > 0 ? stop.elapsed_s : null
 
   if (stop.kind === 'not_found') {

@@ -4,7 +4,7 @@ import type {
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
-import { REVIEW_GATE, stepLabel, stepRunning, unitName } from './stepNames'
+import { REVIEW_GATE, isCountedUnit, stepLabel, stepRunning, unitName } from './stepNames'
 import {
   FACTORY_CODE_CLI_CREDENTIALS_MISSING,
   FACTORY_CODE_CLI_FAILED,
@@ -979,6 +979,9 @@ export function platformsLeadCopy(
   if (isBelowFullPilotAuthorshipFloor(build) && claimsStoreGreenPilot(build)) {
     return 'Authorship is below the full-pilot floor. Download unavailable — a thin Store-green zip is refused.'
   }
+  if (build?.state === 'not_found') {
+    return "We can't find this build on the server. Your brief and feature list are safe."
+  }
   if (!build || build.state === 'building' || build.state === 'not_started' || build.state === 'unknown') {
     return 'The coding agent is writing this platform. Export stays closed until a pilot-ready run succeeds.'
   }
@@ -1099,6 +1102,10 @@ export function exportAffordance(build: BuildStatus | null | undefined): {
   if (!build || build.state === 'building' || build.state === 'not_started') {
     return { label: 'Building…', disabled: true, ghost: true }
   }
+  if (build.state === 'not_found') {
+    // Nothing is building: the server cannot find this build at all.
+    return { label: 'Not found on the server', disabled: true, ghost: true }
+  }
   if (isBelowFullPilotAuthorshipFloor(build) && claimsStoreGreenPilot(build)) {
     return {
       label: 'Export (.zip) — below full-pilot authorship floor',
@@ -1183,7 +1190,9 @@ export function runningLine(build: BuildStatus): string {
   if (at && total) parts.push(`Step ${Math.min(at, total)} of ${total}`)
   if (build.current_phase?.id) parts.push(stepRunning(build.current_phase.id, at))
   const progress = build.phase_progress
-  if (progress && progress.total > 0) {
+  // Only a count of named things is said; a stage marker with a done/total
+  // of its own ("dispatch" 0 of 1 while a model call runs) is not a count.
+  if (progress && progress.total > 0 && isCountedUnit(progress.stage)) {
     parts.push(`${Math.min(progress.done, progress.total)} of ${progress.total} ${unitName(progress.stage)}`)
   }
   return parts.length ? parts.join(' — ') : 'Starting the build'
@@ -1209,12 +1218,20 @@ export function wholeBuildFraction(build: BuildStatus): number | null {
 export interface RunningMemo {
   /** The status object these marks were last folded from. */
   seen: BuildStatus | null
+  /**
+   * The server deadline the expected end was last measured from. The page
+   * wraps each status in new objects on every render (stall and count
+   * stamps), but they carry the read's own ``deadline`` object through
+   * unchanged, so a new deadline object is a new server read and only a new
+   * read moves the expected end.
+   */
+  deadline: BuildStatus['deadline'] | null
   bar: number | null
   startedMs: number | null
   endMs: number | null
 }
 
-export const EMPTY_RUNNING_MEMO: RunningMemo = { seen: null, bar: null, startedMs: null, endMs: null }
+export const EMPTY_RUNNING_MEMO: RunningMemo = { seen: null, deadline: null, bar: null, startedMs: null, endMs: null }
 
 /**
  * Fold one status read into the memo, at the time it was received.
@@ -1228,9 +1245,12 @@ export function foldRunning(memo: RunningMemo, build: BuildStatus, receivedMs: n
   if (memo.seen === build) return memo
   const fraction = wholeBuildFraction(build)
   const bar = fraction == null ? memo.bar : Math.max(memo.bar ?? 0, fraction)
-  const deadline = build.deadline
+  const deadline = build.deadline ?? null
+  const fresh = deadline !== memo.deadline
   const endMs =
-    deadline && typeof deadline.deadline_in_s === 'number' ? receivedMs + deadline.deadline_in_s * 1000 : memo.endMs
+    fresh && deadline && typeof deadline.deadline_in_s === 'number'
+      ? receivedMs + deadline.deadline_in_s * 1000
+      : memo.endMs
   let startedMs = memo.startedMs
   if (
     startedMs == null &&
@@ -1241,7 +1261,7 @@ export function foldRunning(memo: RunningMemo, build: BuildStatus, receivedMs: n
   ) {
     startedMs = endMs - deadline.ceiling_s * 1000
   }
-  return { seen: build, bar, startedMs, endMs }
+  return { seen: build, deadline, bar, startedMs, endMs }
 }
 
 function clock(ms: number): string {

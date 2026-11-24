@@ -13,10 +13,14 @@ import { buildFace } from '../buildCard'
 import { buildActions } from '../buildActions'
 import {
   EMPTY_RUNNING_MEMO,
+  exportAffordance,
   foldRunning,
+  platformsLeadCopy,
   runningLine,
   runningTimers,
   wholeBuildFraction,
+  withClientStall,
+  withResolvedNRequired,
   type RunningMemo,
 } from '../buildProgress'
 import { WIRE_IDS } from '../stepNames'
@@ -50,12 +54,16 @@ const TIME_RAN_OUT = record('time_ran_out', {
   fix_rounds: 1,
   elapsed_s: 2289,
 })
-// Example 2: a check that used its fix round and has its own sentence.
+// Example 2: a check that used its fix round and has its own sentence. The
+// shape is one the server sends (#301 stop_record): a check code outside the
+// generic FAILED_GATE / FAILED_BUDGET_SPENT, whose STOP_ENTRIES sentence the
+// server puts in check_plain. The spec's own example sentence is one no
+// server entry carries, so the form is pinned with a sentence that exists.
 const CHECK_FAILED = record('check_failed', {
-  plain: 'A country code was typed into the code instead of read from the money settings.',
-  check_plain: 'A country code was typed into the code instead of read from the money settings.',
+  plain: 'A feature did not accept its own request.',
+  check_plain: 'A feature did not accept its own request.',
   fix_rounds: 1,
-  technical: { code: 'FAILED_GATE', reason_chain: ['writer_contract'], message: 'FAILED(WRITER, writer_contract, x)', reference: 'ab12' },
+  technical: { code: 'writer_behaviour_failed', reason_chain: ['writer_behaviour_failed'], message: 'writer_behaviour_failed', reference: 'ab12' },
 })
 // Example 3: our build service restarted while the code was written.
 const SERVICE = record('service_interrupted', {
@@ -90,7 +98,7 @@ describe('stopWords: the worked examples of section 4.5', () => {
     const w = stopWords(CHECK_FAILED)
     expect(`${w.word} at ${w.where}`).toBe('Stopped at step 3 of 5')
     expect(w.sentence).toBe(
-      'A quality check did not pass after 1 fix round. A country code was typed into the code instead of read from the money settings. Steps 1 and 2 are done and kept.',
+      'A quality check did not pass after 1 fix round. A feature did not accept its own request. Steps 1 and 2 are done and kept.',
     )
     const plan = buildActions({ build: stopped(CHECK_FAILED) })
     expect(plan.bar.map((a) => [a.label, a.sub])).toEqual([
@@ -100,13 +108,19 @@ describe('stopWords: the worked examples of section 4.5', () => {
   })
 
   it('2b. a check with no sentence of its own says only that a quality check did not pass', () => {
-    const generic = record('check_failed', { plain: 'A quality check did not pass.', check_plain: null, fix_rounds: 0 })
+    // The server's shape for FAILED_GATE / writer_contract: check_plain null.
+    const generic = record('check_failed', {
+      plain: 'A quality check did not pass.',
+      check_plain: null,
+      fix_rounds: 0,
+      technical: { code: 'FAILED_GATE', reason_chain: ['writer_contract'], message: 'gate', reference: 'ab13' },
+    })
     expect(stopWords(generic).sentence).toBe('A quality check did not pass. Steps 1 and 2 are done and kept.')
   })
 
   it.each([
     // The server's typed field decides, never the sentence's first words.
-    ['A quality check of the money settings found a typed country code.', 'A quality check of the money settings found a typed country code. '],
+    ['A test run listed checks that did not pass.', 'A test run listed checks that did not pass. '],
     ['', ''],
   ])('2c. the check sentence is the typed check_plain only (%j)', (own, said) => {
     const w = stopWords(record('check_failed', { plain: 'Something else entirely.', check_plain: own, fix_rounds: 0 }))
@@ -232,7 +246,8 @@ describe('runningLine', () => {
   it('names no wire id, even for a unit or a step the table does not know', () => {
     const odd = { ...RUNNING, current_phase: { id: 'NEW_STEP' }, phase_progress: { done: 1, total: 3, stage: 'widgets' } } as BuildStatus
     const line = runningLine(odd)
-    expect(line).toBe('Step 3 of 5 — Step 3 — 1 of 3 parts')
+    // A unit the table does not name is not a count the user knows: no count.
+    expect(line).toBe('Step 3 of 5 — Step 3')
     for (const id of [...WIRE_IDS, 'NEW_STEP', 'widgets', 'handlers']) expect(line).not.toContain(id)
   })
 })
@@ -298,5 +313,75 @@ describe('the three timers', () => {
     expect(runningTimers(RUNNING, none, 1000).map((t) => t.key)).toEqual(['updated'])
     const memo = foldRunning(EMPTY_RUNNING_MEMO, RUNNING, 0)
     expect(runningTimers(RUNNING, memo, 3601 * 1000).find((t) => t.key === 'expected')?.text).toMatch(/^Past its expected end/)
+  })
+})
+
+/* OPUSGRADE F295 5698ca8, fault 2: the page wraps one server read in new
+ * objects on every render; only a new read moves the expected end. */
+describe('the expected end stays put between reads', () => {
+  it.each([
+    ['wrapped with the plan count, as the Floor does', (b: BuildStatus, now: number) => withClientStall(withResolvedNRequired(b, 5), now) as BuildStatus],
+    ['passed as is', (b: BuildStatus, _now: number) => b],
+  ])('one server read over four clock ticks: %s', (_name, wrap) => {
+    const server: BuildStatus = { ...RUNNING, deadline: { anchor: 'RUN_STARTED', ceiling_s: 5400, deadline_in_s: 1800 } }
+    const t0 = Date.UTC(2026, 10, 24, 12, 0, 0)
+    let memo: RunningMemo = EMPTY_RUNNING_MEMO
+    const ends: number[] = []
+    for (let tick = 0; tick < 4; tick++) {
+      const now = t0 + tick * 5000
+      memo = foldRunning(memo, wrap(server, now), now)
+      ends.push(((memo.endMs ?? 0) - t0) / 1000)
+    }
+    expect(ends).toEqual([1800, 1800, 1800, 1800])
+    // ...so past the end it says so, instead of sliding later.
+    const late = t0 + 1801 * 1000
+    memo = foldRunning(memo, wrap(server, late), late)
+    expect(runningTimers(server, memo, late).find((t) => t.key === 'expected')?.text).toMatch(/^Past its expected end/)
+  })
+
+  it('a new server read measures the end again from when it arrived', () => {
+    const t0 = 1_000_000
+    const first = foldRunning(EMPTY_RUNNING_MEMO, RUNNING, t0)
+    const next: BuildStatus = { ...RUNNING, deadline: { ...RUNNING.deadline!, deadline_in_s: 3000 } }
+    expect(foldRunning(first, next, t0 + 600_000).endMs).toBe(t0 + 600_000 + 3000 * 1000)
+  })
+})
+
+/* Fault 6: a stage marker's own done/total is not a count of parts. */
+describe('the running line counts only named things', () => {
+  it.each([
+    [{ done: 0, total: 1, stage: 'dispatch' }, 'Step 3 of 5 — Writing the code'],
+    [{ done: 3, total: 1, stage: 'dispatch' }, 'Step 3 of 5 — Writing the code'],
+    [{ done: 2, total: 4, stage: 'handlers' }, 'Step 3 of 5 — Writing the code — 2 of 4 features'],
+    [{ done: 1, total: 6, stage: 'blocks' }, 'Step 3 of 5 — Writing the code — 1 of 6 building blocks'],
+  ])('%j reads %j', (progress, line) => {
+    expect(runningLine({ ...RUNNING, phase_progress: progress })).toBe(line)
+  })
+})
+
+/* s9: the step it stopped at is never said to be kept. */
+describe('the kept steps end before the step it stopped at', () => {
+  it.each([
+    [3, 3, 'Steps 1 and 2 are done and kept.'],
+    [5, 3, 'Steps 1 and 2 are done and kept.'],
+    [1, 3, 'Step 1 is done and kept.'],
+    [3, 1, 'No step was finished yet.'],
+  ])('steps_done=%i at step %i: %s', (done, at, kept) => {
+    const w = stopWords(record('user_stopped', { steps_done: done, step_index: at }))
+    expect(w.sentence.endsWith(kept)).toBe(true)
+  })
+  it('with no step named, the server count stands', () => {
+    const w = stopWords(record('user_stopped', { steps_done: 3, step_index: null, step: '' }))
+    expect(w.sentence).toBe('You stopped this build. Steps 1 to 3 are done and kept.')
+  })
+})
+
+/* Fault 6: the Platforms page does not call a missing build "Building". */
+describe('Platforms: a build the server cannot find', () => {
+  it('is not building and says what the Floor says', () => {
+    const gone = { state: 'not_found' } as BuildStatus
+    expect(exportAffordance(gone)).toEqual({ label: 'Not found on the server', disabled: true, ghost: true })
+    expect(platformsLeadCopy(gone, true)).toBe("We can't find this build on the server. Your brief and feature list are safe.")
+    expect(exportAffordance({ state: 'building' } as BuildStatus).label).toBe('Building…')
   })
 })
