@@ -900,7 +900,7 @@ test.describe('stepper at 360x780', () => {
 test.describe('grader findings at 360x780', () => {
   test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
 
-  const COUNT = { 'grader-sent-back': 3, 'grader-refused': 4 } as const
+  const COUNT = { 'grader-sent-back': 3, 'grader-refused': 6 } as const
   for (const state of ['grader-sent-back', 'grader-refused'] as const) {
     test(`${state}: the findings are on the face, plain, whole and inside the screen`, async ({ page }) => {
       await openState(page, state)
@@ -910,7 +910,7 @@ test.describe('grader findings at 360x780', () => {
       expect(await detail.evaluate((el) => (el as HTMLDetailsElement).open)).toBe(false)
       await expect(box.getByTestId('floor-grader-finding')).toHaveCount(COUNT[state])
       const text = (await box.textContent()) ?? ''
-      for (const machine of ['function grade FAIL', 'UI step FAIL', 'function_check', 'variation_orders', '.py', 'NOT_CERTIFIED', 'route:', 'screen:', 'honest_error', '/v1/', '_']) {
+      for (const machine of ['function grade FAIL', 'UI step FAIL', 'function_check', 'variation_orders', '.py', 'NOT_CERTIFIED', 'route:', 'screen:', 'honest_error', '/v1/', '_', 'KeyError', "'"]) {
         expect(text).not.toContain(machine)
       }
       // Every line sits inside the viewport's width.

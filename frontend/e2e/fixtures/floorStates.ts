@@ -278,6 +278,27 @@ const GRADER_UI_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
   },
 ]
 
+/** A review question and a function-grade error row in the shapes the grader
+ * writes them (layer2 questions, function_grader errors). */
+const GRADER_REVIEW_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
+  {
+    rule: 'review_question',
+    what: 'A review question about this part is still open.',
+    where: "Does the product deliver capability 'retention_management' as the brief asked: hold back a share of each payment?",
+    place: 'Does the product deliver capability retention management as the brief asked, hold back a share of each payment?',
+    owner: 'writer',
+    quote: "re-run writer on: Does the product deliver capability 'retention_management' as the brief asked: hold back a share of each payment?",
+  },
+  {
+    rule: 'function_check',
+    what: 'The quality check could not check this part, so it cannot pass the build.',
+    where: 'harness: KeyError at /app/backend/app/kernel/retention_rules.py',
+    place: '',
+    owner: 'run',
+    quote: 'function grade FAIL: harness: KeyError at /app/backend/app/kernel/retention_rules.py',
+  },
+]
+
 const BUILD_GRADER_SENT_BACK: BuildStatus = {
   ...BUILD_WRITER,
   last_event: 'rework round 1: fixing what the quality check found',
@@ -304,7 +325,7 @@ const BUILD_GRADER_REFUSED: BuildStatus = {
     code: 'grader_not_certified',
     kind: 'rounds_spent',
     title: 'used up its fix rounds',
-    summary: 'A check still did not pass the work (4 items), and this build has no fix rounds left.',
+    summary: 'A check still did not pass the work (6 items), and this build has no fix rounds left.',
     next:
       'Continuing does not grant new fix rounds: the step runs again and stops again if the same check fails.',
     ref: '5c0de1a2b3',
@@ -319,9 +340,9 @@ const BUILD_GRADER_REFUSED: BuildStatus = {
     tier: 'NOT_CERTIFIED',
     round: 1,
     budget: 1,
-    findings: [...GRADER_ROWS.slice(0, 2), ...GRADER_UI_ROWS],
+    findings: [...GRADER_ROWS.slice(0, 2), ...GRADER_UI_ROWS, ...GRADER_REVIEW_ROWS],
     sent_to_writer: 3,
-    headline: 'The quality check did not pass the build. It found 4 problems:',
+    headline: 'The quality check did not pass the build. It found 6 problems:',
   },
 }
 

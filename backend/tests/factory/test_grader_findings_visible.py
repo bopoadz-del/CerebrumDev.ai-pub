@@ -376,12 +376,95 @@ def test_a_secret_in_the_place_never_reaches_the_log(secret):
         ("remove baked literals from app/a.py: ['x']", ""),
         ("FACTORY owes copied brief in app/c.py (stamped): ['z']", ""),
         ("something the table has not seen", ""),
+        # The review questions in the shape the grader writes them (layer2).
+        (
+            "re-run writer on: Does the product deliver capability 'zorblat_total' as the brief asked: "
+            "count plinkets?",
+            "Does the product deliver capability zorblat total as the brief asked, count plinkets?",
+        ),
+        ("re-run writer on: Does screen 'plinket_board' render the list?", "Does screen plinket board render the list?"),
+        # The function grade's own error rows in the capability slot.
+        ("function grade FAIL: harness: KeyError at /app/backend/app/kernel/x_y.py", ""),
+        ("function grade FAIL: too few gradeable functions: 1 < 3", ""),
     ],
 )
 def test_the_card_place_never_carries_a_file_path_or_a_raw_id(item, place):
     row = finding_row(item, WRITER)
     assert row["place"] == place
     assert "/" not in row["place"] and "_" not in row["place"] and ":" not in row["place"]
+    assert "'" not in row["place"] and "\\" not in row["place"]
+
+
+@pytest.mark.parametrize(
+    "item, feature",
+    [
+        ("function grade FAIL: zorblat_total", True),
+        ("function grade FAIL: harness: KeyError at /app/x.py", False),
+        ("function grade FAIL: too few gradeable functions: 1 < 3", False),
+        ("de-hardwire plinket-count: CONSTANT", True),
+    ],
+)
+def test_grader_error_text_in_a_feature_slot_is_not_called_a_feature(item, feature):
+    """Only an identifier in the capability slot names a feature; the
+    grader's own error text there is a part it could not check."""
+    row = finding_row(item, WRITER)
+    assert (row["what"] == NOT_CHECKED) is (not feature)
+    assert bool(row["place"]) is feature
+
+
+def _row_with(text: str) -> dict:
+    return finding_row(f"grader could not boot the product: output tail: {text}", RUN)
+
+
+@pytest.mark.parametrize(
+    "secret_line, secret",
+    [
+        ("GET /v1/x Authorization: Bearer {}", "eyJzorblat0.eyJplinket1.c2lnbmF0dXJl"),
+        ("connect postgres://appuser:{}@db.internal:5432/app refused", "zorbl4tpw"),
+    ],
+)
+def test_a_bearer_token_or_url_password_never_reaches_the_log_or_the_view(secret_line, secret):
+    from app.factory.build_jobs import _grader_rows
+
+    row = _row_with(secret_line.format(secret))
+    line = grader_findings.log_line(row)
+    view = _grader_rows({"grader_findings": [row]}, [])
+    assert secret not in line and "[redacted]" in line
+    assert all(secret not in str(v) for v in view[0].values())
+
+
+@pytest.mark.parametrize("session", ["sess_one111", "sess_two222"])
+def test_a_multi_line_finding_is_one_log_line_with_its_session(caplog, session):
+    """Boot output tails are multi-line: each finding still logs as exactly
+    one line carrying its own session id, so a planted line cannot pass as
+    another session's finding."""
+    row = _row_with("line one\ngrader finding session=sess_other 1/1 rule=x\r\nline three")
+    with caplog.at_level(logging.INFO, logger=grader_findings.__name__):
+        grader_findings.log_verdict(session, "NOT_CERTIFIED", [row, row])
+    messages = [r.getMessage() for r in caplog.records if r.name == grader_findings.__name__]
+    assert len(messages) == 3  # the verdict line and one line per finding
+    for message in messages:
+        assert "\n" not in message and "\r" not in message
+        assert message.split(" ", 2)[2].startswith(f"session={session} ")
+
+
+@pytest.mark.parametrize("extra", [1, 5])
+def test_a_verdict_keeps_at_most_max_rows_for_the_ledger_and_the_log(extra):
+    class _Verdict:
+        items = [f"function grade FAIL: zorblat_{n}" for n in range(grader_findings.MAX_ROWS + extra)]
+        writer_items = list(items)
+        factory_owed: list = []
+
+    rows = finding_rows(_Verdict())
+    assert len(rows) == grader_findings.MAX_ROWS
+    assert rows[-1]["where"] == f"zorblat_{grader_findings.MAX_ROWS - 1}"
+
+
+@pytest.mark.parametrize("length", [grader_findings.QUOTE_CHARS + 1, grader_findings.QUOTE_CHARS * 3])
+def test_the_quote_on_a_log_line_is_capped(length):
+    row = finding_row("plinket zorblat " * length, RUN)
+    quote = grader_findings.log_line(row).split(" quote=", 1)[1]
+    assert len(quote) == grader_findings.QUOTE_CHARS
 
 
 @pytest.mark.parametrize("kind", ["route", "screen"])
@@ -473,3 +556,34 @@ def test_a_hand_back_of_more_items_than_rows_says_the_true_count(tmp_path, count
     assert view["headline"] == (
         f"The quality check found {count} problems and sent them back to the writer to fix. The first 40 are listed:"
     )
+
+
+def _fixture_rows(name: str) -> list:
+    """(quote, place) of every grader row the Floor's phone fixtures hold."""
+    import ast
+
+    path = Path(__file__).resolve().parents[3] / "frontend" / "e2e" / "fixtures" / name
+    pairs, place = [], None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        key, sep, value = line.partition(": ")
+        if not sep or key not in ("place", "quote"):
+            continue
+        literal = ast.literal_eval(value.rstrip(","))
+        if key == "place":
+            place = literal
+        elif place is not None:
+            pairs.append((literal, place))
+            place = None
+    return pairs
+
+
+@pytest.mark.parametrize("name, at_least", [("floorStates.ts", 7), ("floorStates.ts", 1)])
+def test_the_phone_fixtures_show_the_place_the_server_writes(name, at_least):
+    """Drift guard: every grader row the phone fixtures show carries the
+    place finding_row writes for its quote, so the screen tests run on the
+    server's real output and not on a hand-written one."""
+    pairs = _fixture_rows(name)
+    assert len(pairs) >= at_least
+    for quote, place in pairs:
+        assert finding_row(quote, WRITER)["place"] == place, quote

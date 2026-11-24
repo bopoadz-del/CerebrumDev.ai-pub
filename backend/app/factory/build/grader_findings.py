@@ -130,6 +130,11 @@ def finding_row(item: str, owner: str) -> Dict[str, str]:
     where = ((rest.split(sep, 1)[0] if sep else rest).strip() or "-") if prefix else "-"
     if owner == RUN and rule == FALLBACK[1]:
         rule, what = "not_checked", NOT_CHECKED
+    elif names == CAPABILITY and where != "-" and not _is_id(where):
+        # The grader's own error text in a capability slot ("harness: ...",
+        # "too few gradeable functions: ...") names no feature: the part
+        # could not be checked, and its words stay in Technical detail.
+        what = NOT_CHECKED
     return {
         "rule": rule,
         "what": what,
@@ -142,19 +147,37 @@ def finding_row(item: str, owner: str) -> Dict[str, str]:
 
 def plain_place(where: str, names: str) -> str:
     """``where`` as the card face may show it: a capability id as words, a
-    step or a question as written, nothing for a file path or no locator."""
+    step or a question in words, nothing for a file path, for text in a
+    capability slot that is not an id, or for no locator."""
     if where == "-" or names in (FILE, NONE):
         return ""
     if names == CAPABILITY:
-        return _words(where)[:PLACE_CHARS]
+        return _words(where)[:PLACE_CHARS] if _is_id(where) else ""
     if names == STEP:
         return step_place(where)[:PLACE_CHARS]
-    return where[:PLACE_CHARS]
+    return plain_words(where)[:PLACE_CHARS]
+
+
+def _is_id(text: str) -> bool:
+    """One identifier (letters, digits, ``_`` and ``-``), not prose."""
+    return bool(text) and all(ch.isalnum() or ch in "_-" for ch in text)
 
 
 def _words(ident: str) -> str:
     """An id as words: separators become spaces."""
     return " ".join(ident.replace("_", " ").replace("-", " ").split())
+
+
+def plain_words(text: str) -> str:
+    """The grader's prose for the card face: a quoted id reads as words, a
+    file path is left out, and no ``_`` or ``:`` separator remains."""
+    kept: List[str] = []
+    for token in text.split():
+        bare = token.strip("'\"`")
+        if "/" in bare or "\\" in bare:
+            continue
+        kept.append(bare.replace("_", " ").replace(":", ","))
+    return " ".join(" ".join(kept).split())
 
 
 #: How the card names a UI step, by the step kind the UI grader writes before
@@ -201,6 +224,12 @@ def finding_rows(verdict: Any) -> List[Dict[str, str]]:
     return rows[:MAX_ROWS]
 
 
+def one_line(text: str) -> str:
+    """Text on one line: every run of whitespace, line breaks included, is
+    one space, so a multi-line quote stays on the line that names its session."""
+    return " ".join(text.split())
+
+
 def log_line(row: Mapping[str, str]) -> str:
     """One finding as one log line: what, where, which rule, who owns it, and
     the grader's own words. Everything the grader wrote is redacted; the quote
@@ -208,8 +237,8 @@ def log_line(row: Mapping[str, str]) -> str:
     decided (:func:`log_handback`), never guessed here."""
     from app.factory.build.sanitize import sanitize_for_status
 
-    quote = sanitize_for_status(str(row.get("quote") or ""))[:QUOTE_CHARS]
-    where = sanitize_for_status(str(row.get("where") or ""))[:QUOTE_CHARS]
+    quote = one_line(sanitize_for_status(str(row.get("quote") or "")))[:QUOTE_CHARS]
+    where = one_line(sanitize_for_status(str(row.get("where") or "")))[:QUOTE_CHARS]
     return (
         f"rule={row.get('rule')} where={where} owner={row.get('owner')} "
         f"what={row.get('what')} quote={quote}"
