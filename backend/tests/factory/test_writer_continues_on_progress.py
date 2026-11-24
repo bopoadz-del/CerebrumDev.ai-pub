@@ -530,6 +530,43 @@ def _at(now, minutes, detail="", **payload):
 
 
 @pytest.mark.parametrize(
+    "line, name",
+    [
+        # git reads a line starting with '#' as a comment, never a pattern
+        ("#keep.py", "#keep.py"),
+        # negations are not read, so they never hide a file either
+        ("!keep.py", "!keep.py"),
+    ],
+)
+def test_gitignore_comments_and_negations_never_hide_source(tmp_path, line, name):
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    _tree(tmp_path, {".gitignore": (line + "\n").encode(), "app/" + name: b"x = 2\n"})
+    assert set(iter_authored_source(tmp_path)) == {
+        ".gitignore",
+        "app/main.py",
+        "tests/test_main.py",
+        "app/" + name,
+    }
+
+
+@pytest.mark.parametrize(
+    "rule, source_file, artefact",
+    [
+        ("build/", "tools/build", "build/x.js"),
+        ("out/", "src/out", "web/out/a.js"),
+    ],
+)
+def test_a_directory_rule_hides_directories_never_a_file(tmp_path, rule, source_file, artefact):
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    _tree(tmp_path, {".gitignore": (rule + "\n").encode(), source_file: b"run\n", artefact: b"x"})
+    authored = set(iter_authored_source(tmp_path))
+    assert source_file in authored, "a rule ending in '/' matches directories only"
+    assert artefact not in authored
+
+
+@pytest.mark.parametrize(
     "samples, grown",
     [
         # dropped before the window, then crept back up inside it: below the peak
