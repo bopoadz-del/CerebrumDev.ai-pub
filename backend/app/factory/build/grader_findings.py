@@ -251,16 +251,23 @@ def log_stop(session_id: str, reason: str) -> None:
     logger.info("grader stop session=%s to_writer=0 reason=%s", str(session_id or "-"), reason)
 
 
-def headline(state: str, rows: Sequence[Mapping[str, str]], sent_to_writer: int, tier: str = "") -> str:
+def headline(
+    state: str, rows: Sequence[Mapping[str, str]], sent_to_writer: int, tier: str = "", found: int = 0
+) -> str:
     """The one sentence above the findings on the build card, from the grader
-    view's own state, tier and counts. Empty when there is nothing to show."""
+    view's own state, tier and counts. Empty when there is nothing to show.
+
+    ``found`` is how many items the verdict holds; the card lists at most
+    MAX_ROWS of them, so the count is the verdict's, never the list's, and a
+    shortened list says it is shortened."""
     if not rows or state == "certified":
         return ""
     if tier == ERROR_TIER:
         return "The quality check could not finish, so it cannot pass the build:"
-    n = len(rows)
-    found = f"{n} problem{'s' if n != 1 else ''}"
+    n = max(found, len(rows))
+    problems = f"{n} problem{'s' if n != 1 else ''}"
+    listed = f". The first {len(rows)} are listed:" if n > len(rows) else ":"
     if state == "sent_back":
         back = f"{sent_to_writer} of them" if sent_to_writer != n else ("it" if n == 1 else "them")
-        return f"The quality check found {found} and sent {back} back to the writer to fix:"
-    return f"The quality check did not pass the build. It found {found}:"
+        return f"The quality check found {problems} and sent {back} back to the writer to fix{listed}"
+    return f"The quality check did not pass the build. It found {problems}{listed}"

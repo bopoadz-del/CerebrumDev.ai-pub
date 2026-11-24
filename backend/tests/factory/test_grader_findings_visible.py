@@ -401,3 +401,74 @@ def test_a_step_id_with_no_target_reads_as_its_own_words(step, words):
     never framed as a step kind with an empty target (which reads as nothing
     for ``screen``) and never borrows the kind's frame (``opening the app``)."""
     assert grader_findings.step_place(step) == words
+
+
+@pytest.mark.parametrize(
+    "found, rows, sent, expected",
+    [
+        (45, 40, 45, "The quality check found 45 problems and sent them back to the writer to fix. "
+                     "The first 40 are listed:"),
+        (45, 40, 3, "The quality check found 45 problems and sent 3 of them back to the writer to fix. "
+                    "The first 40 are listed:"),
+        (2, 2, 2, "The quality check found 2 problems and sent them back to the writer to fix:"),
+        (0, 2, 2, "The quality check found 2 problems and sent them back to the writer to fix:"),
+    ],
+)
+def test_a_shortened_list_counts_the_verdict_not_the_rows(found, rows, sent, expected):
+    assert grader_findings.headline("sent_back", [_ROW] * rows, sent, "NOT_CERTIFIED", found) == expected
+
+
+@pytest.mark.parametrize(
+    "found, rows, expected",
+    [
+        (41, 40, "The quality check did not pass the build. It found 41 problems. The first 40 are listed:"),
+        (1, 1, "The quality check did not pass the build. It found 1 problem:"),
+    ],
+)
+def test_a_shortened_refusal_counts_the_verdict_not_the_rows(found, rows, expected):
+    assert grader_findings.headline("refused", [_ROW] * rows, 0, "NOT_CERTIFIED", found) == expected
+
+
+@pytest.mark.parametrize(
+    "follow, found",
+    [
+        ({}, 45),
+        ({"grader_items": ["function grade FAIL: zorblat_total"]}, 1),
+        ({"grader_findings": [finding_row("function grade FAIL: zorblat_total", WRITER)]}, 1),
+    ],
+)
+def test_the_view_counts_every_item_of_the_standing_verdict(tmp_path, follow, found):
+    from app.factory.build.grader import GRADER_GATE, NOT_CERTIFIED
+    from app.factory.build.ledger import BuildLedger, EventKind
+    from app.factory.build_jobs import _grader_view
+
+    items = [f"function grade FAIL: zorblat_{i}" for i in range(45)]
+    ledger = BuildLedger(tmp_path / "build_ledger.jsonl")
+    ledger.start_run(product_id="product", inputs_hash="h")
+    base = {"grader_gate": GRADER_GATE, "grader_tier": NOT_CERTIFIED}
+    rows = [finding_row(i, WRITER) for i in items][: grader_findings.MAX_ROWS]
+    ledger.append(EventKind.NOTE, role="WRITER", detail="v",
+                  payload={**base, "grader_items": items, "grader_findings": rows})
+    ledger.append(EventKind.NOTE, role="WRITER", detail="next", payload={**base, **follow})
+    view = _grader_view(list(ledger.events()))
+    assert view["found"] == found
+
+
+def test_a_hand_back_of_more_items_than_rows_says_the_true_count(tmp_path):
+    from app.factory.build.grader import GRADER_GATE, NOT_CERTIFIED
+    from app.factory.build.ledger import BuildLedger, EventKind
+    from app.factory.build_jobs import _grader_view
+
+    items = [f"function grade FAIL: zorblat_{i}" for i in range(45)]
+    ledger = BuildLedger(tmp_path / "build_ledger.jsonl")
+    ledger.start_run(product_id="product", inputs_hash="h")
+    ledger.append(EventKind.NOTE, role="WRITER", detail="v", payload={
+        "grader_gate": GRADER_GATE, "grader_tier": NOT_CERTIFIED, "grader_items": items,
+        "grader_findings": [finding_row(i, WRITER) for i in items][: grader_findings.MAX_ROWS]})
+    ledger.append(EventKind.REWORK, role="WRITER", detail="h", payload={
+        "gate": GRADER_GATE, "work_list": items, "round": 1, "grader_tier": NOT_CERTIFIED})
+    view = _grader_view(list(ledger.events()))
+    assert len(view["findings"]) == grader_findings.MAX_ROWS == 40
+    assert view["headline"] == (
+        "The quality check found 45 problems and sent them back to the writer to fix. The first 40 are listed:"
+    )

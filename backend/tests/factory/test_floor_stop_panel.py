@@ -500,6 +500,7 @@ def _grader(view_state, tier, round_no=0, sent=0):
         "round": round_no,
         "budget": REWORK_BUDGET,
         "findings": [],
+        "found": 0,
         "sent_to_writer": sent,
         "headline": "",
     }

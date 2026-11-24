@@ -1233,6 +1233,8 @@ def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
             # The verdict's own rows; an event that carries none (a hand-back,
             # a stop, the Factory-fault note) keeps the rows it follows.
             "findings": _grader_rows(payload, prior.get("findings", [])),
+            # How many items the verdict holds (the rows stop at MAX_ROWS).
+            "found": _grader_found(payload, prior.get("found", 0)),
             # What the hand-back actually sent the writer: its own work list.
             "sent_to_writer": (
                 len(payload.get("work_list") or ()) if kind == "REWORK" else prior.get("sent_to_writer", 0)
@@ -1241,8 +1243,20 @@ def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
     if view is not None:
         from app.factory.build.grader_findings import headline
 
-        view["headline"] = headline(view["state"], view["findings"], view["sent_to_writer"], view["tier"])
+        view["headline"] = headline(
+            view["state"], view["findings"], view["sent_to_writer"], view["tier"], view["found"]
+        )
     return view
+
+
+def _grader_found(payload: Mapping[str, Any], prior: int) -> int:
+    """How many items a grader event's verdict holds: its full item list, else
+    its recorded rows, else ``prior`` (an event with neither is no verdict)."""
+    for key in ("grader_items", "grader_findings"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return prior
 
 
 def _grader_rows(payload: Mapping[str, Any], prior: List[Dict[str, str]]) -> List[Dict[str, str]]:
