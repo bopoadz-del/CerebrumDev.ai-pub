@@ -822,6 +822,7 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
     pilot's public timeline relays these as they are.
     """
     from app.factory.build.product_grader.function_grader import ONE_RESULT
+    from app.factory.build.product_grader.ui_grader import NOT_RUN
     from app.factory.build.product_grader.two_dataset import (
         HARDWIRED_CONSTANT,
         WRONG_COMPUTATION,
@@ -858,7 +859,11 @@ def reason_classes(grade: Mapping[str, Any], capability_ids: List[str]) -> List[
     if ui.get("ran") is not True:
         add("", "ungraded", "ui")
     for step in ui.get("steps") or []:
-        if not step.get("passed"):
+        # A step that did not run (an earlier chain step failed) was not
+        # observed: it is a gap in the grade, never a failure of its own.
+        if step.get("status") == NOT_RUN:
+            add(str(step.get("target") or ""), "ungraded", "ui")
+        elif not step.get("passed"):
             add(str(step.get("target") or ""), _UI_KIND_CLASS.get(str(step.get("kind")), "failed_ui_step"), "ui")
 
     for finding in (grade.get("hardwiring") or {}).get("findings") or []:
