@@ -25,6 +25,17 @@ from tests.factory.test_branch_is_platform import _failed_platform
 from tests.factory.test_brief_one_write_path import _events, _infos, _open_session, client  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Every test here posts to the chat door; earlier tests in the same
+    process must not have spent its per-minute budget."""
+    from app.core.rate_limit import reset_rate_limits
+
+    reset_rate_limits()
+    yield
+    reset_rate_limits()
+
+
 def _stub_generate(monkeypatch) -> list:
     """generate_product stand-in: records the call, reuses the given workspace."""
     calls: list = []
