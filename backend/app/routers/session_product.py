@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Sequence
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -316,10 +316,20 @@ _PROTOTYPE_MARKER_BODY = (
     "PRODUCT (pytest -m pilot) and STORE ops have not passed. Dual certification\n"
     "is pending. Frontend modules and some handlers may be Factory templates.\n"
     "\n"
-    "Press Run pilot checks on the Factory Floor to run the pilot tests on\n"
-    "the same workspace. Do not treat this zip as a finished production\n"
+    "%s Do not treat this zip as a finished production\n"
     "platform.\n"
 )
+#: The next-step sentence of the note, by whether the server offers the
+#: ``run_pilot`` action for this build (floor_actions.allowed_build_actions).
+_PILOT_NEXT_STEP = {
+    True: "Press Run pilot checks on the Factory Floor to run the pilot\ntests on the same workspace.",
+    False: "The build level this platform was built to stops at code, so\nthe Factory Floor offers no pilot checks for it.",
+}
+
+
+def _prototype_marker_body(actions: Sequence[str]) -> str:
+    """The note's text, naming Run pilot checks only when it is offered."""
+    return _PROTOTYPE_MARKER_BODY % _PILOT_NEXT_STEP["run_pilot" in actions]
 
 
 def _maybe_write_prototype_marker(zf: zipfile.ZipFile, out: Path) -> None:
@@ -333,6 +343,7 @@ def _maybe_write_prototype_marker(zf: zipfile.ZipFile, out: Path) -> None:
             return
         if not ledger.succeeded():
             return
+        actions = _succeeded_build_actions(ledger)
     except Exception:  # noqa: BLE001
         return
     if _PROTOTYPE_MARKER in zf.namelist():
@@ -341,7 +352,20 @@ def _maybe_write_prototype_marker(zf: zipfile.ZipFile, out: Path) -> None:
 
     info = zipfile.ZipInfo(_PROTOTYPE_MARKER, date_time=_time.localtime()[:6])
     info.compress_type = zipfile.ZIP_DEFLATED
-    zf.writestr(info, _PROTOTYPE_MARKER_BODY)
+    zf.writestr(info, _prototype_marker_body(actions))
+
+
+def _succeeded_build_actions(ledger: Any) -> list:
+    """The actions the server offers this succeeded, not pilot-ready run, at
+    the build level the run recorded (its BUILD_LEVEL note)."""
+    from app.factory.build.build_level import ledger_bar
+    from app.factory.floor_actions import allowed_build_actions
+
+    level = ledger_bar(ledger.events())
+    reaches_pilot = None if level is None else level.get("stop_gate") not in ("", "CODE")
+    return allowed_build_actions(
+        {"state": "succeeded", "pilot_ready": False}, reaches_pilot=reaches_pilot
+    )
 
 
 def zip_generated_product(out: Path, archive_base: Path) -> Path:

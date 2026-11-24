@@ -457,7 +457,7 @@ def test_user_notices_name_a_floor_control_not_a_word_to_type(text):
     from app.routers import session_product
 
     body = (
-        session_product._PROTOTYPE_MARKER_BODY
+        session_product._prototype_marker_body(["download_platform", "run_pilot"])
         if text == "prototype"
         else platform_chat_llm.UNCERTIFIED_KIT_NOTICE % ("k", "k")
     )
@@ -465,3 +465,193 @@ def test_user_notices_name_a_floor_control_not_a_word_to_type(text):
     assert "say continue" not in body.lower()
     assert "/product/" not in body
     assert "or continue" not in body.lower()
+
+
+# --- Guards of the functions this change touched (each first rule is held) ---
+
+
+def _blank_session(sid):
+    """A session with no blueprint drafted."""
+    from app.core.session_store import create_session
+
+    create_session(sid, "tester")
+    return get_session(sid)
+
+
+@pytest.mark.parametrize("action", ["rename", "add_capability"])
+def test_a_refinement_with_no_blueprint_changes_nothing(action):
+    from app.factory.floor_actions import parse_action
+
+    state = _blank_session(f"sess_lock_refine_{action}")
+    assert platform_chat_flow.apply_refinement(state, parse_action(action), "zq") is None
+    assert not state.product_design.blueprint
+
+
+@pytest.mark.parametrize("triggered_by", ["start_over", "chat"])
+def test_start_from_scratch_with_no_blueprint_is_refused(tmp_path, triggered_by):
+    state = _blank_session(f"sess_lock_scratch_{triggered_by}")
+    with pytest.raises(ValueError, match="no blueprint"):
+        platform_chat_flow.start_over(state, output_root=tmp_path, triggered_by=triggered_by)
+    assert not state.product_design.generation
+    assert not state.product_design.platform_id  # refused before any id is minted
+
+
+@pytest.mark.parametrize("build", [None, {"state": "unknown"}])
+def test_a_recorded_start_reads_an_unknown_build_from_its_ledger(tmp_path, build):
+    out, state = _failed_platform(tmp_path, "sess_lock_record_" + ("none" if build is None else "unknown"))
+    pd = state.product_design
+    platform_chat_flow._record_generation(
+        pd, {"output_dir": str(out), "build": build}, triggered_by="continue", resumed=True
+    )
+    assert pd.generation["build"].get("state") == "failed", pd.generation["build"]
+
+
+@pytest.mark.parametrize("country", ["", "zq"])
+def test_intake_facts_are_empty_without_a_design_and_listed_with_one(country):
+    from app.factory import platform_chat_llm
+
+    assert platform_chat_llm._intake_facts(None) == ""
+    state = _blank_session(f"sess_lock_facts_{country or 'none'}")
+    state.product_design.country = country or None
+    assert platform_chat_llm._intake_facts(state.product_design) != ""
+
+
+@pytest.mark.parametrize("drafted", [True, False])
+def test_the_chat_summary_says_whether_a_blueprint_was_drafted(tmp_path, drafted):
+    from app.routers import chat
+
+    if drafted:
+        _out, state = _failed_platform(tmp_path, "sess_lock_summary_drafted")
+    else:
+        state = _blank_session("sess_lock_summary_blank")
+    summary = chat._session_state_summary(state)
+    assert isinstance(summary, str)
+    assert ("Drafted blueprint" in summary) is drafted, summary
+    assert ("No platform blueprint" in summary) is not drafted, summary
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/someone/else/tree/build/sess_0123abcd-feed01",
+        "https://github.com/x/y/tree/build/sess_1-2",
+    ],
+)
+def test_a_pasted_link_to_another_repo_is_refused_in_the_chat(client, link):  # noqa: F811
+    from app.factory.build.branch_attach import NOT_A_BUILD_LINK
+
+    sid = "sess_lock_link_" + str(abs(hash(link)) % 10_000)
+    _open_session(sid, {})
+    resp = client.post(f"/v1/sessions/{sid}/chat", json={"message": link})
+    assert resp.status_code == 200, resp.text
+    assert [i["summary"] for i in _infos(resp.text)] == [NOT_A_BUILD_LINK]
+
+
+@pytest.mark.parametrize("sid", ["sess_lock_plan_a", "sess_lock_plan_b"])
+def test_plan_with_no_blueprint_is_refused_and_records_no_error(client, sid):  # noqa: F811
+    _open_session(sid, {})
+    resp = client.post(f"/v1/sessions/{sid}/product/plan")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "draft a blueprint first"
+    assert get_session(sid).product_design.last_error is None
+
+
+@pytest.mark.parametrize(
+    ("stop_gate", "offered"),
+    [pytest.param("CODE", False, id="prototype-stops-at-code"), pytest.param("STORE", True, id="pilot-level")],
+)
+def test_the_download_note_names_run_pilot_checks_only_when_offered(tmp_path, stop_gate, offered):
+    import zipfile
+
+    from app.routers import session_product
+
+    out = tmp_path / f"ws_{stop_gate}"
+    (out / "app").mkdir(parents=True)
+    (out / "app" / "main.py").write_text("app = None\n", encoding="utf-8")
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(
+        EventKind.RUN_SUCCEEDED,
+        detail="done",
+        payload={"cycle": "code", "build_level": "some_level", "stop_gate": stop_gate},
+    )
+    archive = session_product.zip_generated_product(out, tmp_path / f"zip_{stop_gate}")
+    with zipfile.ZipFile(archive) as zf:
+        note = zf.read(session_product._PROTOTYPE_MARKER).decode("utf-8")
+    assert ("Run pilot checks" in note) is offered, note
+    assert "%s" not in note
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_the_uncertified_kit_notice_waits_for_the_approve_and_build_control(monkeypatch, pending):
+    from app.factory import platform_chat_llm, store_kits
+
+    monkeypatch.setattr(
+        store_kits,
+        "domain_kits",
+        lambda *a, **k: {"zq": {"serves_verticals": ["zq_yards"], "build_ready": False}},
+    )
+    state = _blank_session(f"sess_lock_kit_{pending}")
+    pd = state.product_design
+    pd.vertical = "zq_yards"
+    if pending:
+        pd.blueprint = {"product_name": "zq"}
+    notice = platform_chat_llm._kit_notice(state)
+    assert ("Approve & build" in notice) is pending, notice
+    assert bool(pd.kit_notice_given) is pending
+    # Given once per session: the next turn says nothing.
+    if pending:
+        assert platform_chat_llm._kit_notice(state) == ""
+
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_the_model_is_told_try_again_keeps_the_rework_budget(tmp_path, finished):
+    from app.factory import platform_chat_llm
+
+    out, state = _failed_platform(tmp_path, f"sess_lock_model_{finished}")
+    if finished:
+        _finish(out)
+    facts = " ".join(platform_chat_llm._session_facts(state).split())
+    assert "reset rework budget" not in facts
+    assert "Start over" not in facts
+    assert ("rework budget it had left" in facts) is not finished, facts
+
+
+@pytest.mark.parametrize("drafted", [True, False])
+def test_the_model_facts_forbid_start_coder_only_without_a_blueprint(tmp_path, drafted):
+    from app.factory import platform_chat_llm
+
+    if drafted:
+        _out, state = _failed_platform(tmp_path, "sess_lock_mfacts_drafted")
+    else:
+        state = _blank_session("sess_lock_mfacts_blank")
+    facts = platform_chat_llm._session_facts(state)
+    assert ("no pending blueprint. start_coder is forbidden" in facts) is not drafted, facts
+
+
+@pytest.mark.parametrize("handoff", [True, False])
+def test_start_or_resume_reads_the_store_gate_before_a_pending_blueprint(monkeypatch, handoff):
+    state = _blank_session(f"sess_lock_sor_{handoff}")
+    state.product_design.blueprint = {"product_name": "zq"}
+    monkeypatch.setattr(platform_chat_flow, "is_handoff_awaiting_n3", lambda *a, **k: handoff)
+    monkeypatch.setattr(platform_chat_flow, "ingest_n3_store_gate_reply", lambda *a, **k: {"door": "store_gate"})
+    monkeypatch.setattr(platform_chat_flow, "approve_and_generate", lambda *a, **k: {"door": "approve"})
+    reply = platform_chat_flow.start_or_resume_coder(state, triggered_by="continue")
+    assert reply == {"door": "store_gate" if handoff else "approve"}
+
+
+@pytest.mark.parametrize("stop_gate", ["CODE", "STORE"])
+def test_the_download_note_is_written_once(tmp_path, stop_gate):
+    import zipfile
+
+    from app.routers import session_product
+
+    out = tmp_path / f"ws1_{stop_gate}"
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.RUN_SUCCEEDED, detail="done", payload={"build_level": "l", "stop_gate": stop_gate})
+    with zipfile.ZipFile(tmp_path / f"z1_{stop_gate}.zip", "w") as zf:
+        session_product._maybe_write_prototype_marker(zf, out)
+        session_product._maybe_write_prototype_marker(zf, out)
+        names = zf.namelist()
+    assert names.count(session_product._PROTOTYPE_MARKER) == 1

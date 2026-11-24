@@ -276,9 +276,9 @@ def _session_facts(state: Any) -> str:
             "Do NOT say 'same blueprint hash — not starting over'. A new "
             "platform brief MUST call draft_platform. continue / try again / "
             "start_coder RESUMES this platform on its own branch at the "
-            "failing phase with a reset rework budget; only the user's Start "
-            "over control makes a FRESH workspace (the old head is kept as an "
-            "archive tag)."
+            "failing phase with the rework budget it had left; only the user's "
+            "Start from scratch control makes a FRESH workspace (the old head "
+            "is kept as an archive tag)."
         )
     elif platform_chat_flow.is_generation_resumable(state):
         point = platform_chat_flow._ledger_resume_point(state) or "the last phase"
@@ -830,6 +830,10 @@ def _kit_notice(state: Any) -> str:
         resolve_vertical(choice, kits) if choice != NO_VERTICAL else ("", None, "")
     )
     if status == SERVED and kit and kits.get(kit, {}).get("build_ready") is True:
+        return ""
+    if status == SERVED and kit and not platform_chat_flow.has_pending_blueprint(state):
+        # The uncertified notice names Approve & build: it waits for the turn
+        # that shows that control (a pending blueprint), and is given then.
         return ""
     pd.kit_notice_given = True
     if status == SERVED and kit:

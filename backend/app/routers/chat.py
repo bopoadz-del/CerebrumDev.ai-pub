@@ -595,7 +595,9 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
         or platform_chat_flow.is_handoff_awaiting_n3(state)
     )
     if not resumable:
-        result = {"sse": "info", "ok": False, "summary": "There is no build yet. Describe your platform first."}
+        # Only a session with no blueprint is asked to describe its platform.
+        first = "" if state.product_design.blueprint else " Describe your platform first."
+        result = {"sse": "info", "ok": False, "summary": "There is no build yet." + first}
         _record(result)
         async for ev in _yield_platform_result(result):
             yield ev

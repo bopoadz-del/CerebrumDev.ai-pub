@@ -22,8 +22,9 @@ Routing contract (this is law, the smoke tests enforce it):
      blueprint is already approved — a pending unapproved blueprint is not
      required. After code-phase 5/5 SUCCESS, continue opens a pilot cycle
      on the same workspace (pytest -m pilot + STORE ops), not a new product.
-     A RUN_FAILED / rework-exhausted ledger is terminal: same-hash continue
-     or a new brief must start a fresh workspace (reset rework budget),
+     A RUN_FAILED / rework-exhausted ledger is terminal: Try again resumes
+     the same workspace at its failing phase with the rework budget it had
+     left; only Start from scratch or a new brief makes a fresh workspace,
      never a no-op resume of the dead run. ``HANDOFF_TO_N3`` is
      also not a coding-failure terminal: continue / start_coder ingests
      the cerebrum-builds ``store-gate`` 12/12 status and must not
@@ -2198,7 +2199,8 @@ def start_or_resume_coder(
     workspace. Only a Store-green SUCCESS refuses another run.
 
     A RUN_FAILED / rework-exhausted ledger is terminal: continue or
-    start_coder starts a fresh workspace with a reset rework budget.
+    start_coder resumes the same workspace at its failing phase with the
+    rework budget it had left; only Start from scratch makes a fresh one.
     """
     if is_handoff_awaiting_n3(state, output_root):
         return ingest_n3_store_gate_reply(
