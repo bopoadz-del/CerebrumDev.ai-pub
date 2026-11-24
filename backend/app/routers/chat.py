@@ -423,9 +423,9 @@ async def _platform_turn(
         why = "the Floor chat model did not return a usable answer this time"
     guidance = (
         "Use the Floor controls: Draft turns your brief into a feature list; "
-        "Approve starts the coding agent; Continue resumes a build; the "
-        "feature-list editor and rename change a pending blueprint; the "
-        "intake line sets the build level, vertical, country and currency. "
+        "Approve & build starts the coding agent; Try again resumes a stopped "
+        "build; the feature-list editor and rename change a pending blueprint; "
+        "Edit brief sets the build level, industry, country and currency. "
         f"Free-text conversation is unavailable right now: {why}."
     )
     result = {"sse": "info", "ok": True, "summary": guidance, "stream_delta": True}
@@ -498,6 +498,13 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
         return
 
     if action is FloorAction.DRAFT:
+        if platform_chat_flow.has_running_build(state):
+            # A draft replaces the blueprint a running build was approved on.
+            result = platform_chat_flow.running_build_reply(state)
+            _record(result)
+            async for ev in _yield_platform_result(result):
+                yield ev
+            return
         if not (user_message or "").strip():
             result = {"sse": "info", "ok": False, "summary": "Draft needs a brief."}
             _record(result)
@@ -546,7 +553,7 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
             result = {
                 "sse": "info",
                 "ok": False,
-                "summary": "There is no built platform to start over. Approve the feature list to build it.",
+                "summary": "There is no built platform to start from scratch. Approve & build the feature list to build it.",
             }
             _record(result)
             async for ev in _yield_platform_result(result):
@@ -649,26 +656,12 @@ async def chat(
     # SSE generator it could only surface as an event). Quotas exempt
     # subscribers; this binds every account.
     require_llm_rate(getattr(state, "user_id", None), "chat")
-    # The industry, country, currency and build level the user changed ride beside the
-    # action as typed fields. One write path: they change the pending
-    # proposal, persisted before the stream reloads the session, and only
-    # Confirm stores them. A changed answer on a frozen intake is refused,
-    # and then the action does not run either.
-    from ..factory.locale_choice import sync_blueprint_intake
-
-    edit = platform_chat_flow.edit_intake(
-        state, body.vertical, body.country, body.currency, body.build_level
-    )
-    if edit is not None and not edit["ok"]:
-        return StreamingResponse(_yield_platform_result(edit), media_type="text/event-stream")
-    # The stored blueprint keeps carrying exactly the declared pair on EVERY
-    # request -- a blueprint drafted mid-chat picks it up before an approve.
-    if sync_blueprint_intake(state.product_design) or edit is not None:
-        update_session(state.session_id, state)
     try:
         action = parse_action(body.action)
     except FloorActionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # The tenant guard runs before anything is written: a request that is
+    # refused 403 parks no answer on the session.
     if _chat_starts_generation(state, action):
         # Same tenant guard as the product build routes, fired at the chat
         # door before the SSE stream opens: a principal that owns the session
@@ -681,6 +674,22 @@ async def chat(
 
         _require_build_tenant(state, principal)
         assert_entitled(principal)
+    # The industry, country, currency and build level the user sent ride
+    # beside the action as typed fields. One write path: they change the
+    # pending proposal, persisted before the stream reloads the session, and
+    # only Confirm stores them. A changed answer on a frozen intake is
+    # refused, and then the action does not run either.
+    from ..factory.locale_choice import sync_blueprint_intake
+
+    edit = platform_chat_flow.edit_intake(
+        state, body.vertical, body.country, body.currency, body.build_level
+    )
+    if edit is not None and not edit["ok"]:
+        return StreamingResponse(_yield_platform_result(edit), media_type="text/event-stream")
+    # The stored blueprint keeps carrying exactly the declared pair on EVERY
+    # request -- a blueprint drafted mid-chat picks it up before an approve.
+    if sync_blueprint_intake(state.product_design) or edit is not None:
+        update_session(state.session_id, state)
     return StreamingResponse(
         _stream_response(state.session_id, body.message, action, body.value),
         media_type="text/event-stream",

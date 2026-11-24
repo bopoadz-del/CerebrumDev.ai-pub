@@ -176,12 +176,12 @@ def _level_bar_sentence(level: str) -> str:
 
 def intake_frozen(state: Any) -> bool:
     """True while the answers cannot change: a build is running, or the
-    blueprint is approved and "Continue with new answers" has not reopened
-    the intake."""
+    blueprint is approved and the intake is not reopened (``intake_reopened``:
+    Change answers on a build that is still a terminal failure)."""
     if has_running_build(state):
         return True
     pd = state.product_design
-    return bool(pd.blueprint_approved) and not bool(getattr(pd, "intake_reopened", False))
+    return bool(pd.blueprint_approved) and not intake_reopened(state)
 
 
 #: The typed reason a changed answer is refused on a frozen intake.
@@ -209,9 +209,11 @@ def edit_intake(
     edit, error = shaped_intake_edit(vertical, country, currency, build_level)
     if error:
         return {"sse": "info", "ok": False, "summary": error, "intake": intake_state(pd)}
-    if not edit_differs_from_declared(pd, edit):
+    if not edit:
         return None
     if intake_frozen(state):
+        if not edit_differs_from_declared(pd, edit):
+            return None  # the answers the frozen blueprint already holds
         return {
             "sse": "info",
             "ok": False,
@@ -219,16 +221,19 @@ def edit_intake(
             "summary": (
                 "The blueprint is approved: its answers (industry, country, "
                 "currency and build level) are frozen with it, so nothing was "
-                "changed. After a stopped build, Continue with new answers "
+                "changed. After a build stops with a failure, Change answers "
                 "opens them again."
             ),
             "intake": intake_state(pd),
         }
+    # Every answer the user sent goes onto the proposal, an answer equal to
+    # the declared one included: the user's pick replaces a chat suggestion
+    # for that field, so Confirm stores exactly what the user picked.
     propose_intake_edit(pd, edit)
     return {
         "sse": "info",
         "ok": True,
-        "summary": "Changed answers are waiting for your Confirm.",
+        "summary": "Your answers are waiting to be saved.",
         "intake": intake_state(pd),
     }
 
@@ -260,7 +265,7 @@ def apply_intake_action(
         pd.intake_proposal = {**(pd.intake_proposal or {}), "build_level": level}
         summary = (
             "Proposed build level " + _level_bar_sentence(level)
-            + " Press Confirm to use it."
+            + " Save the brief to use it."
         )
     elif action is FloorAction.CONFIRM_INTAKE:
         stored = confirm_intake(pd)
@@ -271,7 +276,7 @@ def apply_intake_action(
                 "summary": "There is no proposed intake to confirm.",
                 "intake": intake_state(pd),
             }
-        parts = [f"{k.replace('_', ' ')} {v}" for k, v in stored.items()]
+        parts = [f"{k.replace('_', ' ')} {v or 'cleared'}" for k, v in stored.items()]
         summary = "Confirmed: " + ", ".join(parts) + "."
         if stored.get("build_level"):
             summary += " Build level " + _level_bar_sentence(stored["build_level"])
@@ -381,7 +386,10 @@ def apply_refinement(
         from app.factory.store_kits import chosen_vertical
 
         vertical = chosen_vertical(args["vertical"])
-        pd.vertical = vertical
+        # One write path: the declared industry changes only on Confirm. The
+        # pending blueprint takes the refinement; the declared field gets it
+        # as a proposal beside the declared answers.
+        propose_intake_edit(pd, {"vertical": vertical})
         bp.vertical = vertical
         bp.product_id = vertical
         pd.blueprint = bp.model_dump(mode="json")
@@ -1052,8 +1060,13 @@ def _record_generation(
     triggered_by: str,
     resumed: bool,
 ) -> None:
-    """Persist enough for a new uvicorn worker to resume the same run."""
+    """Persist enough for a new uvicorn worker to resume the same run.
+
+    Every start or resume that launched a run is recorded here, so a reopened
+    intake ends here, whichever action started the run."""
     from app.factory.build_jobs import build_status
+
+    pd.intake_reopened = False
 
     out = result.get("output_dir") or ""
     st = result.get("build") if isinstance(result.get("build"), dict) else None
@@ -1462,6 +1475,28 @@ def start_fresh_generation(
     }
 
 
+#: The typed reason a resume or a Save-and-try-again is refused when the
+#: platform's last run is not a terminal failure: it is running, finished,
+#: or never built. Nothing is stored and nothing starts.
+NOT_A_FAILED_BUILD = "NOT_A_FAILED_BUILD"
+
+
+def not_a_failed_build_reply(state: Any) -> Dict[str, Any]:
+    pd = state.product_design
+    pd.intake_reopened = False
+    return {
+        "sse": "info",
+        "ok": False,
+        "refused": NOT_A_FAILED_BUILD,
+        "summary": (
+            "This build did not stop with a failure, so there is nothing to "
+            "try again and nothing was changed."
+        ),
+        "intake": intake_state(pd),
+        "stream_delta": True,
+    }
+
+
 #: The typed reason Continue answers when a failed platform has neither a
 #: workspace on this host nor a branch of record to re-enter.
 NOTHING_TO_RESUME = "NOTHING_TO_RESUME"
@@ -1487,6 +1522,8 @@ def resume_failed_platform(
     pd = state.product_design
     if not pd or not pd.blueprint:
         raise ValueError("no blueprint drafted — describe the platform first")
+    if not is_generation_terminal_failure(state, output_root):
+        return not_a_failed_build_reply(state)
     sync_blueprint_intake(pd)  # the user's declared locale and build level, never a guess
     bp = ProductBlueprint.model_validate(pd.blueprint)
     pd.blueprint_approved = True
@@ -1508,7 +1545,7 @@ def resume_failed_platform(
             "refused": NOTHING_TO_RESUME,
             "summary": (
                 "This platform's workspace is not on this host and it has no "
-                "branch of record to re-enter. Press Start over to build it again "
+                "branch of record to re-enter. Start from scratch builds it again "
                 "from the approved feature list; the old run is kept, not deleted."
             ),
             "awaiting_action": "start_over",
@@ -1643,10 +1680,10 @@ def start_over_confirm_prompt(state: Any) -> Dict[str, Any]:
         "awaiting_action": "start_over",
         "confirm_required": True,
         "summary": (
-            f"Start over rebuilds{name} from scratch on a new workspace — the "
+            f"Start from scratch rebuilds{name} on a new workspace — the "
             "current work is archived, not deleted, and the rebuild cannot be "
-            "undone. Continue instead resumes the run at its failing stage. "
-            "Press Start over again to confirm the rebuild."
+            "undone. Try again instead resumes the run at its failing step. "
+            "Press Start from scratch again to confirm the rebuild."
         ),
         "stream_delta": True,
     }
@@ -1675,7 +1712,7 @@ def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def continue_with_intake(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
-    """The typed "Continue with new answers" on a FAILED build: the intake
+    """The typed "Change answers" on a FAILED build: the intake
     line opens again, pre-filled with the declared answers. Nothing runs until
     the typed ``confirm_intake``, which resumes this platform's own branch."""
     pd = state.product_design
@@ -1697,16 +1734,23 @@ def continue_with_intake(state: Any, output_root: Optional[Path] = None) -> Dict
         "sse": "info",
         "ok": True,
         "summary": (
-            "Change any answer on the intake line, then press Confirm. The build "
+            "Change any answer in the brief, then Save and try again. The build "
             "resumes on this platform's own branch with the rework budget it had left; "
-            "nothing runs until you confirm."
+            "nothing runs until you save."
         ),
         "intake": intake_state(pd),
     }
 
 
-def intake_reopened(state: Any) -> bool:
-    return bool(getattr(getattr(state, "product_design", None), "intake_reopened", False))
+def intake_reopened(state: Any, output_root: Optional[Path] = None) -> bool:
+    """True only while Change answers holds the brief open AND the build is
+    still a terminal failure. The mark alone never reopens anything: a build
+    that started, resumed or finished by any path closes the intake, whether
+    or not the mark was cleared."""
+    pd = getattr(state, "product_design", None)
+    if not bool(getattr(pd, "intake_reopened", False)):
+        return False
+    return is_generation_terminal_failure(state, output_root)
 
 
 def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
@@ -1715,6 +1759,10 @@ def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict
     changed ones change the frozen blueprint's inputs, so the run is rebased
     onto them on the same workspace (start_runner_build ``intake_changed``)."""
     pd = state.product_design
+    if not intake_reopened(state, output_root):
+        # Refused before anything is stored: a Save on a running or finished
+        # build never starts one and never changes its answers.
+        return not_a_failed_build_reply(state)
     stored = confirm_intake(pd)
     pd.intake_reopened = False
     if isinstance(pd.blueprint, dict) and pd.vertical and pd.blueprint.get("vertical") != pd.vertical:
@@ -1724,7 +1772,7 @@ def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict
     )
     reply["intake"] = intake_state(pd)
     if stored:
-        parts = [f"{k.replace('_', ' ')} {v}" for k, v in stored.items()]
+        parts = [f"{k.replace('_', ' ')} {v or 'cleared'}" for k, v in stored.items()]
         reply["summary"] = "Confirmed: " + ", ".join(parts) + ". " + str(reply.get("summary") or "")
     return reply
 

@@ -48,7 +48,7 @@ ORPHAN_DISK_ERROR_DETAIL = (
 ORPHAN_NO_TENANT_REASON = "resume_needs_tenant"
 ORPHAN_NO_TENANT_DETAIL = (
     "build interrupted by a server restart: resuming it needs the account "
-    "that started it, and none is recorded -- press Continue to resume it "
+    "that started it, and none is recorded -- press Try again to resume it "
     "under your account"
 )
 _RUN_SUFFIX_RE = re.compile(r"__run(\d+)$")

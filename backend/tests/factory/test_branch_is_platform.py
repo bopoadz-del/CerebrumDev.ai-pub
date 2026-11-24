@@ -304,8 +304,8 @@ def test_start_over_creates_nothing_when_the_head_cannot_be_tagged(tmp_path, mon
 @pytest.mark.parametrize(
     "generation, expect",
     [
-        ({"product_id": "vineyard"}, "Start over rebuilds vineyard from scratch"),
-        (None, "Start over rebuilds from scratch"),
+        ({"product_id": "vineyard"}, "Start from scratch rebuilds vineyard on a new workspace"),
+        (None, "Start from scratch rebuilds on a new workspace"),
     ],
 )
 def test_start_over_confirm_prompt_offers_continue_and_creates_nothing(generation, expect):
@@ -333,8 +333,10 @@ def test_start_over_confirm_prompt_offers_continue_and_creates_nothing(generatio
     assert reply["sse"] == "info"
     assert reply["stream_delta"] is True
     assert expect in reply["summary"]
-    assert "Press Start over again" in reply["summary"]  # the confirming click
-    assert "Continue instead" in reply["summary"]  # the resume offer
+    # The buttons are named as the Floor labels them (Start from scratch,
+    # Try again); the retired names Start over / Continue are not shown.
+    assert "Press Start from scratch again" in reply["summary"]  # the confirming click
+    assert "Try again instead" in reply["summary"]  # the resume offer
 
 
 @pytest.mark.parametrize(
@@ -381,8 +383,8 @@ def test_start_over_reaches_a_fresh_workspace_only_when_confirmed(
         assert reached == [1], "the confirming click must reach start_over()"
     else:
         assert reached == [], "a bare Start over must not reach start_over()"
-        assert "Press Start over again" in text  # the confirm...
-        assert "Continue instead" in text  # ...offering Continue (resume)
+        assert "Press Start from scratch again" in text  # the confirm...
+        assert "Try again instead" in text  # ...offering Try again (resume)
 
 
 def _callers(path: Path, name: str) -> set:

@@ -877,9 +877,9 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
             "sse": "info",
             "ok": True,
             "summary": (
-                "Press Approve to start the coding agent on this feature list."
+                "Press Approve & build to start the coding agent on this feature list."
                 if pending
-                else "Press Continue to resume the build."
+                else "Press Try again to resume the build."
             ),
             "stream_delta": True,
             "awaiting_action": "approve" if pending else "continue",
@@ -933,7 +933,7 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
                 return {
                     "sse": "info",
                     "ok": True,
-                    "summary": "Confirm the proposed vertical on the Floor to use it.",
+                    "summary": "Press Confirm these on the brief to use the suggested industry.",
                     "stream_delta": True,
                 }
             if op in _MODEL_REFINEMENTS:
@@ -949,13 +949,13 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
             "ok": True,
             "summary": (
                 "I could not apply that change. Use the feature-list editor, "
-                "rename or build-level controls on the Floor, or Approve to build."
+                "rename or Edit brief on the Floor, or Approve & build."
             ),
             "stream_delta": True,
         }
 
     summary = decision.get("message") or (
-        "A blueprint is drafted. Confirm to start the coding agent, or refine it."
+        "A blueprint is drafted. Approve & build starts the coding agent, or refine it."
         if platform_chat_flow.has_pending_blueprint(state)
         else "Describe the platform you want and I will draft a blueprint."
     )

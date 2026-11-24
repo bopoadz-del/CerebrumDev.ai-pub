@@ -875,11 +875,47 @@ def product_verticals(
     }
 
 
+def _refuse_while_building(state: Any) -> None:
+    """409 with the typed INTAKE_FROZEN while a build runs: a draft replaces
+    the blueprint the running build was approved on."""
+    from app.factory import platform_chat_flow
+
+    if platform_chat_flow.has_running_build(state):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "refused": platform_chat_flow.INTAKE_FROZEN,
+                "message": "A build is running on this blueprint; nothing was changed.",
+            },
+        )
+
+
+def _refuse_on_frozen_intake(state: Any) -> None:
+    """409 with the typed INTAKE_FROZEN whenever the chat's Save would be
+    refused: a build is running, or the blueprint is approved and the intake
+    is not reopened. One rule (platform_chat_flow.intake_frozen) for every
+    door that writes the blueprint."""
+    from app.factory import platform_chat_flow
+
+    if platform_chat_flow.intake_frozen(state):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "refused": platform_chat_flow.INTAKE_FROZEN,
+                "message": (
+                    "The blueprint is approved and its answers are frozen "
+                    "with it; nothing was changed."
+                ),
+            },
+        )
+
+
 @router.post("/{session_id}/product/draft")
 def draft_product(
     session_id: str, body: DraftBody, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    _refuse_while_building(state)
     # Outside the try/except below on purpose: that handler catches bare
     # Exception and re-raises as 400, which would mask the 429.
     _enforce_draft_quota(principal.account_id)
@@ -996,6 +1032,7 @@ def accept_golden(
     409 if there is no draft, or no golden was offered for it.
     """
     state = _require_session(session_id, principal)
+    _refuse_on_frozen_intake(state)
     bp_dict = state.product_design.blueprint
     if not bp_dict:
         raise HTTPException(
@@ -1105,6 +1142,10 @@ def approve_blueprint(
     session_id: str, body: ApproveBody, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    if body.blueprint is not None or not body.approve:
+        # Replacing or un-approving the blueprint is a change to its frozen
+        # inputs; approving an approved blueprint again changes nothing.
+        _refuse_on_frozen_intake(state)
     ignored_fields: list[str] = []
     if body.blueprint is not None:
         try:
