@@ -899,14 +899,16 @@ def product_verticals(
     }
 
 
-def _refuse_on_frozen_intake(state: Any) -> None:
-    """409 with the typed INTAKE_FROZEN whenever the chat's Save would be
-    refused: a build is running, or the blueprint is approved and the intake
-    is not reopened. One rule (platform_chat_flow.intake_frozen) for every
-    door that writes the blueprint."""
+def _refuse_on_frozen_intake(state: Any, rule: Any = None) -> None:
+    """409 with the typed INTAKE_FROZEN whenever the chat would refuse the
+    same request: by default the Save rule (a build is running, or the
+    blueprint is approved and the intake is not reopened,
+    platform_chat_flow.intake_frozen); a draft passes the chat Draft's own
+    rule (platform_chat_flow.draft_refused)."""
     from app.factory import platform_chat_flow
 
-    if platform_chat_flow.intake_frozen(state):
+    rule = rule or platform_chat_flow.intake_frozen
+    if rule(state):
         raise HTTPException(
             status_code=409,
             detail={
@@ -925,8 +927,10 @@ def draft_product(
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
     # A draft replaces the blueprint and writes the request's industry,
-    # country and currency: refused whenever the chat's Save would be.
-    _refuse_on_frozen_intake(state)
+    # country and currency: refused whenever the chat's Draft would be.
+    from app.factory import platform_chat_flow
+
+    _refuse_on_frozen_intake(state, platform_chat_flow.draft_refused)
     # Outside the try/except below on purpose: that handler catches bare
     # Exception and re-raises as 400, which would mask the 429.
     _enforce_draft_quota(principal.account_id)

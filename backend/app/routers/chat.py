@@ -505,7 +505,7 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
             async for ev in _yield_platform_result(result):
                 yield ev
             return
-        if platform_chat_flow.intake_frozen(state):
+        if platform_chat_flow.draft_refused(state):
             # A draft replaces the approved blueprint: the same rule as
             # POST /product/draft, so both doors refuse the same request.
             result = platform_chat_flow.frozen_draft_reply(state)

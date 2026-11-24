@@ -4,7 +4,9 @@
    the declared field and the blueprint take it together on Confirm. Approve
    never builds on an answer the brief still shows as unsaved, and a later
    Save never switches the blueprint back.
-2. The chat's Draft obeys the same frozen rule as POST /product/draft.
+2. The chat's Draft obeys the same frozen rule as POST /product/draft: a
+   draft is refused on a frozen intake, except over a terminal failure,
+   where a new brief replaces the dead build at both doors.
 3. Every refusal on a frozen intake carries the typed INTAKE_FROZEN, a Save
    whose answers equal the declared ones included.
 """
@@ -17,7 +19,9 @@ from app.core.session_store import get_session, update_session
 from app.factory import platform_chat_flow
 from app.factory.floor_actions import FloorAction
 from app.models.session import ProductDesignState, SessionState
+from tests.factory.test_branch_is_platform import _failed_platform
 from tests.factory.test_brief_one_write_path import _frozen_session, _infos, client  # noqa: F401
+from tests.factory.test_intake_lock_every_path import _finish
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +125,8 @@ def test_confirming_another_answer_on_a_draft_keeps_its_identity(answer):
 @pytest.mark.parametrize("brief", ["a new ask", "another platform entirely"])
 def test_chat_draft_on_a_frozen_intake_is_refused_like_the_route(tmp_path, client, brief):  # noqa: F811
     sid = "sess_one_rule_draft_" + str(len(brief))
-    state = _frozen_session(tmp_path, sid)
+    out, state = _failed_platform(tmp_path, sid)
+    _finish(out)
     before = dict(state.product_design.blueprint)
 
     chat = client.post(f"/v1/sessions/{sid}/chat", json={"message": brief, "action": "draft"})
@@ -139,6 +144,29 @@ def test_chat_draft_on_a_frozen_intake_is_refused_like_the_route(tmp_path, clien
         k: v for k, v in before.items() if k != "locale"
     }
     assert pd.blueprint_approved is True
+
+
+@pytest.mark.parametrize("door", ["chat", "route"])
+def test_a_new_brief_over_a_dead_build_drafts_at_both_doors(tmp_path, client, door):  # noqa: F811
+    """A terminal failure is the one approved state a new brief may replace:
+    both doors draft it, and the draft starts nothing."""
+    sid = "sess_one_rule_dead_" + door
+    state = _frozen_session(tmp_path, sid)
+    assert platform_chat_flow.intake_frozen(state) is True
+
+    if door == "chat":
+        resp = client.post(
+            f"/v1/sessions/{sid}/chat", json={"message": "a kiln rental desk", "action": "draft"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert all(i.get("refused") != platform_chat_flow.INTAKE_FROZEN for i in _infos(resp.text))
+    else:
+        resp = client.post(f"/v1/sessions/{sid}/product/draft", json={"brief": "a kiln rental desk"})
+        assert resp.status_code == 200, resp.text
+
+    pd = get_session(sid).product_design
+    assert pd.blueprint_approved is False
+    assert platform_chat_flow.has_running_build(get_session(sid)) is False
 
 
 # -- 3. every frozen refusal is typed ----------------------------------------

@@ -190,6 +190,17 @@ def intake_frozen(state: Any) -> bool:
 INTAKE_FROZEN = "INTAKE_FROZEN"
 
 
+def draft_refused(state: Any, output_root: Optional[Path] = None) -> bool:
+    """True when a new draft may not replace the blueprint: a build is
+    running, or the intake is frozen and the build did not end in a terminal
+    failure. A new brief over a dead build is its way out: it replaces the
+    blueprint, starts nothing and resumes nothing. One rule for the chat's
+    Draft and POST /product/draft."""
+    if has_running_build(state):
+        return True
+    return intake_frozen(state) and not is_generation_terminal_failure(state, output_root)
+
+
 def frozen_draft_reply(state: Any) -> Dict[str, Any]:
     """The typed refusal of a draft on a frozen intake (the chat's twin of
     the 409 on POST /product/draft): nothing is drafted or replaced."""
