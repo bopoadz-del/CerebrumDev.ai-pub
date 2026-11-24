@@ -906,6 +906,10 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
         }
 
     if action == "draft_platform":
+        if platform_chat_flow.draft_refused(state):
+            # The model's Draft replaces the blueprint like the typed Draft
+            # and POST /product/draft, so it obeys their one frozen rule.
+            return platform_chat_flow.frozen_draft_reply(state)
         brief = _consolidated_brief(state, message, decision.get("brief") or "")
         result = platform_chat_flow.draft_from_chat(state, brief)
         state.product_design.elicitation_turns = []

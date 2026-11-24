@@ -216,22 +216,32 @@ def frozen_draft_reply(state: Any) -> Dict[str, Any]:
     }
 
 
-def blueprint_takes_declared_vertical(state: Any) -> None:
+def blueprint_takes_declared_vertical(state: Any, confirmed: Optional[Dict[str, Any]] = None) -> None:
     """After Confirm, the blueprint's industry is the declared one: the only
     place the blueprint's industry changes. A pending draft also takes it as
     its product id and session domain (what the typed industry did before it
     went through Confirm); an approved blueprint, reopened after a failure,
-    keeps its product id so the resumed build stays on its own branch."""
+    keeps its product id so the resumed build stays on its own branch.
+
+    ``confirmed`` is what the Confirm stored. An industry it cleared puts the
+    blueprint on the no-industry value a draft without one carries
+    (``NO_VERTICAL``); with no industry declared and none cleared, the
+    blueprint keeps the industry it was drafted with."""
+    from app.factory.store_kits import NO_VERTICAL
+
     pd = state.product_design
     blueprint = pd.blueprint
-    if not isinstance(blueprint, dict) or not pd.vertical:
+    if not isinstance(blueprint, dict):
         return
-    if blueprint.get("vertical") == pd.vertical:
+    if not pd.vertical and "vertical" not in (confirmed or {}):
         return
-    blueprint["vertical"] = pd.vertical
+    declared = pd.vertical or NO_VERTICAL
+    if blueprint.get("vertical") == declared:
+        return
+    blueprint["vertical"] = declared
     if pd.blueprint_approved:
         return
-    blueprint["product_id"] = pd.vertical
+    blueprint["product_id"] = declared
     state.config.domain = session_domain_from_blueprint(ProductBlueprint.model_validate(blueprint))
 
 
@@ -324,7 +334,7 @@ def apply_intake_action(
                 "summary": "There is no proposed intake to confirm.",
                 "intake": intake_view(state),
             }
-        blueprint_takes_declared_vertical(state)
+        blueprint_takes_declared_vertical(state, stored)
         parts = [f"{k.replace('_', ' ')} {v or 'cleared'}" for k, v in stored.items()]
         summary = "Confirmed: " + ", ".join(parts) + "."
         if stored.get("build_level"):
@@ -1822,7 +1832,7 @@ def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict
         return not_a_failed_build_reply(state)
     stored = confirm_intake(pd)
     pd.intake_reopened = False
-    blueprint_takes_declared_vertical(state)
+    blueprint_takes_declared_vertical(state, stored)
     reply = resume_failed_platform(
         state, output_root=output_root, triggered_by="continue_with_intake", intake_changed=True
     )

@@ -92,18 +92,80 @@ def test_no_declared_industry_or_no_blueprint_changes_nothing(blueprint):
     assert state.product_design.blueprint == raw
 
 
+def _record_builds(monkeypatch) -> list:
+    """generate_product stand-in: records the blueprint each build runs on."""
+    built: list = []
+
+    def generate(bp, output_dir, **kwargs):
+        built.append((bp.vertical, bp.product_id))
+        return {"engine": "runner", "output_dir": str(output_dir), "product_id": bp.product_id,
+                "inputs_hash": "h", "build": None}
+
+    monkeypatch.setattr(platform_chat_flow, "generate_product", generate)
+    monkeypatch.setattr(platform_chat_flow, "_live_build_thread", lambda _o: None)
+    return built
+
+
 @pytest.mark.parametrize("industry", ["quarry_yards", "salt_pans"])
-def test_typed_industry_then_approve_builds_on_the_declared_answer(industry):
+def test_typed_industry_then_approve_builds_on_the_declared_answer(tmp_path, monkeypatch, industry):
     """The reviewer's path: declared Y, typed X, Approve with X unsaved. The
-    blueprint Approve hashes is still Y; only Save moves both together."""
-    state = _state(_draft("kiln_works"), vertical="kiln_works", approved=False)
+    build runs on Y; only Save moves the declared answer and the blueprint
+    together, and a build approved after the Save runs on X."""
+    built = _record_builds(monkeypatch)
 
-    platform_chat_flow.apply_refinement(state, FloorAction.SET_VERTICAL, industry)
-    pd = state.product_design
+    unsaved = _state(_draft("kiln_works"), vertical="kiln_works", approved=False)
+    platform_chat_flow.apply_refinement(unsaved, FloorAction.SET_VERTICAL, industry)
+    pd = unsaved.product_design
     assert (pd.vertical, pd.blueprint["vertical"]) == ("kiln_works", "kiln_works")
+    platform_chat_flow.approve_and_generate(unsaved, output_root=tmp_path / "unsaved")
+    assert built[-1][0] == "kiln_works"
 
-    platform_chat_flow.apply_intake_action(state, FloorAction.CONFIRM_INTAKE)
+    saved = _state(_draft("kiln_works"), vertical="kiln_works", approved=False)
+    platform_chat_flow.apply_refinement(saved, FloorAction.SET_VERTICAL, industry)
+    platform_chat_flow.apply_intake_action(saved, FloorAction.CONFIRM_INTAKE)
+    pd = saved.product_design
     assert (pd.vertical, pd.blueprint["vertical"]) == (industry, industry)
+    platform_chat_flow.approve_and_generate(saved, output_root=tmp_path / "saved")
+    assert built[-1][0] == industry
+    assert len(built) == 2
+
+
+@pytest.mark.parametrize("cleared", ["product", "Product"])
+def test_clearing_the_industry_on_a_draft_takes_it_off_the_blueprint(cleared):
+    """Confirm clears the declared industry: the blueprint takes the value a
+    draft without an industry carries, so Approve never builds on the old one."""
+    from app.factory.store_kits import NO_VERTICAL
+
+    state = _state(_draft("kiln_works"), vertical="kiln_works", approved=False)
+    state.product_design.intake_proposal = {"vertical": cleared}
+
+    reply = platform_chat_flow.apply_intake_action(state, FloorAction.CONFIRM_INTAKE)
+
+    assert reply["ok"] is True
+    pd = state.product_design
+    assert pd.vertical is None
+    assert (pd.blueprint["vertical"], pd.blueprint["product_id"]) == (NO_VERTICAL, NO_VERTICAL)
+
+
+@pytest.mark.parametrize("industry", ["quarry_yards", "salt_pans"])
+def test_confirm_on_a_reopened_failed_build_resumes_on_the_declared_industry(
+    tmp_path, monkeypatch, industry
+):
+    """The second Confirm door (Change answers on a dead build): the changed
+    industry reaches the blueprint the resumed build runs on, and the build
+    keeps its own product id so it stays on its branch of record."""
+    _out, state = _failed_platform(tmp_path, "sess_one_rule_reopen_" + industry)
+    built = _record_builds(monkeypatch)
+    product_id = state.product_design.blueprint["product_id"]
+    assert platform_chat_flow.continue_with_intake(state)["ok"] is True
+    state.product_design.intake_proposal = {"vertical": industry}
+
+    reply = platform_chat_flow.confirm_and_continue(state)
+
+    assert reply["ok"] is True, reply
+    bp = state.product_design.blueprint
+    assert (bp["vertical"], bp["product_id"]) == (industry, product_id)
+    assert built == [(industry, product_id)]
 
 
 @pytest.mark.parametrize("answer", [{"country": "zr"}, {"currency": "zrx"}])
@@ -203,3 +265,53 @@ def test_every_intake_action_on_a_frozen_intake_is_refused_typed(tmp_path, actio
     assert reply["ok"] is False
     assert reply["refused"] == platform_chat_flow.INTAKE_FROZEN
     assert state.product_design.country == "ZQ"
+
+
+# -- 4. the chat model's Draft obeys the same rule ---------------------------
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_the_chat_models_draft_obeys_the_frozen_rule(tmp_path, monkeypatch, client, finished):  # noqa: F811
+    """Free text the chat model turns into a Draft is the third door that
+    replaces the blueprint: refused on a finished build, allowed over a
+    terminal failure, like the typed Draft and POST /product/draft."""
+    from app.factory import platform_chat_llm
+
+    sid = f"sess_one_rule_model_draft_{int(finished)}"
+    out, state = _failed_platform(tmp_path, sid)
+    if finished:
+        _finish(out)
+    before = dict(state.product_design.blueprint)
+    decision = {
+        "action": "draft_platform",
+        "brief": "a kiln rental desk",
+        "message": "",
+        "refine": {"op": "", "value": ""},
+        "connectors": [],
+        "missing_connectors": [],
+    }
+    monkeypatch.setattr(platform_chat_llm, "should_orchestrate", lambda *a, **k: True)
+    monkeypatch.setattr(platform_chat_llm, "try_decide_with_reason", lambda *a, **k: (dict(decision), None))
+    drafted: list = []
+    real_draft = platform_chat_flow.draft_from_chat
+
+    def draft(st, brief):
+        drafted.append(brief)
+        return real_draft(st, brief)
+
+    monkeypatch.setattr(platform_chat_flow, "draft_from_chat", draft)
+
+    resp = client.post(f"/v1/sessions/{sid}/chat", json={"message": "make it a kiln rental desk"})
+
+    assert resp.status_code == 200, resp.text
+    pd = get_session(sid).product_design
+    refusals = [i for i in _infos(resp.text) if i.get("refused") == platform_chat_flow.INTAKE_FROZEN]
+    if finished:
+        assert refusals and drafted == []
+        assert pd.blueprint_approved is True
+        assert {k: v for k, v in pd.blueprint.items() if k != "locale"} == {
+            k: v for k, v in before.items() if k != "locale"
+        }
+    else:
+        assert refusals == [] and len(drafted) == 1
+        assert pd.blueprint_approved is False
