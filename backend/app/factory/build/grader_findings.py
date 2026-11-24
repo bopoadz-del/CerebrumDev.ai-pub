@@ -23,6 +23,9 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
+#: The grader's tier for "could not grade" (``grader.ERROR``; drift-tested).
+ERROR_TIER = "ERROR"
+
 #: Who a row belongs to.
 WRITER = "writer"
 FACTORY = "factory"
@@ -143,8 +146,47 @@ def plain_place(where: str, names: str) -> str:
     if where == "-" or names in (FILE, NONE):
         return ""
     if names == CAPABILITY:
-        return where.replace("_", " ").replace("-", " ").strip()[:PLACE_CHARS]
+        return _words(where)[:PLACE_CHARS]
+    if names == STEP:
+        return step_place(where)[:PLACE_CHARS]
     return where[:PLACE_CHARS]
+
+
+def _words(ident: str) -> str:
+    """An id as words: separators become spaces."""
+    return " ".join(ident.replace("_", " ").replace("-", " ").split())
+
+
+#: How the card names a UI step, by the step kind the UI grader writes before
+#: the colon of its step id (``<kind>:<target>``). The kinds are the grader's
+#: own fixed vocabulary; ``{}`` is the target in words. A kind not listed
+#: reads as its target alone.
+STEP_WORDS: Dict[str, str] = {
+    "load": "opening the app",
+    "bind": "the account check on the first page",
+    "attach": "attaching a {} file",
+    "parsed": "reading an attached file",
+    "honest_error": "the error message of the {} feature",
+    "screen": "the {} screen",
+    "route": "the {} feature",
+}
+
+
+def step_place(step: str) -> str:
+    """A UI step id (``screen:command_center``, ``route:/v1/delay_damages``)
+    in words: the step kind's frame around the target's last path segment.
+    Never a raw id, a path or a separator."""
+    kind, sep, target = step.partition(":")
+    if not sep:
+        return _words(step)
+    parts = [part for part in target.split("/") if part.strip("#")]
+    leaf = _words(parts[-1]) if parts else ""
+    frame = STEP_WORDS.get(kind.strip())
+    if frame is None:
+        return leaf or _words(kind)
+    if "{}" in frame and not leaf:
+        return ""
+    return " ".join(frame.format(leaf).split())
 
 
 def finding_rows(verdict: Any) -> List[Dict[str, str]]:
@@ -161,39 +203,61 @@ def finding_rows(verdict: Any) -> List[Dict[str, str]]:
 
 def log_line(row: Mapping[str, str]) -> str:
     """One finding as one log line: what, where, which rule, who owns it, and
-    the grader's own words (redacted, capped)."""
+    the grader's own words. Everything the grader wrote is redacted; the quote
+    is capped. Whether it went back to the writer is logged where that is
+    decided (:func:`log_handback`), never guessed here."""
     from app.factory.build.sanitize import sanitize_for_status
 
     quote = sanitize_for_status(str(row.get("quote") or ""))[:QUOTE_CHARS]
+    where = sanitize_for_status(str(row.get("where") or ""))[:QUOTE_CHARS]
     return (
-        f"rule={row.get('rule')} where={row.get('where')} owner={row.get('owner')} "
-        f"to_writer={'yes' if row.get('owner') == WRITER else 'no'} what={row.get('what')} "
-        f"quote={quote}"
+        f"rule={row.get('rule')} where={where} owner={row.get('owner')} "
+        f"what={row.get('what')} quote={quote}"
     )
 
 
 def log_verdict(session_id: str, tier: str, rows: Sequence[Mapping[str, str]]) -> None:
     """The verdict and each of its findings, one line each, with the session id
     on every line, so a log filter on the session shows what the grader asked
-    for and what goes back to the writer."""
+    for. ``writer_owned`` counts the rows that are the writer's to fix; what
+    is actually sent back is logged by :func:`log_handback`."""
     sid = str(session_id or "-")
-    to_writer = sum(1 for r in rows if r.get("owner") == WRITER)
+    owned = sum(1 for r in rows if r.get("owner") == WRITER)
     logger.info(
-        "grader verdict session=%s tier=%s findings=%d to_writer=%d",
+        "grader verdict session=%s tier=%s findings=%d writer_owned=%d",
         sid,
         tier,
         len(rows),
-        to_writer,
+        owned,
     )
     for n, row in enumerate(rows, 1):
         logger.info("grader finding session=%s %d/%d %s", sid, n, len(rows), log_line(row))
 
 
-def headline(state: str, rows: Sequence[Mapping[str, str]], sent_to_writer: int) -> str:
+def log_handback(session_id: str, sent: int, round_no: int, budget: int) -> None:
+    """The writer was handed ``sent`` findings to fix, in round ``round_no`` of
+    ``budget``: the one line that says work went back."""
+    logger.info(
+        "grader handback session=%s to_writer=%d round=%d/%d",
+        str(session_id or "-"),
+        sent,
+        round_no,
+        budget,
+    )
+
+
+def log_stop(session_id: str, reason: str) -> None:
+    """The verdict ended the run: nothing goes back to the writer."""
+    logger.info("grader stop session=%s to_writer=0 reason=%s", str(session_id or "-"), reason)
+
+
+def headline(state: str, rows: Sequence[Mapping[str, str]], sent_to_writer: int, tier: str = "") -> str:
     """The one sentence above the findings on the build card, from the grader
-    view's own state and counts. Empty when there is nothing to show."""
+    view's own state, tier and counts. Empty when there is nothing to show."""
     if not rows or state == "certified":
         return ""
+    if tier == ERROR_TIER:
+        return "The quality check could not finish, so it cannot pass the build:"
     n = len(rows)
     found = f"{n} problem{'s' if n != 1 else ''}"
     if state == "sent_back":

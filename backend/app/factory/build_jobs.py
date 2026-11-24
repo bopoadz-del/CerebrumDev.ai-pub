@@ -1230,8 +1230,9 @@ def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
             "tier": tier,
             "round": int(payload.get("round") or prior.get("round") or 0),
             "budget": REWORK_BUDGET,
-            # The verdict's own rows (its NOTE); a hand-back or a stop keeps them.
-            "findings": _grader_rows(payload) if kind == "NOTE" else prior.get("findings", []),
+            # The verdict's own rows; an event that carries none (a hand-back,
+            # a stop, the Factory-fault note) keeps the rows it follows.
+            "findings": _grader_rows(payload, prior.get("findings", [])),
             # What the hand-back actually sent the writer: its own work list.
             "sent_to_writer": (
                 len(payload.get("work_list") or ()) if kind == "REWORK" else prior.get("sent_to_writer", 0)
@@ -1240,20 +1241,24 @@ def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
     if view is not None:
         from app.factory.build.grader_findings import headline
 
-        view["headline"] = headline(view["state"], view["findings"], view["sent_to_writer"])
+        view["headline"] = headline(view["state"], view["findings"], view["sent_to_writer"], view["tier"])
     return view
 
 
-def _grader_rows(payload: Mapping[str, Any]) -> List[Dict[str, str]]:
-    """The finding rows a grader verdict NOTE carries; a NOTE written before
-    rows were recorded is read from its quoted items, owner unknown."""
+def _grader_rows(payload: Mapping[str, Any], prior: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """The finding rows a grader event carries: its recorded rows, else (a
+    verdict NOTE written before rows were recorded) its quoted items with the
+    owner unknown, else ``prior`` -- an event with neither carries no verdict
+    of its own and never wipes the one it follows."""
     from app.factory.build.grader_findings import MAX_ROWS, finding_row
 
     rows = payload.get("grader_findings")
     if isinstance(rows, list):
         return [_redacted(dict(r)) for r in rows if isinstance(r, Mapping)][:MAX_ROWS]
-    items = payload.get("grader_items") or []
-    return [_redacted(finding_row(str(i), "")) for i in items][:MAX_ROWS]
+    items = payload.get("grader_items")
+    if isinstance(items, list):
+        return [_redacted(finding_row(str(i), "")) for i in items][:MAX_ROWS]
+    return prior
 
 
 def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:

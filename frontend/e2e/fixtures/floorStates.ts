@@ -243,10 +243,10 @@ const GRADER_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
   {
     rule: 'screen_walk',
     what: 'This screen step did not work when the quality check walked through the app.',
-    where: 'save a new contract and see it in the register',
-    place: 'save a new contract and see it in the register',
+    where: 'route:/v1/variation_orders_register',
+    place: 'the variation orders register feature',
     owner: 'writer',
-    quote: 'UI step FAIL: save a new contract and see it in the register',
+    quote: 'UI step FAIL: route:/v1/variation_orders_register',
   },
   {
     rule: 'no_typed_in_values',
@@ -255,6 +255,26 @@ const GRADER_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
     place: '',
     owner: 'writer',
     quote: "remove baked literals from app/actions/contract_settings.py: ['0.05']",
+  },
+]
+
+/** UI steps as the UI grader names them; the server puts them in words. */
+const GRADER_UI_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
+  {
+    rule: 'screen_walk',
+    what: 'This screen step did not work when the quality check walked through the app.',
+    where: 'screen:payment_certificate_command_center',
+    place: 'the payment certificate command center screen',
+    owner: 'writer',
+    quote: 'UI step FAIL: screen:payment_certificate_command_center',
+  },
+  {
+    rule: 'screen_walk',
+    what: 'This screen step did not work when the quality check walked through the app.',
+    where: 'honest_error:/v1/retention_management',
+    place: 'the error message of the retention management feature',
+    owner: 'writer',
+    quote: 'UI step FAIL: honest_error:/v1/retention_management',
   },
 ]
 
@@ -284,7 +304,7 @@ const BUILD_GRADER_REFUSED: BuildStatus = {
     code: 'grader_not_certified',
     kind: 'rounds_spent',
     title: 'used up its fix rounds',
-    summary: 'A check still did not pass the work (2 items), and this build has no fix rounds left.',
+    summary: 'A check still did not pass the work (4 items), and this build has no fix rounds left.',
     next:
       'Continuing does not grant new fix rounds: the step runs again and stops again if the same check fails.',
     ref: '5c0de1a2b3',
@@ -299,9 +319,9 @@ const BUILD_GRADER_REFUSED: BuildStatus = {
     tier: 'NOT_CERTIFIED',
     round: 1,
     budget: 1,
-    findings: GRADER_ROWS.slice(0, 2),
+    findings: [...GRADER_ROWS.slice(0, 2), ...GRADER_UI_ROWS],
     sent_to_writer: 3,
-    headline: 'The quality check did not pass the build. It found 2 problems:',
+    headline: 'The quality check did not pass the build. It found 4 problems:',
   },
 }
 

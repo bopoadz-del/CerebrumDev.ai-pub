@@ -166,16 +166,23 @@ def test_a_send_back_is_in_the_ledger_the_log_and_the_build_status(
     ]
 
     lines = [r.getMessage() for r in caplog.records if r.name == grader_findings.__name__]
-    assert f"grader verdict session={session} tier=NOT_CERTIFIED findings=2 to_writer=1" in lines
+    assert f"grader verdict session={session} tier=NOT_CERTIFIED findings=2 writer_owned=1" in lines
     assert any(
-        line.startswith(f"grader finding session={session} 1/2 rule=function_check where={cap} owner=writer to_writer=yes")
+        line.startswith(f"grader finding session={session} 1/2 rule=function_check where={cap} owner=writer what=")
         for line in lines
     )
-    assert any(f"session={session} 2/2 rule=factory_file" in line and "to_writer=no" in line for line in lines)
+    assert any(f"session={session} 2/2 rule=factory_file" in line and "owner=factory" in line for line in lines)
+    # What went back is logged where it is decided: one hand-back, then the
+    # spent budget stops the run and nothing more goes to the writer.
+    sent = [line for line in lines if line.startswith(f"grader handback session={session} ")]
+    assert sent == [f"grader handback session={session} to_writer=1 round=1/1"]
+    assert lines[-1] == f"grader stop session={session} to_writer=0 reason=grader_not_certified"
+    assert not any("to_writer=yes" in line for line in lines)
 
     view = build_status(runner.ledger.path.parent)["grader"]
     assert view["state"] == "stopped"
     assert [r["where"] for r in view["findings"]] == [cap, f"baked literals in app/{cap}.py"]
+    assert [r["owner"] for r in view["findings"]] == [WRITER, FACTORY]
     assert view["sent_to_writer"] == 1
     assert view["headline"] == "The quality check did not pass the build. It found 2 problems:"
 
@@ -202,8 +209,77 @@ def test_a_grader_that_could_not_grade_is_logged_too(smoke_blueprint, tmp_path, 
         outcome = runner.run()
     assert not outcome.ok
     lines = [r.getMessage() for r in caplog.records if r.name == grader_findings.__name__]
-    assert "grader verdict session=sess_ccc333 tier=ERROR findings=1 to_writer=0" in lines
+    assert "grader verdict session=sess_ccc333 tier=ERROR findings=1 writer_owned=0" in lines
     assert any(message in line and "owner=run" in line for line in lines)
+    assert lines[-1] == "grader stop session=sess_ccc333 to_writer=0 reason=grader_error"
+
+    # The card has the reason too: a crash is never an empty refusal.
+    from app.factory.build_jobs import build_status
+
+    view = build_status(runner.ledger.path.parent)["grader"]
+    assert view["state"] == "stopped"
+    assert [r["owner"] for r in view["findings"]] == [RUN]
+    assert message in view["findings"][0]["quote"]
+    assert view["headline"] == "The quality check could not finish, so it cannot pass the build:"
+
+
+@pytest.mark.parametrize("cap, session", [("zorblat_total", "sess_ddd444"), ("plinket_count", "sess_eee555")])
+def test_a_factory_fault_refusal_keeps_its_findings_on_the_card(
+    smoke_blueprint, tmp_path, monkeypatch, caplog, cap, session
+):
+    """Only Factory-owed items: the run ends naming the Factory, and the card
+    still shows what the grader found (the fault note carries no rows of its
+    own and must not wipe the verdict's)."""
+    from app.factory.build import grader as grader_mod
+    from app.factory.build.runner import RoleRunner
+    from app.factory.build_jobs import build_status
+
+    monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
+    owed = f"FACTORY owes baked literals in app/{cap}.py (stamped): ['v']"
+
+    def factory_only(**kwargs):
+        return grader_mod.GraderVerdict(tier=grader_mod.NOT_CERTIFIED, items=(owed,), factory_owed=(owed,))
+
+    monkeypatch.setattr(grader_mod, "run_grader", factory_only)
+    runner = RoleRunner(
+        smoke_blueprint,
+        tmp_path / "build",
+        roles=_harness(monkeypatch),
+        session_id=session,
+        brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}',
+    )
+    with caplog.at_level(logging.INFO, logger=grader_findings.__name__):
+        outcome = runner.run()
+    assert not outcome.ok
+    view = build_status(runner.ledger.path.parent)["grader"]
+    assert view["state"] == "stopped"
+    assert [(r["where"], r["owner"]) for r in view["findings"]] == [(f"baked literals in app/{cap}.py", FACTORY)]
+    assert view["headline"] == "The quality check did not pass the build. It found 1 problem:"
+    lines = [r.getMessage() for r in caplog.records if r.name == grader_findings.__name__]
+    assert lines[-1] == f"grader stop session={session} to_writer=0 reason=grader_factory_fault"
+    assert not any(line.startswith("grader handback") for line in lines)
+
+
+@pytest.mark.parametrize(
+    "follow, wheres",
+    [
+        ({}, ["zorblat_total"]),
+        ({"grader_items": []}, []),
+    ],
+)
+def test_an_event_with_no_verdict_of_its_own_keeps_the_rows_before_it(tmp_path, follow, wheres):
+    from app.factory.build.grader import GRADER_GATE, NOT_CERTIFIED
+    from app.factory.build.ledger import BuildLedger, EventKind
+    from app.factory.build_jobs import _grader_view
+
+    ledger = BuildLedger(tmp_path / "build_ledger.jsonl")
+    ledger.start_run(product_id="product", inputs_hash="h")
+    base = {"grader_gate": GRADER_GATE, "grader_tier": NOT_CERTIFIED}
+    first = [finding_row("function grade FAIL: zorblat_total", WRITER)]
+    ledger.append(EventKind.NOTE, role="WRITER", detail="v", payload={**base, "grader_findings": first})
+    ledger.append(EventKind.NOTE, role="WRITER", detail="next", payload={**base, **follow})
+    view = _grader_view(list(ledger.events()))
+    assert [r["where"] for r in view["findings"]] == wheres
 
 
 @pytest.mark.parametrize(
@@ -252,11 +328,34 @@ def test_the_headline_is_read_from_the_view_state(state, rows, sent, expected):
     assert grader_findings.headline(state, rows, sent) == expected
 
 
+@pytest.mark.parametrize(
+    "tier, expected",
+    [
+        ("ERROR", "The quality check could not finish, so it cannot pass the build:"),
+        ("NOT_CERTIFIED", "The quality check did not pass the build. It found 1 problem:"),
+    ],
+)
+def test_a_grader_that_could_not_finish_says_so_in_the_headline(tier, expected):
+    from app.factory.build import grader
+
+    assert grader_findings.ERROR_TIER == grader.ERROR
+    assert grader_findings.headline("stopped", [_ROW], 0, tier) == expected
+
+
 @pytest.mark.parametrize("secret", ["OPENROUTER_API_KEY=planted-one", "DEEPSEEK_API_KEY=planted-two"])
 def test_a_secret_in_the_graders_words_never_reaches_the_log(secret):
     line = grader_findings.log_line(finding_row(f"grader crashed: RuntimeError: {secret}", RUN))
     assert secret.split("=")[1] not in line
     assert "[redacted]" in line
+
+
+@pytest.mark.parametrize("secret", ["OPENROUTER_API_KEY=planted-three", "DEEPSEEK_API_KEY=planted-four"])
+def test_a_secret_in_the_place_never_reaches_the_log(secret):
+    row = finding_row(f"function grade FAIL: {secret}", WRITER)
+    assert secret in row["where"]
+    line = grader_findings.log_line(row)
+    assert secret.split("=")[1] not in line
+    assert line.count("[redacted]") == 2
 
 
 @pytest.mark.parametrize(
@@ -265,6 +364,14 @@ def test_a_secret_in_the_graders_words_never_reaches_the_log(secret):
         ("function grade FAIL: zorblat_total", "zorblat total"),
         ("de-hardwire plinket-count: CONSTANT", "plinket count"),
         ("UI step FAIL: open the list", "open the list"),
+        ("UI step FAIL: route:/v1/zorblat_ledger", "the zorblat ledger feature"),
+        ("UI step FAIL: honest_error:/v1/plinket-sheet", "the error message of the plinket sheet feature"),
+        ("UI step FAIL: screen:zorblat_board", "the zorblat board screen"),
+        ("UI step FAIL: load:/", "opening the app"),
+        ("UI step FAIL: attach:pdf", "attaching a pdf file"),
+        ("UI step FAIL: newkind:/v1/plinket_list", "plinket list"),
+        ("UI step FAIL: route:/", ""),
+        ("UI step FAIL: newkind:/", "newkind"),
         ("re-run writer on: is plinket read?", "is plinket read?"),
         ("remove baked literals from app/a.py: ['x']", ""),
         ("FACTORY owes copied brief in app/c.py (stamped): ['z']", ""),
@@ -274,4 +381,15 @@ def test_a_secret_in_the_graders_words_never_reaches_the_log(secret):
 def test_the_card_place_never_carries_a_file_path_or_a_raw_id(item, place):
     row = finding_row(item, WRITER)
     assert row["place"] == place
-    assert "/" not in row["place"] and "_" not in row["place"]
+    assert "/" not in row["place"] and "_" not in row["place"] and ":" not in row["place"]
+
+
+@pytest.mark.parametrize("kind", ["route", "screen"])
+def test_every_step_kind_on_the_card_is_one_the_ui_grader_writes(kind):
+    """Drift guard: the step kinds the card names are the UI grader's own."""
+    from app.factory.build.product_grader import ui_grader
+
+    source = inspect.getsource(ui_grader)
+    assert kind in grader_findings.STEP_WORDS
+    for known in grader_findings.STEP_WORDS:
+        assert '"' + known in source

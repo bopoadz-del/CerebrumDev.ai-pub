@@ -900,7 +900,7 @@ test.describe('stepper at 360x780', () => {
 test.describe('grader findings at 360x780', () => {
   test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
 
-  const COUNT = { 'grader-sent-back': 3, 'grader-refused': 2 } as const
+  const COUNT = { 'grader-sent-back': 3, 'grader-refused': 4 } as const
   for (const state of ['grader-sent-back', 'grader-refused'] as const) {
     test(`${state}: the findings are on the face, plain, whole and inside the screen`, async ({ page }) => {
       await openState(page, state)
@@ -910,12 +910,40 @@ test.describe('grader findings at 360x780', () => {
       expect(await detail.evaluate((el) => (el as HTMLDetailsElement).open)).toBe(false)
       await expect(box.getByTestId('floor-grader-finding')).toHaveCount(COUNT[state])
       const text = (await box.textContent()) ?? ''
-      for (const machine of ['function grade FAIL', 'UI step FAIL', 'function_check', 'variation_orders', '.py', 'NOT_CERTIFIED']) {
+      for (const machine of ['function grade FAIL', 'UI step FAIL', 'function_check', 'variation_orders', '.py', 'NOT_CERTIFIED', 'route:', 'screen:', 'honest_error', '/v1/', '_']) {
         expect(text).not.toContain(machine)
       }
       // Every line sits inside the viewport's width.
       const rights = await box.locator('li').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().right))
       for (const r of rights) expect(r).toBeLessThanOrEqual(360)
+      // No word is broken across lines: every line ends at a space or the end.
+      const midWord = await box.locator('li').evaluateAll((els) =>
+        els.some((el) => {
+          const range = document.createRange()
+          const node = el.firstChild
+          if (!node || !node.textContent) return false
+          const text = node.textContent
+          let lastTop = -1
+          for (let i = 0; i < text.length; i += 1) {
+            range.setStart(node, i)
+            range.setEnd(node, i + 1)
+            const top = range.getBoundingClientRect().top
+            if (lastTop >= 0 && top > lastTop + 2 && /\S/.test(text[i - 1]) && /\S/.test(text[i])) return true
+            lastTop = top
+          }
+          return false
+        }),
+      )
+      expect(midWord).toBe(false)
+      // Scrolled to the end, the last finding sits above the pinned action bar.
+      const last = box.getByTestId('floor-grader-finding').last()
+      await last.scrollIntoViewIfNeeded()
+      const bar = page.locator('.action-bar-pinned')
+      if (await bar.count()) {
+        const lastBox = await last.boundingBox()
+        const barBox = await bar.first().boundingBox()
+        if (lastBox && barBox) expect(lastBox.y + lastBox.height).toBeLessThanOrEqual(barBox.y + 1)
+      }
       await detail.locator('summary').click()
       await expect(detail.getByTestId('floor-grader-findings-raw')).toContainText('function grade FAIL: variation_orders')
     })
