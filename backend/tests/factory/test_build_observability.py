@@ -214,7 +214,7 @@ def test_a_build_with_no_process_behind_it_reports_stalled(tmp_path):
     status = build_status(out)
     assert status["state"] == "stalled", status
     # No thread in this process: named as an orphan, with the way out.
-    assert "continue" in status["detail"]
+    assert "Try again" in status["detail"]
     assert status["honesty"] == "BUILD_THREAD_ORPHANED"
     # A stalled build is not downloadable either.
     from app.factory.build_jobs import is_build_complete
@@ -536,4 +536,4 @@ def test_a_restarted_server_frees_the_floor_in_minutes_not_half_an_hour(tmp_path
     monkeypatch.setattr(build_jobs, "_live_runner_thread", lambda product_id: False)
     status = build_status(out)
     assert status["state"] == "stalled"
-    assert "restarted" in status["detail"] and "continue" in status["detail"]
+    assert "restarted" in status["detail"] and "Try again" in status["detail"]

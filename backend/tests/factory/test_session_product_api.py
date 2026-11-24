@@ -243,6 +243,24 @@ def test_accept_golden_vs_decline_two_different_outcomes(client, monkeypatch):
     _seed.config.domain = "__before_accept__"
     update_session("sess_accept_golden", _seed)
 
+    # An approved blueprint is frozen: accepting the offer on it is refused
+    # with the typed INTAKE_FROZEN and the disk keeps the approved draft.
+    r = client.post("/v1/sessions/sess_accept_golden/product/draft/accept-golden")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["refused"] == "INTAKE_FROZEN"
+    _ss._session_store.pop("sess_accept_golden", None)
+    _frozen = get_session("sess_accept_golden")
+    assert _frozen.product_design.blueprint["product_id"] == "estate"
+    assert _frozen.product_design.blueprint_approved is True
+
+    # Change answers on a build that is still a terminal failure is the one
+    # state where an approved blueprint may change: there accept goes through.
+    from app.factory import platform_chat_flow
+
+    monkeypatch.setattr(platform_chat_flow, "is_generation_terminal_failure", lambda *_a, **_k: True)
+    _frozen.product_design.intake_reopened = True
+    update_session("sess_accept_golden", _frozen)
+
     r = client.post("/v1/sessions/sess_accept_golden/product/draft/accept-golden")
     assert r.status_code == 200, r.text
     acc = r.json()

@@ -283,19 +283,25 @@ def test_an_unchanged_answer_on_an_approved_session_lets_the_action_run(tmp_path
 
 
 @pytest.mark.parametrize(
-    "running, approved, reopened, frozen",
+    "running, approved, reopened, terminal_failure, frozen",
     [
-        (True, False, True, True),
-        (False, False, True, False),
-        (False, True, False, True),
-        (False, True, True, False),
+        (True, False, True, True, True),
+        (False, False, True, True, False),
+        (False, True, False, True, True),
+        (False, True, True, True, False),
+        # The reopened mark on a build that is no longer a terminal failure
+        # (it resumed, or finished) opens nothing.
+        (False, True, True, False, True),
     ],
 )
 def test_intake_frozen_reads_running_approved_and_reopened(
-    monkeypatch, running, approved, reopened, frozen
+    monkeypatch, running, approved, reopened, terminal_failure, frozen
 ):
     pd = SimpleNamespace(blueprint_approved=approved, intake_reopened=reopened)
     monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: running)
+    monkeypatch.setattr(
+        platform_chat_flow, "is_generation_terminal_failure", lambda _s, _o=None: terminal_failure
+    )
     assert platform_chat_flow.intake_frozen(SimpleNamespace(product_design=pd)) == frozen
 
 
@@ -314,7 +320,10 @@ def test_apply_intake_action_refuses_an_action_that_is_not_intake(monkeypatch, a
     "vertical, country, currency, edit",
     [
         (None, None, None, {}),
-        (None, "", "  ", {}),  # empty is "not changed"
+        # An empty country / currency SENT is the user's "clear it" (it was
+        # "not changed" before; the sheet could not clear a field). Not sent
+        # (None) is still "not changed".
+        (None, "", "  ", {"country": "", "currency": ""}),
         ("", None, None, {"vertical": NO_VERTICAL}),  # the explicit "no industry"
         ("Kiln Works", "zr", "zrx", {"vertical": "kiln_works", "country": "ZR", "currency": "ZRX"}),
     ],

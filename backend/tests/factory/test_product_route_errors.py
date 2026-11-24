@@ -62,6 +62,13 @@ def test_dual_registry_error_is_400(product_client, monkeypatch):
     monkeypatch.setattr(
         "app.routers.session_product.plan_blueprint", _boom
     )
+    # Planning is for a draft: an approved blueprint's answers are frozen
+    # and its plan is refused (INTAKE_FROZEN), so the draft is unapproved here.
+    from app.core.session_store import get_session, update_session
+
+    state = get_session(session_id)
+    state.product_design.blueprint_approved = False
+    update_session(session_id, state)
     res = client.post(f"/v1/sessions/{session_id}/product/plan")
     assert res.status_code == 400, res.text
     assert "both shelves" in res.json()["detail"]

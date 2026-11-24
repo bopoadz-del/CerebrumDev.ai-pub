@@ -1,0 +1,657 @@
+"""A reopened brief ends on every start path, and a Save never restarts a build.
+
+Change answers on a FAILED build reopens the brief. The reopening lasts only
+while that build is still a terminal failure: any start or resume (Try again,
+Start from scratch, Save and try again, a pasted build link) closes it, and a
+build that finished never counts as reopened, whatever the stored mark says.
+A Save on a running or finished build is refused with a typed reason and
+starts nothing. Every route that writes the blueprint obeys the same rule.
+
+The Save also stores exactly what the user picked: an answer equal to the
+declared one beats a chat suggestion for that field, and an empty country /
+currency clears it. A request refused at the tenant guard parks nothing.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.core.session_store import get_session, update_session
+from app.factory import platform_chat_flow
+from app.factory.build.ledger import BuildLedger, EventKind
+from tests.factory.test_branch_is_platform import _failed_platform
+from tests.factory.test_brief_one_write_path import _events, _infos, _open_session, client  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Every test here posts to the chat door; earlier tests in the same
+    process must not have spent its per-minute budget."""
+    from app.core.rate_limit import reset_rate_limits
+
+    reset_rate_limits()
+    yield
+    reset_rate_limits()
+
+
+def _stub_generate(monkeypatch) -> list:
+    """generate_product stand-in: records the call, reuses the given workspace."""
+    calls: list = []
+
+    def generate(bp, output_dir, **kwargs):
+        calls.append((Path(output_dir).name, kwargs.get("start_over"), kwargs.get("intake_changed")))
+        return {"engine": "runner", "output_dir": str(output_dir), "product_id": bp.product_id,
+                "inputs_hash": "h", "build": None}
+
+    monkeypatch.setattr(platform_chat_flow, "generate_product", generate)
+    monkeypatch.setattr(platform_chat_flow, "_live_build_thread", lambda _o: None)
+    return calls
+
+
+def _finish(output_dir) -> None:
+    """The run that was started finishes green."""
+    ledger = BuildLedger(Path(output_dir) / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.RUN_SUCCEEDED, detail="done")
+
+
+def _save(client, sid, **answers):  # noqa: F811
+    return client.post(
+        f"/v1/sessions/{sid}/chat",
+        json={"message": "", "action": "confirm_intake", **answers},
+    )
+
+
+def _try_again(state):
+    return platform_chat_flow.resume_failed_platform(state, triggered_by="continue")
+
+
+def _start_from_scratch(state):
+    return platform_chat_flow.start_over(state)
+
+
+@pytest.mark.parametrize("start", [_try_again, _start_from_scratch])
+def test_reopen_then_start_then_finish_then_save_is_refused_and_starts_nothing(
+    tmp_path, monkeypatch, client, start  # noqa: F811
+):
+    sid = f"sess_lock_{start.__name__}"
+    _out, state = _failed_platform(tmp_path, sid)
+    calls = _stub_generate(monkeypatch)
+    assert platform_chat_flow.continue_with_intake(state)["ok"] is True
+    assert platform_chat_flow.intake_reopened(state) is True
+
+    reply = start(state)
+    assert reply["ok"] is True
+    assert state.product_design.intake_reopened is False  # the start closed it
+    update_session(sid, state)
+    _finish(state.product_design.generation["output_dir"])
+    assert len(calls) == 1
+
+    resp = _save(client, sid, country="zr", currency="zrx")
+    assert resp.status_code == 200, resp.text
+    infos = _infos(resp.text)
+    assert infos and infos[0]["ok"] is False
+    assert infos[0]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    assert len(calls) == 1  # nothing started
+    pd = get_session(sid).product_design
+    assert (pd.country, pd.currency) == (None, None)
+
+
+@pytest.mark.parametrize("answers", [{}, {"country": "zr", "currency": "zrx"}])
+def test_a_stale_reopened_mark_on_a_finished_build_opens_nothing(
+    tmp_path, monkeypatch, client, answers  # noqa: F811
+):
+    """Whatever path started the build (a pasted link included) and whether
+    or not it cleared the mark: once the build is no longer a terminal
+    failure the brief is frozen and a Save starts nothing."""
+    sid = "sess_lock_stale_" + ("changed" if answers else "same")
+    out, state = _failed_platform(tmp_path, sid)
+    calls = _stub_generate(monkeypatch)
+    state.product_design.intake_reopened = True
+    update_session(sid, state)
+    _finish(out)
+
+    assert platform_chat_flow.intake_reopened(get_session(sid)) is False
+    resp = _save(client, sid, **answers)
+    assert resp.status_code == 200, resp.text
+    assert all(i["ok"] is False for i in _infos(resp.text))
+    assert calls == []
+    pd = get_session(sid).product_design
+    assert (pd.country, pd.currency) == (None, None)
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_confirm_and_continue_runs_only_on_a_terminal_failure(tmp_path, monkeypatch, finished):
+    out, state = _failed_platform(tmp_path, f"sess_lock_confirm_{int(finished)}")
+    calls = _stub_generate(monkeypatch)
+    state.product_design.intake_reopened = True
+    state.product_design.intake_proposal = {"country": "ZR", "currency": "ZRX"}
+    if finished:
+        _finish(out)
+
+    reply = platform_chat_flow.confirm_and_continue(state)
+
+    assert reply["ok"] is (not finished)
+    assert len(calls) == (0 if finished else 1)
+    # A refused Confirm stores nothing; an accepted one stores the answers.
+    assert state.product_design.country == (None if finished else "ZR")
+    assert state.product_design.intake_reopened is False
+    if finished:
+        assert reply["refused"] == platform_chat_flow.NOT_A_FAILED_BUILD
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_resume_failed_platform_runs_only_on_a_terminal_failure(tmp_path, monkeypatch, finished):
+    out, state = _failed_platform(tmp_path, f"sess_lock_resume_{int(finished)}")
+    calls = _stub_generate(monkeypatch)
+    if finished:
+        _finish(out)
+
+    reply = platform_chat_flow.resume_failed_platform(state)
+
+    assert reply["ok"] is (not finished)
+    assert len(calls) == (0 if finished else 1)
+    if finished:
+        assert reply["refused"] == platform_chat_flow.NOT_A_FAILED_BUILD
+
+
+@pytest.mark.parametrize(
+    "answers, stored",
+    [({"country": "zr", "currency": "zrx"}, ("ZR", "ZRX")), ({}, (None, None))],
+)
+def test_save_and_try_again_on_a_reopened_failure_still_resumes(
+    tmp_path, monkeypatch, client, answers, stored  # noqa: F811
+):
+    sid = "sess_lock_reopened_resumes_" + str(len(answers))
+    _out, state = _failed_platform(tmp_path, sid)
+    calls = _stub_generate(monkeypatch)
+    monkeypatch.setattr("app.routers.chat.require_remaining", lambda *a, **k: None)
+    monkeypatch.setattr("app.routers.chat.require_within_limit", lambda *a, **k: None)
+    monkeypatch.setattr("app.routers.session_product._require_build_tenant", lambda *a, **k: "t")
+    monkeypatch.setattr("app.routers.chat.assert_entitled", lambda *a, **k: None)
+    platform_chat_flow.continue_with_intake(state)
+    update_session(sid, state)
+
+    resp = _save(client, sid, **answers)
+
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1 and calls[0][2] is True
+    pd = get_session(sid).product_design
+    assert (pd.country, pd.currency, pd.intake_reopened) == (*stored, False)
+
+
+# -- the Save stores exactly what the user picked -----------------------------
+
+
+@pytest.mark.parametrize(
+    "suggested, picked, stored",
+    [
+        # The pick equals the declared answer: it beats the chat's suggestion.
+        ({"country": "ZR", "currency": "ZRX"}, {"country": "zq", "currency": "zqx"}, ("ZQ", "ZQX")),
+        # Clearing both fields stores "not declared", suggestion or not.
+        ({"country": "ZR", "currency": "ZRX"}, {"country": "", "currency": ""}, (None, None)),
+        ({}, {"country": "", "currency": ""}, (None, None)),
+    ],
+)
+def test_save_stores_the_users_pick_over_a_chat_suggestion(client, suggested, picked, stored):  # noqa: F811
+    sid = "sess_lock_pick_" + (picked["country"] or "clear") + str(len(suggested))
+    state = _open_session(sid, suggested)
+    state.product_design.country, state.product_design.currency = "ZQ", "ZQX"
+    update_session(sid, state)
+
+    resp = _save(client, sid, **picked)
+
+    assert resp.status_code == 200, resp.text
+    pd = get_session(sid).product_design
+    assert (pd.country, pd.currency) == stored
+    assert pd.intake_proposal is None
+
+
+# -- the tenant guard runs before an edit is parked ---------------------------
+
+
+@pytest.mark.parametrize(
+    "answers", [{"country": "zr", "currency": "zrx"}, {"vertical": "kiln works"}]
+)
+def test_a_request_refused_at_the_tenant_guard_parks_no_answer(tmp_path, client, answers):  # noqa: F811
+    """The failed platform belongs to another tenant than the dev caller: the
+    Save that would resume it is refused 403 and the session keeps nothing."""
+    sid = "sess_lock_tenant_first_" + "_".join(answers)
+    _out, state = _failed_platform(tmp_path, sid)
+    platform_chat_flow.continue_with_intake(state)
+    state.product_design.intake_proposal = None
+    update_session(sid, state)
+
+    resp = _save(client, sid, **answers)
+
+    assert resp.status_code == 403, resp.text
+    assert get_session(sid).product_design.intake_proposal is None
+
+
+# -- every route that writes the blueprint obeys the same lock ----------------
+
+
+@pytest.mark.parametrize("extra", [{"country": "zr"}, {"vertical_hint": "kiln works"}])
+def test_draft_route_is_refused_while_a_build_runs(tmp_path, monkeypatch, client, extra):  # noqa: F811
+    sid = "sess_lock_draft_running_" + "_".join(extra)
+    _out, state = _failed_platform(tmp_path, sid)
+    before = dict(state.product_design.blueprint)
+    monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: True)
+
+    resp = client.post(f"/v1/sessions/{sid}/product/draft", json={"brief": "a new ask", **extra})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    pd = get_session(sid).product_design
+    assert pd.blueprint == before and (pd.country, pd.vertical) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"approve": True, "blueprint": {"product_id": "other"}}, {"approve": False}],
+)
+def test_approve_route_cannot_replace_or_unapprove_a_frozen_blueprint(tmp_path, client, body):  # noqa: F811
+    sid = "sess_lock_approve_" + str(len(body))
+    out, state = _failed_platform(tmp_path, sid)
+    _finish(out)
+    before = dict(state.product_design.blueprint)
+
+    resp = client.post(f"/v1/sessions/{sid}/product/approve", json=body)
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    pd = get_session(sid).product_design
+    assert pd.blueprint == before and pd.blueprint_approved is True
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_accept_golden_route_is_refused_on_a_frozen_blueprint(tmp_path, client, finished):  # noqa: F811
+    """Finished, or failed and not reopened: the approved blueprint is frozen."""
+    sid = f"sess_lock_accept_golden_{int(finished)}"
+    out, state = _failed_platform(tmp_path, sid)
+    if finished:
+        _finish(out)
+    before = dict(state.product_design.blueprint)
+
+    resp = client.post(f"/v1/sessions/{sid}/product/draft/accept-golden", json={})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    assert get_session(sid).product_design.blueprint == before
+
+
+@pytest.mark.parametrize("vertical", ["kiln_works", "quarry_yards"])
+def test_set_vertical_changes_the_draft_and_proposes_the_industry_only(client, vertical):  # noqa: F811
+    from app.factory.floor_actions import FloorAction
+    from tests.factory.test_platform_chat_refinement import _draft_retail
+
+    state = _open_session("sess_lock_set_vertical_" + vertical, {})
+    _draft_retail(state)
+    declared = state.product_design.vertical
+
+    result = platform_chat_flow.apply_refinement(state, FloorAction.SET_VERTICAL, vertical)
+
+    assert result["blueprint"]["vertical"] == vertical
+    assert state.product_design.vertical == declared  # never written directly
+    assert state.product_design.intake_proposal["vertical"] == vertical
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_the_floor_reads_reopened_from_the_build_not_the_stored_mark(
+    tmp_path, client, finished  # noqa: F811
+):
+    """The intake line the Floor loads says reopened only while the build is
+    still a terminal failure: a mark left on a finished build shows a closed
+    brief, and a refused Save says the same."""
+    sid = f"sess_lock_view_{int(finished)}"
+    out, state = _failed_platform(tmp_path, sid)
+    state.product_design.intake_reopened = True
+    update_session(sid, state)
+    if finished:
+        _finish(out)
+
+    resp = client.get(f"/v1/sessions/{sid}/product/verticals")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["intake"]["reopened"] is (not finished)
+    assert platform_chat_flow.intake_view(get_session(sid))["reopened"] is (not finished)
+
+
+@pytest.mark.parametrize("answers", [{}, {"country": "zr", "currency": "zrx"}])
+def test_a_refused_save_on_a_finished_build_sends_a_closed_brief(
+    tmp_path, monkeypatch, client, answers  # noqa: F811
+):
+    """The refusal itself carries the closed brief, so the sheet stops
+    offering Save and try again on a build that finished."""
+    sid = "sess_lock_refused_view_" + str(len(answers))
+    out, state = _failed_platform(tmp_path, sid)
+    calls = _stub_generate(monkeypatch)
+    state.product_design.intake_reopened = True
+    update_session(sid, state)
+    _finish(out)
+
+    resp = _save(client, sid, **answers)
+
+    assert resp.status_code == 200, resp.text
+    intakes = [data for event, data in _events(resp.text) if event == "intake"]
+    assert intakes and all(i["reopened"] is False for i in intakes), resp.text
+    assert calls == []
+
+
+@pytest.mark.parametrize("extra", [{"country": "zr", "currency": "zrx"}, {"vertical_hint": "kiln works"}])
+def test_draft_route_is_refused_on_a_finished_approved_blueprint(tmp_path, client, extra):  # noqa: F811
+    """A draft writes the request's industry, country and currency: with no
+    build running it is still refused while the approved answers are frozen."""
+    sid = "sess_lock_draft_finished_" + "_".join(extra)
+    out, state = _failed_platform(tmp_path, sid)
+    _finish(out)
+    before = dict(state.product_design.blueprint)
+
+    resp = client.post(f"/v1/sessions/{sid}/product/draft", json={"brief": "a new ask", **extra})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    pd = get_session(sid).product_design
+    assert pd.blueprint == before and pd.blueprint_approved is True
+    assert (pd.country, pd.currency, pd.vertical) == (None, None, None)
+
+
+@pytest.mark.parametrize("route", ["draft/decline-golden", "plan"])
+def test_decline_golden_and_plan_are_refused_on_a_frozen_blueprint(tmp_path, client, route):  # noqa: F811
+    sid = "sess_lock_route_" + route.replace("/", "_").replace("-", "_")
+    out, state = _failed_platform(tmp_path, sid)
+    _finish(out)
+    before_bp = dict(state.product_design.blueprint)
+    before_plan = state.product_design.plan
+
+    resp = client.post(f"/v1/sessions/{sid}/product/{route}", json={})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    pd = get_session(sid).product_design
+    assert pd.blueprint == before_bp and pd.plan == before_plan
+
+
+@pytest.mark.parametrize("tool_output", ["fatal: could not read Username", "error: tag exists"])
+def test_start_over_tag_failure_is_one_sentence_without_tool_output(
+    tmp_path, monkeypatch, tool_output
+):
+    from app.factory.build import builds_push, platform_branch
+
+    _out, state = _failed_platform(tmp_path, "sess_lock_tag_" + tool_output[:5].strip(":"))
+    calls = _stub_generate(monkeypatch)
+    monkeypatch.setattr(builds_push, "builds_token", lambda _env: "t")
+    monkeypatch.setattr(platform_branch, "builds_remote", lambda: "remote")
+
+    def refuse(_remote, _pid):
+        raise RuntimeError(tool_output)
+
+    monkeypatch.setattr(platform_branch, "tag_head_for_archive", refuse)
+
+    reply = platform_chat_flow.start_over(state)
+
+    assert reply["ok"] is False
+    assert tool_output not in reply["summary"]
+    assert "Start from scratch" in reply["summary"] and "nothing was changed" in reply["summary"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_copy_and_change_answers_refuse_in_plain_words_unless_the_build_failed(
+    tmp_path, finished
+):
+    out, state = _failed_platform(tmp_path, f"sess_lock_words_{int(finished)}")
+    if finished:
+        _finish(out)
+
+    copy = platform_chat_flow.take_copy(state)
+    change = platform_chat_flow.continue_with_intake(state)
+
+    assert copy["ok"] is (not finished) and change["ok"] is (not finished)
+    assert state.product_design.intake_reopened is (not finished)
+    if finished:
+        assert copy["summary"].startswith("This build did not stop with a failure")
+        assert change["summary"].startswith("This build did not stop with a failure")
+        assert change["intake"]["reopened"] is False
+    else:
+        assert change["intake"]["reopened"] is True
+
+
+# The Floor's control names (frontend/src/buildActions.ts, floorView.tsx). A
+# sentence the server shows the user names one of these, never a word to type.
+_FLOOR_CONTROLS = ("Approve & build", "Try again", "Run pilot checks", "Start from scratch", "Save")
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [pytest.param("WRITER", id="stalled-in-writer"), pytest.param("CLONER", id="stalled-in-cloner")],
+)
+def test_a_stalled_build_names_the_try_again_control(tmp_path, phase):
+    from app.factory.build.authority import BuildRole
+    from app.factory.build_jobs import BUILD_THREAD_ORPHANED, build_status
+    from tests.factory.test_writer_restart_orphan import _age_ledger
+
+    out = tmp_path / "ws"
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole[phase], detail=phase)
+    _age_ledger(out / "build_ledger.jsonl", 3600)
+    status = build_status(out)
+    assert status["state"] == "stalled", status
+    assert status["honesty"] == BUILD_THREAD_ORPHANED
+    assert "Try again" in status["detail"]
+    assert "continue" not in status["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("prototype", id="prototype-note-in-download"),
+        pytest.param("kit", id="uncertified-kit-notice"),
+    ],
+)
+def test_user_notices_name_a_floor_control_not_a_word_to_type(text):
+    from app.factory import platform_chat_llm
+    from app.routers import session_product
+
+    body = (
+        session_product._prototype_marker_body(["download_platform", "run_pilot"])
+        if text == "prototype"
+        else platform_chat_llm.UNCERTIFIED_KIT_NOTICE % ("k", "k")
+    )
+    assert any(name in body for name in _FLOOR_CONTROLS), body
+    assert "say continue" not in body.lower()
+    assert "/product/" not in body
+    assert "or continue" not in body.lower()
+
+
+# --- Guards of the functions this change touched (each first rule is held) ---
+
+
+def _blank_session(sid):
+    """A session with no blueprint drafted."""
+    from app.core.session_store import create_session
+
+    create_session(sid, "tester")
+    return get_session(sid)
+
+
+@pytest.mark.parametrize("action", ["rename", "add_capability"])
+def test_a_refinement_with_no_blueprint_changes_nothing(action):
+    from app.factory.floor_actions import parse_action
+
+    state = _blank_session(f"sess_lock_refine_{action}")
+    assert platform_chat_flow.apply_refinement(state, parse_action(action), "zq") is None
+    assert not state.product_design.blueprint
+
+
+@pytest.mark.parametrize("triggered_by", ["start_over", "chat"])
+def test_start_from_scratch_with_no_blueprint_is_refused(tmp_path, triggered_by):
+    state = _blank_session(f"sess_lock_scratch_{triggered_by}")
+    with pytest.raises(ValueError, match="no blueprint"):
+        platform_chat_flow.start_over(state, output_root=tmp_path, triggered_by=triggered_by)
+    assert not state.product_design.generation
+    assert not state.product_design.platform_id  # refused before any id is minted
+
+
+@pytest.mark.parametrize("build", [None, {"state": "unknown"}])
+def test_a_recorded_start_reads_an_unknown_build_from_its_ledger(tmp_path, build):
+    out, state = _failed_platform(tmp_path, "sess_lock_record_" + ("none" if build is None else "unknown"))
+    pd = state.product_design
+    platform_chat_flow._record_generation(
+        pd, {"output_dir": str(out), "build": build}, triggered_by="continue", resumed=True
+    )
+    assert pd.generation["build"].get("state") == "failed", pd.generation["build"]
+
+
+@pytest.mark.parametrize("country", ["", "zq"])
+def test_intake_facts_are_empty_without_a_design_and_listed_with_one(country):
+    from app.factory import platform_chat_llm
+
+    assert platform_chat_llm._intake_facts(None) == ""
+    state = _blank_session(f"sess_lock_facts_{country or 'none'}")
+    state.product_design.country = country or None
+    assert platform_chat_llm._intake_facts(state.product_design) != ""
+
+
+@pytest.mark.parametrize("drafted", [True, False])
+def test_the_chat_summary_says_whether_a_blueprint_was_drafted(tmp_path, drafted):
+    from app.routers import chat
+
+    if drafted:
+        _out, state = _failed_platform(tmp_path, "sess_lock_summary_drafted")
+    else:
+        state = _blank_session("sess_lock_summary_blank")
+    summary = chat._session_state_summary(state)
+    assert isinstance(summary, str)
+    assert ("Drafted blueprint" in summary) is drafted, summary
+    assert ("No platform blueprint" in summary) is not drafted, summary
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/someone/else/tree/build/sess_0123abcd-feed01",
+        "https://github.com/x/y/tree/build/sess_1-2",
+    ],
+)
+def test_a_pasted_link_to_another_repo_is_refused_in_the_chat(client, link):  # noqa: F811
+    from app.factory.build.branch_attach import NOT_A_BUILD_LINK
+
+    sid = "sess_lock_link_" + str(abs(hash(link)) % 10_000)
+    _open_session(sid, {})
+    resp = client.post(f"/v1/sessions/{sid}/chat", json={"message": link})
+    assert resp.status_code == 200, resp.text
+    assert [i["summary"] for i in _infos(resp.text)] == [NOT_A_BUILD_LINK]
+
+
+@pytest.mark.parametrize("sid", ["sess_lock_plan_a", "sess_lock_plan_b"])
+def test_plan_with_no_blueprint_is_refused_and_records_no_error(client, sid):  # noqa: F811
+    _open_session(sid, {})
+    resp = client.post(f"/v1/sessions/{sid}/product/plan")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "draft a blueprint first"
+    assert get_session(sid).product_design.last_error is None
+
+
+@pytest.mark.parametrize(
+    ("stop_gate", "offered"),
+    [pytest.param("CODE", False, id="prototype-stops-at-code"), pytest.param("STORE", True, id="pilot-level")],
+)
+def test_the_download_note_names_run_pilot_checks_only_when_offered(tmp_path, stop_gate, offered):
+    import zipfile
+
+    from app.routers import session_product
+
+    out = tmp_path / f"ws_{stop_gate}"
+    (out / "app").mkdir(parents=True)
+    (out / "app" / "main.py").write_text("app = None\n", encoding="utf-8")
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(
+        EventKind.RUN_SUCCEEDED,
+        detail="done",
+        payload={"cycle": "code", "build_level": "some_level", "stop_gate": stop_gate},
+    )
+    archive = session_product.zip_generated_product(out, tmp_path / f"zip_{stop_gate}")
+    with zipfile.ZipFile(archive) as zf:
+        note = zf.read(session_product._PROTOTYPE_MARKER).decode("utf-8")
+    assert ("Run pilot checks" in note) is offered, note
+    assert "%s" not in note
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_the_uncertified_kit_notice_waits_for_the_approve_and_build_control(monkeypatch, pending):
+    from app.factory import platform_chat_llm, store_kits
+
+    monkeypatch.setattr(
+        store_kits,
+        "domain_kits",
+        lambda *a, **k: {"zq": {"serves_verticals": ["zq_yards"], "build_ready": False}},
+    )
+    state = _blank_session(f"sess_lock_kit_{pending}")
+    pd = state.product_design
+    pd.vertical = "zq_yards"
+    if pending:
+        pd.blueprint = {"product_name": "zq"}
+    notice = platform_chat_llm._kit_notice(state)
+    assert ("Approve & build" in notice) is pending, notice
+    assert bool(pd.kit_notice_given) is pending
+    # Given once per session: the next turn says nothing.
+    if pending:
+        assert platform_chat_llm._kit_notice(state) == ""
+
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_the_model_is_told_try_again_keeps_the_rework_budget(tmp_path, finished):
+    from app.factory import platform_chat_llm
+
+    out, state = _failed_platform(tmp_path, f"sess_lock_model_{finished}")
+    if finished:
+        _finish(out)
+    facts = " ".join(platform_chat_llm._session_facts(state).split())
+    assert "reset rework budget" not in facts
+    assert "Start over" not in facts
+    assert ("rework budget it had left" in facts) is not finished, facts
+
+
+@pytest.mark.parametrize("drafted", [True, False])
+def test_the_model_facts_forbid_start_coder_only_without_a_blueprint(tmp_path, drafted):
+    from app.factory import platform_chat_llm
+
+    if drafted:
+        _out, state = _failed_platform(tmp_path, "sess_lock_mfacts_drafted")
+    else:
+        state = _blank_session("sess_lock_mfacts_blank")
+    facts = platform_chat_llm._session_facts(state)
+    assert ("no pending blueprint. start_coder is forbidden" in facts) is not drafted, facts
+
+
+@pytest.mark.parametrize("handoff", [True, False])
+def test_start_or_resume_reads_the_store_gate_before_a_pending_blueprint(monkeypatch, handoff):
+    state = _blank_session(f"sess_lock_sor_{handoff}")
+    state.product_design.blueprint = {"product_name": "zq"}
+    monkeypatch.setattr(platform_chat_flow, "is_handoff_awaiting_n3", lambda *a, **k: handoff)
+    monkeypatch.setattr(platform_chat_flow, "ingest_n3_store_gate_reply", lambda *a, **k: {"door": "store_gate"})
+    monkeypatch.setattr(platform_chat_flow, "approve_and_generate", lambda *a, **k: {"door": "approve"})
+    reply = platform_chat_flow.start_or_resume_coder(state, triggered_by="continue")
+    assert reply == {"door": "store_gate" if handoff else "approve"}
+
+
+@pytest.mark.parametrize("stop_gate", ["CODE", "STORE"])
+def test_the_download_note_is_written_once(tmp_path, stop_gate):
+    import zipfile
+
+    from app.routers import session_product
+
+    out = tmp_path / f"ws1_{stop_gate}"
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.RUN_SUCCEEDED, detail="done", payload={"build_level": "l", "stop_gate": stop_gate})
+    with zipfile.ZipFile(tmp_path / f"z1_{stop_gate}.zip", "w") as zf:
+        session_product._maybe_write_prototype_marker(zf, out)
+        session_product._maybe_write_prototype_marker(zf, out)
+        names = zf.namelist()
+    assert names.count(session_product._PROTOTYPE_MARKER) == 1
