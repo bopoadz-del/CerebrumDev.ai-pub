@@ -111,20 +111,24 @@ def test_a_stale_reopened_mark_on_a_finished_build_opens_nothing(
     assert (pd.country, pd.currency) == (None, None)
 
 
-def test_confirm_and_continue_refuses_a_build_that_is_not_a_failure(tmp_path, monkeypatch):
-    out, state = _failed_platform(tmp_path, "sess_lock_confirm_refused")
+@pytest.mark.parametrize("finished", [True, False])
+def test_confirm_and_continue_runs_only_on_a_terminal_failure(tmp_path, monkeypatch, finished):
+    out, state = _failed_platform(tmp_path, f"sess_lock_confirm_{int(finished)}")
     calls = _stub_generate(monkeypatch)
     state.product_design.intake_reopened = True
     state.product_design.intake_proposal = {"country": "ZR", "currency": "ZRX"}
-    _finish(out)
+    if finished:
+        _finish(out)
 
     reply = platform_chat_flow.confirm_and_continue(state)
 
-    assert reply["ok"] is False
-    assert reply["refused"] == platform_chat_flow.NOT_A_FAILED_BUILD
-    assert calls == []
-    assert state.product_design.country is None  # nothing stored
+    assert reply["ok"] is (not finished)
+    assert len(calls) == (0 if finished else 1)
+    # A refused Confirm stores nothing; an accepted one stores the answers.
+    assert state.product_design.country == (None if finished else "ZR")
     assert state.product_design.intake_reopened is False
+    if finished:
+        assert reply["refused"] == platform_chat_flow.NOT_A_FAILED_BUILD
 
 
 @pytest.mark.parametrize("finished", [True, False])
@@ -142,8 +146,14 @@ def test_resume_failed_platform_runs_only_on_a_terminal_failure(tmp_path, monkey
         assert reply["refused"] == platform_chat_flow.NOT_A_FAILED_BUILD
 
 
-def test_save_and_try_again_on_a_reopened_failure_still_resumes(tmp_path, monkeypatch, client):  # noqa: F811
-    sid = "sess_lock_reopened_resumes"
+@pytest.mark.parametrize(
+    "answers, stored",
+    [({"country": "zr", "currency": "zrx"}, ("ZR", "ZRX")), ({}, (None, None))],
+)
+def test_save_and_try_again_on_a_reopened_failure_still_resumes(
+    tmp_path, monkeypatch, client, answers, stored  # noqa: F811
+):
+    sid = "sess_lock_reopened_resumes_" + str(len(answers))
     _out, state = _failed_platform(tmp_path, sid)
     calls = _stub_generate(monkeypatch)
     monkeypatch.setattr("app.routers.chat.require_remaining", lambda *a, **k: None)
@@ -153,12 +163,12 @@ def test_save_and_try_again_on_a_reopened_failure_still_resumes(tmp_path, monkey
     platform_chat_flow.continue_with_intake(state)
     update_session(sid, state)
 
-    resp = _save(client, sid, country="zr", currency="zrx")
+    resp = _save(client, sid, **answers)
 
     assert resp.status_code == 200, resp.text
     assert len(calls) == 1 and calls[0][2] is True
     pd = get_session(sid).product_design
-    assert (pd.country, pd.currency, pd.intake_reopened) == ("ZR", "ZRX", False)
+    assert (pd.country, pd.currency, pd.intake_reopened) == (*stored, False)
 
 
 # -- the Save stores exactly what the user picked -----------------------------
@@ -191,16 +201,19 @@ def test_save_stores_the_users_pick_over_a_chat_suggestion(client, suggested, pi
 # -- the tenant guard runs before an edit is parked ---------------------------
 
 
-def test_a_request_refused_at_the_tenant_guard_parks_no_answer(tmp_path, client):  # noqa: F811
+@pytest.mark.parametrize(
+    "answers", [{"country": "zr", "currency": "zrx"}, {"vertical": "kiln works"}]
+)
+def test_a_request_refused_at_the_tenant_guard_parks_no_answer(tmp_path, client, answers):  # noqa: F811
     """The failed platform belongs to another tenant than the dev caller: the
     Save that would resume it is refused 403 and the session keeps nothing."""
-    sid = "sess_lock_tenant_first"
+    sid = "sess_lock_tenant_first_" + "_".join(answers)
     _out, state = _failed_platform(tmp_path, sid)
     platform_chat_flow.continue_with_intake(state)
     state.product_design.intake_proposal = None
     update_session(sid, state)
 
-    resp = _save(client, sid, country="zr", currency="zrx")
+    resp = _save(client, sid, **answers)
 
     assert resp.status_code == 403, resp.text
     assert get_session(sid).product_design.intake_proposal is None
@@ -209,18 +222,19 @@ def test_a_request_refused_at_the_tenant_guard_parks_no_answer(tmp_path, client)
 # -- every route that writes the blueprint obeys the same lock ----------------
 
 
-def test_draft_route_is_refused_while_a_build_runs(tmp_path, monkeypatch, client):  # noqa: F811
-    sid = "sess_lock_draft_running"
+@pytest.mark.parametrize("extra", [{"country": "zr"}, {"vertical_hint": "kiln works"}])
+def test_draft_route_is_refused_while_a_build_runs(tmp_path, monkeypatch, client, extra):  # noqa: F811
+    sid = "sess_lock_draft_running_" + "_".join(extra)
     _out, state = _failed_platform(tmp_path, sid)
     before = dict(state.product_design.blueprint)
     monkeypatch.setattr(platform_chat_flow, "has_running_build", lambda _s: True)
 
-    resp = client.post(f"/v1/sessions/{sid}/product/draft", json={"brief": "a new ask", "country": "zr"})
+    resp = client.post(f"/v1/sessions/{sid}/product/draft", json={"brief": "a new ask", **extra})
 
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
     pd = get_session(sid).product_design
-    assert pd.blueprint == before and pd.country is None
+    assert pd.blueprint == before and (pd.country, pd.vertical) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -241,10 +255,13 @@ def test_approve_route_cannot_replace_or_unapprove_a_frozen_blueprint(tmp_path, 
     assert pd.blueprint == before and pd.blueprint_approved is True
 
 
-def test_accept_golden_route_is_refused_on_a_frozen_blueprint(tmp_path, client):  # noqa: F811
-    sid = "sess_lock_accept_golden"
+@pytest.mark.parametrize("finished", [True, False])
+def test_accept_golden_route_is_refused_on_a_frozen_blueprint(tmp_path, client, finished):  # noqa: F811
+    """Finished, or failed and not reopened: the approved blueprint is frozen."""
+    sid = f"sess_lock_accept_golden_{int(finished)}"
     out, state = _failed_platform(tmp_path, sid)
-    _finish(out)
+    if finished:
+        _finish(out)
     before = dict(state.product_design.blueprint)
 
     resp = client.post(f"/v1/sessions/{sid}/product/draft/accept-golden", json={})
@@ -254,16 +271,17 @@ def test_accept_golden_route_is_refused_on_a_frozen_blueprint(tmp_path, client):
     assert get_session(sid).product_design.blueprint == before
 
 
-def test_set_vertical_changes_the_draft_and_proposes_the_industry_only(client):  # noqa: F811
+@pytest.mark.parametrize("vertical", ["kiln_works", "quarry_yards"])
+def test_set_vertical_changes_the_draft_and_proposes_the_industry_only(client, vertical):  # noqa: F811
     from app.factory.floor_actions import FloorAction
     from tests.factory.test_platform_chat_refinement import _draft_retail
 
-    state = _open_session("sess_lock_set_vertical", {})
+    state = _open_session("sess_lock_set_vertical_" + vertical, {})
     _draft_retail(state)
     declared = state.product_design.vertical
 
-    result = platform_chat_flow.apply_refinement(state, FloorAction.SET_VERTICAL, "kiln_works")
+    result = platform_chat_flow.apply_refinement(state, FloorAction.SET_VERTICAL, vertical)
 
-    assert result["blueprint"]["vertical"] == "kiln_works"
+    assert result["blueprint"]["vertical"] == vertical
     assert state.product_design.vertical == declared  # never written directly
-    assert state.product_design.intake_proposal["vertical"] == "kiln_works"
+    assert state.product_design.intake_proposal["vertical"] == vertical
