@@ -943,6 +943,19 @@ test.describe('stop words and the running line at 360x780', () => {
     await expect(page.getByTestId('floor-try-again')).toBeInViewport()
   })
 
+  test('user-stopped: the buttons are exactly the actions the server allows', async ({ page }) => {
+    await openState(page, 'user-stopped')
+    const bar = page.getByTestId('floor-action-bar')
+    if (await bar.getByTestId('floor-action-more').count()) await bar.getByTestId('floor-action-more').click()
+    // The fixture's build-status sends the server's list for an owner stop.
+    for (const id of ['floor-try-again', 'floor-take-copy', 'floor-continue-with-intake', 'floor-start-over']) {
+      await expect(bar.getByTestId(id)).toHaveCount(1)
+    }
+    await expect(bar.getByTestId('floor-coder-stop')).toHaveCount(0)
+    await expect(bar.getByTestId('floor-check-again')).toHaveCount(0)
+    await expect(bar.getByTestId('continue-to-pilot')).toHaveCount(0)
+  })
+
   test('not-found: its own state, "Check again" asks the server once more', async ({ page }) => {
     await openState(page, 'not-found')
     await expect(page.getByTestId('floor-build-state')).toContainText("We can't find this build")

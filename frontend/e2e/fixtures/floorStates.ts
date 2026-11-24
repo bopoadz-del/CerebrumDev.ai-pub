@@ -249,6 +249,8 @@ const BUILD_STOPPED: BuildStatus = {
       reference: '7461cb639b',
     },
   },
+  // The actions the server accepts here (floor_actions.allowed_build_actions).
+  actions: ['try_again', 'download_copy', 'change_answers', 'start_over'],
 }
 
 /** You pressed Stop build at step 3; the server's stop record says so. */
@@ -273,6 +275,7 @@ const BUILD_USER_STOPPED: BuildStatus = {
     elapsed_s: 1260,
     technical: { code: 'STOPPED_BY_OWNER', reason_chain: [], message: '', reference: '' },
   },
+  actions: ['try_again', 'download_copy', 'change_answers', 'start_over'],
 }
 
 /** The session names a workspace the server does not have. */
@@ -289,6 +292,7 @@ const BUILD_NOT_FOUND: BuildStatus = {
     elapsed_s: null,
     technical: { code: '', reason_chain: [], message: '', reference: '' },
   },
+  actions: ['check_again', 'start_over'],
 }
 
 /** The server still says building, but the last event is 42 minutes old: the client calls it stalled. */
@@ -489,7 +493,9 @@ export async function mockFloorStates(page: Page): Promise<void> {
           })
         }
         if (rest === '/product/build-status') {
-          return json({ ok: true, product_id: w.productId, build: w.build ?? { state: 'not_started' } })
+          // The server sends its allowed actions beside the build, not in it.
+          const { actions, ...build } = w.build ?? { state: 'not_started' as const }
+          return json({ ok: true, product_id: w.productId, build, ...(actions ? { actions } : {}) })
         }
         if (rest === '/product/coder-control') return json({ ok: true, control: { action: 'run' } })
         if (rest === '/product/package') {

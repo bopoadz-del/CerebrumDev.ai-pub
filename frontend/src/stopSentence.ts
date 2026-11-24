@@ -23,10 +23,6 @@ export const OUR_SIDE = 'This is on our side, not in your brief.'
 /** The stop kinds whose cause is the Factory's own. */
 const OUR_SIDE_KINDS = new Set(['time_ran_out', 'service_interrupted', 'nothing_produced'])
 
-/** The opening words of the server's generic check sentences; a check with
- *  its own sentence says something else, and only that sentence is added. */
-const CHECK_LEAD = 'A quality check'
-
 export type StopPrimary = 'try_again' | 'check_again'
 
 export interface StopWords {
@@ -60,10 +56,10 @@ function plural(n: number, one: string): string {
   return `${n} ${one}${n === 1 ? '' : 's'}`
 }
 
-/** The check's own plain sentence, when the server sent one. */
-function checkOwnSentence(plain: string | undefined): string | null {
-  const text = (plain ?? '').trim()
-  return text && !text.startsWith(CHECK_LEAD) ? text : null
+/** The check's own plain sentence: the server's typed field, never a guess. */
+function checkOwnSentence(stop: StopRecord): string | null {
+  const text = (stop.check_plain ?? '').trim()
+  return text || null
 }
 
 /**
@@ -95,11 +91,14 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
     case 'time_ran_out':
       why = `${running ?? 'The build'} ran out of time${elapsed ? ` after about ${minutesOf(elapsed)} minutes` : ''}.`
       break
-    case 'service_interrupted':
+    case 'service_interrupted': {
+      // The server says whether its service restarted or failed in place.
+      const what = stop.restarted ? 'restarted' : 'was interrupted'
       why = running
-        ? `Our build service was interrupted while ${lowerFirst(running)}.`
-        : 'Our build service was interrupted during the build.'
+        ? `Our build service ${what} while ${lowerFirst(running)}.`
+        : `Our build service ${what} during the build.`
       break
+    }
     case 'nothing_produced':
       why = `${running ?? 'The build'} stopped without producing anything.`
       break
@@ -116,7 +115,7 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
     case 'check_failed': {
       const rounds = stop.fix_rounds ?? 0
       const lead = rounds > 0 ? `A quality check did not pass after ${plural(rounds, 'fix round')}.` : 'A quality check did not pass.'
-      const own = checkOwnSentence(stop.plain)
+      const own = checkOwnSentence(stop)
       why = own ? `${lead} ${own}` : lead
       break
     }

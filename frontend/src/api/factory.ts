@@ -527,11 +527,14 @@ export const product = {
     }),
   generate: (sid: string) =>
     req<ProductDesign & { ok: boolean }>('POST', `/v1/sessions/${sid}/product/generate`, {}),
-  buildStatus: (sid: string) =>
-    req<{ ok: boolean; product_id?: string; build: BuildStatus }>(
+  buildStatus: async (sid: string) => {
+    const body = await req<{ ok: boolean; product_id?: string; build: BuildStatus; actions?: string[] }>(
       'GET',
       `/v1/sessions/${sid}/product/build-status`,
-    ),
+    )
+    // The server's allowed actions travel with the build they belong to.
+    return Array.isArray(body.actions) ? { ...body, build: { ...body.build, actions: body.actions } } : body
+  },
   coderControl: (sid: string, action: 'pause' | 'stop' | 'resume') =>
     req<{ ok: boolean; control: { action: string } }>(
       'POST',
@@ -735,6 +738,10 @@ export type StopKind =
 export interface StopRecord {
   kind: StopKind | string
   plain?: string
+  /** The check's own plain sentence, sent by the server; null when it has none. */
+  check_plain?: string | null
+  /** The build service restarted under the run (not a failure in place). */
+  restarted?: boolean
   /** Wire id of the step it ended in. */
   step?: string
   step_index?: number | null
@@ -762,6 +769,8 @@ export type BuildStatus = {
   stop?: StopRecord | null
   /** The build's own declared end. Null when the record declares none. */
   deadline?: BuildDeadline | null
+  /** The actions the server accepts in this state, in its order (build-status). */
+  actions?: string[] | null
   detail?: string
   findings?: string[]
   cycle?: string

@@ -19,6 +19,8 @@ export interface InfoReply {
   refused?: string
   awaiting_action?: string
   stream_delta?: boolean
+  /** The build was already running: the press started nothing new. */
+  already_running?: boolean
 }
 
 export type OutcomeTone = 'done' | 'refused' | 'error'
@@ -59,6 +61,9 @@ export function nextActionFor(awaiting: string | null | undefined): ActionId | n
   return Object.prototype.hasOwnProperty.call(WIRE_ACTION, awaiting) ? WIRE_ACTION[awaiting] : null
 }
 
+/** Said when a press found the build already running. */
+export const ALREADY_RUNNING = 'Nothing new was started: this build is still running.'
+
 /** What a press that went through says, per action. */
 const DONE_TEXT: Record<ActionId, string> = {
   stop: 'Stop requested. Work so far is kept.',
@@ -91,6 +96,8 @@ export function actionOutcome(id: ActionId, info: InfoReply | null | undefined):
       next: nextActionFor(info.awaiting_action),
     }
   }
+  // The server's typed answer that a run is already going: nothing started.
+  if (info?.already_running) return { tone: 'refused', text: ALREADY_RUNNING, next: null }
   return { tone: 'done', text: doneText(id), next: null }
 }
 

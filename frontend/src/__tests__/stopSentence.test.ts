@@ -53,12 +53,14 @@ const TIME_RAN_OUT = record('time_ran_out', {
 // Example 2: a check that used its fix round and has its own sentence.
 const CHECK_FAILED = record('check_failed', {
   plain: 'A country code was typed into the code instead of read from the money settings.',
+  check_plain: 'A country code was typed into the code instead of read from the money settings.',
   fix_rounds: 1,
   technical: { code: 'FAILED_GATE', reason_chain: ['writer_contract'], message: 'FAILED(WRITER, writer_contract, x)', reference: 'ab12' },
 })
-// Example 3: our build service was interrupted while the code was written.
+// Example 3: our build service restarted while the code was written.
 const SERVICE = record('service_interrupted', {
   plain: 'Our build service restarted while the code was being written.',
+  restarted: true,
   technical: { code: 'FACTORY_CODE_CLI_ORPHANED', reason_chain: [], message: 'orphaned', reference: 'cd34' },
 })
 
@@ -98,16 +100,33 @@ describe('stopWords: the worked examples of section 4.5', () => {
   })
 
   it('2b. a check with no sentence of its own says only that a quality check did not pass', () => {
-    const generic = record('check_failed', { plain: 'A quality check did not pass.', fix_rounds: 0 })
+    const generic = record('check_failed', { plain: 'A quality check did not pass.', check_plain: null, fix_rounds: 0 })
     expect(stopWords(generic).sentence).toBe('A quality check did not pass. Steps 1 and 2 are done and kept.')
   })
 
-  it('3. the service was interrupted: our side, the step by its running name', () => {
+  it.each([
+    // The server's typed field decides, never the sentence's first words.
+    ['A quality check of the money settings found a typed country code.', 'A quality check of the money settings found a typed country code. '],
+    ['', ''],
+  ])('2c. the check sentence is the typed check_plain only (%j)', (own, said) => {
+    const w = stopWords(record('check_failed', { plain: 'Something else entirely.', check_plain: own, fix_rounds: 0 }))
+    expect(w.sentence).toBe(`A quality check did not pass. ${said}Steps 1 and 2 are done and kept.`)
+  })
+
+  it('3. our build service restarted: our side, the step by its running name', () => {
     const w = stopWords(SERVICE)
     expect(w.sentence).toBe(
-      `Our build service was interrupted while writing the code. ${OUR_SIDE} Steps 1 and 2 are done and kept.`,
+      `Our build service restarted while writing the code. ${OUR_SIDE} Steps 1 and 2 are done and kept.`,
     )
     expect(buildActions({ build: stopped(SERVICE) }).bar[0].sub).toBe('Picks up at step 3. Finished steps are kept.')
+  })
+
+  it.each([
+    [true, 'restarted'],
+    [false, 'was interrupted'],
+  ])('3b. restarted=%s says the service %s', (restarted, verb) => {
+    const w = stopWords({ ...SERVICE, restarted })
+    expect(w.sentence.startsWith(`Our build service ${verb} while writing the code.`)).toBe(true)
   })
 
   it('other states use the same pattern', () => {

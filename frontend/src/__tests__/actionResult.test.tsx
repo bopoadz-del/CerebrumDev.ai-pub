@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Floor } from '../App'
 import { ApiError } from '../api/factory'
-import { actionOutcome, holdCardTop, humanError, messageFromBody, nextActionFor } from '../actionResult'
+import { ALREADY_RUNNING, actionOutcome, holdCardTop, humanError, messageFromBody, nextActionFor } from '../actionResult'
 import { buildActions } from '../buildActions'
 
 const chatStreamMock = vi.fn()
@@ -108,6 +108,35 @@ describe('action results in the action bar', () => {
     expect(screen.getByTestId('floor-try-again')).toBeDisabled()
     finish()
     await waitFor(() => expect(screen.getByTestId('floor-action-result-text')).toHaveTextContent('Started again.'))
+  })
+
+  it.each([
+    // The trial limit arrives as an SSE error event: the press failed.
+    ['error', 'Free-trial limit reached for builds.', 'error', 'Free-trial limit reached for builds.'],
+    // A body that is not a sentence is never shown raw.
+    ['error', '{"detail":"trial_limit_reached"}', 'error', 'The Factory could not do that. Nothing was changed.'],
+  ])('an SSE %s event is a failed press, never "Started again." (%s)', async (event, data, tone, text) => {
+    chatStreamMock.mockImplementation(async (_s: string, _m: string, onEvent: OnEvent) => {
+      onEvent({ event, data })
+    })
+    stoppedSession('sess_sse_error')
+    fireEvent.click(await screen.findByTestId('floor-try-again'))
+    const result = await screen.findByTestId('floor-action-result')
+    expect(result).toHaveAttribute('data-tone', tone)
+    expect(screen.getByTestId('floor-action-result-text').textContent).toBe(text)
+    expect(screen.getByTestId('floor-action-result-text')).not.toHaveTextContent('Started again.')
+  })
+
+  it.each([
+    [{ ok: true, already_running: true, summary: 'The coding agent is still writing p. I did not start a second run.' }, ALREADY_RUNNING],
+    [{ ok: true, summary: 'Resumed.' }, 'Started again.'],
+  ])('a press that found the build running says nothing started (%#)', async (data, text) => {
+    chatStreamMock.mockImplementation(async (_s: string, _m: string, onEvent: OnEvent) => {
+      onEvent({ event: 'info', data })
+    })
+    stoppedSession('sess_running')
+    fireEvent.click(await screen.findByTestId('floor-try-again'))
+    expect((await screen.findByTestId('floor-action-result-text')).textContent).toBe(text)
   })
 
   it('a refused download shows the server message only, never the raw body', async () => {

@@ -841,10 +841,10 @@ export function Floor({
               { role: 'factory', text: summary, card: 'generation', engine, triggeredBy },
             ])
           } else if (ev.event === 'error') {
-            setMsgs((m) => [
-              ...m.slice(0, -1),
-              { role: 'factory', text: String(ev.data ?? 'Something went wrong.'), card: 'error' },
-            ])
+            // An error event is a press that did not go through: never "done".
+            const errorText = humanError(String(ev.data ?? ''), 'The Factory could not do that. Nothing was changed.')
+            failed = errorText
+            setMsgs((m) => [...m.slice(0, -1), { role: 'factory', text: errorText, card: 'error' }])
           } else if (ev.event === 'chain' || ev.event === 'rules') {
             setMsgs((m) => {
               const copy = [...m]
