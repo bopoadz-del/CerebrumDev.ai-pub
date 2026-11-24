@@ -64,6 +64,11 @@ def render_md(grade: Mapping[str, Any]) -> str:
         lines.append(f"  - `{u.get('capability_id')}`: UNGRADED; {u.get('detail')}")
     lines.append(f"- UI steps passed: {sum(1 for s in steps if s.get('passed') is True)}/{len(steps)}")
     lines += [f"  - FAIL: {name}" for name in ui.get("failing") or []]
+    lines += [
+        f"  - NOT RUN: {row.get('name')} (blocked by {row.get('blocked_by') or '?'})"
+        for row in ui.get("not_run") or []
+        if isinstance(row, Mapping)
+    ]
     na = [
         str(s.get("name") or "")
         for s in (ui.get("not_applicable") or [])

@@ -66,6 +66,21 @@ _KIND_FILE_TYPE = {
     "attach_xlsx": "xlsx",
 }
 
+#: The step kinds that form one chain: each needs the page the step before it
+#: left (attach a file, see it parsed, ask about it). Only these run in
+#: order with a stop at the first failure. Every other step navigates by
+#: itself, so it runs whatever happened to the steps before it.
+CHAIN_KINDS = tuple(_KIND_FILE_TYPE) + ("cited_answer",)
+
+#: The step kinds that act on the page as they find it (they do not navigate).
+#: Each opens the product's front page first when its page is still blank, so
+#: none of them depends on an earlier step having loaded it.
+ON_PAGE_KINDS = ("bind",) + CHAIN_KINDS
+
+#: A chain step that Playwright skipped because an earlier chain step failed.
+#: It did not run: it is not a pass and it is not a failure of its own.
+NOT_RUN = "not_run"
+
 
 
 @dataclass(frozen=True)
@@ -87,17 +102,32 @@ class UiGrade:
         return bool(self.steps)
 
     @property
+    def not_run(self) -> List[Dict[str, Any]]:
+        """Steps that did not run because an earlier step of their chain
+        failed. Each row names the step that blocked it."""
+        return [s for s in self.steps if s.get("status") == NOT_RUN]
+
+    @property
     def failing(self) -> List[str]:
-        return [s["name"] for s in self.steps if not s.get("passed")] + list(self.errors)
+        """Steps that ran and did not pass, plus run-level errors. A step
+        that did not run is not listed here: nothing was observed about it."""
+        return [
+            s["name"] for s in self.steps
+            if not s.get("passed") and s.get("status") != NOT_RUN
+        ] + list(self.errors)
 
     @property
     def ok(self) -> bool:
-        return self.ran and not self.failing
+        return self.ran and not self.failing and not self.not_run
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
             "ok": self.ok, "ran": self.ran, "failing": self.failing, "steps": self.steps,
         }
+        if self.not_run:
+            out["not_run"] = [
+                {"name": s["name"], "blocked_by": s.get("blocked_by", "")} for s in self.not_run
+            ]
         if self.not_applicable:
             out["not_applicable"] = list(self.not_applicable)
         if self.brief_note:
@@ -340,21 +370,39 @@ def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
     return (
         "import { test, expect } from '@playwright/test';\n"
         f"const PLAN = {json.dumps([s.__dict__ for s in plan])};\n"
+        f"const CHAIN = {json.dumps(list(CHAIN_KINDS))};\n"
+        f"const ON_PAGE = {json.dumps(list(ON_PAGE_KINDS))};\n"
         f"const QUESTION = {json.dumps(_question(blueprint, brief))};\n"
         + BASE_JS +
         "const errs: string[] = [];\n"
-        "test.describe.configure({ mode: 'serial' });\n"
         "let page: any;\n"
-        "test.beforeAll(async ({ browser }) => { page = await browser.newPage();\n"
-        "  page.on('console', (m: any) => { if (m.type() === 'error') errs.push(m.text()); });\n"
-        "  page.on('pageerror', (e: any) => errs.push(String(e))); });\n"
-        "for (const s of PLAN) {\n"
-        "  test(s.name, async ({ request }) => {\n"
+        "const open = async (browser: any) => { const p = await browser.newPage();\n"
+        "  p.on('console', (m: any) => { if (m.type() === 'error') errs.push(m.text()); });\n"
+        "  p.on('pageerror', (e: any) => errs.push(String(e))); return p; };\n"
+        "const run = async (s: any, request: any) => {\n"
+        "    if (ON_PAGE.includes(s.kind) && !/^https?:/.test(page.url())) { await page.goto(url('/')); }\n"
         "    errs.length = 0;\n"
         + branches +
         "    } else { throw new Error('no assertion for ' + s.kind); }\n"
-        "  });\n"
-        "}\n"
+        "};\n"
+        # Steps that navigate by themselves: one failing does not stop the
+        # others, so every one of them is observed.
+        "test.describe('steps', () => {\n"
+        "  test.beforeAll(async ({ browser }) => { page = await open(browser); });\n"
+        "  for (const s of PLAN.filter((s: any) => !CHAIN.includes(s.kind))) {\n"
+        "    test(s.name, async ({ request }) => { await run(s, request); });\n"
+        "  }\n"
+        "});\n"
+        # The document chain: each step needs the page the one before left,
+        # so it stops at its first failure. The steps after that are skipped
+        # by Playwright and read back as not run, never as failures.
+        "test.describe('document chain', () => {\n"
+        "  test.describe.configure({ mode: 'serial' });\n"
+        "  test.beforeAll(async ({ browser }) => { page = await open(browser); });\n"
+        "  for (const s of PLAN.filter((s: any) => CHAIN.includes(s.kind))) {\n"
+        "    test(s.name, async ({ request }) => { await run(s, request); });\n"
+        "  }\n"
+        "});\n"
     )
 
 
@@ -382,22 +430,62 @@ def report_outcomes(report: Mapping[str, Any]) -> Dict[str, bool]:
     return seen
 
 
+def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
+    """Every test title in a Playwright JSON report -> ``passed``, ``failed``
+    or ``skipped``. Skipped means Playwright did not run the test at all
+    (every result it recorded for it is ``skipped``)."""
+    seen: Dict[str, str] = {}
+    if not isinstance(report, Mapping):
+        return seen
+
+    def walk(suite: Mapping[str, Any]) -> None:
+        for spec in suite.get("specs") or []:
+            results = [r for t in spec.get("tests") or [] for r in t.get("results") or []]
+            if step_passed(results):
+                status = "passed"
+            elif results and all(r.get("status") == "skipped" for r in results):
+                status = "skipped"
+            else:
+                status = "failed"
+            seen[str(spec.get("title"))] = status
+        for child in suite.get("suites") or []:
+            walk(child)
+
+    for s in report.get("suites") or []:
+        walk(s)
+    return seen
+
+
 def parse_report(
     report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET
 ) -> UiGrade:
     """Playwright JSON reporter -> UiGrade. A planned step absent from the
-    report is a failed step (a skipped step is not a passed one). A step the
+    report is a failed step (a skipped step is not a passed one). A chain
+    step skipped after an earlier chain step failed is not run: it is quoted
+    with the step that blocked it and is never a failure of its own. A step the
     brief does not contain is not applicable: it was not run, it is not
     passed, and it is not a failure. A brief that cannot be read is a block:
     no step is graded."""
     run, skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
-    seen = report_outcomes(report)
-    steps = [
-        {"name": st.name, "kind": st.kind, "target": st.target, "passed": seen.get(st.name, False)}
-        for st in run
-    ]
+    seen = report_statuses(report)
+    steps: List[Dict[str, Any]] = []
+    # The chain step that failed first: the chain steps Playwright skipped
+    # after it did not run because of it.
+    blocker = ""
+    for st in run:
+        status = seen.get(st.name, "failed")
+        row: Dict[str, Any] = {
+            "name": st.name, "kind": st.kind, "target": st.target, "passed": status == "passed",
+        }
+        if st.kind in CHAIN_KINDS:
+            if status == "skipped" and blocker:
+                row["status"] = NOT_RUN
+                row["blocked_by"] = blocker
+            elif status != "passed" and not blocker:
+                blocker = st.name
+        steps.append(row)
     errors = [] if seen else ["playwright report has no results"]
     return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
 

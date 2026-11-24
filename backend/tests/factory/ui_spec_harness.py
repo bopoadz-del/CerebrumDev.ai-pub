@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Mapping, Optional, Tuple
 
 PRELUDE = r"""
-const __tests: [string, any][] = []; const __before: any[] = [];
+const __tests: [string, any, any][] = []; const __before: any[] = [];
+// Playwright's serial mode: a describe block (or the file) configured
+// serial skips every test of that block after its first failure.
+const __root: any = { serial: false, failed: false, parent: null };
+let __group: any = __root;
+const __serialOf = (g: any) => { let s: any = null; for (let x = g; x; x = x.parent) if (x.serial) s = x; return s; };
 class __Fail extends Error {}
 function expect(v: any) {
   const fail = (m: string) => { throw new __Fail(m); };
@@ -34,13 +39,15 @@ const __request = {
 // The page is the text the product served: the last page loaded plus every
 // upload / chat reply. getByText(re) is visible iff re matches that text.
 let __html = '';
+let __url = 'about:blank';
 const __base = () => process.env.BASE_URL || '';
 const __loc = (find: (t: string) => boolean, act: any = {}) => {
   const l: any = { first: () => l, last: () => l, __visible: () => find(__html), ...act };
   return l;
 };
 const __page = {
-  goto: async (u: string) => { const r = await fetch(u); __html = await r.text(); return __resp(r); },
+  goto: async (u: string) => { const r = await fetch(u); __html = await r.text(); __url = u; return __resp(r); },
+  url: () => __url,
   waitForLoadState: async () => {}, on: () => {},
   getByText: (re: RegExp) => __loc((t) => re.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
@@ -60,8 +67,13 @@ const __page = {
     },
   }),
 };
-const test: any = (name: string, fn: any) => { __tests.push([name, fn]); };
-test.describe = { configure: () => {} };
+const test: any = (name: string, fn: any) => { __tests.push([name, fn, __group]); };
+test.describe = (_name: any, fn?: any) => {
+  if (typeof fn !== 'function') return;
+  const parent = __group; __group = { serial: false, failed: false, parent };
+  try { fn(); } finally { __group = parent; }
+};
+test.describe.configure = (o: any = {}) => { if (o.mode === 'serial') __group.serial = true; };
 test.beforeAll = (fn: any) => { __before.push(fn); };
 """
 
@@ -69,11 +81,13 @@ RUNNER = r"""
 for (const b of __before) await b({ browser: { newPage: async () => __page } });
 const __only = (process.env.ONLY_KINDS || '').split(',').filter(Boolean);
 const __out: Record<string, string> = {};
-for (const [name, fn] of __tests) {
+for (const [name, fn, group] of __tests) {
   const step = PLAN.find((s: any) => s.name === name);
   if (__only.length && !__only.includes(step.kind)) continue;
+  const serial = __serialOf(group);
+  if (serial && serial.failed) { __out[name] = 'skipped'; continue; }
   try { await fn({ request: __request }); __out[name] = 'passed'; }
-  catch (e: any) { __out[name] = 'failed: ' + String(e && e.message || e); }
+  catch (e: any) { __out[name] = 'failed: ' + String(e && e.message || e); if (serial) serial.failed = true; }
 }
 console.log('@@UI@@' + JSON.stringify(__out));
 """
