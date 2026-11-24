@@ -5,10 +5,13 @@ declares (``ui_modules``) and the routes its capabilities imply
 (``/v1/<capability_id>``). Fixtures (a PDF and an XLSX) are written from the
 blueprint's own summary and capability text -- nothing canned.
 
-Steps (ORDERS_1730Z Layer 1): app loads; login/tenant bind; chat-box "+"
+Steps (ORDERS_1730Z Layer 1): app loads; tenant binding (each tenant the
+run binds is served, a caller with no tenant is refused); chat-box "+"
 attach a real PDF and XLSX; parsed status appears; a cited answer with a
 number renders; an invalid request is answered honestly with 422/503 (never
-a 200); every declared route returns 200 and renders with no console errors.
+a 200); every declared route returns 200 to a bound tenant, and every screen
+renders with no console errors. A step that ran and failed carries what the
+run saw (``evidence``).
 
 Which of those steps run is read from the customer brief's ``documents``
 field (``customer_brief``): whether the customer uploads documents, and
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -75,12 +79,48 @@ CHAIN_KINDS = tuple(_KIND_FILE_TYPE) + ("cited_answer",)
 #: The step kinds that act on the page as they find it (they do not navigate).
 #: Each opens the product's front page first when its page is still blank, so
 #: none of them depends on an earlier step having loaded it.
-ON_PAGE_KINDS = ("bind",) + CHAIN_KINDS
+ON_PAGE_KINDS = CHAIN_KINDS
+
+#: The status codes that say the product refused a caller it could not bind
+#: to a tenant. The product's tenancy contract (app/tenancy.py, rendered by
+#: store_acceptance.render_tenancy_module) answers such a caller 401
+#: authentication_required; a 403 is the same refusal.
+TENANT_REFUSED_STATUSES = (401, 403)
+
+#: How much of a failed step's own error text a finding keeps.
+EVIDENCE_CHARS = 300
 
 #: A chain step that Playwright skipped because an earlier chain step failed.
 #: It did not run: it is not a pass and it is not a failure of its own.
 NOT_RUN = "not_run"
 
+
+
+@dataclass(frozen=True)
+class UiTenants:
+    """Two tenants bound for one UI run, plus a token bound to nobody.
+
+    Every token is new for each run. None is a fixed value, so no credential
+    is written into the Factory or into a built image. The grading boot binds
+    ``a`` and ``b`` through the product's own tenancy contract
+    (``TENANT_TOKENS``, ``token:tenant`` pairs). ``unbound`` is never bound."""
+
+    a: str
+    b: str
+    unbound: str
+
+    def bound_env(self) -> str:
+        """The ``TENANT_TOKENS`` value that binds ``a`` and ``b``."""
+        return f"{self.a}:grade-tenant-a,{self.b}:grade-tenant-b"
+
+    def run_env(self) -> Dict[str, str]:
+        """What the UI run is told about its tenants."""
+        return {"GRADE_TENANT_A": self.a, "GRADE_TENANT_B": self.b,
+                "GRADE_TENANT_UNBOUND": self.unbound}
+
+
+def new_tenants() -> UiTenants:
+    return UiTenants(*(secrets.token_hex(16) for _ in range(3)))
 
 
 @dataclass(frozen=True)
@@ -180,7 +220,7 @@ def _candidate_steps(blueprint: Mapping[str, Any]) -> List[UiStep]:
     first = caps[0] if caps else ""
     steps = [
         UiStep("load:/", "load", "/"),
-        UiStep("bind:tenant", "bind", str(blueprint.get("product_id") or "")),
+        UiStep("bind:tenant", "bind", capability_route(first)),
         UiStep("attach:pdf", "attach_pdf", "fixture.pdf"),
         UiStep("attach:xlsx", "attach_xlsx", "fixture.xlsx"),
         UiStep("parsed:status", "parsed", "fixture.pdf"),
@@ -332,11 +372,41 @@ _PAGE_OK = (
     "const r = await page.goto(url(s.target)); expect(r?.status()).toBe(200);\n"
     "await page.waitForLoadState('networkidle'); expect(errs).toEqual([]);"
 )
+#: The run's tenants, sent the way the product's tenancy contract reads them:
+#: as a bearer token. A run that was not given its tenants cannot check a
+#: binding, and says so.
+TENANTS_JS = (
+    "const TENANT = { a: process.env.GRADE_TENANT_A, b: process.env.GRADE_TENANT_B,"
+    " unbound: process.env.GRADE_TENANT_UNBOUND };\n"
+    "const as = (t: any) => { if (!t) throw new Error('the UI run was not given its tenants');"
+    " return { authorization: 'Bearer ' + t }; };\n"
+    f"const REFUSED = {json.dumps(list(TENANT_REFUSED_STATUSES))};\n"
+)
+
 KIND_JS: Dict[str, str] = {
     "load": _PAGE_OK,
     "screen": _PAGE_OK,
-    "route": "const r = await request.get(url(s.target)); expect(r.status()).toBe(200);",
-    "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
+    # A capability route is called as a bound tenant. The product's contract
+    # refuses a caller with no tenant, so a call without one would check
+    # nothing but the missing credential.
+    "route": (
+        "const r = await request.get(url(s.target), { headers: as(TENANT.a) });\n"
+        "expect(r.status(), 'GET ' + s.target + ' as a bound tenant').toBe(200);"
+    ),
+    # Tenant binding, read from the product's tenancy contract: each bound
+    # tenant's own token is served, and a caller with no token, or with a
+    # token bound to no tenant, is refused.
+    "bind": (
+        "const a = await request.get(url(s.target), { headers: as(TENANT.a) });\n"
+        "expect(a.status(), 'GET ' + s.target + ' as tenant A').toBe(200);\n"
+        "const b = await request.get(url(s.target), { headers: as(TENANT.b) });\n"
+        "expect(b.status(), 'GET ' + s.target + ' as tenant B').toBe(200);\n"
+        "const none = await request.get(url(s.target));\n"
+        "expect(REFUSED, 'GET ' + s.target + ' with no token answered ' + none.status()).toContain(none.status());\n"
+        "const u = await request.get(url(s.target), { headers: as(TENANT.unbound) });\n"
+        "expect(REFUSED, 'GET ' + s.target + ' with a token bound to no tenant answered ' + u.status())"
+        ".toContain(u.status());"
+    ),
     "attach_pdf": (
         "await page.getByRole('button', { name: '+' }).first().click();\n"
         "await page.locator('input[type=file]').first().setInputFiles(process.env.GRADE_FIXTURES + '/' + s.target);"
@@ -348,8 +418,10 @@ KIND_JS: Dict[str, str] = {
         "await expect(page.getByText(/\\d/).last()).toBeVisible();"
     ),
     "honest_error": (
-        "const r = await request.post(url(s.target), { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
-        f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}).toContain(r.status());"
+        "const r = await request.post(url(s.target), { data: '\"not-an-object\"',"
+        " headers: { 'content-type': 'application/json', ...as(TENANT.a) } });\n"
+        f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}, 'POST ' + s.target + ' with an invalid body answered '"
+        " + r.status()).toContain(r.status());"
     ),
 }
 KIND_JS["attach_xlsx"] = KIND_JS["attach_pdf"]
@@ -373,7 +445,7 @@ def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
         f"const CHAIN = {json.dumps(list(CHAIN_KINDS))};\n"
         f"const ON_PAGE = {json.dumps(list(ON_PAGE_KINDS))};\n"
         f"const QUESTION = {json.dumps(_question(blueprint, brief))};\n"
-        + BASE_JS +
+        + BASE_JS + TENANTS_JS +
         "const errs: string[] = [];\n"
         "let page: any;\n"
         "const open = async (browser: any) => { const p = await browser.newPage();\n"
@@ -456,6 +528,60 @@ def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
     return seen
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _evidence_text(text: Any) -> str:
+    """A failed step's own error text on one line: colour codes removed,
+    whitespace collapsed, at most EVIDENCE_CHARS. The head is kept, because
+    Playwright puts the expected and received values first."""
+    return " ".join(_ANSI.sub("", str(text or "")).split())[:EVIDENCE_CHARS]
+
+
+def report_errors(report: Mapping[str, Any]) -> Dict[str, str]:
+    """Every test title in a Playwright JSON report -> the error text of its
+    last result that recorded one (empty when none did)."""
+    seen: Dict[str, str] = {}
+    if not isinstance(report, Mapping):
+        return seen
+
+    def walk(suite: Mapping[str, Any]) -> None:
+        for spec in suite.get("specs") or []:
+            message = ""
+            for t in spec.get("tests") or []:
+                for r in t.get("results") or []:
+                    errs = list(r.get("errors") or []) + ([r["error"]] if r.get("error") else [])
+                    for e in errs:
+                        text = e.get("message") if isinstance(e, Mapping) else e
+                        if text:
+                            message = str(text)
+            seen[str(spec.get("title"))] = _evidence_text(message)
+        for child in suite.get("suites") or []:
+            walk(child)
+
+    for s in report.get("suites") or []:
+        walk(s)
+    return seen
+
+
+def step_evidence(ui: Any) -> Dict[str, str]:
+    """Step name -> what the run saw, for every step that recorded it."""
+    return {
+        str(row.get("name")): str(row["evidence"])
+        for row in getattr(ui, "steps", None) or []
+        if isinstance(row, Mapping) and row.get("evidence")
+    }
+
+
+def _failure_evidence(name: str, status: str, seen: Mapping[str, str], said: Mapping[str, str]) -> str:
+    """What the run saw for a step that ran and did not pass."""
+    if name not in seen:
+        return "the step is missing from the Playwright report"
+    if status == "skipped":
+        return "Playwright skipped the step and no earlier step explains it"
+    return said.get(name) or "Playwright recorded no error text"
+
+
 def parse_report(
     report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET
 ) -> UiGrade:
@@ -470,6 +596,7 @@ def parse_report(
     if block:
         return _unreadable_block()
     seen = report_statuses(report)
+    said = report_errors(report)
     steps: List[Dict[str, Any]] = []
     # The chain step that failed first: the chain steps Playwright skipped
     # after it did not run because of it.
@@ -485,6 +612,8 @@ def parse_report(
                 row["blocked_by"] = blocker
             elif status != "passed" and not blocker:
                 blocker = st.name
+        if status != "passed" and row.get("status") != NOT_RUN:
+            row["evidence"] = _failure_evidence(st.name, status, seen, said)
         steps.append(row)
     errors = [] if seen else ["playwright report has no results"]
     return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
@@ -494,14 +623,20 @@ def _tail(text: Any) -> str:
     return " ".join(str(text or "").split())[-OUTPUT_TAIL_CHARS:]
 
 
-def _playwright_run(run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int) -> Any:
+def _playwright_run(
+    run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int,
+    tenants: Optional[UiTenants] = None,
+) -> Any:
     """The one way a UI spec is run: the grade and the toolchain check both
     come through here, with the same command and the same environment."""
+    env = {"PATH": RUN_PATH, "BASE_URL": base_url,
+           "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)}
+    if tenants is not None:
+        env.update(tenants.run_env())
     return run(
         ["npx", "playwright", "test", str(spec), "--reporter=json"],
         cwd=str(spec.parent),
-        env={"PATH": RUN_PATH, "BASE_URL": base_url,
-             "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)},
+        env=env,
         timeout=timeout,
         capture_output=True,
         text=True,
@@ -575,7 +710,12 @@ def grade_ui(
     base_url: Optional[str],
     run: Any = subprocess.run,
     brief: Any = _UNSET,
+    tenants: Optional[UiTenants] = None,
 ) -> UiGrade:
+    """The UI grade. ``tenants`` are the ones the product at ``base_url`` was
+    booted with. Without them the run gets new tokens that nothing bound, so
+    the tenant-binding step can only fail, and its evidence says what the
+    product answered."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -593,7 +733,8 @@ def grade_ui(
     fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
-                               fixtures=fixtures, timeout=RUN_TIMEOUT_S)
+                               fixtures=fixtures, timeout=RUN_TIMEOUT_S,
+                               tenants=tenants or new_tenants())
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     report_text = _report_text(out, proc)

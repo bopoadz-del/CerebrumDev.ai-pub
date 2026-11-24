@@ -596,7 +596,7 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
         def stop(self):
             recorded["stopped"] = True
 
-    monkeypatch.setattr(grader, "boot_product", lambda root: (_Boot(), boot_url))
+    monkeypatch.setattr(grader, "boot_product", lambda root, **_kw: (_Boot(), boot_url))
 
     class _Ui:
         @property
@@ -620,7 +620,7 @@ def test_grade_ui_uses_the_booted_products_url(monkeypatch, tmp_path, boot_url):
 
     class _UiGrader:
         @staticmethod
-        def grade_ui(blueprint, workdir, *, base_url, brief=None):
+        def grade_ui(blueprint, workdir, *, base_url, brief=None, **_kw):
             recorded["base_url"] = base_url
             return _Ui()
 
@@ -1060,3 +1060,81 @@ def test_ui_steps_that_did_not_run_are_ungraded_not_handed_to_the_writer(
         assert gap in verdict.ungraded
         assert f"UI step FAIL: {name}" not in verdict.items
         assert not any(name in item for item in verdict.writer_items)
+
+
+# --- the UI run's tenants are bound at boot; every UI finding has evidence ---
+
+@pytest.mark.parametrize("tokens,bound", [("", False), ("tok-a:grade-tenant-a,tok-b:grade-tenant-b", True)])
+def test_boot_env_binds_the_ui_runs_tenants_only_when_given(tmp_path, tokens, bound):
+    env = grader.boot_env(tmp_path / "p", tmp_path / "store", 5555, {}, tokens)
+    assert ("TENANT_TOKENS" in env) is bound
+    if bound:
+        assert env["TENANT_TOKENS"] == tokens
+
+
+@pytest.mark.parametrize("given_url", [None, "http://127.0.0.1:11"])
+def test_the_ui_run_gets_the_tenants_the_boot_bound(monkeypatch, tmp_path, given_url):
+    """The tenants the boot binds are the ones the UI run checks with. A url
+    the caller booted was bound by nobody here, so the run gets none."""
+    import app.factory.build.product_grader as pg
+    from app.factory.build.product_grader.ui_grader import UiGrade
+
+    booted: dict = {}
+
+    class _Boot:
+        def stop(self):
+            pass
+
+    def _boot(root, **kw):
+        booted["tokens"] = kw.get("tenant_tokens")
+        return _Boot(), "http://127.0.0.1:9"
+
+    class _UiGrader:
+        @staticmethod
+        def grade_ui(blueprint, workdir, *, base_url, brief=None, tenants=None):
+            booted["tenants"] = tenants
+            return UiGrade([{"name": "load:/", "passed": True}], [])
+
+    monkeypatch.setattr(grader, "boot_product", _boot)
+    monkeypatch.setattr(pg, "ui_grader", _UiGrader, raising=False)
+    grader._grade_ui({}, tmp_path, tmp_path / "g", given_url)
+    if given_url is None:
+        assert booted["tokens"] == booted["tenants"].bound_env()
+        assert booted["tenants"].a in booted["tokens"] and booted["tenants"].unbound not in booted["tokens"]
+    else:
+        assert "tokens" not in booted and booted["tenants"] is None
+
+
+@pytest.mark.parametrize("evidence", [
+    "GET /v1/intake_form with no token answered 200",
+    "GET /v1/visit_log as a bound tenant expected 200 received 500",
+])
+def test_a_ui_finding_handed_to_the_writer_carries_what_the_run_saw(
+    tmp_path, independent_grader, monkeypatch, evidence
+):
+    class _Ui:
+        ran = True
+        errors: list = []
+        ok = False
+        failing = ["bind:tenant", "route:/v1/visit_log"]
+        not_run: list = []
+        steps = [
+            {"name": "bind:tenant", "passed": False, "evidence": evidence},
+            {"name": "route:/v1/visit_log", "passed": False},
+            {"name": "load:/", "passed": True},
+        ]
+
+        def to_dict(self):
+            return {"ok": False, "ran": True, "failing": self.failing, "steps": self.steps}
+
+    monkeypatch.setattr(
+        grader, "_grade_ui",
+        lambda blueprint, root, gradroot, base_url, brief=None: (_Ui(), True, ""),
+    )
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
+    assert f"UI step FAIL: bind:tenant -- seen: {evidence}" in verdict.writer_items
+    assert "UI step FAIL: route:/v1/visit_log" in verdict.writer_items

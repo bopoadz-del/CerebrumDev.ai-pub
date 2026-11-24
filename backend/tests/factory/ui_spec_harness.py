@@ -12,7 +12,12 @@ import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, Iterator, List, Mapping, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+
+from app.factory.build.product_grader.ui_grader import UiTenants, new_tenants
+
+#: The tenants a run is given when a test names none: new per test session.
+TENANTS = new_tenants()
 
 PRELUDE = r"""
 const __tests: [string, any][] = []; const __before: any[] = [];
@@ -28,7 +33,7 @@ function expect(v: any) {
 }
 const __resp = (r: Response) => ({ status: () => r.status });
 const __request = {
-  get: async (u: string) => __resp(await fetch(u)),
+  get: async (u: string, o: any = {}) => __resp(await fetch(u, { headers: o.headers })),
   post: async (u: string, o: any) => __resp(await fetch(u, { method: 'POST', body: o.data, headers: o.headers })),
 };
 // The page is the text the product served: the last page loaded plus every
@@ -93,11 +98,15 @@ def require_node() -> str:
     return node
 
 
-def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None) -> Dict[str, str]:
+def run_spec(
+    spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None,
+    tenants: Optional[UiTenants] = None,
+) -> Dict[str, str]:
     body = "\n".join(line for line in spec.splitlines() if not line.startswith("import "))
     f = tmp / "spec_run.mts"
     f.write_text(PRELUDE + body + RUNNER, encoding="utf-8")
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "ONLY_KINDS": ",".join(only_kinds)}
+    env.update((tenants or TENANTS).run_env())
     if fixtures is not None:
         env["GRADE_FIXTURES"] = str(fixtures)
     if base_url is not None:
@@ -116,16 +125,28 @@ class Server(str):
 
 
 @contextmanager
-def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None) -> Iterator[Server]:
+def server(
+    statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None,
+    bound: Optional[Iterable[str]] = None,
+) -> Iterator[Server]:
     """An HTTP server answering each path with its status and body
     (``POST <path>`` keys a POST; the query string is ignored for keys).
-    Every POST body is recorded in ``.seen`` as ``(key, bytes)``."""
+    Every POST body is recorded in ``.seen`` as ``(key, bytes)``.
+
+    ``bound``: the bearer tokens it serves under ``/v1/``, as a product
+    built to the tenancy contract does; any other caller gets 401. None
+    serves every caller."""
+    tokens = None if bound is None else set(bound)
     bodies = bodies or {}
     seen: List[Tuple[str, bytes]] = []
 
     class H(BaseHTTPRequestHandler):
         def _answer(self, key):
             code = statuses.get(key, default)
+            if tokens is not None and self.path.startswith("/v1/"):
+                auth = str(self.headers.get("authorization") or "")
+                if not (auth.startswith("Bearer ") and auth[7:] in tokens):
+                    code = 401
             body = bodies.get(key, "ok").encode()
             self.send_response(code)
             self.send_header("content-length", str(len(body)))

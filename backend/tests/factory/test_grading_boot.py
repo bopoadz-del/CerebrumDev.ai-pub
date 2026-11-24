@@ -228,11 +228,11 @@ def test_grade_ui_stops_the_boot_on_every_exit_path(monkeypatch, tmp_path, raise
         def stop(self):
             stops.append(True)
 
-    monkeypatch.setattr(grader, "boot_product", lambda root: (_Boot(), "http://127.0.0.1:9"))
+    monkeypatch.setattr(grader, "boot_product", lambda root, **_kw: (_Boot(), "http://127.0.0.1:9"))
 
     class _UiGrader:
         @staticmethod
-        def grade_ui(blueprint, workdir, *, base_url, brief=None):
+        def grade_ui(blueprint, workdir, *, base_url, brief=None, **_kw):
             raise raised("the UI walk broke")
 
     monkeypatch.setattr(pg, "ui_grader", _UiGrader, raising=False)
@@ -243,7 +243,7 @@ def test_grade_ui_stops_the_boot_on_every_exit_path(monkeypatch, tmp_path, raise
 
 @pytest.mark.parametrize("reason", ["product boot exited with code 4; output tail: x", "did not answer"])
 def test_grade_ui_quotes_the_boot_reason_as_not_run(monkeypatch, tmp_path, reason):
-    monkeypatch.setattr(grader, "boot_product", lambda root: (None, reason))
+    monkeypatch.setattr(grader, "boot_product", lambda root, **_kw: (None, reason))
     ui, ran, not_run = grader._grade_ui({}, tmp_path, tmp_path / "g", None)
     assert ran is False
     assert not_run == f"UI run did not happen: {reason}"
@@ -343,11 +343,11 @@ def test_grade_ui_quotes_a_run_that_rendered_nothing_with_its_own_errors(monkeyp
         def stop(self):
             pass
 
-    monkeypatch.setattr(grader, "boot_product", lambda root: (_Boot(), "http://127.0.0.1:9"))
+    monkeypatch.setattr(grader, "boot_product", lambda root, **_kw: (_Boot(), "http://127.0.0.1:9"))
 
     class _UiGrader:
         @staticmethod
-        def grade_ui(blueprint, workdir, *, base_url, brief=None):
+        def grade_ui(blueprint, workdir, *, base_url, brief=None, **_kw):
             return UiGrade([], list(errors))
 
     monkeypatch.setattr(pg, "ui_grader", _UiGrader, raising=False)

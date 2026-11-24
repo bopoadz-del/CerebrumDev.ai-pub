@@ -385,18 +385,25 @@ def boot_plan(workspace: Path | str, port: int) -> Dict[str, Any]:
 
 
 def boot_env(
-    workspace: Path | str, storage: Path, port: int, source: Optional[Mapping[str, str]] = None
+    workspace: Path | str,
+    storage: Path,
+    port: int,
+    source: Optional[Mapping[str, str]] = None,
+    tenant_tokens: str = "",
 ) -> Dict[str, str]:
     """The booted product's environment: the one probe environment
     (function_grader.probe_env, the same the function and two-dataset
     probes run in) plus the port. From the Factory's process it keeps only what an
     interpreter needs from the OS to start -- never its keys or settings.
     DATABASE_URL is left unset, so the product's db contract reads its own
-    default (a database under STORAGE_PATH)."""
+    default (a database under STORAGE_PATH). ``tenant_tokens`` binds the UI
+    run's tenants through the product's tenancy contract (TENANT_TOKENS)."""
     from app.factory.build.product_grader.function_grader import probe_env
 
     env = probe_env(workspace, storage, source)
     env["PORT"] = str(port)
+    if tenant_tokens:
+        env["TENANT_TOKENS"] = tenant_tokens
     return env
 
 
@@ -545,6 +552,7 @@ def boot_product(
     *,
     ready_timeout_s: float = _BOOT_READY_TIMEOUT_S,
     source_env: Optional[Mapping[str, str]] = None,
+    tenant_tokens: str = "",
 ) -> Tuple[Optional[GradingBoot], str]:
     """Boot the product for grading and wait for /health 200. Returns
     (boot, base_url), and the caller stops the boot; or (None, reason), with
@@ -562,7 +570,7 @@ def boot_product(
         proc = subprocess.Popen(
             [sys.executable, "-c", _BOOT_LAUNCHER, json.dumps(boot_plan(root, port))],
             cwd=str(root),
-            env=boot_env(root, storage, port, source_env),
+            env=boot_env(root, storage, port, source_env, tenant_tokens),
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=os.name == "posix",
@@ -945,10 +953,16 @@ def _grade_ui(
             return _unreadable_block(), False, BRIEF_UNREADABLE
     ui_not_run = ""
     boot: Optional[GradingBoot] = None
+    # The tenants the UI run checks binding with: bound into the boot here,
+    # handed to the run below. A url the caller booted has none of them.
+    tenants: Any = None
     try:
         if base_url is None:
+            from app.factory.build.product_grader.ui_grader import new_tenants
+
+            tenants = new_tenants()
             try:
-                boot, booted = boot_product(root)
+                boot, booted = boot_product(root, tenant_tokens=tenants.bound_env())
             except Exception as exc:  # noqa: BLE001 -- recorded below, not raised
                 boot = None
                 booted = ""
@@ -970,7 +984,9 @@ def _grade_ui(
             ui: Any = _UiNotRun(ui_not_run or "UI run did not happen: the UI grader is unavailable")
             return ui, False, ui_not_run
         if base_url:
-            passed = {} if brief is _BRIEF_OMITTED else {"brief": brief}
+            passed: Dict[str, Any] = {} if brief is _BRIEF_OMITTED else {"brief": brief}
+            if boot is not None:
+                passed["tenants"] = tenants
             ui = ui_grader.grade_ui(blueprint, gradroot / "ui", base_url=base_url, **passed)
         else:
             ui = ui_grader.UiGrade(
@@ -1183,8 +1199,13 @@ def run_grader(
             items.append(f"function grade FAIL: {name}")
     ui_failing = list(ui.failing) if ui_ran else []
     if ui_ran:
+        # Each finding carries what the run saw for it, so the writer fixes
+        # the cause it can read instead of guessing from a step's name.
+        from app.factory.build.product_grader.ui_grader import step_evidence
+
+        seen = step_evidence(ui)
         for name in ui_failing:
-            items.append(f"UI step FAIL: {name}")
+            items.append(f"UI step FAIL: {name}" + (f" -- seen: {seen[name]}" if name in seen else ""))
         # A step that did not run is a gap in the grade, not a finding about
         # the tree: it blocks certification and is not handed to the writer.
         for row in getattr(ui, "not_run", None) or []:

@@ -188,7 +188,7 @@ def test_grade_ui_passes_base_url_to_the_run(tmp_path, url):
 
 
 @pytest.mark.parametrize("kind,needles", [
-    ("bind", ["s.target", "toBeVisible()"]),                                   # U14
+    ("bind", ["s.target", "as(TENANT.a)", "as(TENANT.b)", "as(TENANT.unbound)", "REFUSED"]),  # U14
     ("attach_pdf", ["name: '+'", "setInputFiles", "GRADE_FIXTURES"]),          # U15
     ("attach_xlsx", ["name: '+'", "setInputFiles", "GRADE_FIXTURES"]),
     ("parsed", ["/parsed/i", "toBeVisible"]),                                   # U16
@@ -277,12 +277,27 @@ def test_nested_report_suites_are_read(depth):  # U5
     assert g.ok and [s["passed"] for s in g.steps] == [True] * len(names)
 
 
-@pytest.mark.parametrize("i,served,ok", [(0, 0, True), (1, 1, True), (0, 1, False), (1, 0, False)])
-def test_bind_needs_the_products_own_id_on_the_page(tmp_path, i, served, ok):  # U12
+def _bound(which):
+    """The tokens a test server serves: names from the run's tenants."""
+    return None if which is None else [getattr(h.TENANTS, name) for name in which]
+
+
+@pytest.mark.parametrize("i", [0, 1])
+@pytest.mark.parametrize("served,ok", [
+    (("a", "b"), True),                  # binds both tenants, refuses the rest
+    (None, False),                       # serves a caller with no token
+    (("a",), False),                     # tenant B is not served
+    ((), False),                         # tenant A is not served
+    (("a", "b", "unbound"), False),      # serves a token bound to no tenant
+])
+def test_bind_checks_the_products_tenancy_contract(tmp_path, i, served, ok):  # U12
+    """bind:tenant reads the product's own tenancy contract: each bound
+    tenant's token is served and a caller with no tenant is refused. What the
+    page says is not part of it."""
     bp = BPS[i]
-    with h.server({}, bodies={"/": f"<h1>tenant {BPS[served]['product_id']}</h1>"}) as base:
-        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "bind"))
-    assert got["load:/"] == "passed" and (got["bind:tenant"] == "passed") is ok
+    with h.server({}, bodies={"/": f"<h1>{bp['product_id']}</h1>"}, bound=_bound(served)) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("bind",))
+    assert (got["bind:tenant"] == "passed") is ok, got
 
 
 @pytest.mark.parametrize("i", [0, 1])
@@ -363,7 +378,8 @@ def test_each_kind_runs_its_own_branch(tmp_path, kind, statuses, failed):  # U19
 # --- G2 15bd9c1 gaps on split B: N4-N6, U18, U19 executed end to end -------
 def _flow(tmp_path, bp, *, page="", upload="parsed ok", answer="total 1,240 [1]"):
     fx = ug.write_fixtures(bp, tmp_path / "fx")
-    with h.server({}, bodies={"/": page, "POST /__upload": upload, "POST /__ask": answer}) as base:
+    with h.server({}, bodies={"/": page, "POST /__upload": upload, "POST /__ask": answer},
+                  bound=_bound(("a", "b"))) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, fixtures=fx["pdf"].parent,
                          only_kinds=("load", "bind", "attach_pdf", "attach_xlsx", "parsed", "cited_answer"))
         return got, list(base.seen), fx
@@ -383,9 +399,12 @@ def test_full_flow_passes_on_a_product_that_answers(tmp_path, bp):
 
 
 @pytest.mark.parametrize("bp", BPS)
-def test_bind_fails_without_the_product_id(tmp_path, bp):  # N4
-    got, _, _ = _flow(tmp_path, bp, page="tenant somebody-else")
-    assert got["bind:tenant"].startswith("failed")
+@pytest.mark.parametrize("page", ["tenant somebody-else", ""])
+def test_bind_does_not_read_the_page(tmp_path, bp, page):  # N4
+    """The page text was never a tenant binding: a page without the product
+    id does not fail a product that binds its tenants."""
+    got, _, _ = _flow(tmp_path, bp, page=page)
+    assert got["bind:tenant"] == "passed"
 
 
 @pytest.mark.parametrize("upload", ["", "upload received"])
@@ -477,8 +496,8 @@ def test_only_the_document_chain_stops_at_its_first_failure(bp):
 
 @pytest.mark.parametrize("bp", BPS)
 def test_screens_and_routes_are_observed_when_bind_fails(tmp_path, bp):
-    """A product that answers every screen and route but never shows its id:
-    bind fails, and every other step still reports what it saw."""
+    """A product that answers every caller, with or without a tenant: bind
+    fails, and every other step still reports what it saw."""
     with h.server({}, bodies={"/": "<h1>welcome</h1>"}) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "bind", "screen", "route"))
     assert got["bind:tenant"].startswith("failed")
@@ -487,9 +506,145 @@ def test_screens_and_routes_are_observed_when_bind_fails(tmp_path, bp):
 
 
 @pytest.mark.parametrize("bp", BPS)
-def test_bind_opens_the_front_page_itself(tmp_path, bp):
-    """bind does not rely on the load step having run before it."""
-    page = f"<h1>{bp['product_id']}</h1>"
-    with h.server({}, bodies={"/": page}) as base:
+def test_bind_does_not_depend_on_the_front_page(tmp_path, bp):
+    """bind calls the product's first capability route by itself: a front
+    page that does not load does not decide it."""
+    with h.server({"/": 500}, bound=_bound(("a", "b"))) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("bind",))
     assert got == {"bind:tenant": "passed"}
+
+
+# --- the tenants are the run's own, and every route is called as one -------
+
+@pytest.mark.parametrize("served,ok", [(("a", "b"), True), ((), False)])
+def test_routes_and_honest_error_are_called_as_a_bound_tenant(tmp_path, served, ok):
+    """A product that refuses a caller with no tenant still answers every
+    route and the invalid request: the run calls them as tenant A."""
+    with h.server({HONEST: 422}, bound=_bound(served)) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("route", "honest_error"))
+    assert got and all((v == "passed") is ok for v in got.values()), got
+
+
+@pytest.mark.parametrize("runs", [2, 3])
+def test_two_runs_get_two_sets_of_tenants(runs):
+    made = [ug.new_tenants() for _ in range(runs)]
+    assert len({t for m in made for t in (m.a, m.b, m.unbound)}) == 3 * runs
+    one, two = made[0], made[1]
+    assert len({one.a, one.b, one.unbound, two.a, two.b, two.unbound}) == 6
+    assert one.bound_env() == f"{one.a}:grade-tenant-a,{one.b}:grade-tenant-b"
+    assert one.unbound not in one.bound_env()
+    assert one.run_env() == {"GRADE_TENANT_A": one.a, "GRADE_TENANT_B": one.b,
+                             "GRADE_TENANT_UNBOUND": one.unbound}
+
+
+@pytest.mark.parametrize("given", [True, False])
+def test_grade_ui_tells_the_run_its_tenants(tmp_path, given):
+    tenants = ug.new_tenants()
+    seen = {}
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://x", tenants=tenants if given else None,
+                run=lambda cmd, **kw: seen.update(kw["env"]))
+    assert seen["GRADE_TENANT_A"] and seen["GRADE_TENANT_B"] and seen["GRADE_TENANT_UNBOUND"]
+    assert (seen["GRADE_TENANT_A"] == tenants.a) is given
+
+
+def test_a_run_not_given_tenants_fails_bind_saying_so(tmp_path):
+    with h.server({}, bound=_bound(("a", "b"))) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("bind",),
+                         tenants=ug.UiTenants("", "", ""))
+    assert "not given its tenants" in got["bind:tenant"]
+
+
+def test_the_toolchain_check_is_given_no_tenants(tmp_path):
+    seen = {}
+
+    def run(cmd, **kw):
+        seen.update(kw["env"])
+        raise RuntimeError("stop here")
+
+    ug.toolchain_check(run=run, which=lambda name, path=None: "/usr/bin/npx")
+    assert "BASE_URL" in seen and "GRADE_TENANT_A" not in seen
+
+
+# --- every failed step carries what the run saw ------------------------------
+
+def _report_with_errors(errors, statuses=None):
+    statuses = statuses or {}
+    specs = []
+    for st in ug.ui_plan(DOC_BP):
+        status = statuses.get(st.name, "failed" if st.name in errors else "passed")
+        result = {"status": status}
+        if st.name in errors:
+            result["errors"] = [{"message": errors[st.name]}]
+        specs.append({"title": st.name, "tests": [{"results": [result]}]})
+    return {"suites": [{"specs": specs}]}
+
+
+@pytest.mark.parametrize("name,message,want", [
+    ("bind:tenant",
+     "\x1b[31mError: GET /v1/rent_roll with no token answered 200\x1b[39m\n\nExpected value: 200\nReceived array: [401, 403]",
+     "Error: GET /v1/rent_roll with no token answered 200 Expected value: 200 Received array: [401, 403]"),
+    ("route:/v1/notice_log", "Error: GET /v1/notice_log as a bound tenant\n expected 200 received 500",
+     "Error: GET /v1/notice_log as a bound tenant expected 200 received 500"),
+])
+def test_a_failed_step_quotes_what_the_run_saw(name, message, want):
+    g = ug.parse_report(_report_with_errors({name: message}), DOC_BP)
+    row = next(r for r in g.steps if r["name"] == name)
+    assert g.failing == [name] and row["evidence"] == want
+    assert ug.step_evidence(g) == {name: want}
+    assert all("evidence" not in r for r in g.steps if r["passed"])
+
+
+@pytest.mark.parametrize("head", ["Expected: 200 Received: 401", "GET /v1/rent_roll as tenant B"])
+def test_evidence_keeps_the_head_of_a_long_error(head):
+    long = head + " " + "x" * 1000
+    g = ug.parse_report(_report_with_errors({"load:/": long}), DOC_BP)
+    (seen,) = ug.step_evidence(g).values()
+    assert len(seen) == ug.EVIDENCE_CHARS and seen.startswith(head)
+
+
+@pytest.mark.parametrize("statuses,name,want", [
+    ({"screen:tenant_portal": "skipped"}, "screen:tenant_portal",
+     "Playwright skipped the step and no earlier step explains it"),
+    ({"route:/v1/rent_roll": "failed"}, "route:/v1/rent_roll", "Playwright recorded no error text"),
+])
+def test_a_failed_step_with_no_error_text_says_what_is_known(statuses, name, want):
+    g = ug.parse_report(_report_with_errors({}, statuses), DOC_BP)
+    assert ug.step_evidence(g) == {name: want}
+
+
+@pytest.mark.parametrize("missing", ["load:/", "screen:tenant_portal"])
+def test_a_step_missing_from_the_report_says_so(missing):
+    report = _report_with_errors({})
+    report["suites"][0]["specs"] = [s for s in report["suites"][0]["specs"] if s["title"] != missing]
+    g = ug.parse_report(report, DOC_BP)
+    assert ug.step_evidence(g) == {missing: "the step is missing from the Playwright report"}
+
+
+@pytest.mark.parametrize("blocker,skipped", [
+    ("attach:pdf", ["attach:xlsx", "parsed:status", "answer:cited"]),
+    ("parsed:status", ["answer:cited"]),
+])
+def test_a_step_that_did_not_run_carries_no_evidence(blocker, skipped):
+    statuses = {blocker: "failed", **{n: "skipped" for n in skipped}}
+    g = ug.parse_report(_report_with_errors({blocker: "no '+' button"}, statuses), DOC_BP)
+    assert ug.step_evidence(g) == {blocker: "no '+' button"}
+    assert [r["name"] for r in g.not_run] == skipped
+
+
+@pytest.mark.parametrize("ui", [object(), type("U", (), {"steps": None})(), type("U", (), {"steps": [{"name": "x"}, "junk"]})()])
+def test_step_evidence_of_a_grade_without_rows_is_empty(ui):
+    assert ug.step_evidence(ui) == {}
+
+
+@pytest.mark.parametrize("report", [None, [], "text"])
+def test_report_errors_of_a_non_report_is_empty(report):
+    assert ug.report_errors(report) == {}
+
+
+@pytest.mark.parametrize("error,want", [({"message": "retry"}, "retry"), ("plain text", "plain text")])
+def test_report_errors_reads_a_single_error_field_and_nested_suites(error, want):
+    report = {"suites": [{"suites": [{"specs": [
+        {"title": "load:/", "tests": [{"results": [{"status": "failed", "error": {"message": "first"}},
+                                                    {"status": "failed", "error": error}]}]},
+    ]}]}]}
+    assert ug.report_errors(report) == {"load:/": want}
