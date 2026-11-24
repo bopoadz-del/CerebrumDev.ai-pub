@@ -1,0 +1,177 @@
+"""The intake lock, one rule at every door (follow-up to the lock on every path).
+
+1. The typed industry goes through the one write path: it is proposed, and
+   the declared field and the blueprint take it together on Confirm. Approve
+   never builds on an answer the brief still shows as unsaved, and a later
+   Save never switches the blueprint back.
+2. The chat's Draft obeys the same frozen rule as POST /product/draft.
+3. Every refusal on a frozen intake carries the typed INTAKE_FROZEN, a Save
+   whose answers equal the declared ones included.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.core.session_store import get_session, update_session
+from app.factory import platform_chat_flow
+from app.factory.floor_actions import FloorAction
+from app.models.session import ProductDesignState, SessionState
+from tests.factory.test_brief_one_write_path import _frozen_session, _infos, client  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    from app.core.rate_limit import reset_rate_limits
+
+    reset_rate_limits()
+    yield
+    reset_rate_limits()
+
+
+def _state(blueprint, *, vertical, approved):
+    s = SessionState(session_id="sess-one-rule", user_id="user-1", account_id="acct-1")
+    s.product_design = ProductDesignState(
+        blueprint=blueprint, vertical=vertical, blueprint_approved=approved
+    )
+    return s
+
+
+def _draft(vertical: str) -> dict:
+    from app.factory.product_architect import draft_blueprint_from_brief
+
+    bp = draft_blueprint_from_brief("a platform for my business", vertical_hint=vertical)
+    return bp.model_dump(mode="json")
+
+
+# -- 1. the industry: proposed, then taken on Confirm only --------------------
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_confirmed_industry_reaches_the_blueprint_and_only_a_draft_renames(approved):
+    blueprint = _draft("kiln_works")
+    product_id = blueprint["product_id"]
+    state = _state(blueprint, vertical="quarry_yards", approved=approved)
+    domain = state.config.domain
+
+    platform_chat_flow.blueprint_takes_declared_vertical(state)
+
+    bp = state.product_design.blueprint
+    assert bp["vertical"] == "quarry_yards"
+    if approved:  # a reopened build keeps its own branch
+        assert bp["product_id"] == product_id
+        assert state.config.domain == domain
+    else:
+        assert bp["product_id"] == "quarry_yards"
+        assert state.config.domain != domain
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_an_unchanged_industry_leaves_the_blueprint_alone(approved):
+    blueprint = {**_draft("kiln_works"), "product_id": "own_id"}
+    state = _state(blueprint, vertical="kiln_works", approved=approved)
+    domain = state.config.domain
+
+    platform_chat_flow.blueprint_takes_declared_vertical(state)
+
+    assert state.product_design.blueprint["product_id"] == "own_id"
+    assert state.config.domain == domain
+
+
+@pytest.mark.parametrize("blueprint", [None, "draft"])
+def test_no_declared_industry_or_no_blueprint_changes_nothing(blueprint):
+    raw = _draft("kiln_works") if blueprint else None
+    state = _state(raw and dict(raw), vertical=None, approved=False)
+
+    platform_chat_flow.blueprint_takes_declared_vertical(state)
+
+    assert state.product_design.blueprint == raw
+
+
+@pytest.mark.parametrize("industry", ["quarry_yards", "salt_pans"])
+def test_typed_industry_then_approve_builds_on_the_declared_answer(industry):
+    """The reviewer's path: declared Y, typed X, Approve with X unsaved. The
+    blueprint Approve hashes is still Y; only Save moves both together."""
+    state = _state(_draft("kiln_works"), vertical="kiln_works", approved=False)
+
+    platform_chat_flow.apply_refinement(state, FloorAction.SET_VERTICAL, industry)
+    pd = state.product_design
+    assert (pd.vertical, pd.blueprint["vertical"]) == ("kiln_works", "kiln_works")
+
+    platform_chat_flow.apply_intake_action(state, FloorAction.CONFIRM_INTAKE)
+    assert (pd.vertical, pd.blueprint["vertical"]) == (industry, industry)
+
+
+@pytest.mark.parametrize("answer", [{"country": "zr"}, {"currency": "zrx"}])
+def test_confirming_another_answer_on_a_draft_keeps_its_identity(answer):
+    blueprint = {**_draft("kiln_works"), "product_id": "own_id"}
+    state = _state(blueprint, vertical="kiln_works", approved=False)
+    state.product_design.intake_proposal = dict(answer)
+
+    reply = platform_chat_flow.apply_intake_action(state, FloorAction.CONFIRM_INTAKE)
+
+    assert reply["ok"] is True
+    bp = state.product_design.blueprint
+    assert (bp["vertical"], bp["product_id"]) == ("kiln_works", "own_id")
+
+
+# -- 2. Draft: the chat door and the route refuse the same request ------------
+
+
+@pytest.mark.parametrize("brief", ["a new ask", "another platform entirely"])
+def test_chat_draft_on_a_frozen_intake_is_refused_like_the_route(tmp_path, client, brief):  # noqa: F811
+    sid = "sess_one_rule_draft_" + str(len(brief))
+    state = _frozen_session(tmp_path, sid)
+    before = dict(state.product_design.blueprint)
+
+    chat = client.post(f"/v1/sessions/{sid}/chat", json={"message": brief, "action": "draft"})
+    route = client.post(f"/v1/sessions/{sid}/product/draft", json={"brief": brief})
+
+    assert chat.status_code == 200, chat.text
+    infos = _infos(chat.text)
+    assert infos and infos[0]["ok"] is False
+    assert infos[0]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    assert route.status_code == 409, route.text
+    assert route.json()["detail"]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    pd = get_session(sid).product_design
+    # The door syncs the declared locale onto the blueprint; nothing is drafted.
+    assert {k: v for k, v in pd.blueprint.items() if k != "locale"} == {
+        k: v for k, v in before.items() if k != "locale"
+    }
+    assert pd.blueprint_approved is True
+
+
+# -- 3. every frozen refusal is typed ----------------------------------------
+
+
+@pytest.mark.parametrize("answers", [{"country": "ZQ", "currency": "ZQX"}, {}])
+def test_a_save_equal_to_the_declared_answers_is_refused_typed(tmp_path, client, answers):  # noqa: F811
+    sid = "sess_one_rule_same_" + str(len(answers))
+    _frozen_session(tmp_path, sid)
+
+    resp = client.post(
+        f"/v1/sessions/{sid}/chat",
+        json={"message": "", "action": "confirm_intake", **answers},
+    )
+
+    assert resp.status_code == 200, resp.text
+    infos = _infos(resp.text)
+    assert infos and infos[0]["ok"] is False
+    assert infos[0]["refused"] == platform_chat_flow.INTAKE_FROZEN
+    pd = get_session(sid).product_design
+    assert (pd.country, pd.currency) == ("ZQ", "ZQX")
+
+
+@pytest.mark.parametrize(
+    "action, value", [(FloorAction.CONFIRM_INTAKE, None), (FloorAction.SET_BUILD_LEVEL, "pilot")]
+)
+def test_every_intake_action_on_a_frozen_intake_is_refused_typed(tmp_path, action, value):
+    state = _frozen_session(tmp_path, "sess_one_rule_action_" + action.value)
+    state.product_design.intake_proposal = {"country": "ZR"}
+    update_session(state.session_id, state)
+
+    reply = platform_chat_flow.apply_intake_action(state, action, value)
+
+    assert reply["ok"] is False
+    assert reply["refused"] == platform_chat_flow.INTAKE_FROZEN
+    assert state.product_design.country == "ZQ"

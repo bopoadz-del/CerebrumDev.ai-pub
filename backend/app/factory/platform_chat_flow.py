@@ -190,6 +190,40 @@ def intake_frozen(state: Any) -> bool:
 INTAKE_FROZEN = "INTAKE_FROZEN"
 
 
+def frozen_draft_reply(state: Any) -> Dict[str, Any]:
+    """The typed refusal of a draft on a frozen intake (the chat's twin of
+    the 409 on POST /product/draft): nothing is drafted or replaced."""
+    return {
+        "sse": "info",
+        "ok": False,
+        "refused": INTAKE_FROZEN,
+        "summary": (
+            "The blueprint is approved and its answers are frozen with it, "
+            "so no new draft replaced it; nothing was changed."
+        ),
+        "intake": intake_view(state),
+    }
+
+
+def blueprint_takes_declared_vertical(state: Any) -> None:
+    """After Confirm, the blueprint's industry is the declared one: the only
+    place the blueprint's industry changes. A pending draft also takes it as
+    its product id and session domain (what the typed industry did before it
+    went through Confirm); an approved blueprint, reopened after a failure,
+    keeps its product id so the resumed build stays on its own branch."""
+    pd = state.product_design
+    blueprint = pd.blueprint
+    if not isinstance(blueprint, dict) or not pd.vertical:
+        return
+    if blueprint.get("vertical") == pd.vertical:
+        return
+    blueprint["vertical"] = pd.vertical
+    if pd.blueprint_approved:
+        return
+    blueprint["product_id"] = pd.vertical
+    state.config.domain = session_domain_from_blueprint(ProductBlueprint.model_validate(blueprint))
+
+
 def edit_intake(
     state: Any,
     vertical: Optional[str] = None,
@@ -253,9 +287,10 @@ def apply_intake_action(
         return {
             "sse": "info",
             "ok": False,
+            "refused": INTAKE_FROZEN,
             "summary": (
-                "The blueprint is approved: its intake, build level included, "
-                "is frozen with it. Draft a new platform to build at another level."
+                "The blueprint is approved: its answers, build level included, "
+                "are frozen with it, so nothing was changed."
             ),
             "intake": intake_view(state),
         }
@@ -278,6 +313,7 @@ def apply_intake_action(
                 "summary": "There is no proposed intake to confirm.",
                 "intake": intake_view(state),
             }
+        blueprint_takes_declared_vertical(state)
         parts = [f"{k.replace('_', ' ')} {v or 'cleared'}" for k, v in stored.items()]
         summary = "Confirmed: " + ", ".join(parts) + "."
         if stored.get("build_level"):
@@ -388,21 +424,18 @@ def apply_refinement(
         from app.factory.store_kits import chosen_vertical
 
         vertical = chosen_vertical(args["vertical"])
-        # One write path: the declared industry changes only on Confirm. The
-        # pending blueprint takes the refinement; the declared field gets it
-        # as a proposal beside the declared answers.
+        # One write path: the industry goes onto the proposal only. The
+        # declared field and the blueprint both take it on Confirm
+        # (blueprint_takes_declared_vertical), so Approve never builds on an
+        # answer the brief still shows as unsaved.
         propose_intake_edit(pd, {"vertical": vertical})
-        bp.vertical = vertical
-        bp.product_id = vertical
-        pd.blueprint = bp.model_dump(mode="json")
-        state.config.domain = session_domain_from_blueprint(bp)
         return {
             "ok": True,
-            "refined": True,
+            "refined": False,
             "action": action,
-            "summary": f"Vertical set to '{vertical}'.",
+            "summary": f"Industry '{vertical}' is waiting to be saved. Save the brief to use it.",
             "blueprint": pd.blueprint,
-            "yaml": blueprint_to_yaml(bp),
+            "intake": intake_view(state),
         }
 
     elif action == "list_capabilities":
@@ -1778,8 +1811,7 @@ def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict
         return not_a_failed_build_reply(state)
     stored = confirm_intake(pd)
     pd.intake_reopened = False
-    if isinstance(pd.blueprint, dict) and pd.vertical and pd.blueprint.get("vertical") != pd.vertical:
-        pd.blueprint["vertical"] = pd.vertical
+    blueprint_takes_declared_vertical(state)
     reply = resume_failed_platform(
         state, output_root=output_root, triggered_by="continue_with_intake", intake_changed=True
     )
