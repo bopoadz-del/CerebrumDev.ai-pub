@@ -36,6 +36,22 @@ export const STEP_ORDER: readonly string[] = Object.keys(STEP_NAMES)
 export const REVIEW_GATE = 'grader'
 export const REVIEW_NAME = 'Quality check'
 
+/**
+ * What a step counts while it works, as the screen names it. The record's
+ * progress carries a unit (``handlers`` while the code is written); the
+ * screen says "features". A unit the table does not know reads as "parts".
+ */
+const UNIT_NAMES: Readonly<Record<string, string>> = {
+  handlers: 'features',
+  capabilities: 'features',
+  features: 'features',
+  blocks: 'building blocks',
+}
+
+export function unitName(unit: string | null | undefined): string {
+  return UNIT_NAMES[String(unit ?? '').trim().toLowerCase()] ?? 'parts'
+}
+
 /** The three kinds of check, keyed by their wire id, in the order they run. */
 export const CHECK_NAMES: Readonly<Record<string, { label: string; phrase: string }>> = {
   CODE: { label: 'Code checks', phrase: 'the code checks' },

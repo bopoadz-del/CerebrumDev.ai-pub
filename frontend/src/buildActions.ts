@@ -27,6 +27,7 @@ export type ActionId =
   | 'download_platform'
   | 'run_pilot'
   | 'open_repo'
+  | 'check_again'
 
 export type ActionStyle = 'primary' | 'secondary' | 'quiet' | 'danger'
 
@@ -68,6 +69,11 @@ export type StopKind = 'by_you' | 'check' | 'our_side'
 
 export function stopKind(build: BuildStatus | null | undefined): StopKind | null {
   if (!build || (build.state !== 'failed' && build.state !== 'stalled')) return null
+  // The server's stop record names the kind (a closed set); it decides.
+  const recorded = build.stop?.kind
+  if (recorded === 'user_stopped') return 'by_you'
+  if (recorded === 'check_failed') return 'check'
+  if (recorded) return 'our_side'
   if (build.coder_control === 'stop') return 'by_you'
   if (build.state === 'stalled') return 'our_side'
   // The runner's own STOP decision: a check used up its fix rounds.
@@ -99,6 +105,7 @@ export const BUSY_LABEL: Record<ActionId, string> = {
   download_platform: 'Packing…',
   run_pilot: 'Starting…',
   open_repo: 'Opening…',
+  check_again: 'Checking…',
 }
 
 /** The pressed action shows its busy label and cannot be pressed twice. */
@@ -285,9 +292,22 @@ export function buildActions(input: ActionInput): ActionPlan {
   return withPending(planFor(input), input.pending)
 }
 
+function checkAgain(input: ActionInput): BuildAction {
+  return {
+    id: 'check_again',
+    label: 'Check again',
+    sub: 'Asks the server for this build once more.',
+    style: 'primary',
+    disabled: input.busy ? WAIT : null,
+  }
+}
+
 function planFor(input: ActionInput): ActionPlan {
   const build = input.build
   const accessPaused = Boolean(input.accessPaused)
+  if (build?.state === 'not_found') {
+    return { bar: [checkAgain(input), startOver(input)], more: [], accessPaused }
+  }
   if (build?.state === 'succeeded') return { ...finishedPlan(input, build), accessPaused }
   if (build && (build.state === 'failed' || build.state === 'stalled')) {
     return { ...stoppedPlan(input, build), accessPaused }

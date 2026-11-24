@@ -153,11 +153,16 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     for (const old of ['COLLECTOR', 'WORKERS', 'Binding surveyor', 'Platform manufacturer', 'Block stocker']) {
       expect(screen.queryByText(old)).not.toBeInTheDocument()
     }
-    expect(await screen.findByText('Step 3 of 5 — Writing the code')).toBeInTheDocument()
-    expect(screen.getByText(/next: Test/)).toBeInTheDocument()
-    expect(screen.getByText('7/7 handlers')).toBeInTheDocument()
-    expect(screen.getByText(/Last: wrote handler payments/)).toBeInTheDocument()
-    expect(screen.getByText(/still working/)).toBeInTheDocument()
+    // PR-12: the running card is one line (step, the step's running name, the
+    // share of features), one whole-build bar and the timers. The second
+    // fraction, the "next:" chip, the "Last:" line and the heartbeat sentence
+    // left the face; the agent's narration is in Technical detail.
+    expect(await screen.findByTestId('floor-running-line')).toHaveTextContent(
+      'Step 3 of 5 — Writing the code — 7 of 7 features',
+    )
+    expect(screen.getByTestId('floor-running-bar')).toHaveAttribute('aria-valuenow', '60')
+    expect(screen.getByTestId('floor-running-timers')).toHaveTextContent('Last update just now')
+    expect(screen.queryByText('7/7 handlers')).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText(/coding agent has taken over/i)).toBeDisabled()
     // The build is still running (WRITER 3/5), so the Floor must not offer the
     // platforms CTA yet — there is no platform to open until the agent lands.

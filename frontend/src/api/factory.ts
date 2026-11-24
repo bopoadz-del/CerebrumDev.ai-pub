@@ -718,8 +718,50 @@ export interface BuildDecision {
   reason?: string
 }
 
+/** The closed set of ways a build can end early (server failure_record.STOP_KINDS). */
+export type StopKind =
+  | 'time_ran_out'
+  | 'check_failed'
+  | 'nothing_produced'
+  | 'service_interrupted'
+  | 'no_progress'
+  | 'user_stopped'
+  | 'not_found'
+
+/** The one "ended because" record of a build that ended early (PR-11). The
+ *  page writes its sentence from the typed fields; ``plain`` is the server's
+ *  own sentence for the cause; everything under ``technical`` is machine text
+ *  for Technical detail only. */
+export interface StopRecord {
+  kind: StopKind | string
+  plain?: string
+  /** Wire id of the step it ended in. */
+  step?: string
+  step_index?: number | null
+  steps_total?: number | null
+  steps_done?: number
+  fix_rounds?: number
+  elapsed_s?: number | null
+  technical?: { code?: string; reason_chain?: string[]; message?: string; reference?: string }
+}
+
+/** The build's own declared end, on the server clock (build_jobs.declared_deadline). */
+export interface BuildDeadline {
+  /** The ledger event the end is measured from (RUN_STARTED, REWORK, ...). */
+  anchor?: string | null
+  /** The wall that event opened, in seconds. */
+  ceiling_s?: number
+  gate_wall_s?: number
+  /** Seconds from the read to the declared end. */
+  deadline_in_s: number
+}
+
 export type BuildStatus = {
-  state: 'not_started' | 'unknown' | 'building' | 'succeeded' | 'failed' | 'stalled' | 'waiting'
+  state: 'not_started' | 'unknown' | 'building' | 'succeeded' | 'failed' | 'stalled' | 'waiting' | 'not_found'
+  /** The one stop record of a build that ended early, or of one the server cannot find. */
+  stop?: StopRecord | null
+  /** The build's own declared end. Null when the record declares none. */
+  deadline?: BuildDeadline | null
   detail?: string
   findings?: string[]
   cycle?: string
@@ -862,6 +904,9 @@ export async function awaitBuild(
     if (build.state === 'unknown') {
       return { ...build, state: 'succeeded' }
     }
+    // A build the server cannot find stays in its own state: polling again
+    // cannot find it; "Check again" asks once more.
+    if (build.state === 'not_found') return build
     if (Date.now() > deadline) {
       return { ...build, state: 'failed', detail: 'build timed out client-side' }
     }
@@ -887,7 +932,7 @@ export async function watchBuildStatus(
     // n_required re-eval — keep polling so Platforms cannot freeze on
     // a cached RUN_FAILED / need≥5 tick. Other terminal failures stop.
     const stickyThin = /FACTORY_CODE_CLI_THIN_AUTHORSHIP/i.test(build.detail || '')
-    if ((build.state === 'failed' && !stickyThin) || build.state === 'stalled') return
+    if ((build.state === 'failed' && !stickyThin) || build.state === 'stalled' || build.state === 'not_found') return
     await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, intervalMs)
       const onAbort = () => {

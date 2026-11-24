@@ -1042,6 +1042,7 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .build-card.tone-warning { border-color: var(--warning-edge); }
 .build-card.tone-danger { border-color: var(--danger-edge); background: var(--danger-fill); }
 .build-card.tone-success { border-color: var(--success-edge); background: var(--success-fill); }
+.build-card.tone-neutral { border-color: var(--control-border); }
 .build-state {
   margin: 0;
   display: flex;
@@ -1055,6 +1056,7 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
 .tone-warning .build-state { color: var(--warning-text); }
 .tone-danger .build-state { color: var(--danger-text); }
 .tone-success .build-state { color: var(--success-text); }
+.tone-neutral .build-state { color: var(--text); }
 .build-state-icon { flex: 0 0 auto; }
 .build-state-title { color: var(--text); font-weight: var(--weight-regular); min-width: 0; overflow-wrap: anywhere; }
 .build-sentence {
@@ -1342,6 +1344,47 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   height: 100%;
   background: var(--success-text);
 }
+/* The running card: one line, one whole-build bar, three timers. */
+.running {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.running-line {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+  font-weight: var(--weight-strong);
+  overflow-wrap: anywhere;
+}
+.running-queued {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+}
+.running-bar {
+  height: 6px;
+  background: var(--divider);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  margin: var(--space-1) 0;
+}
+.running-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--info-text);
+}
+.running-timers {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+  row-gap: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs); line-height: var(--lh-xs);
+}
+.running-timers > span { white-space: nowrap; }
 .bp-summary {
   color: var(--dim);
   font-size: var(--text-sm); line-height: var(--lh-sm);

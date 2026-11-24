@@ -70,6 +70,7 @@ const DONE_TEXT: Record<ActionId, string> = {
   download_platform: 'Download started.',
   run_pilot: 'Pilot checks started.',
   open_repo: 'Repository opened.',
+  check_again: 'Checked again.',
 }
 
 export function doneText(id: ActionId): string {
