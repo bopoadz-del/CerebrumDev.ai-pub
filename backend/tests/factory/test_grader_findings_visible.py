@@ -393,3 +393,11 @@ def test_every_step_kind_on_the_card_is_one_the_ui_grader_writes(kind):
     assert kind in grader_findings.STEP_WORDS
     for known in grader_findings.STEP_WORDS:
         assert '"' + known in source
+
+
+@pytest.mark.parametrize("step, words", [("screen", "screen"), ("load", "load")])
+def test_a_step_id_with_no_target_reads_as_its_own_words(step, words):
+    """A step id with no ``kind:`` separator is named by its own words. It is
+    never framed as a step kind with an empty target (which reads as nothing
+    for ``screen``) and never borrows the kind's frame (``opening the app``)."""
+    assert grader_findings.step_place(step) == words
