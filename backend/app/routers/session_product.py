@@ -773,6 +773,8 @@ def not_found_build_status() -> Dict[str, Any]:
         "stop": {
             "kind": fr.STOP_NOT_FOUND,
             "plain": fr.NOT_FOUND_PLAIN,
+            "check_plain": None,
+            "restarted": False,
             "step": "",
             "step_index": None,
             "steps_total": None,

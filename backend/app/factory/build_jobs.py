@@ -568,6 +568,23 @@ def _elapsed_s(events: Sequence[Any]) -> Optional[int]:
     return int(max(stamps) - min(stamps))
 
 
+def _grader_send_backs(events: Sequence[Any]) -> int:
+    """Fix rounds the grader spent: its writer handbacks.
+
+    The runner's rule records a decision for every gate round it sends back;
+    the grader's handback is a REWORK event of its own with no decision, so
+    the rule's count alone misses it."""
+    from app.factory.build.grader import GRADER_GATE
+
+    return sum(
+        1
+        for e in events
+        if _event_name(getattr(e, "kind", None)) == "REWORK"
+        and (getattr(e, "payload", None) or {}).get("gate") == GRADER_GATE
+        and not isinstance((e.payload or {}).get("decision"), dict)
+    )
+
+
 def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict[str, Any]]:
     """The one "ended because" record of a build that ended early, or None.
 
@@ -598,9 +615,16 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
     chain = fr.reason_chain(payload.get("reason"), getattr(last, "detail", "")) if last is not None else []
     if terminal is not None:
         tp = terminal.payload or {}
+        markers = fr.reason_chain(tp.get("reason"), terminal.detail)
+        # The runner's typed reason for its own stop, when it wrote one, is
+        # the most specific marker: it is read first.
+        decided = tp.get("decision")
+        decided_reason = str(decided.get("reason") or "") if isinstance(decided, dict) else ""
+        if fr._is_code(decided_reason):
+            markers.append(decided_reason)
         kind, plain, code = fr.stop_kind(
             outcome=tp.get("outcome"),
-            markers=fr.reason_chain(tp.get("reason"), terminal.detail),
+            markers=markers,
             failure_kind=payload.get("failure_kind"),
             chain=chain,
             gate_failed=_event_name(getattr(last, "kind", None)) == "GATE_FAILED",
@@ -616,14 +640,24 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
         kind, plain = fr.STOP_ENTRIES["model_call_timeout"]
         code = "model_call_timeout"
     phases = [p.value for p in BUILD_PHASES]
+    # The step a run ended in is the phase its terminal event names: the
+    # runner writes the phase it was in when it stopped. The last failure can
+    # be an earlier gate that a fix round already answered (a TESTER refusal
+    # sent back to the WRITER, which then ran out of time).
     step = ""
-    if last is not None and terminal is not None:
+    if terminal is not None:
+        step = _event_name(getattr(terminal, "role", None))
+    if not step and last is not None and terminal is not None:
         step = _event_name(last.role)
     if not step:
         current = status.get("current_phase") or {}
         step = str(current.get("id") or "") if isinstance(current, dict) else ""
-    if not step and terminal is not None:
-        step = _event_name(getattr(terminal, "role", None))
+    step_index = phases.index(step) + 1 if step in phases else None
+    steps_done = int(status.get("phases_done") or 0)
+    if step_index is not None:
+        # The step it stopped in is not done, even when an earlier pass of it
+        # had passed before a fix round sent the work back to it.
+        steps_done = min(steps_done, step_index - 1)
     reference = ""
     if last is not None:
         reference = _failure_ref(
@@ -638,11 +672,14 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
     return {
         "kind": kind,
         "plain": plain,
+        # Typed facts the page words its sentence from, never text it reads.
+        "check_plain": fr.check_plain(kind, code, plain),
+        "restarted": code in fr.RESTART_CODES,
         "step": step,
-        "step_index": phases.index(step) + 1 if step in phases else None,
+        "step_index": step_index,
         "steps_total": len(phases),
-        "steps_done": int(status.get("phases_done") or 0),
-        "fix_rounds": fr.fix_rounds_used(status.get("decisions")),
+        "steps_done": steps_done,
+        "fix_rounds": fr.fix_rounds_used(status.get("decisions")) + _grader_send_backs(events),
         "elapsed_s": _elapsed_s(events),
         "technical": {
             "code": code,

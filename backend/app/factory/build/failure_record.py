@@ -236,6 +236,10 @@ STOP_ENTRIES: Dict[str, Tuple[str, str]] = {
     "model_call_timeout": (STOP_TIME_RAN_OUT, "The coding service did not answer in time."),
     "worker_timed_out": (STOP_TIME_RAN_OUT, "This step ran out of time before it finished."),
     "time_budget_exceeded": (STOP_TIME_RAN_OUT, "The build reached its time limit before it finished."),
+    "stage_time_check_stop": (
+        STOP_TIME_RAN_OUT,
+        "The build reached a time check without enough working code to finish in time.",
+    ),
     "budget_skipped": (STOP_TIME_RAN_OUT, "A step was skipped because the build had no time left."),
     "FAILED_TIME_BUDGET": (STOP_TIME_RAN_OUT, "The build reached its time limit before it finished."),
     # No progress.
@@ -292,6 +296,25 @@ CHECK_FAILED_PLAIN = "A quality check did not pass."
 NO_PROGRESS_PLAIN = "The build stopped sending updates, so nothing is working on it."
 #: The sentence for a build the server cannot find.
 NOT_FOUND_PLAIN = "We can't find this build on the server."
+
+#: Codes whose sentence is the generic "a check did not pass": a check with
+#: no sentence of its own. Any other check code's sentence is the check's own.
+GENERIC_CHECK_CODES = frozenset({"FAILED_GATE", "FAILED_BUDGET_SPENT"})
+
+#: Codes that mean our build service restarted under the run (an orphaned
+#: thread or coding job), as opposed to failing or crashing in place.
+RESTART_CODES = frozenset({"BUILD_THREAD_ORPHANED", "FACTORY_CODE_CLI_ORPHANED"})
+
+
+def check_plain(kind: str, code: str, plain: str) -> Optional[str]:
+    """The check's own plain sentence, or None for a check with none.
+
+    The page adds it after "A quality check did not pass"; the generic check
+    sentences are never repeated."""
+    if kind != STOP_CHECK_FAILED or code in GENERIC_CHECK_CODES or plain == CHECK_FAILED_PLAIN:
+        return None
+    return plain
+
 
 #: The runner decision classes that spend a fix round.
 FIX_ROUND_CLASSES = frozenset({"REWORK", "REGENERATE_TEST", "REPROMPT"})
