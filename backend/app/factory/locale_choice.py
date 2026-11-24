@@ -187,18 +187,26 @@ def confirm_intake(pd: Any) -> Optional[Dict[str, str]]:
     return proposal
 
 
-def intake_state(pd: Any) -> Dict[str, Any]:
-    """What the Floor's intake line shows: the declared typed fields and the
-    pending proposal (if any), side by side and never merged."""
+def declared_intake(pd: Any) -> Dict[str, Any]:
+    """The typed fields the session holds as the user's declared answers."""
     return {
-        "declared": {
-            "vertical": getattr(pd, "vertical", None),
-            "country": getattr(pd, "country", None),
-            "currency": getattr(pd, "currency", None),
-            "build_level": getattr(pd, "build_level", None),
-        },
+        "vertical": getattr(pd, "vertical", None),
+        "country": getattr(pd, "country", None),
+        "currency": getattr(pd, "currency", None),
+        "build_level": getattr(pd, "build_level", None),
+    }
+
+
+def intake_state(pd: Any, *, reopened: bool) -> Dict[str, Any]:
+    """What the Floor's intake line shows: the declared typed fields and the
+    pending proposal (if any), side by side and never merged.
+
+    ``reopened`` is given by the caller, derived from the build
+    (platform_chat_flow.intake_reopened): the session's stored mark is never
+    shown on its own, so a finished or running build never reads as an open
+    brief."""
+    return {
+        "declared": declared_intake(pd),
         "proposal": shaped_proposal(getattr(pd, "intake_proposal", None)),
-        # True after "Continue with new answers" on a FAILED build: the line
-        # is editable again until the typed Confirm resumes the platform.
-        "reopened": bool(getattr(pd, "intake_reopened", False)),
+        "reopened": bool(reopened),
     }

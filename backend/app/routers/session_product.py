@@ -41,7 +41,6 @@ from app.factory.blocks_source import resolve_blocks_root
 from app.factory.blueprint import BlueprintError, ProductBlueprint, customer_settable
 from app.factory.dual_registry import DualRegistryError
 from app.factory.floor_actions import require_build_level
-from app.factory.locale_choice import intake_state
 from app.factory.paths import UnsafeOutputDir, factory_outputs_root, safe_output_dir
 from app.factory.product_architect import (
     _golden_for_draft,
@@ -854,6 +853,7 @@ def product_verticals(
     """The Floor's vertical picker: what the Store's kits DECLARE they serve,
     and the user's current choice. The user picks one or types their own;
     the Factory never infers it."""
+    from app.factory import platform_chat_flow
     from app.factory.store_kits import NO_VERTICAL, declared_verticals
 
     state = _require_session(session_id, principal)
@@ -871,23 +871,8 @@ def product_verticals(
         # The build level the user chose; None = not chosen (no default).
         "build_level": state.product_design.build_level,
         # The Floor's intake line: declared fields + any pending proposal.
-        "intake": intake_state(state.product_design),
+        "intake": platform_chat_flow.intake_view(state),
     }
-
-
-def _refuse_while_building(state: Any) -> None:
-    """409 with the typed INTAKE_FROZEN while a build runs: a draft replaces
-    the blueprint the running build was approved on."""
-    from app.factory import platform_chat_flow
-
-    if platform_chat_flow.has_running_build(state):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "refused": platform_chat_flow.INTAKE_FROZEN,
-                "message": "A build is running on this blueprint; nothing was changed.",
-            },
-        )
 
 
 def _refuse_on_frozen_intake(state: Any) -> None:
@@ -915,7 +900,9 @@ def draft_product(
     session_id: str, body: DraftBody, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
-    _refuse_while_building(state)
+    # A draft replaces the blueprint and writes the request's industry,
+    # country and currency: refused whenever the chat's Save would be.
+    _refuse_on_frozen_intake(state)
     # Outside the try/except below on purpose: that handler catches bare
     # Exception and re-raises as 400, which would mask the 429.
     _enforce_draft_quota(principal.account_id)
@@ -1096,6 +1083,7 @@ def decline_golden(
     409 if there is no draft.
     """
     state = _require_session(session_id, principal)
+    _refuse_on_frozen_intake(state)
     bp_dict = state.product_design.blueprint
     if not bp_dict:
         raise HTTPException(
@@ -1118,6 +1106,9 @@ def plan_product(
     session_id: str, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    # Planning re-syncs the intake onto the blueprint and replaces the plan
+    # an approval was given on: refused on a frozen intake.
+    _refuse_on_frozen_intake(state)
     if not state.product_design.blueprint:
         raise HTTPException(status_code=400, detail="draft a blueprint first")
     require_llm_rate(principal, "plan")

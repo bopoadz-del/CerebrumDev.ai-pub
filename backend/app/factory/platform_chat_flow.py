@@ -54,6 +54,7 @@ from .floor_actions import (
 )
 from .locale_choice import (
     confirm_intake,
+    declared_intake,
     edit_differs_from_declared,
     intake_state,
     propose_intake_edit,
@@ -208,7 +209,7 @@ def edit_intake(
     pd = state.product_design
     edit, error = shaped_intake_edit(vertical, country, currency, build_level)
     if error:
-        return {"sse": "info", "ok": False, "summary": error, "intake": intake_state(pd)}
+        return {"sse": "info", "ok": False, "summary": error, "intake": intake_view(state)}
     if not edit:
         return None
     if intake_frozen(state):
@@ -224,7 +225,7 @@ def edit_intake(
                 "changed. After a build stops with a failure, Change answers "
                 "opens them again."
             ),
-            "intake": intake_state(pd),
+            "intake": intake_view(state),
         }
     # Every answer the user sent goes onto the proposal, an answer equal to
     # the declared one included: the user's pick replaces a chat suggestion
@@ -234,7 +235,7 @@ def edit_intake(
         "sse": "info",
         "ok": True,
         "summary": "Your answers are waiting to be saved.",
-        "intake": intake_state(pd),
+        "intake": intake_view(state),
     }
 
 
@@ -255,13 +256,13 @@ def apply_intake_action(
                 "The blueprint is approved: its intake, build level included, "
                 "is frozen with it. Draft a new platform to build at another level."
             ),
-            "intake": intake_state(pd),
+            "intake": intake_view(state),
         }
     if action is FloorAction.SET_BUILD_LEVEL:
         try:
             level = parse_level(value).value
         except FloorActionError as exc:
-            return {"sse": "info", "ok": False, "summary": str(exc), "intake": intake_state(pd)}
+            return {"sse": "info", "ok": False, "summary": str(exc), "intake": intake_view(state)}
         pd.intake_proposal = {**(pd.intake_proposal or {}), "build_level": level}
         summary = (
             "Proposed build level " + _level_bar_sentence(level)
@@ -274,7 +275,7 @@ def apply_intake_action(
                 "sse": "info",
                 "ok": False,
                 "summary": "There is no proposed intake to confirm.",
-                "intake": intake_state(pd),
+                "intake": intake_view(state),
             }
         parts = [f"{k.replace('_', ' ')} {v or 'cleared'}" for k, v in stored.items()]
         summary = "Confirmed: " + ", ".join(parts) + "."
@@ -286,7 +287,7 @@ def apply_intake_action(
         "sse": "info",
         "ok": True,
         "summary": summary,
-        "intake": intake_state(pd),
+        "intake": intake_view(state),
     }
     if pd.blueprint:
         result["blueprint"] = pd.blueprint
@@ -1170,7 +1171,7 @@ def already_complete_reply(state: Any) -> Dict[str, Any]:
     summary = (
         f"{product} finished the code-phase 5/5{phase}. "
         "It is not yet pilot-ready (pytest -m pilot / Store ops). "
-        "Say continue to open a pilot cycle on the same workspace."
+        "Press Run pilot checks to test it on the same workspace."
     )
     return {
         "ok": True,
@@ -1492,7 +1493,7 @@ def not_a_failed_build_reply(state: Any) -> Dict[str, Any]:
             "This build did not stop with a failure, so there is nothing to "
             "try again and nothing was changed."
         ),
-        "intake": intake_state(pd),
+        "intake": intake_view(state),
         "stream_delta": True,
     }
 
@@ -1620,13 +1621,15 @@ def start_over(
 
         try:
             archived = tag_head_for_archive(builds_remote(), pid)
-        except Exception as exc:  # noqa: BLE001 -- a reply, and nothing is created
+        except Exception:  # noqa: BLE001 -- a reply, and nothing is created
+            # The tool's own output stays in the log; the Floor gets a sentence.
+            logger.warning("start over: archive tag failed for %s", pid, exc_info=True)
             return {
                 "ok": False,
                 "sse": "info",
                 "summary": (
-                    f"Start over stopped before anything changed: the current "
-                    f"head could not be tagged for safekeeping ({exc})."
+                    "Start from scratch did not run: the current work could "
+                    "not be kept safely first, so nothing was changed."
                 ),
                 "stream_delta": True,
             }
@@ -1697,7 +1700,7 @@ def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
         return {
             "sse": "info",
             "ok": False,
-            "summary": "There is no failed build to take a copy of.",
+            "summary": "This build did not stop with a failure, so there is no copy to download.",
         }
     return {
         "sse": "info",
@@ -1720,12 +1723,12 @@ def continue_with_intake(state: Any, output_root: Optional[Path] = None) -> Dict
         return {
             "sse": "info",
             "ok": False,
-            "summary": "There is no failed build to continue.",
-            "intake": intake_state(pd),
+            "summary": "This build did not stop with a failure, so there are no answers to change.",
+            "intake": intake_view(state, output_root),
         }
     declared = {
         k: v
-        for k, v in intake_state(pd)["declared"].items()
+        for k, v in declared_intake(pd).items()
         if isinstance(v, str) and v
     }
     pd.intake_reopened = True
@@ -1738,7 +1741,7 @@ def continue_with_intake(state: Any, output_root: Optional[Path] = None) -> Dict
             "resumes on this platform's own branch with the rework budget it had left; "
             "nothing runs until you save."
         ),
-        "intake": intake_state(pd),
+        "intake": intake_view(state, output_root),
     }
 
 
@@ -1751,6 +1754,15 @@ def intake_reopened(state: Any, output_root: Optional[Path] = None) -> bool:
     if not bool(getattr(pd, "intake_reopened", False)):
         return False
     return is_generation_terminal_failure(state, output_root)
+
+
+def intake_view(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
+    """The Floor's intake line for this session. ``reopened`` is read from the
+    build (intake_reopened), never from the stored mark alone: a mark left on
+    a running or finished build shows a closed brief."""
+    return intake_state(
+        state.product_design, reopened=intake_reopened(state, output_root)
+    )
 
 
 def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
@@ -1770,7 +1782,7 @@ def confirm_and_continue(state: Any, output_root: Optional[Path] = None) -> Dict
     reply = resume_failed_platform(
         state, output_root=output_root, triggered_by="continue_with_intake", intake_changed=True
     )
-    reply["intake"] = intake_state(pd)
+    reply["intake"] = intake_view(state, output_root)
     if stored:
         parts = [f"{k.replace('_', ' ')} {v or 'cleared'}" for k, v in stored.items()]
         reply["summary"] = "Confirmed: " + ", ".join(parts) + ". " + str(reply.get("summary") or "")

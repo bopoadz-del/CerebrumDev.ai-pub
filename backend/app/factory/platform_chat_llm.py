@@ -41,7 +41,7 @@ from app.factory.floor_actions import (
     FloorActionError,
     parse_action,
 )
-from app.factory.locale_choice import intake_state, shaped_proposal
+from app.factory.locale_choice import declared_intake, shaped_proposal
 from app.factory.product_architect import LlmSoftMiss
 
 #: Refinements the model may apply itself. The vertical is the user's typed
@@ -132,7 +132,7 @@ or interrupted (no RUN_FAILED) and the user says continue / resume / keep \
 going, OR (3) the last run FAILED (rework exhausted / TESTER still red) \
 and the user asks to continue or try again — that RESUMES the platform \
 on its own branch at the failing phase with the rework budget it had left (only \
-the user's Start over control makes a fresh workspace). Do not require a \
+the user's Start from scratch control makes a fresh workspace). Do not require a \
 pending unapproved \
 blueprint to resume. If the last run already succeeded AND the product is \
 pilot-ready, do NOT call start_coder — reply that it finished. If \
@@ -150,10 +150,10 @@ about their vertical (only if they named one), country (2-letter code), \
 currency (3-letter code) and build level (only one of prototype | light | \
 pilot | production, and only if they chose it in so many words -- never \
 from how their business sounds). Leave a field "" when they have not said \
-it. The Floor shows your proposal with Confirm / Change buttons; it stores \
-nothing until the user presses Confirm.
+it. The Floor shows your proposal in the brief; it stores nothing until \
+the user presses Save.
 - reply: questions, chit-chat, or a pending blueprint with no confirmation. \
-Set "message" to a short grounded reply. Tell them they can confirm to start \
+Set "message" to a short grounded reply. Tell them they can press Approve & build to start \
 the coding agent. Do not pretend a build started.
 
 The session facts carry the STORE: ready-made blocks, CONNECTORS and MCP \
@@ -215,7 +215,7 @@ def _intake_facts(pd: Any) -> str:
     are the user's; anything unset is to be ASKED, never assumed."""
     if pd is None:
         return ""
-    declared = intake_state(pd)["declared"]
+    declared = declared_intake(pd)
     shown = ", ".join(
         f"{k}={v}" if v else f"{k}=NOT DECLARED"
         for k, v in declared.items()
@@ -861,7 +861,7 @@ def apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[s
     result = _apply_decision(state, message, decision)
     pd = getattr(state, "product_design", None)
     if pd is not None and isinstance(result, dict):
-        result["intake"] = intake_state(pd)
+        result["intake"] = platform_chat_flow.intake_view(state)
     return result
 
 

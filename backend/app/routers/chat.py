@@ -37,7 +37,6 @@ from ..factory.floor_actions import (
     parse_action,
     require_build_level,
 )
-from ..factory.locale_choice import intake_state
 from ..models.session import SessionState
 
 logger = logging.getLogger(__name__)
@@ -108,7 +107,8 @@ def _session_state_summary(state) -> str:
         elif platform_chat_flow.is_generation_terminal_failure(state):
             lines.append(
                 "Last coding run FAILED (rework exhausted or gates still red). "
-                "A new brief starts a new product; continue starts a fresh workspace."
+                "A new brief starts a new product; Try again resumes the same "
+                "branch at the failing step; Start from scratch makes a fresh workspace."
             )
         elif platform_chat_flow.is_generation_resumable(state):
             lines.append(
@@ -478,7 +478,7 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
         # No build without the user's chosen level -- no default, no guess.
         refused = require_build_level(state.product_design)
         if refused is not None:
-            refused = {**refused, "intake": intake_state(state.product_design)}
+            refused = {**refused, "intake": platform_chat_flow.intake_view(state)}
             _record(refused)
             async for ev in _yield_platform_result(refused):
                 yield ev
