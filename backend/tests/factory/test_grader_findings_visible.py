@@ -454,12 +454,13 @@ def test_the_view_counts_every_item_of_the_standing_verdict(tmp_path, follow, fo
     assert view["found"] == found
 
 
-def test_a_hand_back_of_more_items_than_rows_says_the_true_count(tmp_path):
+@pytest.mark.parametrize("count", [41, 45])
+def test_a_hand_back_of_more_items_than_rows_says_the_true_count(tmp_path, count):
     from app.factory.build.grader import GRADER_GATE, NOT_CERTIFIED
     from app.factory.build.ledger import BuildLedger, EventKind
     from app.factory.build_jobs import _grader_view
 
-    items = [f"function grade FAIL: zorblat_{i}" for i in range(45)]
+    items = [f"function grade FAIL: zorblat_{i}" for i in range(count)]
     ledger = BuildLedger(tmp_path / "build_ledger.jsonl")
     ledger.start_run(product_id="product", inputs_hash="h")
     ledger.append(EventKind.NOTE, role="WRITER", detail="v", payload={
@@ -470,5 +471,5 @@ def test_a_hand_back_of_more_items_than_rows_says_the_true_count(tmp_path):
     view = _grader_view(list(ledger.events()))
     assert len(view["findings"]) == grader_findings.MAX_ROWS == 40
     assert view["headline"] == (
-        "The quality check found 45 problems and sent them back to the writer to fix. The first 40 are listed:"
+        f"The quality check found {count} problems and sent them back to the writer to fix. The first 40 are listed:"
     )
