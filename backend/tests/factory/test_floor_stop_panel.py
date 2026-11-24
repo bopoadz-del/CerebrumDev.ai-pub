@@ -493,8 +493,16 @@ def test_no_ledger_is_unknown_not_a_stop(tmp_path, name):
 # -- the grader chip speaks only for the grader -------------------------------
 
 
-def _grader(view_state, tier, round_no=0):
-    return {"state": view_state, "tier": tier, "round": round_no, "budget": REWORK_BUDGET}
+def _grader(view_state, tier, round_no=0, sent=0):
+    return {
+        "state": view_state,
+        "tier": tier,
+        "round": round_no,
+        "budget": REWORK_BUDGET,
+        "findings": [],
+        "sent_to_writer": sent,
+        "headline": "",
+    }
 
 
 _GRADER_STEPS = {
@@ -504,7 +512,7 @@ _GRADER_STEPS = {
     "certified": (EventKind.NOTE, {"grader_gate": GRADER_GATE, "grader_tier": CERTIFIED}),
     "not_certified": (EventKind.NOTE, {"grader_gate": GRADER_GATE, "grader_tier": NOT_CERTIFIED}),
     "error": (EventKind.NOTE, {"grader_gate": GRADER_GATE, "grader_tier": ERROR}),
-    "handback": (EventKind.REWORK, {"gate": GRADER_GATE, "source": "GRADER", "round": 1, "grader_tier": NOT_CERTIFIED}),
+    "handback": (EventKind.REWORK, {"gate": GRADER_GATE, "source": "GRADER", "round": 1, "grader_tier": NOT_CERTIFIED, "work_list": ["function grade FAIL: cap_x"]}),
     "stop": (EventKind.GATE_FAILED, {"gate": GRADER_GATE, "reason": "grader_not_certified", "grader_tier": NOT_CERTIFIED}),
     "stop_error": (EventKind.GATE_FAILED, {"gate": GRADER_GATE, "reason": "grader_error", "grader_tier": ERROR}),
     "run_failed": (EventKind.RUN_FAILED, {"outcome": "FAILED_GATE", "decision": {"reason": "stopped_by_owner"}}),
@@ -520,9 +528,9 @@ _GRADER_STEPS = {
         (("writer_gate_failed", "writer_gate_rework", "resume", "timeout", "run_failed"), None),
         (("certified",), _grader("certified", CERTIFIED)),
         (("not_certified",), _grader("refused", NOT_CERTIFIED)),
-        (("not_certified", "handback"), _grader("sent_back", NOT_CERTIFIED, 1)),
-        (("not_certified", "handback", "resume", "certified"), _grader("certified", CERTIFIED, 1)),
-        (("not_certified", "handback", "not_certified", "stop", "run_failed"), _grader("stopped", NOT_CERTIFIED, 1)),
+        (("not_certified", "handback"), _grader("sent_back", NOT_CERTIFIED, 1, 1)),
+        (("not_certified", "handback", "resume", "certified"), _grader("certified", CERTIFIED, 1, 1)),
+        (("not_certified", "handback", "not_certified", "stop", "run_failed"), _grader("stopped", NOT_CERTIFIED, 1, 1)),
         (("error", "stop_error", "run_failed"), _grader("stopped", ERROR)),
         # Continue after a grader stop: it has not judged the resumed attempt.
         (("not_certified", "stop", "run_failed", "resume"), None),

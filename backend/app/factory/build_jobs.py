@@ -34,7 +34,7 @@ import re
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 logger = logging.getLogger("cerebrumdev.factory.build_jobs")
 
@@ -1224,13 +1224,36 @@ def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
         state = {"REWORK": "sent_back", "GATE_FAILED": "stopped"}.get(
             kind, "certified" if tier == CERTIFIED else "refused"
         )
+        prior = view or {}
         view = {
             "state": state,
             "tier": tier,
-            "round": int(payload.get("round") or (view or {}).get("round") or 0),
+            "round": int(payload.get("round") or prior.get("round") or 0),
             "budget": REWORK_BUDGET,
+            # The verdict's own rows (its NOTE); a hand-back or a stop keeps them.
+            "findings": _grader_rows(payload) if kind == "NOTE" else prior.get("findings", []),
+            # What the hand-back actually sent the writer: its own work list.
+            "sent_to_writer": (
+                len(payload.get("work_list") or ()) if kind == "REWORK" else prior.get("sent_to_writer", 0)
+            ),
         }
+    if view is not None:
+        from app.factory.build.grader_findings import headline
+
+        view["headline"] = headline(view["state"], view["findings"], view["sent_to_writer"])
     return view
+
+
+def _grader_rows(payload: Mapping[str, Any]) -> List[Dict[str, str]]:
+    """The finding rows a grader verdict NOTE carries; a NOTE written before
+    rows were recorded is read from its quoted items, owner unknown."""
+    from app.factory.build.grader_findings import MAX_ROWS, finding_row
+
+    rows = payload.get("grader_findings")
+    if isinstance(rows, list):
+        return [_redacted(dict(r)) for r in rows if isinstance(r, Mapping)][:MAX_ROWS]
+    items = payload.get("grader_items") or []
+    return [_redacted(finding_row(str(i), "")) for i in items][:MAX_ROWS]
 
 
 def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:

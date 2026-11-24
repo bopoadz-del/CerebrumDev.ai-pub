@@ -1208,6 +1208,14 @@ class RoleRunner:
             findings=list(grade_verdict.items),
         )
 
+    def _logged_grader_error(self, verdict: Any) -> Any:
+        """An ERROR verdict (the grader could not grade) reaches the backend
+        log like every other verdict, its reason as one finding row."""
+        from app.factory.build.grader_findings import finding_rows, log_verdict
+
+        log_verdict(str(self.state.get("session_id") or ""), verdict.tier, finding_rows(verdict))
+        return verdict
+
     def _writer_grader(self) -> Optional[Any]:
         """The GRADER: the writer's tree is graded BEFORE the TESTER judges
         it. Returns None when the grader is disabled or the verdict is
@@ -1246,7 +1254,7 @@ class RoleRunner:
                 detail=f"GRADER: {ERROR}: {exc}",
                 payload={"grader_gate": GRADER_GATE, "grader_tier": ERROR, "grader_items": [str(exc)]},
             )
-            return GraderVerdict(tier=ERROR, items=(str(exc),))
+            return self._logged_grader_error(GraderVerdict(tier=ERROR, items=(str(exc),)))
         product_id = (
             str(getattr(self.blueprint, "product_id", "") or "")
             or str(self.state.get("product_id") or "")
@@ -1276,7 +1284,16 @@ class RoleRunner:
                 detail=f"grader crashed: {type(exc).__name__}: {exc}",
                 payload={"grader_gate": GRADER_GATE, "grader_crash": True},
             )
-            return GraderVerdict(tier=ERROR, items=(f"grader crashed: {type(exc).__name__}: {exc}",))
+            return self._logged_grader_error(
+                GraderVerdict(tier=ERROR, items=(f"grader crashed: {type(exc).__name__}: {exc}",))
+            )
+        # Every verdict's findings, one row each (what, where, which rule,
+        # whose), into the ledger and the backend log under the session id:
+        # what the grader asked for is read, never guessed.
+        from app.factory.build.grader_findings import finding_rows, log_verdict
+
+        rows = finding_rows(verdict)
+        log_verdict(str(self.state.get("session_id") or ""), verdict.tier, rows)
         self.ledger.append(
             EventKind.NOTE,
             role=BuildRole.WRITER,
@@ -1290,6 +1307,7 @@ class RoleRunner:
                 "grader_ungraded": list(verdict.ungraded),
                 "grader_reasons": [dict(r) for r in verdict.reasons],
                 "grader_notes": list(verdict.notes),
+                "grader_findings": rows,
             },
         )
         if verdict.ok:
