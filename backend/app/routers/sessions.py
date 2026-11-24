@@ -43,8 +43,9 @@ def session_card(state: Any) -> Dict[str, Any]:
     A bare ``sess_0ca5413f`` id is not something a person can find their
     bakery platform by. The title is the product name once one is drafted,
     otherwise the first thing the user actually said. Read from session
-    state only -- no ledger or disk access, this runs once per listed
-    session.
+    state, plus one light read of the build ledger's terminal event for the
+    build's outcome (building, stopped, ready, not found) -- no grading, this
+    runs once per listed session.
     """
     pd = getattr(state, "product_design", None)
     blueprint = getattr(pd, "blueprint", None) or {}
@@ -71,6 +72,7 @@ def session_card(state: Any) -> Dict[str, Any]:
         "title": title,
         "stage": stage,
         "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else None,
+        "outcome": session_build_outcome(state),
     }
 
 
@@ -101,6 +103,19 @@ async def list_sessions(principal: Principal = Depends(require_api_key)) -> List
             }
         )
     return out
+
+
+def session_build_outcome(state: Any) -> Optional[str]:
+    """Building, stopped, ready or not found for this session's build; None
+    when the session has started no build (or its build left no ledger)."""
+    from ..factory.build_jobs import build_outcome
+
+    pd = getattr(state, "product_design", None)
+    gen = getattr(pd, "generation", None) or {}
+    out = gen.get("output_dir") if isinstance(gen, dict) else None
+    if not out:
+        return None
+    return build_outcome(out)
 
 
 @router.delete("/{session_id}")
