@@ -236,6 +236,10 @@ STOP_ENTRIES: Dict[str, Tuple[str, str]] = {
     "model_call_timeout": (STOP_TIME_RAN_OUT, "The coding service did not answer in time."),
     "worker_timed_out": (STOP_TIME_RAN_OUT, "This step ran out of time before it finished."),
     "time_budget_exceeded": (STOP_TIME_RAN_OUT, "The build reached its time limit before it finished."),
+    "stage_time_check_stop": (
+        STOP_TIME_RAN_OUT,
+        "The build reached a time check without enough working code to finish in time.",
+    ),
     "budget_skipped": (STOP_TIME_RAN_OUT, "A step was skipped because the build had no time left."),
     "FAILED_TIME_BUDGET": (STOP_TIME_RAN_OUT, "The build reached its time limit before it finished."),
     # No progress.
