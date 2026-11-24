@@ -342,8 +342,17 @@ class _Stop(BaseException):
     pass
 
 
-@pytest.mark.parametrize("log", ["STEP 1: models\nSTEP 2: routes\n", "STEP 1: models\nnoise\nSTEP 2: routes\n"])
-def test_a_resumed_pass_keeps_its_files_byte_for_byte(tmp_path, monkeypatch, log):
+@pytest.mark.parametrize(
+    "log, steps",
+    [
+        ("STEP 1: models\nSTEP 2: routes\n", ("STEP 1: models", "STEP 2: routes")),
+        (
+            "STEP 1: models\n\nSTEP 1: models\nchecked the tests\nSTEP 2: routes\n",
+            ("STEP 1: models", "checked the tests", "STEP 2: routes"),
+        ),
+    ],
+)
+def test_a_resumed_pass_keeps_its_files_byte_for_byte(tmp_path, monkeypatch, log, steps):
     monkeypatch.setenv("FACTORY_CODEWHALE_WRITER", "1")
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "0")
     files = {"app/models.py": "# green model\n", "docs/writer_progress.log": log}
@@ -362,7 +371,7 @@ def test_a_resumed_pass_keeps_its_files_byte_for_byte(tmp_path, monkeypatch, log
         runner._run_phase(BuildRole.WRITER, [])
     assert seen["resumed"] is True
     assert seen["model"] == b"# green model\n", "the kept work must not be rewritten"
-    assert wc.done_steps(staging) == ("STEP 1: models", "STEP 2: routes")
+    assert wc.done_steps(staging) == steps
 
 
 @pytest.mark.parametrize("leftover", [None, {"app/models.py": "# torn\n"}])
@@ -399,7 +408,8 @@ def test_the_resumed_writer_prompt_lists_the_done_steps_and_files(tmp_path, monk
     _plant_authored_handler(root)
     (root / "docs").mkdir(parents=True, exist_ok=True)
     (root / "docs" / "writer_progress.log").write_text(
-        "STEP 1: models\nSTEP 2: routes\nSTEP 2: routes, tests green\n", encoding="utf-8"
+        "STEP 1: models\nSTEP 2: routes\nSTEP 2: routes\nSTEP 2: routes, tests green\n",
+        encoding="utf-8",
     )
     ctx.state[wc.RESUMED_KEY] = resumed
     ctx.state["writer_resumed"] = resumed
@@ -420,7 +430,7 @@ def test_the_resumed_writer_prompt_lists_the_done_steps_and_files(tmp_path, monk
         assert "This is pass 2 of 3." in prompt
         assert "STEP 1: models" in prompt
         assert "STEP 2: routes, tests green" in prompt
-        assert "  STEP 2: routes\n" not in prompt, "a re-reported step is listed once, latest line"
+        assert prompt.count("  STEP 2: routes\n") == 1, "an exact repeat is listed once"
         assert "app/actions/cap.py" in prompt
         assert prompt.index("ALREADY DONE") < prompt.index("Everything below is the original brief") + 400
     assert (root / "app/actions/cap.py").read_bytes() == before
@@ -560,26 +570,27 @@ def test_each_writer_pass_is_compared_with_its_own_counts(earlier_pass_files, gr
 @pytest.mark.parametrize(
     "lines, counted",
     [
-        # the same step said again three times in the window: not new work
+        # the same report said again three times in the window: not new work
         (
             [
-                (30, "writer: STEP 4: wiring"),
-                (5, "writer: STEP 4: wiring"),
-                (3, "writer: STEP 4: x"),
-                (1, "writer: STEP 4: y"),
+                (30, "STEP 4: wiring"),
+                (5, "STEP 4: wiring"),
+                (3, "STEP 4:  wiring"),
+                (1, "STEP 4: wiring"),
             ],
             0,
         ),
-        # three times inside the window only: one step
-        ([(5, "writer: STEP 4: a"), (3, "writer: STEP 4: a"), (1, "writer: STEP 4: a")], 1),
-        # two new steps
-        ([(30, "writer: STEP 4: a"), (5, "writer: STEP 5: b"), (1, "writer: STEP 6: c")], 2),
+        # three times inside the window only: one report
+        ([(5, "STEP 4: a"), (3, "STEP 4: a"), (1, "STEP 4: a")], 1),
+        # two new reports
+        ([(30, "STEP 4: a"), (5, "STEP 5: b"), (1, "STEP 6: c")], 2),
     ],
 )
 def test_a_step_counts_once_and_only_when_first_reported(lines, counted):
     now = datetime(2026, 11, 24, 7, 24, tzinfo=timezone.utc)
     events = [
-        _at(now, m, detail, **{STEPS_REPORTED: i + 1}) for i, (m, detail) in enumerate(lines)
+        _at(now, m, "writer: " + line, **{STEPS_REPORTED: i + 1})
+        for i, (m, line) in enumerate(lines)
     ]
     assert wc.progress_at_cut(events, now=now, window_s=600)["steps"] == counted
 

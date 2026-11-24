@@ -23,7 +23,6 @@ No product, brief or file name is read here.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -49,7 +48,6 @@ DEFAULT_MIN_PASS_S = 600.0
 #: How many file paths the continue section lists before it summarises.
 FILES_LISTED = 200
 
-_STEP_LINE = re.compile(r"^\s*STEP\s+(\d+)\b")
 
 
 def _env_float(name: str, default: float, *, floor: float) -> float:
@@ -103,17 +101,15 @@ def _int(value: Any) -> Optional[int]:
         return None
 
 
-_STEP_IN_LINE = re.compile(r"\bSTEP\s+(\d+)\b")
-
-
 def _step_key(event: Any, payload: Dict[str, Any]) -> Optional[Tuple[str, Any]]:
-    """Which step a STEP record reports: its STEP number when the line names
-    one, else the record's own running counter (each relayed line has one)."""
-    match = _STEP_IN_LINE.search(str(getattr(event, "detail", "") or ""))
-    if match:
-        return ("step", int(match.group(1)))
+    """Which report a STEP record is: the relayed line itself, whole (the
+    same line said again is the same report, not new work); a record with
+    no line falls back to its own running counter."""
+    line = " ".join(str(getattr(event, "detail", "") or "").split())
+    if line:
+        return ("line", line)
     counter = _int(payload.get("steps_reported"))
-    return None if counter is None else ("line", counter)
+    return None if counter is None else ("count", counter)
 
 
 def _is_writer_start(event: Any) -> bool:
@@ -127,8 +123,8 @@ def progress_at_cut(events: Sequence[Any], *, now: datetime, window_s: float) ->
 
     ``steps``: steps first reported inside the window. A STEP record (it
     carries ``steps_reported`` and no file count; a heartbeat carries both)
-    counts once per step: a step already reported earlier in the run --
-    re-said, or done by an earlier pass -- is not new work.
+    counts once: a line already reported earlier in the run -- said again,
+    or reported by an earlier pass -- is not new work.
     ``files_grown``: the last ``files_on_disk`` in the window minus this
     pass's highest count before the window (or, with none, the window's
     first count). A count that fell and came back is not growth, and a lone
@@ -217,19 +213,17 @@ def decide(
 
 
 def done_steps(checkout: Path) -> Tuple[str, ...]:
-    """The STEP lines of the writer's own progress log, in order, deduplicated
-    by step number (a step re-reported keeps its latest line)."""
+    """The lines of the writer's own progress log, in the order it wrote
+    them, an exact repeat listed once. The log is the writer's own report of
+    what it did, so it is passed back whole: nothing here reads its words to
+    pick which lines count."""
     log = Path(checkout) / "docs" / "writer_progress.log"
     try:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ()
-    by_number: Dict[int, str] = {}
-    for line in text.splitlines():
-        match = _STEP_LINE.match(line)
-        if match:
-            by_number[int(match.group(1))] = line.strip()
-    return tuple(by_number[n] for n in sorted(by_number))
+    lines = (" ".join(raw.split()) for raw in text.splitlines())
+    return tuple(dict.fromkeys(line for line in lines if line))
 
 
 def done_files(checkout: Path) -> Tuple[str, ...]:
