@@ -92,6 +92,22 @@ def test_no_declared_industry_or_no_blueprint_changes_nothing(blueprint):
     assert state.product_design.blueprint == raw
 
 
+@pytest.mark.parametrize("vertical,confirmed", [
+    ("quarry_yards", None),
+    (None, {"vertical": None}),
+])
+def test_a_declared_or_cleared_industry_with_no_blueprint_changes_nothing(vertical, confirmed):
+    """An industry Confirm declared or cleared has no blueprint to reach yet:
+    the session is left as it is and nothing raises."""
+    state = _state(None, vertical=vertical, approved=False)
+    domain = state.config.domain
+
+    platform_chat_flow.blueprint_takes_declared_vertical(state, confirmed)
+
+    assert state.product_design.blueprint is None
+    assert state.config.domain == domain
+
+
 def _record_builds(monkeypatch) -> list:
     """generate_product stand-in: records the blueprint each build runs on."""
     built: list = []
