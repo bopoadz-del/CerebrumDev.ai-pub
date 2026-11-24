@@ -215,6 +215,61 @@ def test_the_runner_records_its_stage_time_check_stop_as_time(tmp_path, max_rewo
     assert stop["fix_rounds"] == 0
 
 
+@pytest.mark.parametrize("max_rework", [1, 2])
+def test_a_stage_time_check_stop_between_steps_reads_as_time(tmp_path, monkeypatch, max_rework):
+    """The stage time check that halts the run at the top of the next step,
+    before it starts, records its typed reason too: time, never "a check
+    still did not pass after the fix rounds" with zero rounds spent.
+
+    The inspect's own decision is budget_inspect's concern; here it decides
+    hard_stop once the clock is past the mark, and the CLONER ends past it
+    with no progress line after, so the halt lands between steps."""
+    from app.factory.blueprint import load_blueprint
+    from app.factory.build.budget_inspect import STAGE_1_S
+    from app.factory.build.roles import ROLE_IMPLEMENTATIONS
+    from app.factory.build.runner import BuildBudget, RoleRunner
+
+    now = {"t": 0.0}
+
+    def inspect_halts_past_the_mark(self):
+        if self.clock() >= STAGE_1_S and not self._stage_halt:
+            self._stage_halt = {"decision": "hard_stop", "reason": "stage stop after inspect"}
+        return self._stage_halt
+
+    monkeypatch.setattr(RoleRunner, "_maybe_stage_inspect", inspect_halts_past_the_mark)
+
+    real_cloner = ROLE_IMPLEMENTATIONS[BuildRole.CLONER]
+
+    def cloner_ends_past_the_mark(ctx):
+        result = real_cloner(ctx)
+        now["t"] = STAGE_1_S + 5
+        return result
+
+    root = Path(__file__).resolve().parents[3]
+    roles = dict(ROLE_IMPLEMENTATIONS)
+    roles[BuildRole.CLONER] = cloner_ends_past_the_mark
+    runner = RoleRunner(
+        load_blueprint(root / "blueprints/examples/runner_smoke.yaml"),
+        tmp_path / "build",
+        roles=roles,
+        budget=BuildBudget(max_rework=max_rework, wall_clock_s=4 * STAGE_1_S, phase_wall_clock_s=4 * STAGE_1_S),
+        clock=lambda: now["t"],
+        auto_pilot=True,
+        brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}',
+    )
+    outcome = runner.run()
+
+    assert outcome.outcome.value == "FAILED_BUDGET_SPENT"
+    started = [e.role for e in runner.ledger.events() if e.kind == EventKind.PHASE_STARTED]
+    assert BuildRole.CLONER in started
+    assert BuildRole.WRITER not in started
+    terminal = runner.ledger.terminal_event()
+    assert (terminal.payload or {})["decision"]["reason"] == STAGE_TIME_CHECK_STOP
+    stop = build_status(tmp_path / "build")["stop"]
+    assert stop["kind"] == fr.STOP_TIME_RAN_OUT
+    assert stop["fix_rounds"] == 0
+
+
 @pytest.mark.parametrize("kind", ["user_stopped", "time_ran_out"])
 def test_a_stopped_build_offers_change_answers_which_the_server_accepts(kind):
     """continue_with_intake answers every failed run, the owner's stop too."""
@@ -254,7 +309,11 @@ def test_a_check_sends_its_own_sentence_only_when_it_has_one(tmp_path, reason, c
 
 @pytest.mark.parametrize(
     "honesty, restarted",
-    [("FACTORY_CODE_CLI_ORPHANED", True), ("BUILD_THREAD_CRASHED", False)],
+    [
+        ("FACTORY_CODE_CLI_ORPHANED", True),
+        ("BUILD_THREAD_ORPHANED", True),
+        ("BUILD_THREAD_CRASHED", False),
+    ],
 )
 def test_a_restart_is_told_apart_from_a_crash(tmp_path, honesty, restarted):
     from app.factory.build_jobs import stop_record
@@ -267,3 +326,14 @@ def test_a_restart_is_told_apart_from_a_crash(tmp_path, honesty, restarted):
     assert stop["kind"] == fr.STOP_SERVICE_INTERRUPTED
     assert stop["restarted"] is restarted
     assert stop["check_plain"] is None
+
+
+@pytest.mark.parametrize("code", sorted(fr.GENERIC_CHECK_CODES))
+def test_a_generic_check_code_sends_no_sentence_of_its_own(code):
+    """A spent rework budget or a bare gate refusal is the generic "a check
+    did not pass": the page already says that, so no second sentence is sent,
+    whatever plain text the code carries."""
+    own = "The rework rounds for this build are used up."
+
+    assert fr.check_plain(fr.STOP_CHECK_FAILED, code, own) is None
+    assert fr.check_plain(fr.STOP_CHECK_FAILED, code + "_X", own) == own
