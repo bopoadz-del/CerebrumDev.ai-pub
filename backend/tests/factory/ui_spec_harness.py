@@ -34,13 +34,15 @@ const __request = {
 // The page is the text the product served: the last page loaded plus every
 // upload / chat reply. getByText(re) is visible iff re matches that text.
 let __html = '';
+let __url = 'about:blank';
 const __base = () => process.env.BASE_URL || '';
 const __loc = (find: (t: string) => boolean, act: any = {}) => {
   const l: any = { first: () => l, last: () => l, __visible: () => find(__html), ...act };
   return l;
 };
 const __page = {
-  goto: async (u: string) => { const r = await fetch(u); __html = await r.text(); return __resp(r); },
+  goto: async (u: string) => { const r = await fetch(u); __html = await r.text(); __url = u; return __resp(r); },
+  url: () => __url,
   waitForLoadState: async () => {}, on: () => {},
   getByText: (re: RegExp) => __loc((t) => re.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
@@ -61,7 +63,8 @@ const __page = {
   }),
 };
 const test: any = (name: string, fn: any) => { __tests.push([name, fn]); };
-test.describe = { configure: () => {} };
+test.describe = (_name: any, fn?: any) => { if (typeof fn === 'function') fn(); };
+test.describe.configure = () => {};
 test.beforeAll = (fn: any) => { __before.push(fn); };
 """
 

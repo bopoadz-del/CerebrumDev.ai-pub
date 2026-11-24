@@ -1022,3 +1022,41 @@ def test_grade_ui_blocks_before_any_boot_when_the_brief_cannot_be_read(tmp_path,
     assert note == BRIEF_UNREADABLE
     assert list(ui.errors) == [BRIEF_UNREADABLE]
     assert not ui.ran
+
+
+@pytest.mark.parametrize("blocked,blocker", [
+    (["parsed:status", "answer:cited"], "attach:pdf"),
+    (["answer:cited"], "parsed:status"),
+])
+def test_ui_steps_that_did_not_run_are_ungraded_not_handed_to_the_writer(
+    tmp_path, independent_grader, monkeypatch, blocked, blocker
+):
+    """A step blocked by an earlier one is a gap in the grade: it keeps the
+    tree uncertified and is quoted as ungraded, never as the writer's FAIL."""
+
+    class _Ui:
+        ran = True
+        errors: list = []
+        ok = False
+        failing = [blocker]
+        not_run = [{"name": n, "blocked_by": blocker} for n in blocked]
+
+        def to_dict(self):
+            return {"ok": False, "ran": True, "failing": [blocker], "steps": []}
+
+    monkeypatch.setattr(
+        grader, "_grade_ui",
+        lambda blueprint, root, gradroot, base_url, brief=None: (_Ui(), True, ""),
+    )
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
+    assert verdict.tier == grader.NOT_CERTIFIED
+    assert f"UI step FAIL: {blocker}" in verdict.writer_items
+    for name in blocked:
+        gap = f"UI step not run: {name} (blocked by {blocker})"
+        assert gap in verdict.ungraded
+        assert f"UI step FAIL: {name}" not in verdict.items
+        assert not any(name in item for item in verdict.writer_items)

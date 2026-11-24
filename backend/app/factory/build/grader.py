@@ -1185,6 +1185,12 @@ def run_grader(
     if ui_ran:
         for name in ui_failing:
             items.append(f"UI step FAIL: {name}")
+        # A step that did not run is a gap in the grade, not a finding about
+        # the tree: it blocks certification and is not handed to the writer.
+        for row in getattr(ui, "not_run", None) or []:
+            ungraded.append(
+                f"UI step not run: {row.get('name')} (blocked by {row.get('blocked_by')})"
+            )
     if not refusal:
         # FG-5: what is open in Layer 2 is read from the record's one
         # derivation -- an answered FAIL is open and reaches the writer with
