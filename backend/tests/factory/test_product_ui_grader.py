@@ -458,9 +458,18 @@ def test_a_skipped_step_outside_the_chain_is_still_a_failure(name):
     assert g.failing == [target] and g.not_run == []
 
 
-def test_a_skipped_chain_step_with_no_failed_step_before_it_is_a_failure():
-    g = ug.parse_report(_chain_report({"parsed:status": "skipped"}), DOC_BP)
-    assert g.failing == ["parsed:status"] and g.not_run == []
+@pytest.mark.parametrize("step", ["parsed:status", "answer:cited"])
+def test_a_skipped_chain_step_with_no_failed_step_before_it_is_a_failure(step):
+    g = ug.parse_report(_chain_report({step: "skipped"}), DOC_BP)
+    assert g.failing == [step] and g.not_run == []
+
+
+@pytest.mark.parametrize("report", [None, ["load:/"]])
+def test_a_report_that_is_not_a_mapping_has_no_statuses(report):
+    """A report that is not a JSON object names no step: nothing ran."""
+    assert ug.report_statuses(report) == {}
+    g = ug.parse_report(report, DOC_BP)
+    assert g.errors == ["playwright report has no results"] and not g.ok
 
 
 @pytest.mark.parametrize("bp", BPS)
