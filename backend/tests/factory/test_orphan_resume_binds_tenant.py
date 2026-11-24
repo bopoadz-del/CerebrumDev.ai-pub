@@ -12,7 +12,7 @@ The tenant is durable: the session state the Floor started the build from
 records the account (``user_id``) -- the same identity every Floor start
 passes as ``tenant_identity``. A resume binds THAT account. When no account
 is recorded, the resume stops with a typed reason the owner can act on
-(press Continue), never a WRITER failure.
+(press Try again), never a WRITER failure.
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ def test_resume_without_a_recorded_tenant_stops_with_a_typed_reason(tmp_path, mo
     status = build_status(out)
     assert status["state"] == "failed", status
     # Owner-visible and actionable -- and not dressed up as a WRITER failure.
-    assert "Continue" in status["detail"]
+    assert "Try again" in status["detail"]
     assert "WRITER failed" not in status["detail"]
     terminal = BuildLedger(out / "build_ledger.jsonl").terminal_event()
     assert terminal.payload.get("reason") == ORPHAN_NO_TENANT_REASON
