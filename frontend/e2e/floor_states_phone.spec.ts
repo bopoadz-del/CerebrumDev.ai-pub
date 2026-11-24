@@ -890,3 +890,35 @@ test.describe('stepper at 360x780', () => {
     await expect(gold).toContainText('Download')
   })
 })
+
+/*
+ * Grader findings on the card face: when the quality check sends work back or
+ * does not pass the build, what it found is on the card in plain words with
+ * Technical detail closed. The grader's own words, rule ids and file paths
+ * stay inside Technical detail.
+ */
+test.describe('grader findings at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  const COUNT = { 'grader-sent-back': 3, 'grader-refused': 2 } as const
+  for (const state of ['grader-sent-back', 'grader-refused'] as const) {
+    test(`${state}: the findings are on the face, plain, whole and inside the screen`, async ({ page }) => {
+      await openState(page, state)
+      const box = page.getByTestId('floor-grader-findings')
+      await expect(box).toBeVisible()
+      const detail = page.getByTestId('floor-tech-detail')
+      expect(await detail.evaluate((el) => (el as HTMLDetailsElement).open)).toBe(false)
+      await expect(box.getByTestId('floor-grader-finding')).toHaveCount(COUNT[state])
+      const text = (await box.textContent()) ?? ''
+      for (const machine of ['function grade FAIL', 'UI step FAIL', 'function_check', 'variation_orders', '.py', 'NOT_CERTIFIED']) {
+        expect(text).not.toContain(machine)
+      }
+      // Every line sits inside the viewport's width.
+      const rights = await box.locator('li').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().right))
+      for (const r of rights) expect(r).toBeLessThanOrEqual(360)
+      await detail.locator('summary').click()
+      await expect(detail.getByTestId('floor-grader-findings-raw')).toContainText('function grade FAIL: variation_orders')
+    })
+  }
+})
+

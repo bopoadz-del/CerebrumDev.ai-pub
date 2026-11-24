@@ -28,51 +28,63 @@ WRITER = "writer"
 FACTORY = "factory"
 RUN = "run"
 
+#: What ``where`` names, which decides the plain ``place`` the card shows:
+#: a capability id reads as words, a screen step or a review question as
+#: written, a file path never reaches the card face (machine text).
+CAPABILITY, STEP, QUESTION, FILE, NONE = "capability", "step", "question", "file", "none"
+
 #: (prefix the grader writes the item with, rule id, plain sentence, separator
-#: that ends ``where``). The first matching prefix wins; an item no prefix
-#: matches is quoted under ``FALLBACK``.
-ITEM_SHAPES: Tuple[Tuple[str, str, str, str], ...] = (
+#: that ends ``where``, what ``where`` names). The first matching prefix wins;
+#: an item no prefix matches is quoted under ``FALLBACK``.
+ITEM_SHAPES: Tuple[Tuple[str, str, str, str, str], ...] = (
     (
         "function grade FAIL: ",
         "function_check",
         "This feature did not give a correct answer when the quality check called it.",
         "",
+        CAPABILITY,
     ),
     (
         "UI step FAIL: ",
         "screen_walk",
         "This screen step did not work when the quality check walked through the app.",
         "",
+        STEP,
     ),
     (
         "re-run writer on: ",
         "review_question",
         "A review question about this part is still open.",
         " -- ",
+        QUESTION,
     ),
     (
         "de-hardwire ",
         "no_fixed_answers",
         "This feature returns a fixed answer instead of working it out from its input.",
         ": ",
+        CAPABILITY,
     ),
     (
         "remove baked literals from ",
         "no_typed_in_values",
-        "This file holds values typed in for one case instead of read from the data.",
+        "A file the writer wrote holds values typed in for one case instead of reading them from the data.",
         ": ",
+        FILE,
     ),
     (
         "remove copied brief from ",
         "no_copied_brief",
-        "This file copies text from the brief instead of building the feature.",
+        "A file the writer wrote copies text from the brief instead of building the feature.",
         ": ",
+        FILE,
     ),
     (
         "FACTORY owes ",
         "factory_file",
         "A file the Factory wrote has a problem. The writer is not charged for it.",
         " (",
+        FILE,
     ),
 )
 
@@ -81,6 +93,7 @@ FALLBACK = (
     "grader_finding",
     "The quality check named a problem.",
     "",
+    NONE,
 )
 
 #: The sentence for a part the grader could not check (owner ``RUN``).
@@ -92,8 +105,11 @@ MAX_ROWS = 40
 #: Characters of the grader's own words kept on one log line.
 QUOTE_CHARS = 300
 
+#: Characters of a place kept for the card face.
+PLACE_CHARS = 120
 
-def _shape(item: str) -> Tuple[str, str, str, str]:
+
+def _shape(item: str) -> Tuple[str, str, str, str, str]:
     for shape in ITEM_SHAPES:
         if item.startswith(shape[0]):
             return shape
@@ -101,20 +117,34 @@ def _shape(item: str) -> Tuple[str, str, str, str]:
 
 
 def finding_row(item: str, owner: str) -> Dict[str, str]:
-    """One grader item as ``{rule, what, where, owner, quote}``."""
+    """One grader item as ``{rule, what, where, place, owner, quote}``.
+
+    ``where`` is the grader's own locator (machine text); ``place`` is the
+    same locator in plain words for the card face, or empty for a file."""
     text = str(item or "").strip()
-    prefix, rule, what, sep = _shape(text)
+    prefix, rule, what, sep, names = _shape(text)
     rest = text[len(prefix):]
-    where = rest.split(sep, 1)[0] if sep else rest
+    where = ((rest.split(sep, 1)[0] if sep else rest).strip() or "-") if prefix else "-"
     if owner == RUN and rule == FALLBACK[1]:
         rule, what = "not_checked", NOT_CHECKED
     return {
         "rule": rule,
         "what": what,
-        "where": (where.strip() or "-") if prefix else "-",
+        "where": where,
+        "place": plain_place(where, names),
         "owner": owner,
         "quote": text,
     }
+
+
+def plain_place(where: str, names: str) -> str:
+    """``where`` as the card face may show it: a capability id as words, a
+    step or a question as written, nothing for a file path or no locator."""
+    if where == "-" or names in (FILE, NONE):
+        return ""
+    if names == CAPABILITY:
+        return where.replace("_", " ").replace("-", " ").strip()[:PLACE_CHARS]
+    return where[:PLACE_CHARS]
 
 
 def finding_rows(verdict: Any) -> List[Dict[str, str]]:

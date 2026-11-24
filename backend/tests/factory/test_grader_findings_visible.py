@@ -257,3 +257,21 @@ def test_a_secret_in_the_graders_words_never_reaches_the_log(secret):
     line = grader_findings.log_line(finding_row(f"grader crashed: RuntimeError: {secret}", RUN))
     assert secret.split("=")[1] not in line
     assert "[redacted]" in line
+
+
+@pytest.mark.parametrize(
+    "item, place",
+    [
+        ("function grade FAIL: zorblat_total", "zorblat total"),
+        ("de-hardwire plinket-count: CONSTANT", "plinket count"),
+        ("UI step FAIL: open the list", "open the list"),
+        ("re-run writer on: is plinket read?", "is plinket read?"),
+        ("remove baked literals from app/a.py: ['x']", ""),
+        ("FACTORY owes copied brief in app/c.py (stamped): ['z']", ""),
+        ("something the table has not seen", ""),
+    ],
+)
+def test_the_card_place_never_carries_a_file_path_or_a_raw_id(item, place):
+    row = finding_row(item, WRITER)
+    assert row["place"] == place
+    assert "/" not in row["place"] and "_" not in row["place"]

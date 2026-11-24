@@ -29,6 +29,8 @@ export const FLOOR_STATES = [
   'stalled',
   'finished-prototype',
   'finished-pilot',
+  'grader-sent-back',
+  'grader-refused',
 ] as const
 export type FloorState = (typeof FLOOR_STATES)[number]
 
@@ -40,6 +42,8 @@ export const BUILD_STATES: FloorState[] = [
   'stalled',
   'finished-prototype',
   'finished-pilot',
+  'grader-sent-back',
+  'grader-refused',
 ]
 
 export const SID: Record<FloorState, string> = {
@@ -52,6 +56,8 @@ export const SID: Record<FloorState, string> = {
   stalled: 'sess_state_stalled',
   'finished-prototype': 'sess_state_okproto',
   'finished-pilot': 'sess_state_okpilot',
+  'grader-sent-back': 'sess_state_gradeback',
+  'grader-refused': 'sess_state_graderefused',
 }
 
 const EMAIL = 'e2e.phone@factory.dev'
@@ -224,6 +230,81 @@ const BUILD_STOPPED: BuildStatus = {
   decisions: [REWORK_DECISION],
 }
 
+/** The grader's rows as the server writes them (grader_findings.finding_row). */
+const GRADER_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
+  {
+    rule: 'function_check',
+    what: 'This feature did not give a correct answer when the quality check called it.',
+    where: 'variation_orders',
+    place: 'variation orders',
+    owner: 'writer',
+    quote: 'function grade FAIL: variation_orders',
+  },
+  {
+    rule: 'screen_walk',
+    what: 'This screen step did not work when the quality check walked through the app.',
+    where: 'save a new contract and see it in the register',
+    place: 'save a new contract and see it in the register',
+    owner: 'writer',
+    quote: 'UI step FAIL: save a new contract and see it in the register',
+  },
+  {
+    rule: 'no_typed_in_values',
+    what: 'A file the writer wrote holds values typed in for one case instead of reading them from the data.',
+    where: 'app/actions/contract_settings.py',
+    place: '',
+    owner: 'writer',
+    quote: "remove baked literals from app/actions/contract_settings.py: ['0.05']",
+  },
+]
+
+const BUILD_GRADER_SENT_BACK: BuildStatus = {
+  ...BUILD_WRITER,
+  last_event: 'rework round 1: fixing what the quality check found',
+  activity: 'rework round 1: fixing what the quality check found',
+  grader: {
+    state: 'sent_back',
+    tier: 'NOT_CERTIFIED',
+    round: 1,
+    budget: 1,
+    findings: GRADER_ROWS,
+    sent_to_writer: 3,
+    headline: 'The quality check found 3 problems and sent them back to the writer to fix:',
+  },
+}
+
+const BUILD_GRADER_REFUSED: BuildStatus = {
+  ...BUILD_STOPPED,
+  detail: 'GRADER: NOT_CERTIFIED after 1 round(s) -- grader rework budget of 1 rounds spent',
+  failure: {
+    phase: 'WRITER',
+    location: 'WRITER',
+    outcome: 'failed',
+    reason: 'grader_not_certified',
+    code: 'grader_not_certified',
+    kind: 'rounds_spent',
+    title: 'used up its fix rounds',
+    summary: 'A check still did not pass the work (2 items), and this build has no fix rounds left.',
+    next:
+      'Continuing does not grant new fix rounds: the step runs again and stops again if the same check fails.',
+    ref: '5c0de1a2b3',
+  },
+  failed: { gate: 'grader', check: 'grader_not_certified', finding: 'function grade FAIL: variation_orders' },
+  failed_label: 'FAILED(grader, grader_not_certified, function grade FAIL: variation_orders)',
+  failure_narrative: undefined,
+  next_continue:
+    'Continuing does not grant new fix rounds: the step runs again and stops again if the same check fails.',
+  grader: {
+    state: 'stopped',
+    tier: 'NOT_CERTIFIED',
+    round: 1,
+    budget: 1,
+    findings: GRADER_ROWS.slice(0, 2),
+    sent_to_writer: 3,
+    headline: 'The quality check did not pass the build. It found 2 problems:',
+  },
+}
+
 /** The server still says building, but the last event is 42 minutes old: the client calls it stalled. */
 const BUILD_STALLED: BuildStatus = { ...BUILD_WRITER, last_event_age_s: 2520, stale: true }
 
@@ -345,6 +426,8 @@ function makeSessions(): Record<string, SessionWorld> {
     [SID.stalled]: builtSession(SID.stalled, BUILD_STALLED),
     [SID['finished-prototype']]: builtSession(SID['finished-prototype'], BUILD_OK_PROTO),
     [SID['finished-pilot']]: pilot,
+    [SID['grader-sent-back']]: builtSession(SID['grader-sent-back'], BUILD_GRADER_SENT_BACK),
+    [SID['grader-refused']]: builtSession(SID['grader-refused'], BUILD_GRADER_REFUSED),
   }
 }
 
