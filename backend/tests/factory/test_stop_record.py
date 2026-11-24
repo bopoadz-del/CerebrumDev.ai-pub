@@ -458,6 +458,25 @@ def test_the_session_card_carries_the_build_outcome(tmp_path, generation, outcom
 
 
 @pytest.mark.parametrize(
+    "blueprint, said, title",
+    [
+        ({}, "a booking tool for my clinics", "a booking tool for my clinics"),
+        ({"product_name": "Clinic Desk"}, "a booking tool for my clinics", "Clinic Desk"),
+    ],
+)
+def test_the_card_title_falls_back_to_what_the_user_said_only_before_a_draft(blueprint, said, title):
+    """The card that carries the outcome is still found by its title: the
+    product name once drafted, otherwise the user's first real line."""
+    from app.models.session import ProductDesignState, SessionState
+
+    state = SessionState(session_id="sess-title", user_id="u1", account_id="a1")
+    state.product_design = ProductDesignState(blueprint=blueprint)
+    state.chat_history = [{"role": "user", "content": "hi"}, {"role": "user", "content": said}]
+
+    assert session_card(state)["title"] == title
+
+
+@pytest.mark.parametrize(
     "stamps, elapsed",
     [
         ([], None),
