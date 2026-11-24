@@ -2691,37 +2691,46 @@ _NOT_AUTHORED_DIRS = frozenset({"vendor", ".git", "node_modules", "__pycache__",
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
-def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool]]:
-    """The patterns of ``directory/.gitignore``: (pattern, anchored, dir_only).
+def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool, bool]]:
+    """The patterns of ``directory/.gitignore``: (pattern, anchored,
+    dir_only, negated).
 
     The product's own declaration of what is generated. Tools mark their
     output the same way (a cache or report directory carrying a ``*``
-    ``.gitignore``), so one reader covers both. Negations are not read: a
-    re-included path is still counted by the rules above it, so the count
-    can only miss an artefact, never drop source the writer meant to keep.
+    ``.gitignore``), so one reader covers both. A ``!`` line re-includes
+    what an earlier rule excluded, as git reads it: the last matching rule
+    decides. A leading backslash makes a first ``#`` or ``!`` literal.
     """
     try:
         text = (directory / ".gitignore").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
-    rules: List[Tuple[str, bool, bool]] = []
+    rules: List[Tuple[str, bool, bool, bool]] = []
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("!"):
+        if not line or line.startswith("#"):
             continue
+        negated = line.startswith("!")
+        if negated or line.startswith("\\"):
+            line = line[1:]
         dir_only = line.endswith("/")
         line = line.rstrip("/")
         anchored = line.startswith("/") or "/" in line
         line = line.lstrip("/")
         if line:
-            rules.append((line, anchored, dir_only))
+            rules.append((line, anchored, dir_only, negated))
     return rules
 
 
-def _ignored(rules: List[Tuple[str, Tuple[str, ...], bool, bool]], rel: Tuple[str, ...], is_dir: bool) -> bool:
+def _ignored(
+    rules: List[Tuple[str, Tuple[str, ...], bool, bool, bool]], rel: Tuple[str, ...], is_dir: bool
+) -> bool:
+    """Whether ``rel`` is ignored: the last rule that matches it decides,
+    so a negation re-includes, as git reads its ``.gitignore`` files."""
     import fnmatch
 
-    for pattern, base, anchored, dir_only in rules:
+    ignored = False
+    for pattern, base, anchored, dir_only, negated in rules:
         if dir_only and not is_dir:
             continue
         if rel[: len(base)] != base:
@@ -2729,12 +2738,10 @@ def _ignored(rules: List[Tuple[str, Tuple[str, ...], bool, bool]], rel: Tuple[st
         below = rel[len(base) :]
         if not below:
             continue
-        if anchored:
-            if fnmatch.fnmatchcase("/".join(below), pattern):
-                return True
-        elif fnmatch.fnmatchcase(below[-1], pattern):
-            return True
-    return False
+        subject = "/".join(below) if anchored else below[-1]
+        if fnmatch.fnmatchcase(subject, pattern):
+            ignored = not negated
+    return ignored
 
 
 def _is_database(path: Path) -> bool:
@@ -2761,14 +2768,14 @@ def iter_authored_source(root: Path) -> Iterator[str]:
     from app.factory.build.builds_push import is_exported
 
     base = Path(root)
-    rules_at: Dict[Tuple[str, ...], List[Tuple[str, Tuple[str, ...], bool, bool]]] = {}
+    rules_at: Dict[Tuple[str, ...], List[Tuple[str, Tuple[str, ...], bool, bool, bool]]] = {}
 
-    def _rules(rel_dir: Tuple[str, ...]) -> List[Tuple[str, Tuple[str, ...], bool, bool]]:
+    def _rules(rel_dir: Tuple[str, ...]) -> List[Tuple[str, Tuple[str, ...], bool, bool, bool]]:
         # Every .gitignore from the root down to rel_dir, each anchored at
         # its own directory; read once per directory per walk.
         if rel_dir not in rules_at:
             inherited = list(_rules(rel_dir[:-1])) if rel_dir else []
-            inherited.extend((p, rel_dir, a, d) for p, a, d in _ignore_rules(base.joinpath(*rel_dir)))
+            inherited.extend((p, rel_dir, a, d, n) for p, a, d, n in _ignore_rules(base.joinpath(*rel_dir)))
             rules_at[rel_dir] = inherited
         return rules_at[rel_dir]
 

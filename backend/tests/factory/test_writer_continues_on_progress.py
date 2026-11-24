@@ -259,7 +259,7 @@ def _event(ts, **payload):
     return SimpleNamespace(ts=ts.isoformat(), payload={"source": "codewhale_worker", **payload})
 
 
-@pytest.mark.parametrize("minutes_ago, counted", [(5, 1), (15, 0)])
+@pytest.mark.parametrize("minutes_ago, counted", [(5, 1), (10, 1), (15, 0)])
 def test_progress_is_read_only_inside_the_window_before_the_cut(minutes_ago, counted):
     now = datetime(2026, 11, 24, 7, 24, tzinfo=timezone.utc)
     events = [_event(now - timedelta(minutes=minutes_ago), **{STEPS_REPORTED: 7})]
@@ -308,6 +308,19 @@ def test_the_decision(passes, progress, kept, go):
 def test_the_pass_limit_reads_the_operator_setting(monkeypatch, raw, expected):
     monkeypatch.setenv("FACTORY_WRITER_MAX_PASSES", raw)
     assert wc.max_writer_passes() == expected
+
+
+@pytest.mark.parametrize("raw", ["inf", "nan", "-inf"])
+def test_a_non_finite_operator_setting_reads_as_the_default(monkeypatch, raw):
+    """'inf' parses as a float; a pass limit or window of infinity would
+    raise inside the run loop's error handler, so it reads as unset."""
+    for name in ("FACTORY_WRITER_MAX_PASSES", "FACTORY_WRITER_PROGRESS_WINDOW_S", "FACTORY_WRITER_MIN_PASS_S"):
+        monkeypatch.setenv(name, raw)
+    assert wc.max_writer_passes() == wc.DEFAULT_MAX_PASSES
+    assert wc.progress_window_s() == wc.DEFAULT_PROGRESS_WINDOW_S
+    assert wc.min_pass_s() == wc.DEFAULT_MIN_PASS_S
+    now = datetime(2026, 11, 24, 7, 24, tzinfo=timezone.utc)
+    assert wc.progress_at_cut([], now=now, window_s=wc.progress_window_s()) == {"steps": 0, "files_grown": 0}
 
 
 @pytest.mark.parametrize("raw, expected", [("30", 60.0), ("900", 900.0)])
@@ -534,7 +547,7 @@ def _at(now, minutes, detail="", **payload):
     [
         # git reads a line starting with '#' as a comment, never a pattern
         ("#keep.py", "#keep.py"),
-        # negations are not read, so they never hide a file either
+        # a negation re-includes; it never hides a file, even one named '!...'
         ("!keep.py", "!keep.py"),
     ],
 )
@@ -548,6 +561,34 @@ def test_gitignore_comments_and_negations_never_hide_source(tmp_path, line, name
         "tests/test_main.py",
         "app/" + name,
     }
+
+
+@pytest.mark.parametrize(
+    "gitignore, kept, hidden",
+    [
+        # a directory's contents excluded, one file re-included
+        ("config/*\n!config/settings.py\n", "config/settings.py", "config/cache.py"),
+        # a pattern excluded, one name re-included
+        ("*.json\n!package.json\n", "package.json", "data.json"),
+        # the last matching rule decides: re-excluded after the negation
+        ("*.json\n!package.json\npackage.json\n", "app/main.py", "package.json"),
+    ],
+)
+def test_a_gitignore_negation_re_includes_source(tmp_path, gitignore, kept, hidden):
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    _tree(tmp_path, {".gitignore": gitignore.encode(), kept: b"x = 1\n", hidden: b"x = 2\n"})
+    authored = set(iter_authored_source(tmp_path))
+    assert kept in authored
+    assert hidden not in authored
+
+
+@pytest.mark.parametrize("line, name", [("\\!secret.py", "!secret.py"), ("\\#notes.py", "#notes.py")])
+def test_an_escaped_first_character_is_a_literal_name(tmp_path, line, name):
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    _tree(tmp_path, {".gitignore": (line + "\n").encode(), "app/" + name: b"x = 2\n"})
+    assert "app/" + name not in set(iter_authored_source(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -577,6 +618,9 @@ def test_a_directory_rule_hides_directories_never_a_file(tmp_path, rule, source_
         ([(2, 55)], 0),
         # a real rise above everything seen before
         ([(30, 100), (5, 120), (1, 140)], 40),
+        # fell, then rose above the earlier peak: only the rise above it is
+        # growth (the count is authored source only, so these are new files)
+        ([(30, 165), (5, 55), (1, 170)], 5),
     ],
 )
 def test_files_grown_is_a_rise_above_the_pass_peak(samples, grown):
@@ -656,6 +700,12 @@ def _pytest_cache(root, nodeids, lastfailed):
             ("tests/test_main.py::test_a",),
         ),
         (["tests/test_main.py::test_a"], None, ("tests/test_main.py::test_a",)),
+        # a class key fails every test under it
+        (
+            ["tests/test_main.py::TestB::test_b", "tests/test_main.py::test_a"],
+            {"tests/test_main.py::TestB": True},
+            ("tests/test_main.py::test_a",),
+        ),
     ],
 )
 def test_a_resumed_pass_is_told_the_tests_that_pass(tmp_path, nodeids, lastfailed, passing):
@@ -667,6 +717,21 @@ def test_a_resumed_pass_is_told_the_tests_that_pass(tmp_path, nodeids, lastfaile
     for test in passing:
         assert f"  {test}" in text
     assert "test_b" not in text and "test_gone" not in text
+
+
+@pytest.mark.parametrize("failed_file", ["tests/test_main.py", "tests/test_other.py"])
+def test_an_interrupted_test_run_claims_no_passing_test(tmp_path, failed_file):
+    """A file key in lastfailed is a collection error: pytest stopped before
+    running anything, and nodeids still holds the earlier run's ids. No test
+    from that record is named as passing (real pytest, 24 Nov grader probe)."""
+    _tree(tmp_path, {"tests/test_other.py": b"def test_c():\n    pass\n"})
+    _pytest_cache(
+        tmp_path,
+        ["tests/test_main.py::test_a", "tests/test_main.py::test_b", "tests/test_other.py::test_c"],
+        {failed_file: True},
+    )
+    assert wc.done_tests(tmp_path) == ()
+    assert "Tests that passed" not in wc.render_done_section(["STEP 1: a"], ["app/main.py"], tests=())
 
 
 @pytest.mark.parametrize("cut_steps, continuing", [(4, True), (0, False)])
@@ -708,3 +773,57 @@ def test_the_card_view_is_this_runs_newest_decision(restart, continuing):
     else:
         assert view["continuing"] is True
         assert (view["pass"], view["max_passes"], view["ceiling_minutes"]) == (2, 3, 120)
+
+
+def _note(go):
+    return SimpleNamespace(
+        kind=EventKind.NOTE,
+        role=BuildRole.WRITER,
+        ts="2026-11-24T07:24:00+00:00",
+        detail="continuing, pass 2 of 3: x" if go else "writer not continued: x",
+        payload={wc.NOTE_KEY: {"go": go, "pass_next": 2, "max_passes": 3, "writer_seconds": 3600, "ceiling_s": 7200}},
+    )
+
+
+def _ev(kind, role):
+    return SimpleNamespace(kind=kind, role=role, ts="", detail="", payload={})
+
+
+@pytest.mark.parametrize(
+    "after, continuing",
+    [
+        # the continued pass has started and is running: still continuing
+        ([(EventKind.PHASE_STARTED, BuildRole.WRITER)], True),
+        # its gate gave a verdict: the pass is over
+        ([(EventKind.PHASE_STARTED, BuildRole.WRITER), (EventKind.GATE_PASSED, BuildRole.WRITER)], None),
+        ([(EventKind.PHASE_STARTED, BuildRole.WRITER), (EventKind.GATE_FAILED, BuildRole.WRITER)], None),
+        # the next step started: the pass is over
+        ([(EventKind.PHASE_STARTED, BuildRole.TESTER)], None),
+    ],
+)
+def test_continuing_ends_when_the_continued_pass_ends(after, continuing):
+    view = wc.floor_view([_note(True)] + [_ev(k, r) for k, r in after])
+    if continuing is None:
+        assert view is None, "the card would say 'continuing' after the pass ended"
+    else:
+        assert view["continuing"] is True
+
+
+@pytest.mark.parametrize("kind", [EventKind.GATE_FAILED, EventKind.PHASE_STARTED])
+def test_a_stop_decision_is_kept_after_later_events(kind):
+    view = wc.floor_view([_note(False), _ev(kind, BuildRole.TESTER)])
+    assert view is not None and view["continuing"] is False
+
+
+@pytest.mark.parametrize("timeout_s", [0.3, 0.4])
+def test_the_real_worker_wall_raises_the_typed_cut(tmp_path, timeout_s):
+    """run_worker_job's own wall raises WorkerWallTimeout, the type the
+    continuation rule reads; a plain WorkerError would never continue."""
+    import time
+
+    from tests.factory.test_worker_wall_reads_live_deadline import _run, _SlowProc
+
+    box = {"at": time.monotonic() + timeout_s}
+    with pytest.raises(WorkerWallTimeout) as caught:
+        _run(tmp_path, _SlowProc(5.0), timeout_s=timeout_s, live_time_left=lambda: box["at"] - time.monotonic())
+    assert wc.is_wall_cut(caught.value)

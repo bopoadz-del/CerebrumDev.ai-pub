@@ -22,6 +22,7 @@ No product, brief or file name is read here.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -54,6 +55,8 @@ def _env_float(name: str, default: float, *, floor: float) -> float:
     try:
         value = float(os.environ.get(name, "") or default)
     except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
         return default
     return max(floor, value)
 
@@ -245,8 +248,11 @@ def done_tests(checkout: Path) -> Tuple[str, ...]:
     """The tests whose last run passed, from pytest's own record in the kept
     checkout: every node id pytest has collected (``cache/nodeids``) minus
     the ones its last run left failing (``cache/lastfailed``), keeping only
-    tests whose file is still on disk. Each cache is read relative to the
-    directory it sits in. Empty when pytest never ran or left no record."""
+    tests whose file is still on disk. A failed class key fails every test
+    under it; a failed FILE key is a collection error, which interrupts the
+    run, so that record claims no passing test at all. Each cache is read
+    relative to the directory it sits in. Empty when pytest never ran or
+    left no record."""
     import json
 
     base = Path(checkout)
@@ -269,10 +275,16 @@ def done_tests(checkout: Path) -> Tuple[str, ...]:
         if not isinstance(nodeids, list):
             continue
         failing = set(failed) if isinstance(failed, dict) else set()
+        if any("::" not in str(key) for key in failing):
+            # A whole file failed: a collection error, which interrupts the
+            # run, so no test in this record is known to have passed on it.
+            continue
         prefix = rootdir.relative_to(base).as_posix()
         for nodeid in nodeids:
             node = str(nodeid)
-            if node in failing or not (rootdir / node.split("::", 1)[0]).is_file():
+            if any(node == key or node.startswith(key + "::") for key in failing):
+                continue
+            if not (rootdir / node.split("::", 1)[0]).is_file():
                 continue
             passing.append(node if prefix == "." else f"{prefix}/{node}")
     return tuple(sorted(dict.fromkeys(passing)))
@@ -327,23 +339,42 @@ def pass_label(state: Dict[str, Any]) -> str:
     return ""
 
 
+#: Gate verdicts: a continued writer pass is over once its gate has spoken.
+GATE_VERDICT_KINDS = frozenset({"GATE_PASSED", "GATE_FAILED"})
+
+
+def _pass_ended(kind: str, event: Any) -> bool:
+    """A gate verdict, or a step other than the writer starting: the
+    continued writer pass is over (its own start is a WRITER phase start)."""
+    if kind in GATE_VERDICT_KINDS:
+        return True
+    role = getattr(event, "role", None)
+    return kind == "PHASE_STARTED" and str(getattr(role, "value", role) or "") != "WRITER"
+
+
 def floor_view(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
     """The newest continue / stop decision of this run, for the build card.
 
     Read from the NOTE the runner wrote (its typed payload and its own
     sentence), so the card states exactly what the runner decided: the pass
     now running and its limit, the writer time used and the ceiling. None
-    when this run (since its last RUN_STARTED) made no decision.
+    when this run (since its last RUN_STARTED) made no decision, and None
+    once a continued pass has ended (a gate verdict, or a phase starting
+    after the decision), so the card never says "continuing" afterwards.
     """
     found: Optional[Any] = None
     for event in events:
-        kind = getattr(getattr(event, "kind", None), "value", getattr(event, "kind", None))
-        if str(kind or "") == "RUN_STARTED":
+        kind = str(getattr(getattr(event, "kind", None), "value", getattr(event, "kind", None)) or "")
+        if kind == "RUN_STARTED":
             found = None
             continue
         payload = getattr(event, "payload", None) or {}
         if isinstance(payload.get(NOTE_KEY), dict):
             found = event
+        elif found is not None and found.payload[NOTE_KEY].get("go") and _pass_ended(kind, event):
+            # The continued pass has ended (a gate gave its verdict, or the
+            # next step started): "continuing" is no longer true.
+            found = None
     if found is None:
         return None
     record = dict((getattr(found, "payload", None) or {})[NOTE_KEY])

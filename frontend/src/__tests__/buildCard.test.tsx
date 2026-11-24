@@ -271,7 +271,7 @@ describe('a writer pass the runner continued (GROKGRADE F297)', () => {
   }
 
   it.each([
-    [{ ...building }, 'Continuing in pass 2 of 3', 'Writing time so far: 60 min of 120 min allowed.'],
+    [{ ...building }, 'Continuing in pass 2 of 3', 'Earlier passes wrote for 60 min. The whole build may run up to 120 min.'],
     [{ ...building, writer_pass: { ...PASS, pass: 3, writer_minutes: 120, ceiling_minutes: null } }, 'pass 3 of 3', '120 min.'],
   ])('is said on the card face, not only in Technical detail (%#)', (build, pass, time) => {
     render(<BuildCard build={build as BuildStatus} sessionId="s1" />)

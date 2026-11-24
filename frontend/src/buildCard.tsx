@@ -357,10 +357,10 @@ const TONE_ICON: Record<BuildTone, string> = {
 export function writerPassLine(build: BuildStatus | null): string | null {
   const wp = build?.writer_pass
   if (!build || build.state !== 'building' || !wp?.continuing || !wp.pass || !wp.max_passes) return null
-  const allowance = wp.ceiling_minutes ? ` of ${wp.ceiling_minutes} min allowed` : ''
+  const ceiling = wp.ceiling_minutes ? ` The whole build may run up to ${wp.ceiling_minutes} min.` : ''
   return (
     `Continuing in pass ${wp.pass} of ${wp.max_passes}: the last pass ran out of time while still working, ` +
-    `and its files are kept. Writing time so far: ${wp.writer_minutes} min${allowance}.`
+    `and its files are kept. Earlier passes wrote for ${wp.writer_minutes} min.${ceiling}`
   )
 }
 
