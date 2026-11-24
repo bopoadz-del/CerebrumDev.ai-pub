@@ -222,3 +222,48 @@ def test_a_stopped_build_offers_change_answers_which_the_server_accepts(kind):
 
     assert "change_answers" in actions
     assert actions[0] == "try_again"
+
+
+@pytest.mark.parametrize(
+    "reason, check_plain",
+    [
+        # A check with a sentence of its own: the server sends it.
+        ("writer_behaviour_failed", fr.STOP_ENTRIES["writer_behaviour_failed"][1]),
+        # A gate refusal with no entry: no sentence of its own.
+        ("writer_contract", None),
+    ],
+)
+def test_a_check_sends_its_own_sentence_only_when_it_has_one(tmp_path, reason, check_plain):
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.TESTER)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.TESTER,
+        detail=f"{reason}: a check did not pass",
+        payload={"gate": "TESTER", "reason": reason, "location": "TESTER"},
+    )
+    ledger.append(EventKind.RUN_FAILED, role=BuildRole.TESTER, payload={"outcome": "FAILED_GATE"})
+
+    stop = build_status(out)["stop"]
+
+    assert stop["kind"] == fr.STOP_CHECK_FAILED
+    assert stop["check_plain"] == check_plain
+    assert stop["restarted"] is False
+
+
+@pytest.mark.parametrize(
+    "honesty, restarted",
+    [("FACTORY_CODE_CLI_ORPHANED", True), ("BUILD_THREAD_CRASHED", False)],
+)
+def test_a_restart_is_told_apart_from_a_crash(tmp_path, honesty, restarted):
+    from app.factory.build_jobs import stop_record
+
+    out = tmp_path / "p"
+    _ledger(out)
+
+    stop = stop_record({"state": "failed", "honesty": honesty, "phases_done": 2}, out)
+
+    assert stop["kind"] == fr.STOP_SERVICE_INTERRUPTED
+    assert stop["restarted"] is restarted
+    assert stop["check_plain"] is None

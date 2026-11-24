@@ -297,6 +297,25 @@ NO_PROGRESS_PLAIN = "The build stopped sending updates, so nothing is working on
 #: The sentence for a build the server cannot find.
 NOT_FOUND_PLAIN = "We can't find this build on the server."
 
+#: Codes whose sentence is the generic "a check did not pass": a check with
+#: no sentence of its own. Any other check code's sentence is the check's own.
+GENERIC_CHECK_CODES = frozenset({"FAILED_GATE", "FAILED_BUDGET_SPENT"})
+
+#: Codes that mean our build service restarted under the run (an orphaned
+#: thread or coding job), as opposed to failing or crashing in place.
+RESTART_CODES = frozenset({"BUILD_THREAD_ORPHANED", "FACTORY_CODE_CLI_ORPHANED"})
+
+
+def check_plain(kind: str, code: str, plain: str) -> Optional[str]:
+    """The check's own plain sentence, or None for a check with none.
+
+    The page adds it after "A quality check did not pass"; the generic check
+    sentences are never repeated."""
+    if kind != STOP_CHECK_FAILED or code in GENERIC_CHECK_CODES or plain == CHECK_FAILED_PLAIN:
+        return None
+    return plain
+
+
 #: The runner decision classes that spend a fix round.
 FIX_ROUND_CLASSES = frozenset({"REWORK", "REGENERATE_TEST", "REPROMPT"})
 

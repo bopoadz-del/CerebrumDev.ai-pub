@@ -672,6 +672,9 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
     return {
         "kind": kind,
         "plain": plain,
+        # Typed facts the page words its sentence from, never text it reads.
+        "check_plain": fr.check_plain(kind, code, plain),
+        "restarted": code in fr.RESTART_CODES,
         "step": step,
         "step_index": step_index,
         "steps_total": len(phases),
