@@ -1116,6 +1116,108 @@ class RoleRunner:
         except Exception:  # noqa: BLE001 -- when unsure, the old safe wipe
             return False
 
+    def _continue_cut_writer(self, exc: BaseException, pass_started: float) -> bool:
+        """A WRITER pass cut at its wall while still working continues.
+
+        True when the runner has granted the next pass: the cut pass's
+        staging tree stays (a pass that raises never commits or removes it),
+        the next WRITER phase resumes on it and its prompt lists what is
+        already done. False -- the build stops exactly as before -- when the
+        cut was not the wall, the pass showed no progress in its last
+        minutes, the passes are used up, the files are gone, or the run's
+        hard ceiling leaves no room for another pass. Either way one NOTE
+        states the decision with its facts (owner, 24 Nov 07:35Z).
+        """
+        from datetime import datetime, timezone
+
+        from app.factory.build import writer_continuation as wc
+
+        if not wc.is_wall_cut(exc):
+            return False
+        record = self.state.setdefault(wc.STATE_KEY, {"passes": 0, "seconds": 0.0})
+        record["passes"] = int(record.get("passes") or 0) + 1
+        record["seconds"] = float(record.get("seconds") or 0.0) + max(
+            0.0, float(self.clock()) - float(pass_started)
+        )
+        limit = wc.max_writer_passes()
+        record["max_passes"] = limit
+        events = list(self.ledger.events()) if self.ledger.exists() else []
+        window = wc.progress_window_s()
+        progress = wc.progress_at_cut(events, now=datetime.now(timezone.utc), window_s=window)
+        staging = self._staging_for(BuildRole.WRITER)
+        decision = wc.decide(
+            passes_done=record["passes"],
+            max_passes=limit,
+            progress=progress,
+            staging_kept=bool(staging is not None and staging.exists() and self._writer_can_resume(staging)),
+        )
+        ceiling = float(self.budget.hard_ceiling_s or 0.0)
+        left: Optional[float] = None
+        reason = decision.reason
+        go = decision.go
+        if go and self._stage_halt:
+            # The budget inspector already ruled this stage over; a
+            # continuation never overrides that ruling.
+            go = False
+            reason = "the budget check had already stopped this stage"
+        if go and self._run_started is not None:
+            allowance = float(self.budget.phase_wall_clock_s or 0.0) or float(
+                getattr(self, "_plan_wall_s", 0.0) or 0.0
+            )
+            elapsed = max(0.0, float(self.clock()) - float(self._run_started))
+            # One more writer pass, granted the way a rework round is: the
+            # per-pass plan wall re-arms and the wall grows by one phase
+            # allowance -- never past the hard ceiling (_extend_wall).
+            self._plan_wall_passes += 1
+            self._extend_wall(elapsed + allowance, progress_evidenced=True)
+            if self._deadline is not None:
+                left = float(self._deadline) - float(self.clock())
+            if left is not None and left < wc.min_pass_s():
+                self._plan_wall_passes -= 1
+                go = False
+                reason = "the build's time ceiling leaves no room for another writer pass"
+        minutes_used = record["seconds"] / 60.0
+        ceiling_text = f" of the {ceiling / 60.0:.0f} min ceiling" if ceiling > 0 else ""
+        payload = {
+            "go": go,
+            "reason": reason,
+            "passes_done": record["passes"],
+            "pass_next": decision.pass_next,
+            "max_passes": limit,
+            "steps_in_window": decision.steps,
+            "files_grown_in_window": decision.files_grown,
+            "window_s": window,
+            "writer_seconds": round(record["seconds"], 1),
+            "ceiling_s": ceiling,
+            "time_left_s": None if left is None else round(left, 1),
+        }
+        if go:
+            record["pass_running"] = decision.pass_next
+            detail = (
+                f"continuing, pass {decision.pass_next} of {limit}: {reason} "
+                f"({decision.steps} step(s) reported, {decision.files_grown} new file(s) "
+                f"in its last {window / 60.0:.0f} min). Its files are kept and the next "
+                f"pass finishes only what is left. Writer time so far {minutes_used:.0f} min"
+                f"{ceiling_text}."
+            )
+        else:
+            detail = f"writer not continued: {reason}."
+        self.ledger.append(
+            EventKind.NOTE,
+            role=BuildRole.WRITER,
+            detail=detail,
+            payload={wc.NOTE_KEY: payload},
+        )
+        logger.info(
+            "writer continuation: go=%s pass_next=%d/%d steps=%d files_grown=%d",
+            go,
+            decision.pass_next,
+            limit,
+            decision.steps,
+            decision.files_grown,
+        )
+        return go
+
     def _cycle_events(self) -> list:
         """Ledger events since the current cycle opened."""
         events = list(self.ledger.events()) if self.ledger.exists() else []
@@ -1684,6 +1786,12 @@ class RoleRunner:
                 )
             else:
                 remove_staging(staging)
+        if role is BuildRole.WRITER:
+            # Only THIS pass's resume hands the writer the ALREADY DONE list
+            # (``writer_resumed`` above stays set for the rest of the run).
+            from app.factory.build.writer_continuation import RESUMED_KEY
+
+            self.state[RESUMED_KEY] = resumed_pass
         if role is BuildRole.WRITER and staging is not None:
             # The writer's checkout must show the product it is writing.
             # The CLONER stock is sealed after CLONER and the rework seed
@@ -3604,6 +3712,7 @@ class RoleRunner:
                 # the Store gate refused its 21/21 for not being 22/22.
                 if role is BuildRole.TESTER:
                     self._refresh_factory_files()
+                pass_started = self.clock()
                 try:
                     assert_phase_order(role, done)
                     verdict = self._run_phase(role, work_list)
@@ -3632,6 +3741,12 @@ class RoleRunner:
                         done.add(role)
                         work_list = ()
                         index += 1
+                        continue
+                    if role is BuildRole.WRITER and self._continue_cut_writer(
+                        exc, pass_started
+                    ):
+                        # Re-run the WRITER on the kept checkout (index and
+                        # work list unchanged): the next pass resumes it.
                         continue
                     reason = getattr(exc, "reason", "") or ""
                     location = getattr(exc, "location", "") or role.value

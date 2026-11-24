@@ -268,6 +268,12 @@ class WorkerError(RuntimeError):
     """A named refusal/failure from the CodeWhale worker layer."""
 
 
+class WorkerWallTimeout(WorkerError):
+    """The pass's own wall fired (``worker_timed_out``): the CLI was killed
+    because its time ran out, not because it failed. Typed so the runner can
+    tell a cut pass from a broken one without reading the message."""
+
+
 class _WorkerStall(Exception):
     """A headless pass made no observable progress for the idle limit.
 
@@ -2414,7 +2420,7 @@ def run_worker_job(
                         # Name the wall that actually fired: the ramp may
                         # have lifted it past the dispatch value (live
                         # 2026-10-08 read "exceeded 1800.0s" at ~2640s).
-                        raise WorkerError(
+                        raise WorkerWallTimeout(
                             f"{WORKER_TIMED_OUT}: headless job exceeded "
                             f"its {deadline - wait_started:.0f}s wall "
                             f"(dispatched with {timeout}s)"

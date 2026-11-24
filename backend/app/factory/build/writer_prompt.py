@@ -560,8 +560,14 @@ def render_writer_prompt(
     store_sha: Optional[str] = None,
     findings: Sequence[str] = (),
     dispatched_specialists: Sequence[str] = (),
+    done_section: str = "",
 ) -> str:
     """Fill the template from the brief. Deterministic by construction.
+
+    ``done_section`` (resume only): the ALREADY DONE block the caller read
+    off the kept checkout (``writer_continuation.render_done_section``) --
+    the steps the interrupted pass reported and the files on disk -- so the
+    resumed pass finishes only what is left.
 
     ``dispatched_specialists`` (F-S2c): the hats the Factory runs as their
     own sessions. When non-empty the SPECIALISTS block is dropped and this
@@ -621,7 +627,7 @@ def render_writer_prompt(
     if dispatched_specialists:
         body = _cut_specialists_block(body, dispatched_specialists)
     if resume:
-        body = _RESUME_PREFACE + body
+        body = _RESUME_PREFACE + str(done_section or "") + body
     return f"<!-- {version} -->\n" + body
 
 

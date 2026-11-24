@@ -1063,6 +1063,7 @@ _FAILURE_SUMMARIES = {
     "budget_skipped": "A build step was skipped because the run was out of budget.",
     "writer_behaviour_failed": "A generated capability did not accept its own request.",
     "writer_no_output": "The coder produced no output for this step.",
+    "codewhale_worker_failed": "The coding agent's session ended before it finished this step.",
     "packager_failed": "The build failed while packaging the product for delivery.",
 }
 
