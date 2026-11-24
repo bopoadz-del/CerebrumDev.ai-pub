@@ -718,6 +718,17 @@ export interface BuildDecision {
   reason?: string
 }
 
+/** The writer-continuation decision, as the runner recorded it. */
+export type WriterPass = {
+  continuing: boolean
+  pass: number | null
+  max_passes: number | null
+  writer_minutes: number
+  ceiling_minutes: number | null
+  text: string
+  ts: string
+}
+
 export type BuildStatus = {
   state: 'not_started' | 'unknown' | 'building' | 'succeeded' | 'failed' | 'stalled' | 'waiting'
   detail?: string
@@ -790,6 +801,10 @@ export type BuildStatus = {
   /** Set while the writer waits its turn for a build slot (a full slot
    *  queues, never fails): its place in the FIFO and how long it has waited. */
   queued?: BuildQueuePlace | null
+  /** The runner's newest writer-continuation decision for this run: a
+   *  writer cut at its wall while still working continues in another pass,
+   *  bounded by a pass limit and the run's ceiling. */
+  writer_pass?: WriterPass | null
   /** Tail of the agent's own narration, newest last. The Floor renders
    *  it as a live log: a single replaced sentence cannot distinguish a
    *  working agent from a wedged one. */

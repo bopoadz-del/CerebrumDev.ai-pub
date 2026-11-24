@@ -2683,22 +2683,118 @@ def is_narration_line(line: str) -> bool:
     return text.startswith(_STEP_PREFIX) or text.startswith(HEARTBEAT_PREFIX)
 
 
-def count_authored_files(root: Path) -> int:
-    """Files the pass has put on disk so far, the factory's own view.
+#: Directory names that are never the agent's output at any depth: vendored
+#: blocks, VCS internals, installed packages, bytecode, the writer CLI home.
+_NOT_AUTHORED_DIRS = frozenset({"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR})
+#: The first bytes of every SQLite file: a database (a test run's store, a
+#: coverage data file) is runtime state, never source, whatever its name.
+_SQLITE_MAGIC = b"SQLite format 3\x00"
 
-    Vendored blocks, VCS internals, the writer CLI's own runtime home and
-    the progress logs themselves are not the agent's output. Best-effort:
-    an unreadable tree counts as zero.
+
+def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool]]:
+    """The patterns of ``directory/.gitignore``: (pattern, anchored, dir_only).
+
+    The product's own declaration of what is generated. Tools mark their
+    output the same way (a cache or report directory carrying a ``*``
+    ``.gitignore``), so one reader covers both. Negations are not read: a
+    re-included path is still counted by the rules above it, so the count
+    can only miss an artefact, never drop source the writer meant to keep.
     """
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
+    try:
+        text = (directory / ".gitignore").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    rules: List[Tuple[str, bool, bool]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        dir_only = line.endswith("/")
+        line = line.rstrip("/")
+        anchored = line.startswith("/") or "/" in line
+        line = line.lstrip("/")
+        if line:
+            rules.append((line, anchored, dir_only))
+    return rules
+
+
+def _ignored(rules: List[Tuple[str, Tuple[str, ...], bool, bool]], rel: Tuple[str, ...], is_dir: bool) -> bool:
+    import fnmatch
+
+    for pattern, base, anchored, dir_only in rules:
+        if dir_only and not is_dir:
+            continue
+        if rel[: len(base)] != base:
+            continue
+        below = rel[len(base) :]
+        if not below:
+            continue
+        if anchored:
+            if fnmatch.fnmatchcase("/".join(below), pattern):
+                return True
+        elif fnmatch.fnmatchcase(below[-1], pattern):
+            return True
+    return False
+
+
+def _is_database(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def iter_authored_source(root: Path) -> Iterator[str]:
+    """Relative POSIX paths of the source the pass has authored -- one rule.
+
+    Authored source is what the platform would ship (``builds_push.
+    is_exported``: no caches, bytecode, top-level runtime data or Factory
+    records) minus what the tree itself declares generated (its
+    ``.gitignore`` files, which is how test, coverage and build tools mark
+    their output) minus databases by their content. No product's file names
+    are read: test databases, caches and build output fall out by rule, so
+    the count falls only when the writer deletes source (owner, 24 Nov:
+    165 -> 55 files in one minute of a test run). Raises ``OSError`` when the
+    walk fails part-way; callers decide what a partial walk means.
+    """
+    from app.factory.build.builds_push import is_exported
+
+    base = Path(root)
+    rules_at: Dict[Tuple[str, ...], List[Tuple[str, Tuple[str, ...], bool, bool]]] = {}
+
+    def _rules(rel_dir: Tuple[str, ...]) -> List[Tuple[str, Tuple[str, ...], bool, bool]]:
+        # Every .gitignore from the root down to rel_dir, each anchored at
+        # its own directory; read once per directory per walk.
+        if rel_dir not in rules_at:
+            inherited = list(_rules(rel_dir[:-1])) if rel_dir else []
+            inherited.extend((p, rel_dir, a, d) for p, a, d in _ignore_rules(base.joinpath(*rel_dir)))
+            rules_at[rel_dir] = inherited
+        return rules_at[rel_dir]
+
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = tuple(path.relative_to(base).parts)
+        if set(rel) & _NOT_AUTHORED_DIRS or path.name.startswith("writer_progress"):
+            continue
+        if any(_ignored(_rules(rel[:i]), rel[: i + 1], True) for i in range(len(rel) - 1)):
+            continue
+        if _ignored(_rules(rel[:-1]), rel, False):
+            continue
+        if not is_exported(Path(*rel)) or _is_database(path):
+            continue
+        yield "/".join(rel)
+
+
+def count_authored_files(root: Path) -> int:
+    """Authored source files on disk so far (``iter_authored_source``).
+
+    Best-effort: a walk that raises part-way returns what it counted.
+    """
     total = 0
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            parts = set(path.relative_to(root).parts)
-            if parts & skip or path.name.startswith("writer_progress"):
-                continue
+        for _rel in iter_authored_source(root):
             total += 1
     except OSError:
         return total
@@ -2713,19 +2809,10 @@ def authored_files_or_none(root: Path) -> Optional[int]:
     is indistinguishable from a tree that shrank. The heartbeat and the
     stall watchdog read None as "no sample", never as an empty tree.
     """
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
-    total = 0
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            parts = set(path.relative_to(root).parts)
-            if parts & skip or path.name.startswith("writer_progress"):
-                continue
-            total += 1
+        return sum(1 for _rel in iter_authored_source(root))
     except OSError:
         return None
-    return total
 
 
 #: Files the WORKER itself writes at dispatch (the brief pointer target and
@@ -2737,19 +2824,11 @@ def agent_file_paths(root: Path) -> FrozenSet[str]:
     """Relative paths of the files ``count_authored_files`` counts, minus the
     worker's own dispatch audit files. A pass's new files are the difference
     of two snapshots taken around it."""
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
     found = set()
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root)
-            if set(rel.parts) & skip or path.name.startswith("writer_progress"):
-                continue
-            posix = rel.as_posix()
-            if posix in DISPATCH_AUDIT_FILES:
-                continue
-            found.add(posix)
+        for posix in iter_authored_source(root):
+            if posix not in DISPATCH_AUDIT_FILES:
+                found.add(posix)
     except OSError:
         pass
     return frozenset(found)

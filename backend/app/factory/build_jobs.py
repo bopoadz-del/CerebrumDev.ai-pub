@@ -1345,6 +1345,12 @@ def queued_for_slot(notes: Sequence[Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _writer_pass(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
+    from app.factory.build.writer_continuation import floor_view
+
+    return floor_view(events)
+
+
 def build_status(
     output_dir: Path | str,
     *,
@@ -1591,6 +1597,9 @@ def build_status(
         # The build's own declared end (server clock); a poller waits on
         # this, never on a number of its own.
         "deadline": declared_deadline(events),
+        # The writer-continuation decision (pass n of max, writer time used of
+        # the ceiling) as data, so the build card states it on its face.
+        "writer_pass": _writer_pass(events),
         **monitor,
         **_cycle_fields(ledger, terminal),
         **session_status(Path(output_dir)),

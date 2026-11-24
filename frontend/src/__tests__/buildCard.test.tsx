@@ -251,3 +251,42 @@ describe('buildFace', () => {
     expect(report).not.toContain('Product:')
   })
 })
+
+describe('a writer pass the runner continued (GROKGRADE F297)', () => {
+  const PASS = {
+    continuing: true,
+    pass: 2,
+    max_passes: 3,
+    writer_minutes: 60,
+    ceiling_minutes: 120,
+    text: 'continuing, pass 2 of 3: the writer was still working when its time ran out',
+    ts: '2026-11-24T07:24:30+00:00',
+  }
+  const building: BuildStatus = {
+    state: 'building',
+    phases: PHASES,
+    completed: ['COLLECTOR', 'CLONER'],
+    activity_log: Array.from({ length: 15 }, (_, i) => ({ ts: '', role: 'WRITER', text: `heartbeat ${i}` })),
+    writer_pass: PASS,
+  }
+
+  it.each([
+    [{ ...building }, 'Continuing in pass 2 of 3', 'Writing time so far: 60 min of 120 min allowed.'],
+    [{ ...building, writer_pass: { ...PASS, pass: 3, writer_minutes: 120, ceiling_minutes: null } }, 'pass 3 of 3', '120 min.'],
+  ])('is said on the card face, not only in Technical detail (%#)', (build, pass, time) => {
+    render(<BuildCard build={build as BuildStatus} sessionId="s1" />)
+    const line = screen.getByTestId('floor-writer-pass')
+    expect(line.textContent).toContain(pass)
+    expect(line.textContent).toContain(time)
+    expect(line.closest('details')).toBeNull()
+  })
+
+  it.each([
+    [{ ...building, writer_pass: { ...PASS, continuing: false, text: 'writer not continued: x' } }],
+    [{ ...building, state: 'failed' as const }],
+    [{ ...building, writer_pass: null }],
+  ])('is absent when no pass is continuing or the build stopped (%#)', (build) => {
+    render(<BuildCard build={build as BuildStatus} sessionId="s1" />)
+    expect(screen.queryByTestId('floor-writer-pass')).toBeNull()
+  })
+})

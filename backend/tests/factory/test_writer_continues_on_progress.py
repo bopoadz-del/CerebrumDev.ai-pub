@@ -450,3 +450,213 @@ def test_the_worker_failure_has_its_own_sentence(reason):
 
     row = _floor_failure({"reason": reason, "phase": "WRITER", "location": "WRITER"})
     assert row["summary"] == "The coding agent's session ended before it finished this step."
+
+
+# -- GROKGRADE F297 199e524: artefacts, the progress window, tests, the card --
+
+
+_SQLITE = b"SQLite format 3\x00" + b"\x00" * 100
+
+
+def _tree(root, artefacts):
+    """Two source files plus the artefacts a test or build run leaves."""
+    (root / "app").mkdir(parents=True, exist_ok=True)
+    (root / "app" / "main.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "tests").mkdir(exist_ok=True)
+    (root / "tests" / "test_main.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    for rel, body in artefacts.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
+
+@pytest.mark.parametrize(
+    "artefacts",
+    [
+        {
+            ".pytest_cache/.gitignore": b"# Created by pytest automatically.\n*\n",
+            ".pytest_cache/v/cache/nodeids": b"[]",
+            "htmlcov/.gitignore": b"# Created by coverage.py\n*\n",
+            "htmlcov/index.html": b"<html></html>",
+            ".coverage": _SQLITE,
+            "test.db": _SQLITE,
+        },
+        {
+            ".gitignore": b"dist/\n# generated\n/reports\n",
+            "dist/assets/index.js": b"x",
+            "dist/index.html": b"x",
+            "reports/run.xml": b"<x/>",
+            "app/store.sqlite3": _SQLITE,
+            ".mypy_cache/.gitignore": b"*\n",
+            ".mypy_cache/3.11/a.json": b"{}",
+        },
+    ],
+)
+def test_the_authored_count_skips_test_and_build_artefacts_by_rule(tmp_path, artefacts):
+    from app.factory.build.codewhale_worker import (
+        agent_file_paths,
+        authored_files_or_none,
+        count_authored_files,
+    )
+
+    _tree(tmp_path, {})
+    before = count_authored_files(tmp_path)
+    _tree(tmp_path, artefacts)
+    source = {"app/main.py", "tests/test_main.py"} | (
+        {".gitignore"} if ".gitignore" in artefacts else set()
+    )
+    assert set(agent_file_paths(tmp_path)) == source
+    assert count_authored_files(tmp_path) == authored_files_or_none(tmp_path) == len(source)
+    assert count_authored_files(tmp_path) >= before, "artefacts never move the count down"
+    assert set(wc.done_files(tmp_path)) == source, "a resumed pass is never told to keep artefacts"
+
+
+def _at(now, minutes, detail="", **payload):
+    return SimpleNamespace(
+        ts=(now - timedelta(minutes=minutes)).isoformat(),
+        detail=detail,
+        payload={"source": "codewhale_worker", **payload},
+    )
+
+
+@pytest.mark.parametrize(
+    "samples, grown",
+    [
+        # dropped before the window, then crept back up inside it: below the peak
+        ([(30, 165), (12, 55), (5, 55), (1, 62)], 0),
+        # fell and came back inside the window, still below the earlier peak
+        ([(8, 165), (5, 55), (1, 160)], 0),
+        # one sample and nothing before it to compare with
+        ([(2, 55)], 0),
+        # a real rise above everything seen before
+        ([(30, 100), (5, 120), (1, 140)], 40),
+    ],
+)
+def test_files_grown_is_a_rise_above_the_pass_peak(samples, grown):
+    now = datetime(2026, 11, 24, 7, 24, tzinfo=timezone.utc)
+    events = [_at(now, m, **{FILES_ON_DISK: n, STEPS_REPORTED: 1}) for m, n in samples]
+    assert wc.progress_at_cut(events, now=now, window_s=600)["files_grown"] == grown
+
+
+@pytest.mark.parametrize("earlier_pass_files, grown", [(300, 20), (10, 20)])
+def test_each_writer_pass_is_compared_with_its_own_counts(earlier_pass_files, grown):
+    now = datetime(2026, 11, 24, 7, 24, tzinfo=timezone.utc)
+    start = SimpleNamespace(
+        ts=(now - timedelta(minutes=40)).isoformat(),
+        kind=EventKind.PHASE_STARTED,
+        role=BuildRole.WRITER,
+        detail="",
+        payload={},
+    )
+    events = [
+        _at(now, 90, **{FILES_ON_DISK: earlier_pass_files, STEPS_REPORTED: 1}),
+        start,
+        _at(now, 30, **{FILES_ON_DISK: 5, STEPS_REPORTED: 1}),
+        _at(now, 1, **{FILES_ON_DISK: 25, STEPS_REPORTED: 1}),
+    ]
+    assert wc.progress_at_cut(events, now=now, window_s=600)["files_grown"] == grown
+
+
+@pytest.mark.parametrize(
+    "lines, counted",
+    [
+        # the same step said again three times in the window: not new work
+        (
+            [
+                (30, "writer: STEP 4: wiring"),
+                (5, "writer: STEP 4: wiring"),
+                (3, "writer: STEP 4: x"),
+                (1, "writer: STEP 4: y"),
+            ],
+            0,
+        ),
+        # three times inside the window only: one step
+        ([(5, "writer: STEP 4: a"), (3, "writer: STEP 4: a"), (1, "writer: STEP 4: a")], 1),
+        # two new steps
+        ([(30, "writer: STEP 4: a"), (5, "writer: STEP 5: b"), (1, "writer: STEP 6: c")], 2),
+    ],
+)
+def test_a_step_counts_once_and_only_when_first_reported(lines, counted):
+    now = datetime(2026, 11, 24, 7, 24, tzinfo=timezone.utc)
+    events = [
+        _at(now, m, detail, **{STEPS_REPORTED: i + 1}) for i, (m, detail) in enumerate(lines)
+    ]
+    assert wc.progress_at_cut(events, now=now, window_s=600)["steps"] == counted
+
+
+def _pytest_cache(root, nodeids, lastfailed):
+    import json
+
+    cache = root / ".pytest_cache" / "v" / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    (root / ".pytest_cache" / ".gitignore").write_text("*\n", encoding="utf-8")
+    (cache / "nodeids").write_text(json.dumps(nodeids), encoding="utf-8")
+    if lastfailed is not None:
+        (cache / "lastfailed").write_text(json.dumps(lastfailed), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "nodeids, lastfailed, passing",
+    [
+        (
+            [
+                "tests/test_main.py::test_a",
+                "tests/test_main.py::test_b",
+                "tests/test_gone.py::test_c",
+            ],
+            {"tests/test_main.py::test_b": True},
+            ("tests/test_main.py::test_a",),
+        ),
+        (["tests/test_main.py::test_a"], None, ("tests/test_main.py::test_a",)),
+    ],
+)
+def test_a_resumed_pass_is_told_the_tests_that_pass(tmp_path, nodeids, lastfailed, passing):
+    _tree(tmp_path, {})
+    _pytest_cache(tmp_path, nodeids, lastfailed)
+    assert wc.done_tests(tmp_path) == passing
+    text = wc.render_done_section(["STEP 1: a"], ["app/main.py"], tests=wc.done_tests(tmp_path))
+    assert f"Tests that passed on their last run ({len(passing)})" in text
+    for test in passing:
+        assert f"  {test}" in text
+    assert "test_b" not in text and "test_gone" not in text
+
+
+@pytest.mark.parametrize("cut_steps, continuing", [(4, True), (0, False)])
+def test_the_build_status_carries_the_pass_for_the_card(tmp_path, monkeypatch, cut_steps, continuing):
+    from app.factory.build_jobs import build_status
+
+    runner, _calls = _runner(tmp_path, monkeypatch, cut_steps=cut_steps)
+    runner.run()
+    view = build_status(tmp_path / "build")["writer_pass"]
+    assert view["continuing"] is continuing
+    if continuing:
+        assert (view["pass"], view["max_passes"]) == (2, wc.DEFAULT_MAX_PASSES)
+        assert view["writer_minutes"] == 60 and view["ceiling_minutes"] == round(20000.0 / 60)
+        assert view["text"].startswith("continuing, pass 2 of")
+    else:
+        assert view["text"].startswith("writer not continued")
+
+
+@pytest.mark.parametrize("restart, continuing", [(False, True), (True, None)])
+def test_the_card_view_is_this_runs_newest_decision(restart, continuing):
+    note = SimpleNamespace(
+        kind=EventKind.NOTE,
+        ts="2026-11-24T07:24:00+00:00",
+        detail="continuing, pass 2 of 3: x",
+        payload={
+            wc.NOTE_KEY: {
+                "go": True,
+                "pass_next": 2,
+                "max_passes": 3,
+                "writer_seconds": 3600,
+                "ceiling_s": 7200,
+            }
+        },
+    )
+    rerun = SimpleNamespace(kind=EventKind.RUN_STARTED, ts="", detail="", payload={})
+    view = wc.floor_view([note, rerun] if restart else [note])
+    if continuing is None:
+        assert view is None
+    else:
+        assert view["continuing"] is True
+        assert (view["pass"], view["max_passes"], view["ceiling_minutes"]) == (2, 3, 120)

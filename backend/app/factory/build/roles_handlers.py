@@ -4040,11 +4040,13 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     if ctx.state.get(_cont.RESUMED_KEY):
         # A resumed pass (a continuation after a cut, or the user's Try
         # again) is told what the kept checkout already holds: the steps it
-        # reported and the files on disk, so it never redoes finished work.
+        # reported, the tests that pass and the files on disk, so it never
+        # redoes finished work.
         done_section = _cont.render_done_section(
             _cont.done_steps(Path(dest)),
             _cont.done_files(Path(dest)),
             pass_label=_cont.pass_label(ctx.state),
+            tests=_cont.done_tests(Path(dest)),
         )
     prompt = render_writer_prompt(
         ctx.blueprint,

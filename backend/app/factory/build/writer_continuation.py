@@ -103,23 +103,52 @@ def _int(value: Any) -> Optional[int]:
         return None
 
 
+_STEP_IN_LINE = re.compile(r"\bSTEP\s+(\d+)\b")
+
+
+def _step_key(event: Any, payload: Dict[str, Any]) -> Optional[Tuple[str, Any]]:
+    """Which step a STEP record reports: its STEP number when the line names
+    one, else the record's own running counter (each relayed line has one)."""
+    match = _STEP_IN_LINE.search(str(getattr(event, "detail", "") or ""))
+    if match:
+        return ("step", int(match.group(1)))
+    counter = _int(payload.get("steps_reported"))
+    return None if counter is None else ("line", counter)
+
+
+def _is_writer_start(event: Any) -> bool:
+    kind = getattr(getattr(event, "kind", None), "value", getattr(event, "kind", None))
+    role = getattr(getattr(event, "role", None), "value", getattr(event, "role", None))
+    return str(kind or "") == "PHASE_STARTED" and str(role or "") == "WRITER"
+
+
 def progress_at_cut(events: Sequence[Any], *, now: datetime, window_s: float) -> Dict[str, int]:
     """What the coding agent visibly did in the ``window_s`` before ``now``.
 
-    ``steps``: STEP records in the window (a STEP line carries
-    ``steps_reported`` and no file count; a heartbeat carries both).
-    ``files_grown``: the last ``files_on_disk`` in the window minus the last
-    one before it (0 when the count did not rise). Events without a readable
-    timestamp are not evidence.
+    ``steps``: steps first reported inside the window. A STEP record (it
+    carries ``steps_reported`` and no file count; a heartbeat carries both)
+    counts once per step: a step already reported earlier in the run --
+    re-said, or done by an earlier pass -- is not new work.
+    ``files_grown``: the last ``files_on_disk`` in the window minus this
+    pass's highest count before the window (or, with none, the window's
+    first count). A count that fell and came back is not growth, and a lone
+    count has nothing to compare against, so it is 0. Each WRITER phase start opens a
+    new pass (its counts are relative to its own start). Events without a
+    readable timestamp are not evidence.
     """
     from app.factory.build.authorship import is_coding_agent_source
     from app.factory.build.codewhale_worker import FILES_ON_DISK, STEPS_REPORTED
 
     start = now - timedelta(seconds=float(window_s))
+    seen_steps: set = set()
     steps = 0
-    files_before: Optional[int] = None
-    files_after: Optional[int] = None
+    peak_before: Optional[int] = None
+    first_in: Optional[int] = None
+    last: Optional[int] = None
     for event in events:
+        if _is_writer_start(event):
+            peak_before, first_in, last = None, None, None
+            continue
         payload = getattr(event, "payload", None) or {}
         if not is_coding_agent_source(payload.get("source")):
             continue
@@ -128,20 +157,30 @@ def progress_at_cut(events: Sequence[Any], *, now: datetime, window_s: float) ->
             continue
         if at.tzinfo is None and now.tzinfo is not None:
             at = at.replace(tzinfo=now.tzinfo)
-        files = _int(payload.get(FILES_ON_DISK))
-        if at < start:
-            if files is not None:
-                files_before = files
-            continue
         if at > now:
             continue
+        files = _int(payload.get(FILES_ON_DISK))
         if _int(payload.get(STEPS_REPORTED)) is not None and files is None:
-            steps += 1
-        if files is not None:
-            files_after = files
+            key = _step_key(event, payload)
+            if key is not None and key not in seen_steps:
+                seen_steps.add(key)
+                if at >= start:
+                    steps += 1
+        if files is None:
+            continue
+        if at < start:
+            peak_before = files if peak_before is None else max(peak_before, files)
+            continue
+        if first_in is None:
+            first_in = files
+        last = files
+    # The baseline is the highest count before the window; with none, the
+    # window's own first count. A count that fell and came back is not
+    # growth: only a rise above the baseline is.
+    baseline = peak_before if peak_before is not None else first_in
     grown = 0
-    if files_after is not None:
-        grown = max(0, files_after - (files_before or 0))
+    if last is not None and baseline is not None:
+        grown = max(0, last - baseline)
     return {"steps": steps, "files_grown": grown}
 
 
@@ -204,12 +243,61 @@ def done_files(checkout: Path) -> Tuple[str, ...]:
         return ()
 
 
-def render_done_section(steps: Iterable[str], files: Iterable[str], *, pass_label: str = "") -> str:
+#: How many passing tests the continue section lists before it summarises.
+TESTS_LISTED = 200
+
+
+def done_tests(checkout: Path) -> Tuple[str, ...]:
+    """The tests whose last run passed, from pytest's own record in the kept
+    checkout: every node id pytest has collected (``cache/nodeids``) minus
+    the ones its last run left failing (``cache/lastfailed``), keeping only
+    tests whose file is still on disk. Each cache is read relative to the
+    directory it sits in. Empty when pytest never ran or left no record."""
+    import json
+
+    base = Path(checkout)
+    passing: List[str] = []
+    for dirpath, dirnames, _files in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in {"vendor", ".git", "node_modules"}]
+        if Path(dirpath).name != ".pytest_cache":
+            continue
+        dirnames[:] = []
+        cache = Path(dirpath) / "v" / "cache"
+        rootdir = Path(dirpath).parent
+        try:
+            nodeids = json.loads((cache / "nodeids").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        try:
+            failed = json.loads((cache / "lastfailed").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            failed = {}
+        if not isinstance(nodeids, list):
+            continue
+        failing = set(failed) if isinstance(failed, dict) else set()
+        prefix = rootdir.relative_to(base).as_posix()
+        for nodeid in nodeids:
+            node = str(nodeid)
+            if node in failing or not (rootdir / node.split("::", 1)[0]).is_file():
+                continue
+            passing.append(node if prefix == "." else f"{prefix}/{node}")
+    return tuple(sorted(dict.fromkeys(passing)))
+
+
+def render_done_section(
+    steps: Iterable[str],
+    files: Iterable[str],
+    *,
+    pass_label: str = "",
+    tests: Iterable[str] = (),
+) -> str:
     """The ALREADY DONE block a resumed pass reads before the brief: the steps
-    it reported and the files on disk. Empty when there is nothing to list."""
+    it reported, the tests whose last run passed and the files on disk.
+    Empty when there is nothing to list."""
     steps = [s for s in steps if str(s).strip()]
     files = [f for f in files if str(f).strip()]
-    if not steps and not files:
+    tests = [t for t in tests if str(t).strip()]
+    if not steps and not files and not tests:
         return ""
     lines: List[str] = ["ALREADY DONE -- do not redo this work."]
     if pass_label:
@@ -222,6 +310,11 @@ def render_done_section(steps: Iterable[str], files: Iterable[str], *, pass_labe
     if steps:
         lines.append(f"Steps you reported ({len(steps)}):")
         lines.extend(f"  {s}" for s in steps)
+    if tests:
+        lines.append(f"Tests that passed on their last run ({len(tests)}); keep them passing:")
+        lines.extend(f"  {t}" for t in tests[:TESTS_LISTED])
+        if len(tests) > TESTS_LISTED:
+            lines.append(f"  ... and {len(tests) - TESTS_LISTED} more")
     if files:
         lines.append(f"Files on disk ({len(files)}):")
         lines.extend(f"  {f}" for f in files[:FILES_LISTED])
@@ -238,3 +331,35 @@ def pass_label(state: Dict[str, Any]) -> str:
     if running and limit and running > 1:
         return f"pass {running} of {limit}"
     return ""
+
+
+def floor_view(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
+    """The newest continue / stop decision of this run, for the build card.
+
+    Read from the NOTE the runner wrote (its typed payload and its own
+    sentence), so the card states exactly what the runner decided: the pass
+    now running and its limit, the writer time used and the ceiling. None
+    when this run (since its last RUN_STARTED) made no decision.
+    """
+    found: Optional[Any] = None
+    for event in events:
+        kind = getattr(getattr(event, "kind", None), "value", getattr(event, "kind", None))
+        if str(kind or "") == "RUN_STARTED":
+            found = None
+            continue
+        payload = getattr(event, "payload", None) or {}
+        if isinstance(payload.get(NOTE_KEY), dict):
+            found = event
+    if found is None:
+        return None
+    record = dict((getattr(found, "payload", None) or {})[NOTE_KEY])
+    ceiling = float(record.get("ceiling_s") or 0.0)
+    return {
+        "continuing": bool(record.get("go")),
+        "pass": _int(record.get("pass_next")),
+        "max_passes": _int(record.get("max_passes")),
+        "writer_minutes": round(float(record.get("writer_seconds") or 0.0) / 60.0),
+        "ceiling_minutes": round(ceiling / 60.0) if ceiling > 0 else None,
+        "text": str(getattr(found, "detail", "") or ""),
+        "ts": str(getattr(found, "ts", "") or ""),
+    }

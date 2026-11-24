@@ -256,7 +256,10 @@ STOP_ENTRIES: Dict[str, Tuple[str, str]] = {
         STOP_SERVICE_INTERRUPTED,
         "The build's own record was damaged, so the build stopped.",
     ),
-    "codewhale_worker_failed": (STOP_SERVICE_INTERRUPTED, "The coding service failed while writing the code."),
+    "codewhale_worker_failed": (
+        STOP_SERVICE_INTERRUPTED,
+        "The coding agent's session ended before it finished this step.",
+    ),
     "worker_concurrency_capped": (STOP_SERVICE_INTERRUPTED, "The coding service was full and could not take this step."),
     "worker_dispatch_ambiguous": (STOP_SERVICE_INTERRUPTED, "The coding service could not confirm this step had started."),
     "worker_cli_missing": (STOP_SERVICE_INTERRUPTED, "The coding service is not installed on our build server."),
