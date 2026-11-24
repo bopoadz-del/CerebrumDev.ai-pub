@@ -1781,7 +1781,7 @@ def build_status(
                 "detail": (
                     "the factory server restarted while this build was running, "
                     "so nothing is working on it. Your progress up to the last "
-                    "finished phase is saved -- reply 'continue' to resume"
+                    "finished phase is saved. Press Try again to pick up from there"
                 ),
                 "pilot_ready": False,
                 "honesty": BUILD_THREAD_ORPHANED,

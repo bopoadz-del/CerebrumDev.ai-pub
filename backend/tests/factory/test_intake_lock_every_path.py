@@ -417,3 +417,51 @@ def test_copy_and_change_answers_refuse_in_plain_words_unless_the_build_failed(
         assert change["intake"]["reopened"] is False
     else:
         assert change["intake"]["reopened"] is True
+
+
+# The Floor's control names (frontend/src/buildActions.ts, floorView.tsx). A
+# sentence the server shows the user names one of these, never a word to type.
+_FLOOR_CONTROLS = ("Approve & build", "Try again", "Run pilot checks", "Start from scratch", "Save")
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [pytest.param("WRITER", id="stalled-in-writer"), pytest.param("CLONER", id="stalled-in-cloner")],
+)
+def test_a_stalled_build_names_the_try_again_control(tmp_path, phase):
+    from app.factory.build.authority import BuildRole
+    from app.factory.build_jobs import BUILD_THREAD_ORPHANED, build_status
+    from tests.factory.test_writer_restart_orphan import _age_ledger
+
+    out = tmp_path / "ws"
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole[phase], detail=phase)
+    _age_ledger(out / "build_ledger.jsonl", 3600)
+    status = build_status(out)
+    assert status["state"] == "stalled", status
+    assert status["honesty"] == BUILD_THREAD_ORPHANED
+    assert "Try again" in status["detail"]
+    assert "continue" not in status["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("prototype", id="prototype-note-in-download"),
+        pytest.param("kit", id="uncertified-kit-notice"),
+    ],
+)
+def test_user_notices_name_a_floor_control_not_a_word_to_type(text):
+    from app.factory import platform_chat_llm
+    from app.routers import session_product
+
+    body = (
+        session_product._PROTOTYPE_MARKER_BODY
+        if text == "prototype"
+        else platform_chat_llm.UNCERTIFIED_KIT_NOTICE % ("k", "k")
+    )
+    assert any(name in body for name in _FLOOR_CONTROLS), body
+    assert "say continue" not in body.lower()
+    assert "/product/" not in body
+    assert "or continue" not in body.lower()

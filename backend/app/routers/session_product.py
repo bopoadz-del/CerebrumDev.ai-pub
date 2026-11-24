@@ -316,9 +316,9 @@ _PROTOTYPE_MARKER_BODY = (
     "PRODUCT (pytest -m pilot) and STORE ops have not passed. Dual certification\n"
     "is pending. Frontend modules and some handlers may be Factory templates.\n"
     "\n"
-    "Say continue on the Factory Floor (or POST /product/pilot) to open a\n"
-    "Store-green cycle on the same workspace. Do not treat this zip as a\n"
-    "finished production platform.\n"
+    "Press Run pilot checks on the Factory Floor to run the pilot tests on\n"
+    "the same workspace. Do not treat this zip as a finished production\n"
+    "platform.\n"
 )
 
 

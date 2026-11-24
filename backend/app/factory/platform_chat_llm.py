@@ -154,7 +154,9 @@ it. The Floor shows your proposal in the brief; it stores nothing until \
 the user presses Save.
 - reply: questions, chit-chat, or a pending blueprint with no confirmation. \
 Set "message" to a short grounded reply. Tell them they can press Approve & build to start \
-the coding agent. Do not pretend a build started.
+the coding agent. Do not pretend a build started. When a reply points the \
+user at a control, use the Floor's name for it: Approve & build, Try again, \
+Run pilot checks, Start from scratch, Save.
 
 The session facts carry the STORE: ready-made blocks, CONNECTORS and MCP \
 parts that are attachable, parts that are in the store but NOT cleared for \
@@ -791,9 +793,9 @@ KIT_NOTICE = (
 #: shelf).
 UNCERTIFIED_KIT_NOTICE = (
     "Heads up: the store holds an uncertified '%s' kit \u2014 its domain depth "
-    'is not verified yet. Say "build on %s" to compose on it anyway, or '
-    "continue and we build a simple one fresh \u2014 that will take longer and "
-    "may cost more than a certified ready kit."
+    'is not verified yet. Ask in the chat to "build on %s" to use it anyway, '
+    "or press Approve & build and we build a simple one fresh \u2014 that will "
+    "take longer and may cost more than a certified ready kit."
 )
 
 

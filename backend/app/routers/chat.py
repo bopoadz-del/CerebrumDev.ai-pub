@@ -112,7 +112,7 @@ def _session_state_summary(state) -> str:
             )
         elif platform_chat_flow.is_generation_resumable(state):
             lines.append(
-                "Coding run is incomplete and can be resumed with continue/resume."
+                "Coding run is incomplete; Try again picks it up where it stopped."
             )
     else:
         lines.append("No product has been generated yet.")
@@ -595,7 +595,7 @@ async def _typed_action(session_id, state, user_message, action, value, _record)
         or platform_chat_flow.is_handoff_awaiting_n3(state)
     )
     if not resumable:
-        result = {"sse": "info", "ok": False, "summary": "There is no build to continue. Draft a platform first."}
+        result = {"sse": "info", "ok": False, "summary": "There is no build yet. Describe your platform first."}
         _record(result)
         async for ev in _yield_platform_result(result):
             yield ev
