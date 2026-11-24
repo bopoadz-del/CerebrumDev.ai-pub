@@ -96,16 +96,25 @@ _EDIT_SHAPES = (
 )
 
 
+#: An answer the user cleared on the Floor. It rides on the proposal like any
+#: other answer, and Confirm stores it as "not declared".
+CLEARED = ""
+
+#: The answers a user may clear; the chat's proposal never carries a clear.
+_CLEARABLE = ("country", "currency")
+
+
 def shaped_intake_edit(
     vertical: Optional[str],
     country: Optional[str],
     currency: Optional[str],
     build_level: Optional[str] = None,
 ) -> Tuple[Dict[str, str], Optional[str]]:
-    """The answers the user changed on the Floor, shaped, and the refusal for
+    """The answers the user sent from the Floor, shaped, and the refusal for
     one that does not fit its field (then nothing is kept at all).
 
-    ``None`` or an empty country / currency / build level is "not changed".
+    ``None`` is "not sent". An empty country or currency is the user's
+    explicit "clear it" (``CLEARED``); an empty build level is "not sent".
     An empty vertical is the user's explicit "no industry" choice.
     """
     edit: Dict[str, str] = {}
@@ -115,8 +124,11 @@ def shaped_intake_edit(
         edit["vertical"] = chosen_vertical(vertical)
     for field, shape, hint in _EDIT_SHAPES:
         raw = {"country": country, "currency": currency}[field]
-        text = str(raw or "").strip()
+        if raw is None:
+            continue
+        text = str(raw).strip()
         if not text:
+            edit[field] = CLEARED
             continue
         value = shape(text)
         if not value:
@@ -155,7 +167,10 @@ def propose_intake_edit(pd: Any, edit: Mapping[str, str]) -> None:
 def confirm_intake(pd: Any) -> Optional[Dict[str, str]]:
     """The user pressed Confirm: the pending proposal becomes the session's
     typed fields. Returns what was stored; None when nothing was proposed."""
-    proposal = shaped_proposal(getattr(pd, "intake_proposal", None))
+    raw = getattr(pd, "intake_proposal", None)
+    proposal = shaped_proposal(raw) or {}
+    if isinstance(raw, Mapping):
+        proposal.update({k: CLEARED for k in _CLEARABLE if raw.get(k) == CLEARED})
     pd.intake_proposal = None
     if not proposal:
         return None
@@ -172,18 +187,26 @@ def confirm_intake(pd: Any) -> Optional[Dict[str, str]]:
     return proposal
 
 
-def intake_state(pd: Any) -> Dict[str, Any]:
-    """What the Floor's intake line shows: the declared typed fields and the
-    pending proposal (if any), side by side and never merged."""
+def declared_intake(pd: Any) -> Dict[str, Any]:
+    """The typed fields the session holds as the user's declared answers."""
     return {
-        "declared": {
-            "vertical": getattr(pd, "vertical", None),
-            "country": getattr(pd, "country", None),
-            "currency": getattr(pd, "currency", None),
-            "build_level": getattr(pd, "build_level", None),
-        },
+        "vertical": getattr(pd, "vertical", None),
+        "country": getattr(pd, "country", None),
+        "currency": getattr(pd, "currency", None),
+        "build_level": getattr(pd, "build_level", None),
+    }
+
+
+def intake_state(pd: Any, *, reopened: bool) -> Dict[str, Any]:
+    """What the Floor's intake line shows: the declared typed fields and the
+    pending proposal (if any), side by side and never merged.
+
+    ``reopened`` is given by the caller, derived from the build
+    (platform_chat_flow.intake_reopened): the session's stored mark is never
+    shown on its own, so a finished or running build never reads as an open
+    brief."""
+    return {
+        "declared": declared_intake(pd),
         "proposal": shaped_proposal(getattr(pd, "intake_proposal", None)),
-        # True after "Continue with new answers" on a FAILED build: the line
-        # is editable again until the typed Confirm resumes the platform.
-        "reopened": bool(getattr(pd, "intake_reopened", False)),
+        "reopened": bool(reopened),
     }
