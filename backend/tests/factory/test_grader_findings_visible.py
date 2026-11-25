@@ -478,6 +478,19 @@ def test_every_step_kind_on_the_card_is_one_the_ui_grader_writes(kind):
         assert '"' + known in source
 
 
+@pytest.mark.parametrize(
+    "text, words",
+    [
+        ("zorblat_total failed in app/actions/zorblat_total.py", "zorblat total failed in"),
+        (r"plinket_count failed in 'app\actions\plinket.py' twice", "plinket count failed in twice"),
+    ],
+)
+def test_the_card_words_leave_a_file_path_out(text, words):
+    """A file path in the grader's prose never reaches the card face; the
+    words around it stay, with no ``_`` separator left."""
+    assert grader_findings.plain_words(text) == words
+
+
 @pytest.mark.parametrize("step, words", [("screen", "screen"), ("load", "load")])
 def test_a_step_id_with_no_target_reads_as_its_own_words(step, words):
     """A step id with no ``kind:`` separator is named by its own words. It is
