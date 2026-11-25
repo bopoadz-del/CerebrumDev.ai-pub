@@ -14,12 +14,14 @@ verdict after it is made.
 * ``owner`` is read from the verdict's own lists: ``writer_items`` are the
   writer's to fix and the only rows sent back to it; ``factory_owed`` are the
   Factory's; everything else is a part the grader could not check.
+* Every item is redacted before any part of its row is cut from it, so no
+  row field (ledger, log or card) can hold a key or a piece of one.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Collection, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,11 @@ FALLBACK = (
 #: The sentence for a part the grader could not check (owner ``RUN``).
 NOT_CHECKED = "The quality check could not check this part, so it cannot pass the build."
 
+#: The sentence for an item in a feature slot that names no feature the
+#: verdict graded (the grader's own words about the features together) when it
+#: is billed to the writer: the product is at fault, not the check.
+NOT_ONE_FEATURE = "The features did not pass the quality check as a whole."
+
 #: Rows kept per verdict on the wire and in one log burst.
 MAX_ROWS = 40
 
@@ -119,22 +126,28 @@ def _shape(item: str) -> Tuple[str, str, str, str, str]:
     return FALLBACK
 
 
-def finding_row(item: str, owner: str) -> Dict[str, str]:
+def finding_row(item: str, owner: str, features: Optional[Collection[str]] = None) -> Dict[str, str]:
     """One grader item as ``{rule, what, where, place, owner, quote}``.
 
     ``where`` is the grader's own locator (machine text); ``place`` is the
-    same locator in plain words for the card face, or empty for a file."""
-    text = str(item or "").strip()
+    same locator in plain words for the card face, or empty for a file.
+    ``features`` are the capability ids the verdict graded: a feature slot
+    names a feature only when it holds one of them. Without that list (a
+    verdict that carries no grade) a slot holding no whitespace is an id."""
+    from app.factory.build.sanitize import sanitize_for_status
+
+    text = sanitize_for_status(str(item or "").strip())
     prefix, rule, what, sep, names = _shape(text)
     rest = text[len(prefix):]
     where = ((rest.split(sep, 1)[0] if sep else rest).strip() or "-") if prefix else "-"
     if owner == RUN and rule == FALLBACK[1]:
         rule, what = "not_checked", NOT_CHECKED
-    elif names == CAPABILITY and where != "-" and not _is_id(where):
-        # The grader's own error text in a capability slot ("harness: ...",
-        # "too few gradeable functions: ...") names no feature: the part
-        # could not be checked, and its words stay in Technical detail.
-        what = NOT_CHECKED
+    elif names == CAPABILITY and where != "-" and not _names_feature(where, features):
+        # The grader's own words in a feature slot ("too few gradeable
+        # functions: ...") name no single feature. Whose it is decides the
+        # sentence: the writer's is a fault of the product, else the check's.
+        what = NOT_CHECKED if owner == RUN else NOT_ONE_FEATURE
+        names = QUESTION
     return {
         "rule": rule,
         "what": what,
@@ -145,36 +158,67 @@ def finding_row(item: str, owner: str) -> Dict[str, str]:
     }
 
 
+def _names_feature(where: str, features: Optional[Collection[str]]) -> bool:
+    if features is not None:
+        return where in features
+    return not any(ch.isspace() for ch in where)
+
+
 def plain_place(where: str, names: str) -> str:
     """``where`` as the card face may show it: a capability id as words, a
-    step or a question in words, nothing for a file path, for text in a
-    capability slot that is not an id, or for no locator."""
+    step or a question in words, nothing for a file path or for no locator.
+    A long place is cut at a word and says so."""
     if where == "-" or names in (FILE, NONE):
         return ""
     if names == CAPABILITY:
-        return _words(where)[:PLACE_CHARS] if _is_id(where) else ""
+        return _cut(_words(where))
     if names == STEP:
-        return step_place(where)[:PLACE_CHARS]
-    return plain_words(where)[:PLACE_CHARS]
+        return _cut(step_place(where))
+    return _cut(plain_words(where))
 
 
-def _is_id(text: str) -> bool:
-    """One identifier (letters, digits, ``_`` and ``-``), not prose."""
-    return bool(text) and all(ch.isalnum() or ch in "_-" for ch in text)
+def _cut(text: str, limit: int = PLACE_CHARS) -> str:
+    """``text`` within ``limit`` characters, cut at a word with an ellipsis,
+    never inside a word."""
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 1]
+    if text[limit - 1] != " " and " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip(" ,;.-") + ELLIPSIS
+
+
+#: The mark a cut place ends with.
+ELLIPSIS = "\u2026"
 
 
 def _words(ident: str) -> str:
-    """An id as words: separators become spaces."""
-    return " ".join(ident.replace("_", " ").replace("-", " ").split())
+    """An id as words: every separator (``_``, ``-``, ``.`` ...) is a space."""
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in ident).split())
+
+
+def _machine_token(bare: str) -> bool:
+    """A file path or a dotted name (``app.py``, ``rates.csv``,
+    ``contract.value``): machine text, never card words. A decimal number
+    (``2.5``) is not."""
+    if "/" in bare or "\\" in bare:
+        return True
+    inner = bare.strip(".,;:!?()")
+    return any(
+        ch == "." and (inner[i - 1].isalpha() or inner[i + 1].isalpha())
+        for i, ch in enumerate(inner)
+        if 0 < i < len(inner) - 1
+    )
 
 
 def plain_words(text: str) -> str:
     """The grader's prose for the card face: a quoted id reads as words, a
-    file path is left out, and no ``_`` or ``:`` separator remains."""
+    file path or dotted name is left out, and no ``_`` or ``:`` separator
+    remains."""
     kept: List[str] = []
     for token in text.split():
         bare = token.strip("'\"`")
-        if "/" in bare or "\\" in bare:
+        if _machine_token(bare):
             continue
         kept.append(bare.replace("_", " ").replace(":", ","))
     return " ".join(" ".join(kept).split())
@@ -216,12 +260,34 @@ def finding_rows(verdict: Any) -> List[Dict[str, str]]:
     """Every item of a verdict as a row, in the verdict's own order."""
     writer = {str(i) for i in (getattr(verdict, "writer_items", ()) or ())}
     factory = {str(i) for i in (getattr(verdict, "factory_owed", ()) or ())}
+    features = graded_features(getattr(verdict, "grade", None))
     rows: List[Dict[str, str]] = []
     for item in getattr(verdict, "items", ()) or ():
         text = str(item)
         owner = WRITER if text in writer else FACTORY if text in factory else RUN
-        rows.append(finding_row(text, owner))
+        rows.append(finding_row(text, owner, features))
     return rows[:MAX_ROWS]
+
+
+def graded_features(grade: Any) -> Optional[FrozenSet[str]]:
+    """The capability ids a grade record names (the function grade's graded
+    and ungraded functions, and the hardwiring check's functions), or None
+    when there is no grade record to read them from."""
+    if not isinstance(grade, Mapping):
+        return None
+    functions = (grade.get("layer1") or {}).get("functions") or {}
+    ids = {
+        str(fn.get("capability_id"))
+        for key in ("functions", "ungraded")
+        for fn in functions.get(key) or ()
+        if isinstance(fn, Mapping) and fn.get("capability_id")
+    }
+    ids.update(
+        str(f.get("capability"))
+        for f in (grade.get("hardwiring") or {}).get("findings") or ()
+        if isinstance(f, Mapping) and f.get("kind") == "function" and f.get("capability")
+    )
+    return frozenset(ids)
 
 
 def one_line(text: str) -> str:

@@ -291,11 +291,11 @@ const GRADER_REVIEW_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
   },
   {
     rule: 'function_check',
-    what: 'The quality check could not check this part, so it cannot pass the build.',
-    where: 'harness: KeyError at /app/backend/app/kernel/retention_rules.py',
-    place: '',
-    owner: 'run',
-    quote: 'function grade FAIL: harness: KeyError at /app/backend/app/kernel/retention_rules.py',
+    what: 'The features did not pass the quality check as a whole.',
+    where: 'too few gradeable functions: 1 < 3',
+    place: 'too few gradeable functions, 1 < 3',
+    owner: 'writer',
+    quote: 'function grade FAIL: too few gradeable functions: 1 < 3',
   },
 ]
 

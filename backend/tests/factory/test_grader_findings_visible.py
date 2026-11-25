@@ -19,6 +19,7 @@ from app.factory.build.grader_findings import (
     FACTORY,
     ITEM_SHAPES,
     NOT_CHECKED,
+    NOT_ONE_FEATURE,
     RUN,
     WRITER,
     finding_row,
@@ -352,7 +353,7 @@ def test_a_secret_in_the_graders_words_never_reaches_the_log(secret):
 @pytest.mark.parametrize("secret", ["OPENROUTER_API_KEY=planted-three", "DEEPSEEK_API_KEY=planted-four"])
 def test_a_secret_in_the_place_never_reaches_the_log(secret):
     row = finding_row(f"function grade FAIL: {secret}", WRITER)
-    assert secret in row["where"]
+    assert secret.split("=")[1] not in row["where"]
     line = grader_findings.log_line(row)
     assert secret.split("=")[1] not in line
     assert line.count("[redacted]") == 2
@@ -384,8 +385,12 @@ def test_a_secret_in_the_place_never_reaches_the_log(secret):
         ),
         ("re-run writer on: Does screen 'plinket_board' render the list?", "Does screen plinket board render the list?"),
         # The function grade's own error rows in the capability slot.
-        ("function grade FAIL: harness: KeyError at /app/backend/app/kernel/x_y.py", ""),
-        ("function grade FAIL: too few gradeable functions: 1 < 3", ""),
+        ("function grade FAIL: harness: KeyError at /app/backend/app/kernel/x_y.py", "harness, KeyError at"),
+        ("function grade FAIL: too few gradeable functions: 1 < 3", "too few gradeable functions, 1 < 3"),
+        # A dotted id or a file name in the grader's words is machine text.
+        ("function grade FAIL: zorblat.total", "zorblat total"),
+        ("re-run writer on: read rates from rates.csv and app.py settings?", "read rates from and settings?"),
+        ("re-run writer on: hold 2.5 per cent per contract.value?", "hold 2.5 per cent per"),
     ],
 )
 def test_the_card_place_never_carries_a_file_path_or_a_raw_id(item, place):
@@ -399,17 +404,107 @@ def test_the_card_place_never_carries_a_file_path_or_a_raw_id(item, place):
     "item, feature",
     [
         ("function grade FAIL: zorblat_total", True),
+        ("function grade FAIL: zorblat.total", True),
         ("function grade FAIL: harness: KeyError at /app/x.py", False),
         ("function grade FAIL: too few gradeable functions: 1 < 3", False),
         ("de-hardwire plinket-count: CONSTANT", True),
     ],
 )
-def test_grader_error_text_in_a_feature_slot_is_not_called_a_feature(item, feature):
-    """Only an identifier in the capability slot names a feature; the
-    grader's own error text there is a part it could not check."""
+@pytest.mark.parametrize("owner, not_feature", [(WRITER, NOT_ONE_FEATURE), (FACTORY, NOT_ONE_FEATURE), (RUN, NOT_CHECKED)])
+def test_grader_words_in_a_feature_slot_are_billed_to_their_owner(item, feature, owner, not_feature):
+    """With no grade to read, an id (no whitespace) in the capability slot
+    names a feature; the grader's own words there name none. A row billed
+    to the writer says the product failed, never that the check could not
+    check it; only a row the run owns says that."""
+    row = finding_row(item, owner)
+    assert (row["what"] == not_feature) is (not feature)
+    assert (row["what"] == NOT_CHECKED) is (not feature and owner == RUN)
+    assert row["place"]
+
+
+def _grade_naming(*cids: str) -> dict:
+    return {"layer1": {"functions": {"functions": [{"capability_id": c} for c in cids], "ungraded": []}}}
+
+
+@pytest.mark.parametrize(
+    "cids, item, feature",
+    [
+        (("zorblat_total",), "function grade FAIL: zorblat_total", True),
+        (("plinket count",), "function grade FAIL: plinket count", True),
+        (("zorblat_total",), "function grade FAIL: plinket_count", False),
+        (("plinket_count",), "function grade FAIL: too few gradeable functions: 1 < 3", False),
+    ],
+)
+def test_the_verdicts_own_capabilities_decide_what_a_feature_slot_names(cids, item, feature):
+    """A verdict that carries its grade names its features: the slot is a
+    feature exactly when it holds one of them, whatever its text looks like,
+    and the writer's row that names none is the product's fault."""
+    from app.factory.build.grader import NOT_CERTIFIED, GraderVerdict
+
+    verdict = GraderVerdict(tier=NOT_CERTIFIED, items=(item,), writer_items=(item,), grade=_grade_naming(*cids))
+    (row,) = finding_rows(verdict)
+    assert row["owner"] == WRITER
+    assert row["what"] != NOT_CHECKED
+    assert (row["what"] == NOT_ONE_FEATURE) is (not feature)
+
+
+@pytest.mark.parametrize(
+    "grade, expected",
+    [
+        (None, None),
+        ("not a grade", None),
+        ({}, frozenset()),
+        (
+            {
+                "layer1": {"functions": {"functions": [{"capability_id": "a1"}], "ungraded": [{"capability_id": "b2"}]}},
+                "hardwiring": {"findings": [{"kind": "function", "capability": "c3"}, {"kind": "forbidden_literal"}]},
+            },
+            frozenset({"a1", "b2", "c3"}),
+        ),
+    ],
+)
+def test_graded_features_reads_every_capability_the_grade_names(grade, expected):
+    assert grader_findings.graded_features(grade) == expected
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "hold back five per cent of each interim payment until the final certificate is signed off",
+        "work out the delay damages for each late day from the contract settings and apply the cap",
+    ],
+)
+def test_a_long_review_question_is_cut_at_a_word_and_says_so(words):
+    question = f"re-run writer on: Does the product deliver capability 'zorblat_total' as the brief asked: {words}?"
+    place = finding_row(question, WRITER)["place"]
+    assert len(place) <= grader_findings.PLACE_CHARS
+    assert place.endswith(grader_findings.ELLIPSIS)
+    kept = place[: -len(grader_findings.ELLIPSIS)].split()
+    full = grader_findings.plain_words(question[len("re-run writer on: "):]).split()
+    assert kept == full[: len(kept)]  # whole words only, none cut inside
+
+
+@pytest.mark.parametrize("length", [grader_findings.PLACE_CHARS - 1, grader_findings.PLACE_CHARS])
+def test_a_place_within_the_cap_is_kept_whole(length):
+    words = ("ab " * length)[:length].rstrip()
+    assert grader_findings.plain_place(words, grader_findings.QUESTION) == words
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "re-run writer on: does the job call the API with key ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4 each day?",
+        "re-run writer on: " + "pad " * 25 + "then send Authorization: Bearer eyJzorblat0.eyJplinket1.c2lnbmF0dXJl now",
+        "function grade FAIL: connect postgres://app:p@ssw0rdXYZ@db:5432/app refused",
+    ],
+)
+def test_no_row_field_holds_a_key_or_a_piece_of_one(item):
+    """The item is redacted before its row is cut from it: no field -- the
+    ledger's copy included -- holds the key, whole or cut at the cap."""
     row = finding_row(item, WRITER)
-    assert (row["what"] == NOT_CHECKED) is (not feature)
-    assert bool(row["place"]) is feature
+    for secret in ("A1b2C3d4E5f6G7h8", "eyJzorblat0", "ssw0rdXYZ"):
+        for value in row.values():
+            assert secret not in value and secret not in value.replace(" ", "_"), (secret, value)
 
 
 def _row_with(text: str) -> dict:
@@ -600,3 +695,31 @@ def test_the_phone_fixtures_show_the_place_the_server_writes(name, at_least):
     assert len(pairs) >= at_least
     for quote, place in pairs:
         assert finding_row(quote, WRITER)["place"] == place, quote
+
+
+@pytest.mark.parametrize(
+    "url, secret",
+    [
+        ("redis://:zorblatPassw0rd@cache:6379/0", "zorblatPassw0rd"),
+        ("postgres://app:p@plinketXYZ@db:5432/app", "plinketXYZ"),
+        ("postgres://appuser:zorbl4tpw@db.internal:5432/app", "zorbl4tpw"),
+    ],
+)
+def test_a_url_password_is_redacted_whatever_its_user_or_its_characters(url, secret):
+    """An empty user (the usual cache DSN) and a raw ``@`` inside the
+    password both still lose the whole password; the host stays readable."""
+    from app.factory.build.sanitize import sanitize_for_status
+
+    out = sanitize_for_status(f"connect {url} refused")
+    assert secret not in out and "[redacted]@" in out
+    assert out.split("[redacted]@", 1)[1].split(":", 1)[0] in url.rsplit("@", 1)[1]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://plinket.example:8080/a@b", "http://zorblat@host:80/x", "redis://:@cache:6379"],
+)
+def test_a_url_with_no_password_is_left_alone(url):
+    from app.factory.build.sanitize import sanitize_for_status
+
+    assert sanitize_for_status(f"open {url} now") == f"open {url} now"
