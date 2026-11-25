@@ -161,7 +161,7 @@ def test_a_chain_step_skipped_with_nothing_failed_before_it_blocks_the_rest(firs
     (["timedOut", "skipped"], "failed"),
     (["skipped", "skipped"], "skipped"),
     (["skipped"], "skipped"),
-    ([], "skipped"),
+    ([], ug.NO_RESULT),
     (["passed", "skipped"], "failed"),
     (["passed"], "passed"),
 ])
@@ -182,3 +182,63 @@ def test_a_not_run_step_alone_keeps_the_grade_from_passing(blocked_by):
     assert g.ok is False
     assert ug.UiGrade(steps[:1]).ok is True
 
+
+# --- OPUSGRADE F303 faults 1-3 ------------------------------------------------
+
+CHAIN = ["attach:pdf", "attach:xlsx", "parsed:status", "answer:cited"]
+
+
+@pytest.mark.parametrize("duration", [LIMIT - 1, 3_000])
+@pytest.mark.parametrize("failed", ["attach:pdf", "parsed:status"])
+def test_in_time_a_chain_step_with_no_result_after_a_failure_is_still_a_failure(failed, duration):
+    """A run that ended in time: a chain step Playwright recorded no result
+    for is not explained by the step that failed before it (Playwright marks
+    the steps it skips for that), so it did not pass and goes to the writer."""
+    after = CHAIN[CHAIN.index(failed) + 1:]
+    g = ug.parse_report(_report({failed: ["failed"], **{n: [] for n in after}}, duration), BP)
+    assert g.failing == [failed, *after]
+    assert g.not_run == []
+
+
+@pytest.mark.parametrize("duration,cut", [(3_000, False), (LIMIT - 1, False), (LIMIT, True)])
+def test_a_run_with_no_result_for_any_step_is_all_failures_unless_the_limit_cut_it(duration, cut):
+    names = [st.name for st in ug.ui_plan(BP)]
+    g = ug.parse_report(_report({n: [] for n in names}, duration), BP)
+    if cut:
+        assert g.failing == []
+        assert [(r["name"], r["blocked_by"]) for r in g.not_run] == [(n, ug.TIME_LIMIT) for n in names]
+    else:
+        assert g.failing == names
+        assert g.not_run == []
+    assert not g.ok
+
+
+@pytest.mark.parametrize("cut_at", [{"screen:tenant_portal": ["skipped"]}, AT_CUT])
+def test_a_step_the_limit_stopped_is_never_counted_as_passed(cut_at):
+    """Rows the time limit stopped are not passes: the step count in GRADE.md
+    leaves them out."""
+    names = [st.name for st in ug.ui_plan(BP)]
+    results = {**cut_at, **{n: [] for n in names[names.index("screen:tenant_portal") + 1:]}}
+    ui = ug.parse_report(_report(results, LIMIT + 1), BP).to_dict()
+    not_run = [r for r in ui["steps"] if r.get("status") == ug.NOT_RUN]
+    assert not_run and all(r["passed"] is False for r in not_run)
+    passed = len(names) - len(not_run)
+    md = gm.render_md({"product_id": "p", "layer1": {"ui": ui}, "layer2": {}})
+    assert f"- UI steps passed: {passed}/{len(names)}" in md.splitlines()
+    assert passed < len(names)
+
+
+@pytest.mark.parametrize("cut_step", ["attach:xlsx", "parsed:status"])
+def test_a_limit_that_lands_inside_the_chain_blocks_the_rest_itself(cut_step):
+    """Real Playwright's shape when the limit lands mid-chain: the chain step
+    running at the cut is ``skipped`` and the later ones have no result. The
+    cut step did not fail, so it blocks nothing: every step after it was
+    stopped by the time limit."""
+    i = CHAIN.index(cut_step)
+    results = {**{n: ["passed"] for n in CHAIN[:i]}, cut_step: ["skipped"], **{n: [] for n in CHAIN[i + 1:]}}
+    later = [st.name for st in ug.ui_plan(BP)]
+    later = later[later.index(cut_step) + 1:]
+    results.update({n: [] for n in later if n not in results})
+    g = ug.parse_report(_report(results, LIMIT + 1), BP)
+    assert g.failing == []
+    assert [(r["name"], r["blocked_by"]) for r in g.not_run] == [(n, ug.TIME_LIMIT) for n in [cut_step, *later]]

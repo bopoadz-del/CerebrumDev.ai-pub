@@ -84,6 +84,10 @@ ON_PAGE_KINDS = ("bind",) + CHAIN_KINDS
 #: It did not run: it is not a pass and it is not a failure of its own.
 NOT_RUN = "not_run"
 
+#: A step Playwright recorded no result for. Only the run's time limit explains
+#: that; in a run that ended in time the step did not pass.
+NO_RESULT = "no_result"
+
 #: What blocked a step the run's own time limit stopped before it finished.
 TIME_LIMIT = "the UI run's time limit"
 
@@ -109,8 +113,9 @@ class UiGrade:
 
     @property
     def not_run(self) -> List[Dict[str, Any]]:
-        """Steps that did not run because an earlier step of their chain
-        failed. Each row names the step that blocked it."""
+        """Steps that did not run: an earlier step of their chain failed, or
+        the run's own time limit stopped it first. Each row names what blocked
+        it."""
         return [s for s in self.steps if s.get("status") == NOT_RUN]
 
     @property
@@ -437,9 +442,9 @@ def report_outcomes(report: Mapping[str, Any]) -> Dict[str, bool]:
 
 
 def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
-    """Every test title in a Playwright JSON report -> ``passed``, ``failed``
-    or ``skipped``. Skipped means Playwright did not run the test to an end:
-    it recorded no result for it, or every result it recorded is ``skipped``."""
+    """Every test title in a Playwright JSON report -> ``passed``, ``failed``,
+    ``skipped`` or ``no_result``. Skipped means every result Playwright
+    recorded for the test is ``skipped``; no result means it recorded none."""
     seen: Dict[str, str] = {}
     if not isinstance(report, Mapping):
         return seen
@@ -449,6 +454,8 @@ def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
             results = [r for t in spec.get("tests") or [] for r in t.get("results") or []]
             if step_passed(results):
                 status = "passed"
+            elif not results:
+                status = NO_RESULT
             elif all(r.get("status") == "skipped" for r in results):
                 status = "skipped"
             else:
@@ -500,6 +507,8 @@ def parse_report(
     blocker = ""
     for st in run:
         status = seen.get(st.name, "failed")
+        if status == NO_RESULT:
+            status = "skipped" if cut else "failed"
         row: Dict[str, Any] = {
             "name": st.name, "kind": st.kind, "target": st.target, "passed": status == "passed",
         }
