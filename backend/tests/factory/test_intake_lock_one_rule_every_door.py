@@ -184,7 +184,36 @@ def test_confirm_on_a_reopened_failed_build_resumes_on_the_declared_industry(
     assert built == [(industry, product_id)]
 
 
-@pytest.mark.parametrize("answer", [{"country": "zr"}, {"currency": "zrx"}])
+@pytest.mark.parametrize(("industry", "cleared"), [("kiln_works", ""), ("salt_pans", "product")])
+def test_clearing_the_industry_on_a_reopened_failed_build_resumes_without_it(
+    tmp_path, monkeypatch, industry, cleared
+):
+    """The second Confirm door clears too: a dead build on an industry,
+    Change answers, Confirm with the industry cleared. The resumed build runs
+    on the no-industry value, never on the old industry, and keeps its own
+    product id."""
+    from app.factory.store_kits import NO_VERTICAL
+
+    _out, state = _failed_platform(tmp_path, "sess_one_rule_clear_" + industry)
+    pd = state.product_design
+    pd.vertical = industry
+    pd.blueprint["vertical"] = industry
+    built = _record_builds(monkeypatch)
+    product_id = pd.blueprint["product_id"]
+    assert platform_chat_flow.continue_with_intake(state)["ok"] is True
+    # The answer goes through the one write path the chat request uses.
+    platform_chat_flow.edit_intake(state, vertical=cleared)
+
+    reply = platform_chat_flow.confirm_and_continue(state)
+
+    assert reply["ok"] is True, reply
+    assert pd.vertical is None
+    bp = pd.blueprint
+    assert (bp["vertical"], bp["product_id"]) == (NO_VERTICAL, product_id)
+    assert built == [(NO_VERTICAL, product_id)]
+
+
+@pytest.mark.parametrize("answer",[{"country": "zr"}, {"currency": "zrx"}])
 def test_confirming_another_answer_on_a_draft_keeps_its_identity(answer):
     blueprint = {**_draft("kiln_works"), "product_id": "own_id"}
     state = _state(blueprint, vertical="kiln_works", approved=False)
