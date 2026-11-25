@@ -463,6 +463,21 @@ def test_where_work_stood_past_the_last_phase_is_no_step(failed_role):
     assert _where_work_stood(earlier + [last, _Ev("GATE_PASSED", "OTHER")], last, phases) == failed_role
 
 
+@pytest.mark.parametrize("failed_role", ["TESTER", "STORE_MANAGER"])
+def test_a_fix_round_with_no_role_moves_no_step(failed_role):
+    """The ledger's role is optional. A fix round or a pass recorded with no
+    role names no step: the work stays where it stood, and a later event that
+    does carry a role still moves it."""
+    from app.factory.build_jobs import _where_work_stood
+
+    phases = ["COLLECTOR", "CLONER", "WRITER", "TESTER", "STORE_MANAGER"]
+    last = _Ev("GATE_FAILED", failed_role)
+
+    assert _where_work_stood([last, _Ev("REWORK")], last, phases) == failed_role
+    assert _where_work_stood([last, _Ev("GATE_PASSED")], last, phases) == failed_role
+    assert _where_work_stood([last, _Ev("REWORK"), _Ev("REWORK", "WRITER")], last, phases) == "WRITER"
+
+
 @pytest.mark.parametrize(
     "said, decided",
     [("worker_stalled", "writer_no_output"), ("writer_no_output", "worker_stalled")],
