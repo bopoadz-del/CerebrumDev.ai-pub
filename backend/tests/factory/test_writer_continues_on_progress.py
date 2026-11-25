@@ -129,6 +129,39 @@ def _decisions(runner):
     ]
 
 
+# -- 0. the run's writer time counts every pass -------------------------------
+
+
+@pytest.mark.parametrize("passes", [[3600.0], [1200.0, 900.5, 30.0]])
+def test_every_writer_pass_adds_its_time_to_the_run_total(tmp_path, monkeypatch, passes):
+    runner, _ = _runner(tmp_path, monkeypatch, cut_steps=1)
+    record = None
+    for seconds in passes:
+        started = runner.clock()
+        runner.clock.t += seconds
+        record = runner._count_writer_time(started)
+    assert record is runner.state[wc.STATE_KEY], "the total lives on the run, not in a copy"
+    assert record["seconds"] == pytest.approx(sum(passes))
+    assert record["passes"] == 0, "counting time never grants a pass"
+
+
+@pytest.mark.parametrize("ahead", [0.0, 50.0])
+def test_a_pass_never_takes_time_off_the_total(tmp_path, monkeypatch, ahead):
+    runner, _ = _runner(tmp_path, monkeypatch, cut_steps=1)
+    runner.state[wc.STATE_KEY] = {"passes": 1, "seconds": 120.0}
+    record = runner._count_writer_time(runner.clock() + ahead)
+    assert record["seconds"] == pytest.approx(120.0)
+    assert record["passes"] == 1
+
+
+@pytest.mark.parametrize("cuts, total", [(0, 600.0), (1, 4200.0)])
+def test_a_finished_build_records_the_writer_time_of_every_pass(tmp_path, monkeypatch, cuts, total):
+    runner, _ = _runner(tmp_path, monkeypatch, cut_steps=3, cuts=cuts)
+    outcome = runner.run()
+    assert outcome.ok, outcome.detail
+    assert runner.state[wc.STATE_KEY]["seconds"] == pytest.approx(total)
+
+
 # -- 1. a working writer cut at its wall continues ----------------------------
 
 
