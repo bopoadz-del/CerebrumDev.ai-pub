@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+import app.factory.build.grader as grader
+import app.factory.build.product_grader.grade_md as gm
 import app.factory.build.product_grader.ui_grader as ug
 
 BPS = [
@@ -468,6 +470,26 @@ def test_chain_steps_skipped_after_a_failure_are_not_run_not_failed(failed_step,
     assert g.to_dict()["not_run"] == [{"name": n, "blocked_by": failed_step} for n in skipped]
 
 
+@pytest.mark.parametrize("failed_step,skipped", [
+    ("attach:pdf", ["attach:xlsx", "parsed:status", "answer:cited"]),
+    ("parsed:status", ["answer:cited"]),
+])
+def test_not_run_steps_reach_the_reasons_and_grade_md_as_not_run(failed_step, skipped):
+    """The record a real grade writes: the one step that failed is the only
+    UI failure class; each step it blocked is ungraded and is listed as NOT
+    RUN with its blocker in GRADE.md."""
+    statuses = {failed_step: "failed", **{name: "skipped" for name in skipped}}
+    ui = ug.parse_report(_chain_report(statuses), DOC_BP).to_dict()
+    record = {"layer1": {"ui": ui}, "layer2": {"ran": True}}
+    rows = [r for r in grader.reason_classes(record, []) if r["layer"] == "ui"]
+    assert sorted(r["class"] for r in rows) == sorted(["failed_ui_step"] + ["ungraded"] * len(skipped))
+    md = gm.render_md({"product_id": "p", "layer1": {"ui": ui}, "layer2": {}})
+    assert [line for line in md.splitlines() if line.startswith("  - NOT RUN: ")] == [
+        f"  - NOT RUN: {n} (blocked by {failed_step})" for n in skipped
+    ]
+    assert [line for line in md.splitlines() if line.startswith("  - FAIL: ")] == [f"  - FAIL: {failed_step}"]
+
+
 @pytest.mark.parametrize("name", ["bind:tenant", "screen", "route"])
 def test_a_skipped_step_outside_the_chain_is_still_a_failure(name):
     """Only a chain step can be blocked by another step. Any other step that
@@ -477,9 +499,18 @@ def test_a_skipped_step_outside_the_chain_is_still_a_failure(name):
     assert g.failing == [target] and g.not_run == []
 
 
-def test_a_skipped_chain_step_with_no_failed_step_before_it_is_a_failure():
-    g = ug.parse_report(_chain_report({"parsed:status": "skipped"}), DOC_BP)
-    assert g.failing == ["parsed:status"] and g.not_run == []
+@pytest.mark.parametrize("step", ["parsed:status", "answer:cited"])
+def test_a_skipped_chain_step_with_no_failed_step_before_it_is_a_failure(step):
+    g = ug.parse_report(_chain_report({step: "skipped"}), DOC_BP)
+    assert g.failing == [step] and g.not_run == []
+
+
+@pytest.mark.parametrize("report", [None, ["load:/"]])
+def test_a_report_that_is_not_a_mapping_has_no_statuses(report):
+    """A report that is not a JSON object names no step: nothing ran."""
+    assert ug.report_statuses(report) == {}
+    g = ug.parse_report(report, DOC_BP)
+    assert g.errors == ["playwright report has no results"] and not g.ok
 
 
 @pytest.mark.parametrize("bp", BPS)
@@ -503,6 +534,21 @@ def test_screens_and_routes_are_observed_when_bind_fails(tmp_path, bp):
     assert got["bind:tenant"].startswith("failed")
     others = [name for name in got if name != "bind:tenant"]
     assert others and all(got[name] == "passed" for name in others)
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_a_whole_file_serial_spec_would_hide_screens_and_routes(tmp_path, bp):
+    """The stand-in keeps Playwright's serial rule, so the split is what the
+    test above observes: the same product under a spec made serial as a whole
+    file (the old shape) gets every step after bind skipped, not run."""
+    serial_file = ug.render_spec(bp).replace(
+        "\n", "\ntest.describe.configure({ mode: 'serial' });\n", 1
+    )
+    with h.server({}, bodies={"/": "<h1>welcome</h1>"}) as base:
+        got = h.run_spec(serial_file, tmp_path, base, only_kinds=("load", "bind", "screen", "route"))
+    after = [name for name in got if name not in ("load:/", "bind:tenant")]
+    assert got["bind:tenant"].startswith("failed")
+    assert after and all(got[name] == "skipped" for name in after)
 
 
 @pytest.mark.parametrize("bp", BPS)

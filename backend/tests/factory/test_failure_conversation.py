@@ -291,7 +291,7 @@ def test_continue_with_new_answers_is_refused_when_no_build_failed(tmp_path, dra
     if drafted:
         state.product_design.blueprint = {"product_id": "unbuilt_platform"}
     reply = platform_chat_flow.continue_with_intake(state, output_root=tmp_path)
-    assert reply["ok"] is False and "no failed build" in reply["summary"]
+    assert reply["ok"] is False and "did not stop with a failure" in reply["summary"]
     assert not state.product_design.intake_reopened  # the intake line stays frozen
 
 
