@@ -586,6 +586,20 @@ def test_the_card_words_leave_a_file_path_out(text, words):
     assert grader_findings.plain_words(text) == words
 
 
+@pytest.mark.parametrize(
+    "text, words",
+    [
+        ("zorblat_total missing under app/actions today", "zorblat total missing under today"),
+        (r"plinket_count read from src\plinket_store once", "plinket count read from once"),
+        ("zorblat_total rose by 2.5 or held", "zorblat total rose by 2.5 or held"),
+    ],
+)
+def test_a_path_with_no_dotted_part_is_left_out_too(text, words):
+    """A slash marks a path even when no part of it has a dot (a folder,
+    an extensionless file); the words with no slash, and a decimal, stay."""
+    assert grader_findings.plain_words(text) == words
+
+
 @pytest.mark.parametrize("step, words", [("screen", "screen"), ("load", "load")])
 def test_a_step_id_with_no_target_reads_as_its_own_words(step, words):
     """A step id with no ``kind:`` separator is named by its own words. It is
