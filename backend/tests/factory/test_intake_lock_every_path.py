@@ -283,19 +283,24 @@ def test_accept_golden_route_is_refused_on_a_frozen_blueprint(tmp_path, client, 
 
 
 @pytest.mark.parametrize("vertical", ["kiln_works", "quarry_yards"])
-def test_set_vertical_changes_the_draft_and_proposes_the_industry_only(client, vertical):  # noqa: F811
+def test_set_vertical_proposes_the_industry_only(client, vertical):  # noqa: F811
+    """Neither the declared field nor the draft takes the typed industry
+    until the brief is saved: Approve never builds on an unsaved answer."""
     from app.factory.floor_actions import FloorAction
     from tests.factory.test_platform_chat_refinement import _draft_retail
 
     state = _open_session("sess_lock_set_vertical_" + vertical, {})
     _draft_retail(state)
     declared = state.product_design.vertical
+    before = dict(state.product_design.blueprint)
 
     result = platform_chat_flow.apply_refinement(state, FloorAction.SET_VERTICAL, vertical)
 
-    assert result["blueprint"]["vertical"] == vertical
+    assert result["ok"] is True and result["refined"] is False
+    assert state.product_design.blueprint == before
     assert state.product_design.vertical == declared  # never written directly
     assert state.product_design.intake_proposal["vertical"] == vertical
+    assert result["intake"]["proposal"]["vertical"] == vertical
 
 
 @pytest.mark.parametrize("finished", [True, False])
