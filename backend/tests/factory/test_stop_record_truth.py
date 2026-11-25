@@ -578,16 +578,23 @@ def test_an_owner_stop_between_steps_with_no_failure_or_send_back(
     assert stop["fix_rounds"] == 0
 
 
-def test_where_work_stood_with_no_failure_reads_from_the_start():
+@pytest.mark.parametrize(
+    "phases",
+    [
+        ["COLLECTOR", "CLONER", "WRITER", "TESTER", "STORE_MANAGER"],
+        ["A", "B", "C"],
+    ],
+)
+def test_where_work_stood_with_no_failure_reads_from_the_start(phases):
     """With no failure the read starts in the first phase: an empty tail
     leaves it there, passes move it on, and a fix round hands it back."""
     from app.factory.build_jobs import _where_work_stood
 
-    phases = ["COLLECTOR", "CLONER", "WRITER", "TESTER", "STORE_MANAGER"]
-    passes = [_Ev("GATE_PASSED", r) for r in phases[:4]]
+    passes = [_Ev("GATE_PASSED", r) for r in phases[:-1]]
 
-    assert _where_work_stood([], None, phases) == "COLLECTOR"
-    assert _where_work_stood([_Ev("NOTE")], None, phases) == "COLLECTOR"
-    assert _where_work_stood(passes, None, phases) == "STORE_MANAGER"
-    assert _where_work_stood(passes + [_Ev("REWORK", "WRITER")], None, phases) == "WRITER"
+    assert _where_work_stood([], None, phases) == phases[0]
+    assert _where_work_stood([_Ev("NOTE")], None, phases) == phases[0]
+    assert _where_work_stood(passes, None, phases) == phases[-1]
+    assert _where_work_stood(passes + [_Ev("REWORK", phases[1])], None, phases) == phases[1]
+    assert _where_work_stood(passes + [_Ev("GATE_PASSED", phases[-1])], None, phases) == ""
     assert _where_work_stood([], None, []) == ""
