@@ -9,7 +9,7 @@ import {
   stopTone,
   type RunningMemo,
 } from './buildProgress'
-import { keptSentence, minutesOf, stopWords } from './stopSentence'
+import { keptSentence, minutesWords, stopWords } from './stopSentence'
 
 export { keptSentence }
 
@@ -159,7 +159,7 @@ export function buildFace(build: BuildStatus | null): BuildFace {
     } else if (build.state === 'stalled') {
       why =
         typeof build.last_event_age_s === 'number'
-          ? `No update from the build for ${minutesOf(build.last_event_age_s)} minutes.`
+          ? `No update from the build for ${minutesWords(build.last_event_age_s)}.`
           : 'No update from the build for a long time.'
     } else if (classified) {
       // The class only: the stage's name and the server's longer summary are

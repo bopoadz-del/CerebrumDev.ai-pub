@@ -24,7 +24,7 @@ import {
   type RunningMemo,
 } from '../buildProgress'
 import { WIRE_IDS } from '../stepNames'
-import { OUR_SIDE, stopWords } from '../stopSentence'
+import { OUR_SIDE, minutesOf, minutesWords, ranForWords, stopWords } from '../stopSentence'
 
 const PHASES = ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER']
 
@@ -383,5 +383,87 @@ describe('Platforms: a build the server cannot find', () => {
     expect(exportAffordance(gone)).toEqual({ label: 'Not found on the server', disabled: true, ghost: true })
     expect(platformsLeadCopy(gone, true)).toBe("We can't find this build on the server. Your brief and feature list are safe.")
     expect(exportAffordance({ state: 'building' } as BuildStatus).label).toBe('Building…')
+  })
+})
+
+describe('OPUSGRADE F295 ffbfc04: the guards the grader found untested', () => {
+  // Fault 5: whose side the cause is on comes from the kind; each side has a case.
+  it.each([
+    ['nothing_produced', true],
+    ['time_ran_out', true],
+    ['service_interrupted', true],
+    ['check_failed', false],
+    ['user_stopped', false],
+    ['no_progress', false],
+  ])('%s: on our side = %s', (kind, ours) => {
+    expect(stopWords(record(kind)).sentence.includes(OUR_SIDE)).toBe(ours)
+  })
+
+  // Fault 6: Copy error report sends nothing, so a server list without it keeps it.
+  it.each([
+    ['time ran out', { state: 'failed', stop: { kind: 'time_ran_out' } }, ['try_again', 'download_copy']],
+    ['user stopped', { state: 'failed', stop: { kind: 'user_stopped' } }, ['try_again', 'start_over']],
+  ])('%s: Copy error report stays when the server list omits it', (_name, build, allowed) => {
+    const plan = buildActions({ build: { ...build, actions: allowed } as BuildStatus })
+    const ids = [...plan.bar, ...plan.more].map((a) => a.id)
+    expect(allowed).not.toContain('copy_report')
+    expect(ids).toContain('copy_report')
+  })
+
+  // Fault 7: with no phase_index the step is counted from the steps done, never past the total.
+  it.each([
+    [5, 'Step 5 of 5'],
+    [4, 'Step 5 of 5'],
+    [1, 'Step 2 of 5'],
+  ])('phases_done %i reads %s', (done, step) => {
+    const read = { ...RUNNING, phase_index: undefined, phases_done: done } as BuildStatus
+    expect(runningLine(read).startsWith(`${step} — `)).toBe(true)
+  })
+
+  // Fault 8: a blank check sentence adds nothing; a padded one is trimmed.
+  it.each([
+    ['   ', 1, 'A quality check did not pass after 1 fix round. Steps 1 and 2 are done and kept.'],
+    ['\n\t', 2, 'A quality check did not pass after 2 fix rounds. Steps 1 and 2 are done and kept.'],
+    ['  A feature did not accept its own request.  ', 0,
+      'A quality check did not pass. A feature did not accept its own request. Steps 1 and 2 are done and kept.'],
+  ])('check_plain %j', (checkPlain, rounds, sentence) => {
+    expect(stopWords(record('check_failed', { check_plain: checkPlain, fix_rounds: rounds })).sentence).toBe(sentence)
+  })
+
+  // Fault 9: the time phrase, at and around its boundaries.
+  it.each([
+    [undefined, null],
+    [null, null],
+    [0, null],
+    [-5, null],
+    [Number.NaN, null],
+    [1, 'less than a minute'],
+    [45, 'less than a minute'],
+    [59, 'less than a minute'],
+    [60, 'about 1 minute'],
+    [89, 'about 1 minute'],
+    [90, 'about 2 minutes'],
+    [2289, 'about 38 minutes'],
+  ])('ranForWords(%s) = %s', (seconds, words) => {
+    expect(ranForWords(seconds)).toBe(words)
+  })
+
+  it.each([
+    [45, 'Writing the code ran out of time after less than a minute.'],
+    [75, 'Writing the code ran out of time after about 1 minute.'],
+    [0, 'Writing the code ran out of time.'],
+  ])('time_ran_out after %i s', (elapsed, lead) => {
+    expect(stopWords(record('time_ran_out', { elapsed_s: elapsed })).sentence.startsWith(`${lead} ${OUR_SIDE}`)).toBe(true)
+  })
+
+  it('minutes are whole, at least one, and said with their own plural', () => {
+    expect(minutesOf(0)).toBe(1)
+    expect(minutesOf(10)).toBe(1)
+    expect(minutesOf(150)).toBe(3)
+    expect(minutesWords(30)).toBe('1 minute')
+    expect(minutesWords(2520)).toBe('42 minutes')
+    expect(stopWords(record('no_progress'), { quietS: 60 }).sentence).toBe(
+      'No update from the build for 1 minute. Steps 1 and 2 are done and kept.',
+    )
   })
 })

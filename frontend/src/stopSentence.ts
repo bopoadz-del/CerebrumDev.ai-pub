@@ -48,6 +48,21 @@ export function minutesOf(seconds: number): number {
   return Math.max(1, Math.round(seconds / 60))
 }
 
+/** "1 minute", "38 minutes": the count with its own singular or plural. */
+export function minutesWords(seconds: number): string {
+  return plural(minutesOf(seconds), 'minute')
+}
+
+/**
+ * How long a step ran, said in one phrase: "less than a minute" under 60 s,
+ * otherwise "about N minutes". Null when the record carries no positive time.
+ */
+export function ranForWords(seconds: unknown): string | null {
+  if (typeof seconds !== 'number' || !(seconds > 0)) return null
+  if (seconds < 60) return 'less than a minute'
+  return `about ${minutesWords(seconds)}`
+}
+
 function lowerFirst(text: string): string {
   return text.charAt(0).toLowerCase() + text.slice(1)
 }
@@ -78,7 +93,7 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
   // sentence never says step 3 is kept while it reads "Stopped at step 3".
   const done = Math.max(0, stop.steps_done ?? 0)
   const kept = keptSentence(at ? Math.min(done, at - 1) : done)
-  const elapsed = typeof stop.elapsed_s === 'number' && stop.elapsed_s > 0 ? stop.elapsed_s : null
+  const ranFor = ranForWords(stop.elapsed_s)
 
   if (stop.kind === 'not_found') {
     return {
@@ -92,7 +107,7 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
   let why: string
   switch (stop.kind) {
     case 'time_ran_out':
-      why = `${running ?? 'The build'} ran out of time${elapsed ? ` after about ${minutesOf(elapsed)} minutes` : ''}.`
+      why = `${running ?? 'The build'} ran out of time${ranFor ? ` after ${ranFor}` : ''}.`
       break
     case 'service_interrupted': {
       // The server says whether its service restarted or failed in place.
@@ -108,7 +123,7 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
     case 'no_progress': {
       const quiet = typeof opts.quietS === 'number' && opts.quietS > 0 ? opts.quietS : null
       why = quiet
-        ? `No update from the build for ${minutesOf(quiet)} minutes.`
+        ? `No update from the build for ${minutesWords(quiet)}.`
         : 'No update from the build for a long time.'
       break
     }
