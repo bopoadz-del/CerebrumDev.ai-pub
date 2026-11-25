@@ -524,3 +524,70 @@ def test_a_grader_send_back_with_a_rule_decision_counts_once(tmp_path, handbacks
     stop = build_status(out)["stop"]
 
     assert stop["fix_rounds"] == handbacks
+
+
+@pytest.mark.parametrize(
+    "passed",
+    [
+        (),
+        (BuildRole.TESTER, BuildRole.STORE_MANAGER),
+    ],
+)
+def test_a_grader_handback_then_an_owner_stop_stops_at_the_writer(tmp_path, passed):
+    """No step failed: the grader sent the WRITER's work back (a fix round
+    with no failure before it) and the owner stopped before the WRITER
+    restarted. The work stood at the WRITER, its refused pass is not kept,
+    and the handback is the one fix round."""
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    _passes(ledger, *passed)
+    ledger.append(
+        EventKind.REWORK, role=BuildRole.WRITER, detail="grader", payload={"gate": GRADER_GATE}
+    )
+    _owner_stop(ledger)
+
+    stop = build_status(out)["stop"]
+
+    assert stop["kind"] == fr.STOP_USER_STOPPED
+    assert (stop["step"], stop["step_index"], stop["steps_done"]) == ("WRITER", 3, 2)
+    assert stop["fix_rounds"] == 1
+
+
+@pytest.mark.parametrize(
+    "passed, step, step_index, steps_done",
+    [
+        ((BuildRole.COLLECTOR,), "CLONER", 2, 1),
+        ((BuildRole.COLLECTOR, BuildRole.CLONER, BuildRole.WRITER), "TESTER", 4, 3),
+    ],
+)
+def test_an_owner_stop_between_steps_with_no_failure_or_send_back(
+    tmp_path, passed, step, step_index, steps_done
+):
+    """Nothing failed and nothing was sent back: the work stood at the phase
+    after the last one that passed, never pulled back to the WRITER."""
+    out = tmp_path / "p"
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    _passes(ledger, *passed)
+    _owner_stop(ledger)
+
+    stop = build_status(out)["stop"]
+
+    assert (stop["step"], stop["step_index"], stop["steps_done"]) == (step, step_index, steps_done)
+    assert stop["fix_rounds"] == 0
+
+
+def test_where_work_stood_with_no_failure_reads_from_the_start():
+    """With no failure the read starts in the first phase: an empty tail
+    leaves it there, passes move it on, and a fix round hands it back."""
+    from app.factory.build_jobs import _where_work_stood
+
+    phases = ["COLLECTOR", "CLONER", "WRITER", "TESTER", "STORE_MANAGER"]
+    passes = [_Ev("GATE_PASSED", r) for r in phases[:4]]
+
+    assert _where_work_stood([], None, phases) == "COLLECTOR"
+    assert _where_work_stood([_Ev("NOTE")], None, phases) == "COLLECTOR"
+    assert _where_work_stood(passes, None, phases) == "STORE_MANAGER"
+    assert _where_work_stood(passes + [_Ev("REWORK", "WRITER")], None, phases) == "WRITER"
+    assert _where_work_stood([], None, []) == ""

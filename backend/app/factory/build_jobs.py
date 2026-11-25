@@ -588,12 +588,18 @@ def _grader_send_backs(events: Sequence[Any]) -> int:
 def _where_work_stood(events: Sequence[Any], last: Any, phases: Sequence[str]) -> str:
     """The step the work stood in after the last failure, read forward from it.
 
-    With nothing after the failure, the work stood in the failed step. A fix
-    round (REWORK) hands the work to its own role; a passed phase moves it on
-    to the next phase in the build's order, so phases that passed after a fix
-    round are kept. Past the last phase there is no step: the empty string."""
-    where = _event_name(getattr(last, "role", None))
-    start = next((i for i, e in enumerate(events) if e is last), len(events))
+    With nothing after the failure, the work stood in the failed step. With
+    no failure at all (``last`` is None) the read starts at the ledger's first
+    event in the build's first phase. A fix round (REWORK) hands the work to
+    its own role; a passed phase moves it on to the next phase in the build's
+    order, so phases that passed after a fix round are kept. Past the last
+    phase there is no step: the empty string."""
+    if last is None:
+        where = phases[0] if phases else ""
+        start = -1
+    else:
+        where = _event_name(getattr(last, "role", None))
+        start = next((i for i, e in enumerate(events) if e is last), len(events))
     for event in events[start + 1:]:
         role = _event_name(getattr(event, "role", None))
         if not role:
@@ -669,7 +675,10 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
     step = ""
     if terminal is not None:
         step = _event_name(getattr(terminal, "role", None))
-    if not step and last is not None and terminal is not None:
+    if not step and terminal is not None:
+        # A stop between steps: read where the work stood forward from the
+        # last failure, or from the start when nothing failed (a grader
+        # send-back is a fix round with no failure before it).
         step = _where_work_stood(events, last, phases)
     if not step:
         current = status.get("current_phase") or {}
