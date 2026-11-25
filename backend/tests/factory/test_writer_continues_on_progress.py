@@ -528,7 +528,9 @@ def test_the_authored_count_skips_test_and_build_artefacts_by_rule(tmp_path, art
     source = {"app/main.py", "tests/test_main.py"} | (
         {".gitignore"} if ".gitignore" in artefacts else set()
     )
-    assert set(agent_file_paths(tmp_path)) == source
+    # The merge-back's view is wider on purpose: it carries every file
+    # the agent wrote, artefacts included (only vendor/VCS/bytecode out).
+    assert set(agent_file_paths(tmp_path)) == source | set(artefacts)
     assert count_authored_files(tmp_path) == authored_files_or_none(tmp_path) == len(source)
     assert count_authored_files(tmp_path) >= before, "artefacts never move the count down"
     assert set(wc.done_files(tmp_path)) == source, "a resumed pass is never told to keep artefacts"
@@ -687,53 +689,6 @@ def _pytest_cache(root, nodeids, lastfailed):
         (cache / "lastfailed").write_text(json.dumps(lastfailed), encoding="utf-8")
 
 
-@pytest.mark.parametrize(
-    "nodeids, lastfailed, passing",
-    [
-        (
-            [
-                "tests/test_main.py::test_a",
-                "tests/test_main.py::test_b",
-                "tests/test_gone.py::test_c",
-            ],
-            {"tests/test_main.py::test_b": True},
-            ("tests/test_main.py::test_a",),
-        ),
-        (["tests/test_main.py::test_a"], None, ("tests/test_main.py::test_a",)),
-        # a class key fails every test under it
-        (
-            ["tests/test_main.py::TestB::test_b", "tests/test_main.py::test_a"],
-            {"tests/test_main.py::TestB": True},
-            ("tests/test_main.py::test_a",),
-        ),
-    ],
-)
-def test_a_resumed_pass_is_told_the_tests_that_pass(tmp_path, nodeids, lastfailed, passing):
-    _tree(tmp_path, {})
-    _pytest_cache(tmp_path, nodeids, lastfailed)
-    assert wc.done_tests(tmp_path) == passing
-    text = wc.render_done_section(["STEP 1: a"], ["app/main.py"], tests=wc.done_tests(tmp_path))
-    assert f"Tests that passed on their last run ({len(passing)})" in text
-    for test in passing:
-        assert f"  {test}" in text
-    assert "test_b" not in text and "test_gone" not in text
-
-
-@pytest.mark.parametrize("failed_file", ["tests/test_main.py", "tests/test_other.py"])
-def test_an_interrupted_test_run_claims_no_passing_test(tmp_path, failed_file):
-    """A file key in lastfailed is a collection error: pytest stopped before
-    running anything, and nodeids still holds the earlier run's ids. No test
-    from that record is named as passing (real pytest, 24 Nov grader probe)."""
-    _tree(tmp_path, {"tests/test_other.py": b"def test_c():\n    pass\n"})
-    _pytest_cache(
-        tmp_path,
-        ["tests/test_main.py::test_a", "tests/test_main.py::test_b", "tests/test_other.py::test_c"],
-        {failed_file: True},
-    )
-    assert wc.done_tests(tmp_path) == ()
-    assert "Tests that passed" not in wc.render_done_section(["STEP 1: a"], ["app/main.py"], tests=())
-
-
 @pytest.mark.parametrize("cut_steps, continuing", [(4, True), (0, False)])
 def test_the_build_status_carries_the_pass_for_the_card(tmp_path, monkeypatch, cut_steps, continuing):
     from app.factory.build_jobs import build_status
@@ -827,3 +782,300 @@ def test_the_real_worker_wall_raises_the_typed_cut(tmp_path, timeout_s):
     with pytest.raises(WorkerWallTimeout) as caught:
         _run(tmp_path, _SlowProc(5.0), timeout_s=timeout_s, live_time_left=lambda: box["at"] - time.monotonic())
     assert wc.is_wall_cut(caught.value)
+
+
+# -- OPUSGRADE F297 3d12544 answers ---------------------------------------------
+
+
+def _git_untracked(root, scratch):
+    """What real git keeps from ``root``: untracked files, not ignored, with
+    no global or system config (an empty excludes file)."""
+    import os
+    import subprocess
+
+    empty = scratch / "empty_excludes"
+    empty.write_text("", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(empty))
+    subprocess.run(["git", "init", "-q", str(root)], check=True, env=env)
+    out = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            f"core.excludesFile={empty}",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        check=True,
+        env=env,
+        capture_output=True,
+    ).stdout
+    return {p for p in out.decode("utf-8").split("\0") if p}
+
+
+@pytest.mark.parametrize(
+    "files, kept, hidden",
+    [
+        (
+            {
+                ".gitignore": "app/*.json\n**/generated\n/build\n*.log\n",
+                "app/data/seed.json": "{}",
+                "app/x.json": "{}",
+                "generated/i.py": "x",
+                "lib/generated/j.py": "x",
+                "build/a.py": "x",
+                "src/build/b.py": "x",
+                "run.log": "x",
+                "app/deep/run.log": "x",
+                "app/routes.py": "x",
+            },
+            {"app/data/seed.json", "src/build/b.py", "app/routes.py"},
+            {"app/x.json", "generated/i.py", "lib/generated/j.py", "run.log", "app/deep/run.log"},
+        ),
+        (
+            {
+                ".gitignore": "docs/**\n!docs/keep.md\na/**/b.py\n[ab]c?.txt\n[!x]y.py\n",
+                "docs/x.md": "x",
+                "docs/keep.md": "x",
+                "a/b.py": "x",
+                "a/x/y/b.py": "x",
+                "ac1.txt": "x",
+                "bc22.txt": "x",
+                "dc1.txt": "x",
+                "ay.py": "x",
+                "xy.py": "x",
+                "sub/.gitignore": "*.tmp\n/only_here.py\n",
+                "sub/a.tmp": "x",
+                "sub/deep/b.tmp": "x",
+                "sub/only_here.py": "x",
+                "sub/deep/only_here.py": "x",
+                "a.tmp": "x",
+            },
+            {"docs/keep.md", "bc22.txt", "dc1.txt", "xy.py", "sub/deep/only_here.py", "a.tmp"},
+            {"docs/x.md", "a/b.py", "a/x/y/b.py", "ac1.txt", "ay.py", "sub/a.tmp", "sub/deep/b.tmp", "sub/only_here.py"},
+        ),
+    ],
+)
+def test_gitignore_is_read_the_way_git_reads_it(tmp_path, files, kept, hidden):
+    """Differential against real git (grader probe ``gi``): ``*`` never
+    crosses ``/`` and ``**/`` matches at any depth."""
+    from app.factory.build.builds_push import is_exported
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    root = tmp_path / "tree"
+    for rel, body in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(body, encoding="utf-8")
+    authored = set(iter_authored_source(root))
+    assert kept <= authored
+    assert not (hidden & authored)
+    git_kept = {p for p in _git_untracked(root, tmp_path) if is_exported(Path(p))}
+    assert authored == git_kept
+
+
+@pytest.mark.parametrize("gitignore, extra", [("app/*.json\n", "app/data/seed.json"), ("*.json\n", "app/seed.json")])
+def test_the_specialist_merge_back_carries_files_the_product_ignores(tmp_path, gitignore, extra):
+    """The merge-back is not narrowed by the product's .gitignore (grader
+    probe ``merge_probe``): every file a specialist wrote reaches the tree."""
+    from app.factory.build import specialist_fanout as sf
+
+    dest, tree = tmp_path / "dest", tmp_path / "api"
+    for root in (dest, tree):
+        (root / "app").mkdir(parents=True)
+        (root / ".gitignore").write_text(gitignore, encoding="utf-8")
+    baseline = sf.tree_manifest(dest)
+    (tree / extra).parent.mkdir(parents=True, exist_ok=True)
+    (tree / extra).write_text("{}", encoding="utf-8")
+    (tree / "app" / "routes.py").write_text("r = 1\n", encoding="utf-8")
+    out = sf.merge_back(dest, baseline, {"API": tree}, owned=(), writer="WRITER")
+    assert sorted(out["applied"]["API"]) == sorted([extra, "app/routes.py"])
+    assert (dest / extra).read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize(
+    "nodeids, lastfailed, failing",
+    [
+        # a -x run: test_1 failed, test_2 and test_3 never ran
+        (
+            ["tests/test_main.py::test_1", "tests/test_main.py::test_2", "tests/test_main.py::test_3"],
+            {"tests/test_main.py::test_1": True},
+            ("tests/test_main.py::test_1",),
+        ),
+        # skips and xfails are never in lastfailed; nothing is named at all
+        (["tests/test_main.py::test_ok", "tests/test_main.py::test_skipped"], {}, ()),
+        # a collection error is named as its file; a gone file is dropped
+        (
+            ["tests/test_main.py::test_a"],
+            {"tests/test_main.py": True, "tests/test_gone.py::test_c": True},
+            ("tests/test_main.py",),
+        ),
+    ],
+)
+def test_a_resumed_pass_is_told_only_the_tests_that_failed(tmp_path, nodeids, lastfailed, failing):
+    _tree(tmp_path, {})
+    _pytest_cache(tmp_path, nodeids, lastfailed)
+    assert wc.failing_tests(tmp_path) == failing
+    text = wc.render_done_section(["STEP 1: a"], ["app/main.py"], failing=wc.failing_tests(tmp_path))
+    assert "passed" not in text, "no test is ever named as passing"
+    assert (f"Tests that failed on their last run ({len(failing)}); fix these first:" in text) is bool(failing)
+    for test in failing:
+        assert f"  {test}\n" in text
+    for node in nodeids:
+        if node not in failing:
+            assert node not in text
+
+
+@pytest.mark.parametrize(
+    "body, args, expected",
+    [
+        (
+            "def test_1():\n    assert 0\n\n\ndef test_2():\n    pass\n\n\ndef test_3():\n    pass\n",
+            ["-x"],
+            ("test_a.py::test_1",),
+        ),
+        (
+            "import pytest\n\n\ndef test_ok():\n    pass\n\n\n@pytest.mark.skip\ndef test_skipped():\n"
+            "    pass\n\n\n@pytest.mark.xfail\ndef test_xfail():\n    assert 0\n",
+            [],
+            (),
+        ),
+    ],
+)
+def test_failing_tests_reads_a_real_pytest_record(tmp_path, body, args, expected):
+    """Real pytest (grader probes ``dt/x`` and ``dt/s``): a test a ``-x``
+    run never reached, a skip and an xfail are never named."""
+    import os
+    import subprocess
+    import sys
+
+    (tmp_path / "test_a.py").write_text(body, encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", *args, "test_a.py"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=180,
+        env=env,
+    )
+    assert (tmp_path / ".pytest_cache").is_dir()
+    assert wc.failing_tests(tmp_path) == expected
+    text = wc.render_done_section(["STEP 1: a"], ["test_a.py"], failing=wc.failing_tests(tmp_path))
+    for name in ("test_2", "test_3", "test_ok", "test_skipped", "test_xfail"):
+        assert f"::{name}" not in text
+
+
+@pytest.mark.parametrize("skipped_dir", ["vendor/blk", "node_modules/pkg"])
+def test_a_vendored_test_record_is_not_the_products(tmp_path, skipped_dir):
+    _tree(tmp_path, {f"{skipped_dir}/tests/test_v.py": b"def test_v():\n    assert 0\n"})
+    _pytest_cache(tmp_path / skipped_dir, ["tests/test_v.py::test_v"], {"tests/test_v.py::test_v": True})
+    _pytest_cache(tmp_path, ["tests/test_main.py::test_a"], {"tests/test_main.py::test_a": True})
+    assert wc.failing_tests(tmp_path) == ("tests/test_main.py::test_a",)
+
+
+@pytest.mark.parametrize("count", [wc.TESTS_LISTED, wc.TESTS_LISTED + 7])
+def test_the_failing_tests_list_is_capped(count):
+    tests = [f"tests/test_m.py::test_{i:04d}" for i in range(count)]
+    text = wc.render_done_section([], [], failing=tests)
+    assert f"Tests that failed on their last run ({count})" in text
+    shown = [line for line in text.splitlines() if line.startswith("  tests/")]
+    assert len(shown) == min(count, wc.TESTS_LISTED)
+    assert ("  ... and 7 more" in text) is (count > wc.TESTS_LISTED)
+
+
+@pytest.mark.parametrize("first, cut", [(1200.0, 1800.0), (900.0, 2400.0)])
+def test_writer_time_counts_every_pass_not_only_cut_ones(tmp_path, monkeypatch, first, cut):
+    """Grader probe Q2: a writer pass, a grader send-back, then the rework
+    pass cut at its wall while working -- the Floor's writer time is both
+    writer passes, not only the cut one."""
+    from app.factory.build.grader import NOT_CERTIFIED, GraderVerdict
+
+    runner, calls = _runner(tmp_path, monkeypatch, cut_steps=4, cuts=0)
+    clock = runner.clock
+    staging = role_staging_dir(tmp_path / "build", BuildRole.WRITER)
+    graded = {"n": 0}
+
+    def grader():
+        graded["n"] += 1
+        if graded["n"] == 1:
+            return GraderVerdict(tier=NOT_CERTIFIED, items=("a check failed",), writer_items=("a check failed",))
+        return None
+
+    def phase(role, work_list):
+        if role is BuildRole.WRITER:
+            calls["writer"] += 1
+            if calls["writer"] == 1:
+                clock.t += first
+                return GateResult(ok=True, gate="writer_gate", detail="ok")
+            if calls["writer"] == 2:
+                clock.t += cut
+                (staging / "docs").mkdir(parents=True, exist_ok=True)
+                (staging / "docs" / "writer_progress.log").write_text("STEP 1: a\n", encoding="utf-8")
+                _working(runner.ledger, 4)
+                raise _cut()
+            clock.t += 60.0
+            return GateResult(ok=True, gate="writer_gate", detail="ok")
+        clock.t += 1.0
+        return GateResult(ok=True, gate=f"{role.value.lower()}_gate", detail="ok")
+
+    runner._run_phase = phase  # type: ignore[assignment]
+    runner._writer_grader = grader  # type: ignore[assignment]
+    runner._grader_factory_fault = lambda *a, **k: None  # type: ignore[assignment]
+    runner.run()
+    assert calls["writer"] == 3, "the cut rework pass was continued"
+    (detail, payload), *_ = _decisions(runner)
+    assert payload["writer_seconds"] == first + cut
+    assert f"Writer time so far {(first + cut) / 60.0:.0f} min" in detail
+
+
+def _left_at(tmp_path, monkeypatch, ceiling):
+    runner, _calls = _runner(tmp_path, monkeypatch, cut_steps=5, ceiling=ceiling)
+    runner.run()
+    (_detail, payload), *_ = _decisions(runner)
+    return payload
+
+
+@pytest.mark.parametrize("probe_ceiling", [4500.0, 5000.0])
+def test_a_continuation_with_exactly_the_minimum_pass_left_goes(tmp_path, monkeypatch, probe_ceiling):
+    """The boundary (mutant A6): ``left == min_pass_s`` continues, one
+    second less does not. The ceiling at the boundary is derived from a
+    probe run, never typed; both probes sit where the ceiling, not the
+    phase allowance, binds the extended wall."""
+    probe = _left_at(tmp_path / "probe", monkeypatch, probe_ceiling)
+    assert probe["go"] is True and probe["time_left_s"] is not None
+    boundary = probe_ceiling - probe["time_left_s"] + wc.min_pass_s()
+    at = _left_at(tmp_path / "at", monkeypatch, boundary)
+    below = _left_at(tmp_path / "below", monkeypatch, boundary - 1.0)
+    assert (at["go"], at["time_left_s"]) == (True, wc.min_pass_s())
+    assert (below["go"], below["time_left_s"]) == (False, wc.min_pass_s() - 1.0)
+
+
+@pytest.mark.parametrize("pass_resumed, done", [(False, False), (True, True)])
+def test_only_this_pass_resuming_gets_the_done_list(tmp_path, monkeypatch, pass_resumed, done):
+    """Mutant A19: with the sticky ``writer_resumed`` set for the run (a
+    rework pass after an earlier resume), only a pass that itself resumed
+    gets ALREADY DONE."""
+    from app.factory.build.roles_handlers import _run_writer_via_codewhale_worker
+    from tests.factory.test_codewhale_writer_dispatch import _ctx, _plant_authored_handler, _receipt
+
+    ctx = _ctx(tmp_path)
+    root = tmp_path / "build"
+    _plant_authored_handler(root)
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "writer_progress.log").write_text("STEP 1: models\n", encoding="utf-8")
+    ctx.state["writer_resumed"] = True
+    ctx.state[wc.RESUMED_KEY] = pass_resumed
+    prompts = []
+
+    def fake_run(prompt, dest, **_kw):
+        prompts.append(prompt)
+        return _receipt(tools=[{"tool": "write", "path": "app/actions/cap.py"}])
+
+    monkeypatch.setattr("app.factory.build.codewhale_worker.run_worker_job", fake_run)
+    _run_writer_via_codewhale_worker(ctx)
+    assert ("ALREADY DONE" in prompts[0]) is done
+    assert ("  STEP 1: models" in prompts[0]) is done

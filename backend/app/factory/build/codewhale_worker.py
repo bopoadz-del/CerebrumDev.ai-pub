@@ -36,10 +36,12 @@ any -- no count is invented.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -2722,13 +2724,67 @@ def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool, bool]]:
     return rules
 
 
+@functools.lru_cache(maxsize=512)
+def _gitignore_regex(pattern: str) -> "re.Pattern[str]":
+    """One ``.gitignore`` pattern as git matches it (gitignore(5)).
+
+    ``*`` and ``?`` and a ``[...]`` class never match ``/``; a leading
+    ``**/`` matches in every directory, a middle ``/**/`` matches zero or
+    more directories and a trailing ``/**`` matches everything inside; any
+    other run of stars is a plain ``*``. A backslash makes the next
+    character literal."""
+    out: List[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        at_segment = i == 0 or pattern[i - 1] == "/"
+        if at_segment and pattern.startswith("**/", i):
+            out.append("(?:[^/]*/)*")
+            i += 3
+            continue
+        if pattern.startswith("/**", i) and i + 3 == n:
+            out.append("/.*")
+            i += 3
+            continue
+        char = pattern[i]
+        if char == "*":
+            while i < n and pattern[i] == "*":
+                i += 1
+            out.append("[^/]*")
+            continue
+        if char == "?":
+            out.append("[^/]")
+        elif char == "\\" and i + 1 < n:
+            i += 1
+            out.append(re.escape(pattern[i]))
+        elif char == "[":
+            j = i + 1
+            if j < n and pattern[j] in "!^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j >= n:
+                out.append(re.escape(char))
+            else:
+                body = pattern[i + 1 : j]
+                negated = body[:1] in ("!", "^")
+                body = (body[1:] if negated else body).replace("\\", "\\\\")
+                out.append(f"[^/{body}]" if negated else f"[{body}]")
+                i = j
+        else:
+            out.append(re.escape(char))
+        i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
 def _ignored(
     rules: List[Tuple[str, Tuple[str, ...], bool, bool, bool]], rel: Tuple[str, ...], is_dir: bool
 ) -> bool:
     """Whether ``rel`` is ignored: the last rule that matches it decides,
-    so a negation re-includes, as git reads its ``.gitignore`` files."""
-    import fnmatch
-
+    so a negation re-includes, as git reads its ``.gitignore`` files. A rule
+    with a slash matches the path below its own ``.gitignore``; one without
+    matches the name at any depth (``_gitignore_regex``)."""
     ignored = False
     for pattern, base, anchored, dir_only, negated in rules:
         if dir_only and not is_dir:
@@ -2739,7 +2795,7 @@ def _ignored(
         if not below:
             continue
         subject = "/".join(below) if anchored else below[-1]
-        if fnmatch.fnmatchcase(subject, pattern):
+        if _gitignore_regex(pattern).match(subject):
             ignored = not negated
     return ignored
 
@@ -2828,14 +2884,27 @@ DISPATCH_AUDIT_FILES = frozenset({"docs/writer_prompt.txt", "docs/writer_argv.js
 
 
 def agent_file_paths(root: Path) -> FrozenSet[str]:
-    """Relative paths of the files ``count_authored_files`` counts, minus the
-    worker's own dispatch audit files. A pass's new files are the difference
-    of two snapshots taken around it."""
+    """Relative paths of every file the agent may have put on disk, minus
+    the worker's own dispatch audit files. A pass's new files are the
+    difference of two snapshots taken around it.
+
+    Wider than ``iter_authored_source`` on purpose: the specialist
+    merge-back and ``files_written`` carry every file the agent wrote,
+    whatever the product's ``.gitignore`` says; only vendored blocks, VCS
+    internals, installed packages, bytecode, the CLI home and the progress
+    logs are left out."""
     found = set()
     try:
-        for posix in iter_authored_source(root):
-            if posix not in DISPATCH_AUDIT_FILES:
-                found.add(posix)
+        for path in Path(root).rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root)
+            if set(rel.parts) & _NOT_AUTHORED_DIRS or path.name.startswith("writer_progress"):
+                continue
+            posix = rel.as_posix()
+            if posix in DISPATCH_AUDIT_FILES:
+                continue
+            found.add(posix)
     except OSError:
         pass
     return frozenset(found)

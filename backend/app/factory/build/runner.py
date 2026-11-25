@@ -1116,6 +1116,19 @@ class RoleRunner:
         except Exception:  # noqa: BLE001 -- when unsure, the old safe wipe
             return False
 
+    def _count_writer_time(self, pass_started: float) -> Dict[str, Any]:
+        """Add one WRITER pass's time to the run's writer total and return
+        the continuation record. Every pass counts -- a first pass, a rework
+        pass and a cut pass -- so the Floor's "writer time so far" is the
+        writer's whole time, not only the passes cut at the wall."""
+        from app.factory.build import writer_continuation as wc
+
+        record = self.state.setdefault(wc.STATE_KEY, {"passes": 0, "seconds": 0.0})
+        record["seconds"] = float(record.get("seconds") or 0.0) + max(
+            0.0, float(self.clock()) - float(pass_started)
+        )
+        return record
+
     def _continue_cut_writer(self, exc: BaseException, pass_started: float) -> bool:
         """A WRITER pass cut at its wall while still working continues.
 
@@ -1134,11 +1147,8 @@ class RoleRunner:
 
         if not wc.is_wall_cut(exc):
             return False
-        record = self.state.setdefault(wc.STATE_KEY, {"passes": 0, "seconds": 0.0})
+        record = self._count_writer_time(pass_started)
         record["passes"] = int(record.get("passes") or 0) + 1
-        record["seconds"] = float(record.get("seconds") or 0.0) + max(
-            0.0, float(self.clock()) - float(pass_started)
-        )
         limit = wc.max_writer_passes()
         record["max_passes"] = limit
         events = list(self.ledger.events()) if self.ledger.exists() else []
@@ -3773,6 +3783,8 @@ class RoleRunner:
                         rework=rework_used,
                     )
 
+                if role is BuildRole.WRITER:
+                    self._count_writer_time(pass_started)
                 if self._stage_halt:
                     halt = self._stage_halt
                     return self._finish(

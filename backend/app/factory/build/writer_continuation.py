@@ -230,64 +230,57 @@ def done_steps(checkout: Path) -> Tuple[str, ...]:
 
 
 def done_files(checkout: Path) -> Tuple[str, ...]:
-    """The files the writer has on disk, the Factory's own view of authored
-    output (``agent_file_paths``), sorted."""
-    from app.factory.build.codewhale_worker import agent_file_paths
+    """The source the writer has authored, the Factory's own view
+    (``iter_authored_source``: no caches, build output or databases), minus
+    the worker's dispatch audit files, sorted."""
+    from app.factory.build.codewhale_worker import DISPATCH_AUDIT_FILES, iter_authored_source
 
     try:
-        return tuple(sorted(agent_file_paths(Path(checkout))))
+        return tuple(sorted(p for p in iter_authored_source(Path(checkout)) if p not in DISPATCH_AUDIT_FILES))
     except OSError:
         return ()
 
 
-#: How many passing tests the continue section lists before it summarises.
+#: How many failing tests the continue section lists before it summarises.
 TESTS_LISTED = 200
+#: Directories whose pytest records are never the product's own tests.
+_NOT_PRODUCT_TEST_DIRS = frozenset({"vendor", ".git", "node_modules"})
 
 
-def done_tests(checkout: Path) -> Tuple[str, ...]:
-    """The tests whose last run passed, from pytest's own record in the kept
-    checkout: every node id pytest has collected (``cache/nodeids``) minus
-    the ones its last run left failing (``cache/lastfailed``), keeping only
-    tests whose file is still on disk. A failed class key fails every test
-    under it; a failed FILE key is a collection error, which interrupts the
-    run, so that record claims no passing test at all. Each cache is read
-    relative to the directory it sits in. Empty when pytest never ran or
-    left no record."""
+def failing_tests(checkout: Path) -> Tuple[str, ...]:
+    """The tests pytest's own record in the kept checkout says failed on
+    their last run (``cache/lastfailed``), keeping only those whose file is
+    still on disk. A file key (a collection error) is listed as the file.
+
+    Only failures are read: pytest keeps no record of a pass (its
+    ``nodeids`` lists every collected test, including ones a ``-x`` run
+    never reached, skips and xfails), so no test is ever named as passing.
+    Records under vendored blocks or installed packages are not the
+    product's. Each record is read relative to the directory it sits in.
+    Empty when pytest never ran or left no failure."""
     import json
 
     base = Path(checkout)
-    passing: List[str] = []
+    failing: List[str] = []
     for dirpath, dirnames, _files in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d not in {"vendor", ".git", "node_modules"}]
+        dirnames[:] = [d for d in dirnames if d not in _NOT_PRODUCT_TEST_DIRS]
         if Path(dirpath).name != ".pytest_cache":
             continue
         dirnames[:] = []
-        cache = Path(dirpath) / "v" / "cache"
         rootdir = Path(dirpath).parent
         try:
-            nodeids = json.loads((cache / "nodeids").read_text(encoding="utf-8"))
+            failed = json.loads((Path(dirpath) / "v" / "cache" / "lastfailed").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        try:
-            failed = json.loads((cache / "lastfailed").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            failed = {}
-        if not isinstance(nodeids, list):
-            continue
-        failing = set(failed) if isinstance(failed, dict) else set()
-        if any("::" not in str(key) for key in failing):
-            # A whole file failed: a collection error, which interrupts the
-            # run, so no test in this record is known to have passed on it.
+        if not isinstance(failed, dict):
             continue
         prefix = rootdir.relative_to(base).as_posix()
-        for nodeid in nodeids:
-            node = str(nodeid)
-            if any(node == key or node.startswith(key + "::") for key in failing):
-                continue
+        for key in failed:
+            node = str(key)
             if not (rootdir / node.split("::", 1)[0]).is_file():
                 continue
-            passing.append(node if prefix == "." else f"{prefix}/{node}")
-    return tuple(sorted(dict.fromkeys(passing)))
+            failing.append(node if prefix == "." else f"{prefix}/{node}")
+    return tuple(sorted(dict.fromkeys(failing)))
 
 
 def render_done_section(
@@ -295,15 +288,15 @@ def render_done_section(
     files: Iterable[str],
     *,
     pass_label: str = "",
-    tests: Iterable[str] = (),
+    failing: Iterable[str] = (),
 ) -> str:
     """The ALREADY DONE block a resumed pass reads before the brief: the steps
-    it reported, the tests whose last run passed and the files on disk.
-    Empty when there is nothing to list."""
+    it reported, the files on disk and the tests pytest last recorded as
+    failing. Empty when there is nothing to list."""
     steps = [s for s in steps if str(s).strip()]
     files = [f for f in files if str(f).strip()]
-    tests = [t for t in tests if str(t).strip()]
-    if not steps and not files and not tests:
+    failing = [t for t in failing if str(t).strip()]
+    if not steps and not files and not failing:
         return ""
     lines: List[str] = ["ALREADY DONE -- do not redo this work."]
     if pass_label:
@@ -316,11 +309,11 @@ def render_done_section(
     if steps:
         lines.append(f"Steps you reported ({len(steps)}):")
         lines.extend(f"  {s}" for s in steps)
-    if tests:
-        lines.append(f"Tests that passed on their last run ({len(tests)}); keep them passing:")
-        lines.extend(f"  {t}" for t in tests[:TESTS_LISTED])
-        if len(tests) > TESTS_LISTED:
-            lines.append(f"  ... and {len(tests) - TESTS_LISTED} more")
+    if failing:
+        lines.append(f"Tests that failed on their last run ({len(failing)}); fix these first:")
+        lines.extend(f"  {t}" for t in failing[:TESTS_LISTED])
+        if len(failing) > TESTS_LISTED:
+            lines.append(f"  ... and {len(failing) - TESTS_LISTED} more")
     if files:
         lines.append(f"Files on disk ({len(files)}):")
         lines.extend(f"  {f}" for f in files[:FILES_LISTED])
