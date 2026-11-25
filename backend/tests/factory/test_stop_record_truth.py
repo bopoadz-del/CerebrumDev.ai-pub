@@ -376,6 +376,93 @@ def test_an_owner_stop_between_steps_after_a_send_back_stops_at_the_writer(tmp_p
     assert stop["fix_rounds"] == 1
 
 
+def _passes(ledger: BuildLedger, *roles: BuildRole) -> None:
+    for role in roles:
+        ledger.append(EventKind.PHASE_STARTED, role=role)
+        ledger.append(EventKind.GATE_PASSED, role=role, payload={"gate": role.value})
+
+
+def _owner_stop(ledger: BuildLedger) -> None:
+    """The owner's stop caught between steps: the terminal event names none."""
+    from app.factory.build.runner import STOPPED_BY_OWNER_REASON
+
+    ledger.append(
+        EventKind.RUN_FAILED,
+        detail="stopped by the owner during the build",
+        payload={"outcome": "STOPPED_BY_OWNER", "decision": {"reason": STOPPED_BY_OWNER_REASON}},
+    )
+
+
+@pytest.mark.parametrize(
+    "gate_role, passed_after, step, step_index, steps_done",
+    [
+        (BuildRole.TESTER, (BuildRole.WRITER,), "TESTER", 4, 3),
+        (BuildRole.STORE_MANAGER, (BuildRole.WRITER,), "TESTER", 4, 3),
+        (BuildRole.STORE_MANAGER, (BuildRole.WRITER, BuildRole.TESTER), "STORE_MANAGER", 5, 4),
+    ],
+)
+def test_phases_passed_after_a_send_back_move_the_stop_step_on(
+    tmp_path, gate_role, passed_after, step, step_index, steps_done
+):
+    """A send-back, then the WRITER (and maybe more) passed again, then the
+    owner's stop between steps: the work stood at the next phase, not at the
+    WRITER the fix round named, and the phases that passed are kept."""
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    _send_back_to_writer(ledger, gate_role)
+    _passes(ledger, *passed_after)
+    _owner_stop(ledger)
+
+    stop = build_status(out)["stop"]
+
+    assert stop["kind"] == fr.STOP_USER_STOPPED
+    assert (stop["step"], stop["step_index"], stop["steps_done"]) == (step, step_index, steps_done)
+
+
+@pytest.mark.parametrize("passed_after", [(), (BuildRole.TESTER,)])
+def test_a_later_grader_handback_is_read_from_the_latest_send_back(tmp_path, passed_after):
+    """Two send-backs after the last failure (a gate's, then the grader's
+    after every phase passed): the latest one names the WRITER, and only the
+    phases passed after it move the step on."""
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    _send_back_to_writer(ledger, BuildRole.TESTER)
+    _passes(ledger, BuildRole.WRITER, BuildRole.TESTER, BuildRole.STORE_MANAGER)
+    ledger.append(
+        EventKind.REWORK, role=BuildRole.WRITER, detail="grader", payload={"gate": GRADER_GATE}
+    )
+    _passes(ledger, BuildRole.WRITER, *passed_after)
+    _owner_stop(ledger)
+
+    stop = build_status(out)["stop"]
+
+    expected = "STORE_MANAGER" if passed_after else "TESTER"
+    assert stop["step"] == expected
+    assert stop["steps_done"] == (4 if passed_after else 3)
+
+
+class _Ev:
+    def __init__(self, kind: str, role: str = "") -> None:
+        self.kind, self.role = kind, role
+
+
+@pytest.mark.parametrize("failed_role", ["TESTER", "STORE_MANAGER"])
+def test_where_work_stood_past_the_last_phase_is_no_step(failed_role):
+    """Every phase passed after the failure's send-back: there is no step
+    left, so none is named. With nothing after the failure it is the failed
+    step itself, and an event with no role moves nothing."""
+    from app.factory.build_jobs import _where_work_stood
+
+    phases = ["COLLECTOR", "CLONER", "WRITER", "TESTER", "STORE_MANAGER"]
+    last = _Ev("GATE_FAILED", failed_role)
+    tail = [_Ev("REWORK", "WRITER")] + [_Ev("GATE_PASSED", r) for r in phases[2:]]
+    earlier = [_Ev("GATE_PASSED", "COLLECTOR")]
+
+    assert _where_work_stood(earlier + [last] + tail, last, phases) == ""
+    assert _where_work_stood(earlier + [last, _Ev("NOTE")], last, phases) == failed_role
+    assert _where_work_stood(earlier + [last, _Ev("GATE_PASSED", "OTHER")], last, phases) == failed_role
+
+
 @pytest.mark.parametrize(
     "said, decided",
     [("worker_stalled", "writer_no_output"), ("writer_no_output", "worker_stalled")],
