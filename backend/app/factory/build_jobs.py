@@ -585,19 +585,25 @@ def _grader_send_backs(events: Sequence[Any]) -> int:
     )
 
 
-def _where_work_stood(events: Sequence[Any], last: Any) -> Any:
-    """The event naming the step the work stood in after the last failure.
+def _where_work_stood(events: Sequence[Any], last: Any, phases: Sequence[str]) -> str:
+    """The step the work stood in after the last failure, read forward from it.
 
-    A fix round recorded after that failure sent the work on to its own role
-    (the runner writes a REWORK under the step it hands the work to), so the
-    latest such round is where the work stood; with none, the failure is."""
-    where = last
-    seen = False
-    for event in events:
-        if event is last:
-            seen = True
-        elif seen and _event_name(getattr(event, "kind", None)) == "REWORK" and getattr(event, "role", None):
-            where = event
+    With nothing after the failure, the work stood in the failed step. A fix
+    round (REWORK) hands the work to its own role; a passed phase moves it on
+    to the next phase in the build's order, so phases that passed after a fix
+    round are kept. Past the last phase there is no step: the empty string."""
+    where = _event_name(getattr(last, "role", None))
+    start = next((i for i, e in enumerate(events) if e is last), len(events))
+    for event in events[start + 1:]:
+        role = _event_name(getattr(event, "role", None))
+        if not role:
+            continue
+        kind = _event_name(getattr(event, "kind", None))
+        if kind == "REWORK":
+            where = role
+        elif kind == "GATE_PASSED" and role in phases:
+            nxt = phases.index(role) + 1
+            where = phases[nxt] if nxt < len(phases) else ""
     return where
 
 
@@ -664,7 +670,7 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
     if terminal is not None:
         step = _event_name(getattr(terminal, "role", None))
     if not step and last is not None and terminal is not None:
-        step = _event_name(_where_work_stood(events, last).role)
+        step = _where_work_stood(events, last, phases)
     if not step:
         current = status.get("current_phase") or {}
         step = str(current.get("id") or "") if isinstance(current, dict) else ""
