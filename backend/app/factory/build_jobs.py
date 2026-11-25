@@ -585,6 +585,22 @@ def _grader_send_backs(events: Sequence[Any]) -> int:
     )
 
 
+def _where_work_stood(events: Sequence[Any], last: Any) -> Any:
+    """The event naming the step the work stood in after the last failure.
+
+    A fix round recorded after that failure sent the work on to its own role
+    (the runner writes a REWORK under the step it hands the work to), so the
+    latest such round is where the work stood; with none, the failure is."""
+    where = last
+    seen = False
+    for event in events:
+        if event is last:
+            seen = True
+        elif seen and _event_name(getattr(event, "kind", None)) == "REWORK" and getattr(event, "role", None):
+            where = event
+    return where
+
+
 def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict[str, Any]]:
     """The one "ended because" record of a build that ended early, or None.
 
@@ -648,7 +664,7 @@ def stop_record(status: Dict[str, Any], output_dir: Path | str) -> Optional[Dict
     if terminal is not None:
         step = _event_name(getattr(terminal, "role", None))
     if not step and last is not None and terminal is not None:
-        step = _event_name(last.role)
+        step = _event_name(_where_work_stood(events, last).role)
     if not step:
         current = status.get("current_phase") or {}
         step = str(current.get("id") or "") if isinstance(current, dict) else ""

@@ -517,10 +517,16 @@ def test_the_session_level_says_whether_pilot_checks_are_offered(level, reaches)
     assert _level_reaches_pilot(SimpleNamespace(build_level=level)) is reaches
 
 
-@pytest.mark.parametrize("field", ["kind", "plain"])
+@pytest.mark.parametrize("field", ["kind", "plain", "check_plain", "restarted"])
 def test_the_not_found_state_carries_its_own_stop_record(field):
+    """A build the server cannot find names no check and no restart."""
     build = not_found_build_status()
-    expected = {"kind": fr.STOP_NOT_FOUND, "plain": fr.NOT_FOUND_PLAIN}[field]
+    expected = {
+        "kind": fr.STOP_NOT_FOUND,
+        "plain": fr.NOT_FOUND_PLAIN,
+        "check_plain": None,
+        "restarted": False,
+    }[field]
 
     assert build["state"] == "not_found"
     assert build["stop"][field] == expected

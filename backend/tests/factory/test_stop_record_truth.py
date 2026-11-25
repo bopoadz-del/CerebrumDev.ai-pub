@@ -337,3 +337,88 @@ def test_a_generic_check_code_sends_no_sentence_of_its_own(code):
 
     assert fr.check_plain(fr.STOP_CHECK_FAILED, code, own) is None
     assert fr.check_plain(fr.STOP_CHECK_FAILED, code + "_X", own) == own
+
+
+@pytest.mark.parametrize("gate_role", [BuildRole.TESTER, BuildRole.STORE_MANAGER])
+def test_an_owner_stop_between_steps_after_a_send_back_stops_at_the_writer(tmp_path, gate_role):
+    """The owner stops after a later gate sent the work back, before the
+    WRITER restarts: the run's terminal event names no step (the stop landed
+    between steps), so the step is where the fix round sent the work, not the
+    refused gate, and the WRITER's thrown-away pass is not counted kept."""
+    from app.factory.build.runner import STOPPED_BY_OWNER_REASON
+
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    ledger.append(EventKind.PHASE_STARTED, role=gate_role)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=gate_role,
+        detail="a check did not pass",
+        payload={"gate": gate_role.value, "reason": "suite_failed", "location": gate_role.value},
+    )
+    ledger.append(
+        EventKind.REWORK,
+        role=BuildRole.WRITER,
+        payload={"gate": gate_role.value, "decision": {"gate": gate_role.value, "class": "REWORK"}},
+    )
+    ledger.append(
+        EventKind.RUN_FAILED,
+        detail="stopped by the owner during the build",
+        payload={"outcome": "STOPPED_BY_OWNER", "decision": {"reason": STOPPED_BY_OWNER_REASON}},
+    )
+
+    stop = build_status(out)["stop"]
+
+    assert stop["kind"] == fr.STOP_USER_STOPPED
+    assert stop["step"] == "WRITER"
+    assert stop["step_index"] == 3
+    assert stop["steps_done"] == 2
+    assert stop["fix_rounds"] == 1
+
+
+@pytest.mark.parametrize(
+    "said, decided",
+    [("worker_stalled", "writer_no_output"), ("writer_no_output", "worker_stalled")],
+)
+def test_the_runners_typed_reason_is_read_before_the_terminal_text(tmp_path, said, decided):
+    """The terminal event's own text names one stop code and the runner's
+    typed decision another: the typed decision is the one the record keeps."""
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.TESTER)
+    ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.TESTER,
+        detail=f"{said}: the step ended",
+        payload={"outcome": "FAILED_ROLE_ERROR", "reason": said, "decision": {"reason": decided}},
+    )
+
+    stop = build_status(out)["stop"]
+
+    assert stop["technical"]["code"] == decided
+    assert stop["plain"] == fr.STOP_ENTRIES[decided][1]
+
+
+@pytest.mark.parametrize("handbacks", [1, 2])
+def test_a_grader_send_back_with_a_rule_decision_counts_once(tmp_path, handbacks):
+    """A grader-gate send-back that also carries a rule decision is counted by
+    the rule's decisions; it is not counted a second time as a handback."""
+    out = tmp_path / "p"
+    ledger = _ledger(out)
+    for n in range(handbacks):
+        ledger.append(
+            EventKind.REWORK,
+            role=BuildRole.WRITER,
+            detail="GRADER: NOT_CERTIFIED -- writer handback",
+            payload={
+                "gate": GRADER_GATE,
+                "round": n + 1,
+                "decision": {"gate": GRADER_GATE, "class": "REWORK"},
+            },
+        )
+        ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    ledger.append(EventKind.RUN_FAILED, role=BuildRole.WRITER, payload={"outcome": "FAILED_GATE"})
+
+    stop = build_status(out)["stop"]
+
+    assert stop["fix_rounds"] == handbacks
