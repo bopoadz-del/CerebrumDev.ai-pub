@@ -127,7 +127,9 @@ def _wall_clock_s(cycle: str = "code", auto_pilot: bool = False) -> float:
                 from app.factory.build.roles_handlers import writer_uses_codewhale
 
                 if deepseek_cli_ready() or writer_uses_codewhale(None):
-                    return _DEFAULT_WALL_CLOCK_S
+                    from app.factory.build.budget_inspect import writer_first_pass_wall
+
+                    return writer_first_pass_wall(_DEFAULT_WALL_CLOCK_S)
             return value
     if _uses_pilot_budget(cycle, auto_pilot):
         from app.factory.build.auto_pilot import AUTO_PILOT_WALL_CLOCK_S
@@ -151,17 +153,19 @@ def _max_rework(cycle: str = "code", auto_pilot: bool = False) -> int:
 
 
 def _phase_wall_clock_s(cycle: str = "code", auto_pilot: bool = False) -> float:
-    """Per-role cap. Code-only is 60 min; Store-green uses 90 min.
+    """Per-role cap. The default is the writer's first-pass floor (pilot too).
 
-    The code-only cap must be at least the writer's first pass (owner ruling
-    2026-11-21: one hour, then 30 min per granted fix), or the phase box --
-    not the plan wall -- is what ends the pass.
+    The default cap is at least the writer's first pass
+    (``budget_inspect.writer_first_pass_wall``), or the phase box -- not the
+    plan wall -- is what ends the pass.
 
     A dashboard leftover of 1500s must not cap a keyed auto-pilot WRITER
     — that is how a 2-hour coding run died after the first handler wave.
     Explicit ``0`` still disables the bound. Values above the code-only
     default are honoured as an operator override.
     """
+    from app.factory.build.budget_inspect import writer_first_pass_wall
+
     raw = os.getenv(BUILD_PHASE_WALL_ENV)
     configured: Optional[float] = None
     if raw is not None:
@@ -173,11 +177,11 @@ def _phase_wall_clock_s(cycle: str = "code", auto_pilot: bool = False) -> float:
         if configured == 0:
             return 0.0
         if configured is None or configured <= _DEFAULT_PHASE_WALL_CLOCK_S:
-            return _DEFAULT_PILOT_PHASE_WALL_CLOCK_S
+            return writer_first_pass_wall(_DEFAULT_PILOT_PHASE_WALL_CLOCK_S)
         return configured
     if configured is not None:
         return configured
-    return _DEFAULT_PHASE_WALL_CLOCK_S
+    return writer_first_pass_wall(_DEFAULT_PHASE_WALL_CLOCK_S)
 
 
 def _phase_ref(role: Any) -> Dict[str, str]:
@@ -2159,12 +2163,17 @@ def _run(
         plan = assert_generatable(CapabilityPlanner(blocks_root).plan(blueprint))
         wall = _wall_clock_s(cycle, auto_pilot=auto)
         if not os.getenv(BUILD_WALL_CLOCK_ENV):
-            # No operator-pinned wall: the plan class picks it (30 min small,
-            # 40 min new-platform). One config, no literals here.
-            from app.factory.build.budget_inspect import NEW_PLATFORM_WALL_S
+            # No operator-pinned wall: the cycle's wall and the plan class's
+            # wall, lifted to the writer's first-pass floor. One function,
+            # the same one the runner uses; no literals here.
+            from app.factory.build.budget_inspect import (
+                plan_class_wall,
+                writer_first_pass_wall,
+            )
 
-            if str(getattr(plan, "budget_class", "small") or "small") == "new_platform":
-                wall = NEW_PLATFORM_WALL_S
+            wall = writer_first_pass_wall(
+                wall, plan_class_wall(getattr(plan, "budget_class", "small"))
+            )
         runner = RoleRunner(
             blueprint,
             output_dir,

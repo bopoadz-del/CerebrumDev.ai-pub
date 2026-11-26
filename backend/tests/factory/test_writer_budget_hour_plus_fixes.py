@@ -121,16 +121,20 @@ def test_the_pilot_cycle_is_unchanged_by_the_ruling(passes):
     )
 
 
-@pytest.mark.parametrize("reader", ["_wall_clock_s", "_phase_wall_clock_s"])
-def test_the_code_cycle_defaults_are_an_hour_for_the_writer(monkeypatch, reader):
-    """The Floor's code build: a one-hour writer inside a one-hour phase box.
+def test_the_code_cycle_defaults_hold_the_writer_s_first_pass(monkeypatch):
+    """The Floor's code build: the cycle wall is an hour, and the phase box
+    is at least the first-pass floor, so it never ends the pass first.
 
     If the phase box were smaller than the first pass (it was 1500s), the
     plan wall could be raised and the phase box would still end the pass.
     """
+    from app.factory.build.budget_inspect import writer_first_pass_wall
+
     monkeypatch.delenv("FACTORY_BUILD_WALL_CLOCK_S", raising=False)
     monkeypatch.delenv("FACTORY_PHASE_WALL_CLOCK_S", raising=False)
-    assert getattr(build_jobs, reader)() == FIRST_PASS_S
+    assert build_jobs._wall_clock_s() == FIRST_PASS_S
+    assert build_jobs._phase_wall_clock_s() == writer_first_pass_wall()
+    assert build_jobs._phase_wall_clock_s() >= writer_first_pass_wall(FIRST_PASS_S)
 
 
 def _runner(tmp_path, *, passes: int) -> RoleRunner:

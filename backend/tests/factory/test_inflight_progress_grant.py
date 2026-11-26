@@ -98,7 +98,7 @@ def _stage_1_inspect(runner, clock):
         # F-W2b this was "await_cli" with no wall.
         (2400.0, 5400.0, 5400.0),
         # A phase budget above the ceiling is bounded by the ceiling.
-        (STAGE_1_S, 9000.0, CEILING_S),
+        (STAGE_1_S, CEILING_S + 1800.0, CEILING_S),
     ],
 )
 def test_a_producing_cli_in_flight_gets_the_phase_bounded_wall_at_stage_1(
