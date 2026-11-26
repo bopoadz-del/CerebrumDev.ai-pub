@@ -174,6 +174,10 @@ def test_a_word_common_in_the_store_prose_is_filler_in_the_kit_index(store, cap)
     [
         (("estate_lots", "marrow estate lots", ["quillon_registry"]), "marrow_estate"),
         (("lots_survey", "survey of land lots", ["quillon_registry"]), "quillon_land"),
+        # The named kit shares more words (a higher score) but none of them
+        # is a word of the capability's id, so it does not clear; the kit
+        # that clears still wins.
+        (("rota_tally", "household rota; quillon land parcels survey", ["quillon_registry"]), "marrow_estate"),
     ],
 )
 def test_a_kit_that_fits_the_capability_beats_one_the_block_names(store, cap, kit):
