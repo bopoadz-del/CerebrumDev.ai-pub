@@ -36,6 +36,9 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from app.factory.build.authority import capability_route
 
 RUN_TIMEOUT_S = 600
+#: Playwright is told to stop its own steps this long before a run's cap, so
+#: it always writes its report: a run that ran out of time is read, never lost.
+REPORT_MARGIN_S = 60
 
 #: The PATH a UI run sees. One value, read by the grade and by the toolchain
 #: check, so the check proves exactly the path the grade will take.
@@ -81,6 +84,13 @@ ON_PAGE_KINDS = ("bind",) + CHAIN_KINDS
 #: It did not run: it is not a pass and it is not a failure of its own.
 NOT_RUN = "not_run"
 
+#: A step Playwright recorded no result for. Only the run's time limit explains
+#: that; in a run that ended in time the step did not pass.
+NO_RESULT = "no_result"
+
+#: What blocked a step the run's own time limit stopped before it finished.
+TIME_LIMIT = "the UI run's time limit"
+
 
 
 @dataclass(frozen=True)
@@ -103,8 +113,9 @@ class UiGrade:
 
     @property
     def not_run(self) -> List[Dict[str, Any]]:
-        """Steps that did not run because an earlier step of their chain
-        failed. Each row names the step that blocked it."""
+        """Steps that did not run: an earlier step of their chain failed, or
+        the run's own time limit stopped it first. Each row names what blocked
+        it."""
         return [s for s in self.steps if s.get("status") == NOT_RUN]
 
     @property
@@ -431,9 +442,9 @@ def report_outcomes(report: Mapping[str, Any]) -> Dict[str, bool]:
 
 
 def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
-    """Every test title in a Playwright JSON report -> ``passed``, ``failed``
-    or ``skipped``. Skipped means Playwright did not run the test at all
-    (every result it recorded for it is ``skipped``)."""
+    """Every test title in a Playwright JSON report -> ``passed``, ``failed``,
+    ``skipped`` or ``no_result``. Skipped means every result Playwright
+    recorded for the test is ``skipped``; no result means it recorded none."""
     seen: Dict[str, str] = {}
     if not isinstance(report, Mapping):
         return seen
@@ -443,7 +454,9 @@ def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
             results = [r for t in spec.get("tests") or [] for r in t.get("results") or []]
             if step_passed(results):
                 status = "passed"
-            elif results and all(r.get("status") == "skipped" for r in results):
+            elif not results:
+                status = NO_RESULT
+            elif all(r.get("status") == "skipped" for r in results):
                 status = "skipped"
             else:
                 status = "failed"
@@ -456,35 +469,58 @@ def report_statuses(report: Mapping[str, Any]) -> Dict[str, str]:
     return seen
 
 
+def run_limit_ms(timeout_s: int) -> int:
+    """The time Playwright gives its own steps in a run capped at
+    ``timeout_s``: the cap less the margin it needs to write its report."""
+    return max(1, int(timeout_s) - REPORT_MARGIN_S) * 1000
+
+
+def run_was_cut(report: Any, limit_ms: int) -> bool:
+    """Did the run's time limit stop it? Playwright's report says how long the
+    run took; a run that lasted its whole limit was stopped by it."""
+    stats = report.get("stats") if isinstance(report, Mapping) else None
+    duration = stats.get("duration") if isinstance(stats, Mapping) else None
+    return isinstance(duration, (int, float)) and duration >= limit_ms
+
+
 def parse_report(
-    report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET
+    report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET,
+    *, limit_ms: Optional[int] = None,
 ) -> UiGrade:
     """Playwright JSON reporter -> UiGrade. A planned step absent from the
     report is a failed step (a skipped step is not a passed one). A chain
     step skipped after an earlier chain step failed is not run: it is quoted
     with the step that blocked it and is never a failure of its own. A step the
     brief does not contain is not applicable: it was not run, it is not
-    passed, and it is not a failure. A brief that cannot be read is a block:
-    no step is graded."""
+    passed, and it is not a failure. A run its time limit stopped leaves the
+    steps it did not finish not run, blocked by that limit: a step that ran
+    and failed before it is still a failure. A brief that cannot be read is a
+    block: no step is graded."""
     run, skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
     seen = report_statuses(report)
+    cut = run_was_cut(report, run_limit_ms(RUN_TIMEOUT_S) if limit_ms is None else limit_ms)
     steps: List[Dict[str, Any]] = []
     # The chain step that failed first: the chain steps Playwright skipped
     # after it did not run because of it.
     blocker = ""
     for st in run:
         status = seen.get(st.name, "failed")
+        if status == NO_RESULT:
+            status = "skipped" if cut else "failed"
         row: Dict[str, Any] = {
             "name": st.name, "kind": st.kind, "target": st.target, "passed": status == "passed",
         }
-        if st.kind in CHAIN_KINDS:
-            if status == "skipped" and blocker:
-                row["status"] = NOT_RUN
-                row["blocked_by"] = blocker
-            elif status != "passed" and not blocker:
-                blocker = st.name
+        chain = st.kind in CHAIN_KINDS
+        if chain and status == "skipped" and blocker:
+            row["status"] = NOT_RUN
+            row["blocked_by"] = blocker
+        elif cut and status == "skipped":
+            row["status"] = NOT_RUN
+            row["blocked_by"] = TIME_LIMIT
+        elif chain and status != "passed" and not blocker:
+            blocker = st.name
         steps.append(row)
     errors = [] if seen else ["playwright report has no results"]
     return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
@@ -498,7 +534,8 @@ def _playwright_run(run: Any, spec: Path, *, base_url: str, out: Path, fixtures:
     """The one way a UI spec is run: the grade and the toolchain check both
     come through here, with the same command and the same environment."""
     return run(
-        ["npx", "playwright", "test", str(spec), "--reporter=json"],
+        ["npx", "playwright", "test", str(spec), f"--global-timeout={run_limit_ms(timeout)}",
+         "--reporter=json"],
         cwd=str(spec.parent),
         env={"PATH": RUN_PATH, "BASE_URL": base_url,
              "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)},

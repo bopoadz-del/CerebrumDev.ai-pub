@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { BuildDecision, BuildStatus } from './api/factory'
-import { stopHeadline, stopTone } from './buildProgress'
+import {
+  EMPTY_RUNNING_MEMO,
+  foldRunning,
+  runningLine,
+  runningTimers,
+  stopHeadline,
+  stopTone,
+  type RunningMemo,
+} from './buildProgress'
+import { keptSentence, minutesWords, stopWords } from './stopSentence'
+
+export { keptSentence }
 
 /**
  * The BUILD card: five slots in one order for every state.
@@ -16,7 +27,7 @@ import { stopHeadline, stopTone } from './buildProgress'
  * history and the activity log -- is rendered once, inside Technical detail.
  */
 
-export type BuildTone = 'info' | 'warning' | 'danger' | 'success'
+export type BuildTone = 'info' | 'warning' | 'danger' | 'success' | 'neutral'
 
 export interface BuildFace {
   tone: BuildTone
@@ -58,6 +69,8 @@ function stepOf(build: BuildStatus, phase: string | undefined | null): number | 
 
 /** The step a stopped build stopped at, 1-based, from the run's own phase list. */
 export function stoppedAt(build: BuildStatus): number | null {
+  const fromRecord = build.stop?.step_index
+  if (typeof fromRecord === 'number' && fromRecord > 0) return fromRecord
   return stepOf(build, build.failure?.location || build.failure?.phase || build.current_phase?.id)
 }
 
@@ -79,15 +92,30 @@ function stepsKept(build: BuildStatus): number {
   return n
 }
 
-export function keptSentence(n: number): string {
-  if (n <= 0) return 'No step was finished yet.'
-  if (n === 1) return 'Step 1 is done and kept.'
-  if (n === 2) return 'Steps 1 and 2 are done and kept.'
-  return `Steps 1 to ${n} are done and kept.`
+/** The card's colour for each kind of stop: a stop you asked for is neutral,
+ *  a check that did not pass is red, our side and not-found are amber. */
+const STOP_TONE: Record<string, BuildTone> = {
+  user_stopped: 'neutral',
+  check_failed: 'danger',
+  no_progress: 'danger',
+  time_ran_out: 'warning',
+  service_interrupted: 'warning',
+  nothing_produced: 'warning',
+  not_found: 'warning',
 }
 
-function minutes(seconds: number): number {
-  return Math.max(1, Math.round(seconds / 60))
+/** The face of a build the server described with its stop record. */
+function recordFace(build: BuildStatus): BuildFace {
+  const stop = build.stop ?? { kind: 'not_found' }
+  const words = stopWords(stop, { quietS: build.last_event_age_s ?? null })
+  return {
+    tone: STOP_TONE[stop.kind] ?? 'danger',
+    word: words.word,
+    where: words.where,
+    sentence: words.sentence,
+    fixRoundNow: null,
+    fixRoundsUsed: build.state === 'not_found' ? null : fixRoundsUsedLine(build),
+  }
 }
 
 function fixRoundsUsedLine(build: BuildStatus): string | null {
@@ -113,6 +141,9 @@ export function buildFace(build: BuildStatus | null): BuildFace {
   if (build.state === 'succeeded') {
     return { tone: 'success', word: 'Ready', where: null, sentence: '', fixRoundNow: null, fixRoundsUsed: null }
   }
+  if (build.state === 'not_found' || ((build.state === 'failed' || build.state === 'stalled') && build.stop)) {
+    return recordFace(build)
+  }
   if (build.state === 'failed' || build.state === 'stalled') {
     const at = stoppedAt(build)
     const where = at && total ? `step ${at} of ${total}` : null
@@ -128,7 +159,7 @@ export function buildFace(build: BuildStatus | null): BuildFace {
     } else if (build.state === 'stalled') {
       why =
         typeof build.last_event_age_s === 'number'
-          ? `No update from the build for ${minutes(build.last_event_age_s)} minutes.`
+          ? `No update from the build for ${minutesWords(build.last_event_age_s)}.`
           : 'No update from the build for a long time.'
     } else if (classified) {
       // The class only: the stage's name and the server's longer summary are
@@ -172,7 +203,7 @@ export function buildFace(build: BuildStatus | null): BuildFace {
 export function rawMessage(build: BuildStatus | null): string | null {
   if (!build) return null
   if (build.state !== 'failed' && build.state !== 'stalled' && !build.failure) return null
-  return build.failed_label || build.detail || build.failure?.reason || null
+  return build.failed_label || build.detail || build.failure?.reason || build.stop?.technical?.message || null
 }
 
 export function errorReport(
@@ -188,8 +219,12 @@ export function errorReport(
     build?.failure?.location || build?.failure?.phase
       ? `Step id: ${build?.failure?.location || build?.failure?.phase}`
       : null,
-    build?.failure?.code ? `Reason code: ${build.failure.code}` : null,
-    build?.failure?.ref ? `Reference: ${build.failure.ref}` : null,
+    build?.failure?.code || build?.stop?.technical?.code
+      ? `Reason code: ${build?.failure?.code || build?.stop?.technical?.code}`
+      : null,
+    build?.failure?.ref || build?.stop?.technical?.reference
+      ? `Reference: ${build?.failure?.ref || build?.stop?.technical?.reference}`
+      : null,
     rawMessage(build) ? `Technical message: ${rawMessage(build)}` : null,
   ]
   return lines.filter((l): l is string => Boolean(l)).join('\n')
@@ -250,6 +285,7 @@ export function TechnicalDetail({
   if (!build) return null
   const failure = build.failure
   const stopped = build.state === 'failed' || build.state === 'stalled'
+  const reference = failure?.ref || build.stop?.technical?.reference || null
   const raw = rawMessage(build)
   const decisions = build.decisions ?? []
   const activity = build.activity_log ?? []
@@ -258,7 +294,7 @@ export function TechnicalDetail({
   const hasLog = Boolean(build.coder_log || build.coder_log_present)
   const hasAnything =
     Boolean(
-      failure || raw || decisions.length || activity.length || recovered || notDelivered.length || hasLog || extra,
+      failure || raw || reference || decisions.length || activity.length || recovered || notDelivered.length || hasLog || extra,
     )
   if (!hasAnything) return null
   return (
@@ -287,9 +323,9 @@ export function TechnicalDetail({
             {raw}
           </p>
         )}
-        {failure?.ref && (
+        {reference && (
           <p className="tech-line" data-testid="floor-failure-ref">
-            Reference <code>{failure.ref}</code>
+            Reference <code>{reference}</code>
           </p>
         )}
         {decisions.length > 0 && (
@@ -339,7 +375,7 @@ export function TechnicalDetail({
       </div>
       {/* Outside the capped, scrolling body: the copy action is reachable
           however long the record is. */}
-      {(failure || raw) && <CopyErrorReport text={errorReport(build, { sessionId, productTitle })} />}
+      {(failure || raw || reference) && <CopyErrorReport text={errorReport(build, { sessionId, productTitle })} />}
     </details>
   )
 }
@@ -349,6 +385,7 @@ const TONE_ICON: Record<BuildTone, string> = {
   warning: '↻',
   danger: '!',
   success: '✓',
+  neutral: '■',
 }
 
 /** The card-face line for a writer pass the runner continued: which pass of
@@ -440,6 +477,57 @@ export function BuildCard({
         note={face.fixRoundsUsed}
       />
       {footer}
+    </div>
+  )
+}
+
+/**
+ * The running build's face: one line, one whole-build bar that never moves
+ * backwards, and three timers (started, last update, expected end from the
+ * server's own deadline). The agent's narration stays in Technical detail.
+ */
+export function RunningLine({ build, nowMs }: { build: BuildStatus; nowMs: number }) {
+  // Folded once per status read: a new read moves the marks, a clock tick
+  // only moves the "ago" words.
+  const memo = useRef<RunningMemo>(EMPTY_RUNNING_MEMO)
+  memo.current = foldRunning(memo.current, build, nowMs)
+  const marks = memo.current
+  const line = runningLine(build)
+  const timers = runningTimers(build, marks, nowMs)
+  const percent = marks.bar == null ? null : Math.round(marks.bar * 100)
+  return (
+    <div className="running" data-testid="floor-running">
+      <p className="running-line" data-testid="floor-running-line">
+        {line}
+      </p>
+      {build.queued ? (
+        <p className="running-queued" role="status">
+          Waiting for a build slot{build.queued.position ? ` — position ${build.queued.position}` : ''}
+          {build.queued.ahead ? ` (${build.queued.ahead} ahead)` : ''}
+        </p>
+      ) : null}
+      {percent != null && (
+        <div
+          className="running-bar"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          aria-label="Whole build"
+          data-testid="floor-running-bar"
+        >
+          <span style={{ width: `${percent}%` }} />
+        </div>
+      )}
+      {timers.length > 0 && (
+        <p className="running-timers" data-testid="floor-running-timers">
+          {timers.map((t) => (
+            <span key={t.key} data-timer={t.key}>
+              {t.text}
+            </span>
+          ))}
+        </p>
+      )}
     </div>
   )
 }

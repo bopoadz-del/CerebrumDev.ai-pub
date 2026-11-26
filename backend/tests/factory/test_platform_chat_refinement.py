@@ -84,11 +84,16 @@ def test_refinement_rename_product(state):
 
 
 def test_refinement_set_vertical(state):
+    """The typed industry is proposed, and the draft takes it (industry,
+    product id) only when the brief is saved."""
     _draft_retail(state)
     result = apply_refinement(state, FloorAction.SET_VERTICAL, "boutique_retail")
     assert result["ok"] is True
-    assert result["blueprint"]["vertical"] == "boutique_retail"
-    assert result["blueprint"]["product_id"] == "boutique_retail"
+    assert result["blueprint"]["vertical"] == "retail"
+    assert state.product_design.intake_proposal["vertical"] == "boutique_retail"
+    platform_chat_flow.apply_intake_action(state, FloorAction.CONFIRM_INTAKE)
+    assert state.product_design.blueprint["vertical"] == "boutique_retail"
+    assert state.product_design.blueprint["product_id"] == "boutique_retail"
 
 
 def test_vertical_is_the_structured_hint_never_the_brief_prose():

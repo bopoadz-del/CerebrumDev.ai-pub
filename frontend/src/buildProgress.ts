@@ -4,7 +4,7 @@ import type {
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
-import { REVIEW_GATE, stepLabel, stepRunning } from './stepNames'
+import { REVIEW_GATE, isCountedUnit, stepLabel, stepRunning, unitName } from './stepNames'
 import {
   FACTORY_CODE_CLI_CREDENTIALS_MISSING,
   FACTORY_CODE_CLI_FAILED,
@@ -979,6 +979,9 @@ export function platformsLeadCopy(
   if (isBelowFullPilotAuthorshipFloor(build) && claimsStoreGreenPilot(build)) {
     return 'Authorship is below the full-pilot floor. Download unavailable — a thin Store-green zip is refused.'
   }
+  if (build?.state === 'not_found') {
+    return "We can't find this build on the server. Your brief and feature list are safe."
+  }
   if (!build || build.state === 'building' || build.state === 'not_started' || build.state === 'unknown') {
     return 'The coding agent is writing this platform. Export stays closed until a pilot-ready run succeeds.'
   }
@@ -1099,6 +1102,10 @@ export function exportAffordance(build: BuildStatus | null | undefined): {
   if (!build || build.state === 'building' || build.state === 'not_started') {
     return { label: 'Building…', disabled: true, ghost: true }
   }
+  if (build.state === 'not_found') {
+    // Nothing is building: the server cannot find this build at all.
+    return { label: 'Not found on the server', disabled: true, ghost: true }
+  }
   if (isBelowFullPilotAuthorshipFloor(build) && claimsStoreGreenPilot(build)) {
     return {
       label: 'Export (.zip) — below full-pilot authorship floor',
@@ -1158,4 +1165,131 @@ export function phaseBarFraction(build: BuildStatus): number | null {
     return Math.max(0, Math.min(1, build.activity_done / build.activity_total))
   }
   return null
+}
+
+/* ------------------------------ the running line ------------------------------ */
+
+/** The step number a running build is at, and the run's step count. */
+function runningStep(build: BuildStatus): { at: number | null; total: number | null } {
+  const total = build.phase_total ?? build.phases_total ?? build.phases?.length ?? null
+  const done = build.phases_done ?? build.completed?.length ?? null
+  const at = build.phase_index ?? (typeof done === 'number' ? done + 1 : null)
+  return {
+    at: typeof at === 'number' && at > 0 ? at : null,
+    total: typeof total === 'number' && total > 0 ? total : null,
+  }
+}
+
+/**
+ * One line for a running build: "Step 3 of 5 — Writing the code — 2 of 4
+ * features". Step names come from the one name table; the unit too.
+ */
+export function runningLine(build: BuildStatus): string {
+  const { at, total } = runningStep(build)
+  const parts: string[] = []
+  if (at && total) parts.push(`Step ${Math.min(at, total)} of ${total}`)
+  if (build.current_phase?.id) parts.push(stepRunning(build.current_phase.id, at))
+  const progress = build.phase_progress
+  // Only a count of named things is said; a stage marker with a done/total
+  // of its own ("dispatch" 0 of 1 while a model call runs) is not a count.
+  if (progress && progress.total > 0 && isCountedUnit(progress.stage)) {
+    parts.push(`${Math.min(progress.done, progress.total)} of ${progress.total} ${unitName(progress.stage)}`)
+  }
+  return parts.length ? parts.join(' — ') : 'Starting the build'
+}
+
+/**
+ * The whole build's share done, 0..1: finished steps plus the share of the
+ * current one. Null when the record names no step count.
+ */
+export function wholeBuildFraction(build: BuildStatus): number | null {
+  const { at, total } = runningStep(build)
+  if (!total) return null
+  const done = Math.min(total, Math.max(0, build.phases_done ?? (at ? at - 1 : 0)))
+  const current = done < total ? phaseBarFraction(build) ?? 0 : 0
+  return Math.max(0, Math.min(1, (done + current) / total))
+}
+
+/**
+ * What the running card remembers across polls: the bar's highest value (so
+ * it never moves backwards, also across a restart of a step), the start time
+ * once known, and the expected end measured when each status arrived.
+ */
+export interface RunningMemo {
+  /** The status object these marks were last folded from. */
+  seen: BuildStatus | null
+  /**
+   * The server deadline the expected end was last measured from. The page
+   * wraps each status in new objects on every render (stall and count
+   * stamps), but they carry the read's own ``deadline`` object through
+   * unchanged, so a new deadline object is a new server read and only a new
+   * read moves the expected end.
+   */
+  deadline: BuildStatus['deadline'] | null
+  bar: number | null
+  startedMs: number | null
+  endMs: number | null
+}
+
+export const EMPTY_RUNNING_MEMO: RunningMemo = { seen: null, deadline: null, bar: null, startedMs: null, endMs: null }
+
+/**
+ * Fold one status read into the memo, at the time it was received.
+ *
+ * The expected end is the server's own declared deadline (``deadline_in_s``,
+ * on the server clock) added to the receipt time. The start is known only
+ * while that deadline is measured from the run's own start; once known it is
+ * kept.
+ */
+export function foldRunning(memo: RunningMemo, build: BuildStatus, receivedMs: number): RunningMemo {
+  if (memo.seen === build) return memo
+  const fraction = wholeBuildFraction(build)
+  const bar = fraction == null ? memo.bar : Math.max(memo.bar ?? 0, fraction)
+  const deadline = build.deadline ?? null
+  const fresh = deadline !== memo.deadline
+  const endMs =
+    fresh && deadline && typeof deadline.deadline_in_s === 'number'
+      ? receivedMs + deadline.deadline_in_s * 1000
+      : memo.endMs
+  let startedMs = memo.startedMs
+  if (
+    startedMs == null &&
+    deadline &&
+    deadline.anchor === 'RUN_STARTED' &&
+    typeof deadline.ceiling_s === 'number' &&
+    endMs != null
+  ) {
+    startedMs = endMs - deadline.ceiling_s * 1000
+  }
+  return { seen: build, deadline, bar, startedMs, endMs }
+}
+
+function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function agoWords(seconds: number): string {
+  if (seconds < 60) return 'just now'
+  const m = Math.round(seconds / 60)
+  return m === 1 ? '1 min ago' : `${m} min ago`
+}
+
+export interface RunningTimer {
+  key: 'started' | 'updated' | 'expected'
+  text: string
+}
+
+/** The three timers: started, last update, expected end. Each only when known. */
+export function runningTimers(build: BuildStatus, memo: RunningMemo, nowMs: number): RunningTimer[] {
+  const timers: RunningTimer[] = []
+  if (memo.startedMs != null) timers.push({ key: 'started', text: `Started ${clock(memo.startedMs)}` })
+  const age = eventAgeSeconds(build, nowMs)
+  if (age != null) timers.push({ key: 'updated', text: `Last update ${agoWords(age)}` })
+  if (memo.endMs != null) {
+    timers.push({
+      key: 'expected',
+      text: memo.endMs >= nowMs ? `Expected end ${clock(memo.endMs)}` : `Past its expected end (${clock(memo.endMs)})`,
+    })
+  }
+  return timers
 }
