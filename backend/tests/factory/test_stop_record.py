@@ -241,7 +241,7 @@ def _worker_codes() -> set:
 def _status_markers() -> set:
     from app.factory import build_jobs as bj
     from app.factory.build import ledger as lg
-    from app.factory.build.runner import STOPPED_BY_OWNER_REASON
+    from app.factory.build.runner import STAGE_TIME_CHECK_STOP, STOPPED_BY_OWNER_REASON
 
     return {
         bj.BUILD_THREAD_ORPHANED,
@@ -249,6 +249,7 @@ def _status_markers() -> set:
         lg.LEDGER_UNREADABLE,
         lg.LEDGER_EXTERNAL_NOTE_QUARANTINED,
         STOPPED_BY_OWNER_REASON,
+        STAGE_TIME_CHECK_STOP,
         "BUILD_THREAD_CRASHED",
         "build_thread_crashed",
         *bj._FAILURE_SUMMARIES,
@@ -357,7 +358,11 @@ def test_a_designed_handoff_is_not_the_last_failure(tmp_path, handed_off, reason
             None,
             ["try_again", "change_answers", "download_copy", "start_over"],
         ),
-        ({"state": "failed", "stop": {"kind": "user_stopped"}}, None, ["try_again", "download_copy", "start_over"]),
+        (
+            {"state": "failed", "stop": {"kind": "user_stopped"}},
+            None,
+            ["try_again", "download_copy", "change_answers", "start_over"],
+        ),
         ({"state": "not_found"}, None, ["check_again", "start_over"]),
         ({"state": "not_started"}, None, []),
         (None, None, []),
@@ -512,10 +517,16 @@ def test_the_session_level_says_whether_pilot_checks_are_offered(level, reaches)
     assert _level_reaches_pilot(SimpleNamespace(build_level=level)) is reaches
 
 
-@pytest.mark.parametrize("field", ["kind", "plain"])
+@pytest.mark.parametrize("field", ["kind", "plain", "check_plain", "restarted"])
 def test_the_not_found_state_carries_its_own_stop_record(field):
+    """A build the server cannot find names no check and no restart."""
     build = not_found_build_status()
-    expected = {"kind": fr.STOP_NOT_FOUND, "plain": fr.NOT_FOUND_PLAIN}[field]
+    expected = {
+        "kind": fr.STOP_NOT_FOUND,
+        "plain": fr.NOT_FOUND_PLAIN,
+        "check_plain": None,
+        "restarted": False,
+    }[field]
 
     assert build["state"] == "not_found"
     assert build["stop"][field] == expected
