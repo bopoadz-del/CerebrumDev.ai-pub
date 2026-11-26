@@ -21,6 +21,7 @@ tie-break between equal scores, never a gate.
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple
@@ -33,24 +34,38 @@ INFORMATIVE_SHARE = 0.1
 MIN_SHARED = 2
 #: Words shorter than this carry no meaning on their own ("id", "to", "of").
 MIN_WORD = 3
+#: Two words are one word when they share a common start of at least this
+#: many letters (more when both words change at the end) ...
+MIN_ROOT = 4
+#: ... and the longer one runs on past that common start by no more than
+#: this many letters (an inflection's tail, not a different word).
+MAX_TAIL = 3
 
 _WORD = re.compile(r"[a-z0-9]+")
 
 
-def _stem(word: str) -> str:
-    """One plural form folded to its singular, by spelling alone."""
-    if len(word) > 4 and word.endswith("ies"):
-        return word[:-3] + "y"
-    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
-        return word[:-1]
-    return word
-
-
 def words(text: Any) -> FrozenSet[str]:
     """The meaningful words of a text: lower case, split on anything that is
-    not a letter or digit (so ``snake_case`` ids split), plurals folded."""
+    not a letter or digit (so ``snake_case`` ids split)."""
     raw = _WORD.findall(str(text or "").lower())
-    return frozenset(_stem(w) for w in raw if len(w) >= MIN_WORD and not w.isdigit())
+    return frozenset(w for w in raw if len(w) >= MIN_WORD and not w.isdigit())
+
+
+def folds(a: str, b: str) -> bool:
+    """Whether two words are forms of one word, by their shape alone: a long
+    common start and short tails. No suffix is spelled anywhere, so the rule
+    holds for any language the Store's manifests are written in."""
+    if a == b:
+        return True
+    root = len(os.path.commonprefix([a, b]))
+    short_tail = min(len(a), len(b)) - root
+    long_tail = max(len(a), len(b)) - root
+    if short_tail == 0:
+        # One word is the other plus one letter ("role" / "roles").
+        return root >= MIN_ROOT and long_tail <= 1
+    # Both changed at the end: a longer common start, one letter given up
+    # by the shorter word ("policy" / "policies"; never "audit" / "audio").
+    return root > MIN_ROOT and short_tail <= 1 and long_tail <= MAX_TAIL
 
 
 def _field_text(fields: Any) -> List[str]:
@@ -100,7 +115,8 @@ class Candidate:
     shared: Tuple[str, ...]
     clears: bool
     #: Clears on strong evidence: the capability's id names the block, or
-    #: shares ``MIN_SHARED`` of its own words with the block's declaration.
+    #: shares ``MIN_SHARED`` of its own words with the block's declaration,
+    #: one of them a word of the block's own id (what the block IS).
     strong: bool = False
 
 
@@ -109,17 +125,36 @@ class StoreIndex:
 
     def __init__(self, manifests: Mapping[str, Mapping[str, Any]]):
         self.manifests: Dict[str, Mapping[str, Any]] = dict(manifests)
-        self.terms: Dict[str, FrozenSet[str]] = {
-            bid: declared_words(bid, m) for bid, m in sorted(self.manifests.items())
-        }
+        raw = {bid: declared_words(bid, m) for bid, m in sorted(self.manifests.items())}
+        # One root per word the Store declares, shortest form first, so a
+        # word's forms ("permit", "permits") count as one word.
+        self._roots: Dict[str, List[str]] = {}
+        self._canon: Dict[str, str] = {}
+        for word in sorted(set().union(*raw.values()) if raw else (), key=lambda w: (len(w), w)):
+            self._canon[word] = self._root_of(word, add=True)
+        self.terms: Dict[str, FrozenSet[str]] = {bid: self.fold(ws) for bid, ws in raw.items()}
         self.size = len(self.terms)
         self._df = _counts(self.terms.values())
         # How many blocks use a word in their description PROSE. A word many
         # blocks write in passing ("the", "from", "value") is filler, however
         # rarely a block names a field after it.
         self._prose_df = _counts(
-            words(m.get("description") or "") for m in self.manifests.values()
+            self.fold(words(m.get("description") or "")) for m in self.manifests.values()
         )
+
+    def _root_of(self, word: str, add: bool = False) -> str:
+        bucket = self._roots.setdefault(word[:MIN_ROOT], []) if add else self._roots.get(word[:MIN_ROOT], [])
+        for root in bucket:
+            if folds(root, word):
+                return root
+        if add:
+            bucket.append(word)
+        return word
+
+    def fold(self, ws: Iterable[str]) -> FrozenSet[str]:
+        """The words mapped onto the Store's roots; a word the Store never
+        declares in any form stays itself (and so can share nothing)."""
+        return frozenset(self._canon.get(w) or self._root_of(w) for w in ws)
 
     def idf(self, term: str) -> float:
         return math.log((self.size + 1) / (self._df.get(term, 0) + 1))
@@ -138,15 +173,16 @@ class StoreIndex:
         terms = self.terms.get(block_id)
         if terms is None:
             return None
-        own_cap = words(capability_id)
-        cap = own_cap | words(capability_text)
+        own_cap = self.fold(words(capability_id))
+        cap = own_cap | self.fold(words(capability_text))
         shared = tuple(sorted(t for t in cap & terms if self.informative(t)))
-        own = words(block_id)
+        own = self.fold(words(block_id))
         named = bool(own) and own <= own_cap
         anchors = sum(1 for t in shared if t in own_cap)
         score = sum(self.idf(t) for t in shared)
         clears = named or (anchors >= 1 and len(shared) >= MIN_SHARED)
-        return Candidate(block_id, score, shared, clears, named or anchors >= MIN_SHARED)
+        strong = named or (anchors >= MIN_SHARED and bool(own & own_cap & set(shared)))
+        return Candidate(block_id, score, shared, clears, strong)
 
     def clears(self, block_id: str, capability_id: Any, capability_text: Any = "") -> bool:
         found = self.candidate(block_id, capability_id, capability_text)

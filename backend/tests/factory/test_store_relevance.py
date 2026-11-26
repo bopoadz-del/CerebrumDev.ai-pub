@@ -13,7 +13,7 @@ import pytest
 
 from app.factory import product_architect, store_kits
 from app.factory.product_architect import _blueprint_from_llm_payload
-from app.factory.store_relevance import StoreIndex, declared_function, words
+from app.factory.store_relevance import StoreIndex, declared_function, folds, words
 
 # Twelve filler blocks so a word they all share is common (not informative)
 # and the INFORMATIVE_SHARE limit (10% of 14 blocks = 1.4) admits only words
@@ -154,10 +154,57 @@ def test_declared_function_is_one_honest_line(manifest, want) -> None:
 
 @pytest.mark.parametrize(
     "text, want",
-    [("Glider_Holdbacks and policies", {"glider", "holdback", "and", "policy"}), ("a b 42 ox", set())],
+    [("Glider_Holdbacks and policies", {"glider", "holdbacks", "and", "policies"}), ("a b 42 ox", set())],
 )
-def test_words_split_ids_and_fold_plurals(text, want) -> None:
+def test_words_split_ids_and_drop_short_words_and_numbers(text, want) -> None:
     assert words(text) == want
+
+
+@pytest.mark.parametrize(
+    "a, b, want",
+    [
+        ("holdback", "holdbacks", True),
+        ("policy", "policies", True),
+        ("quill", "quill", True),
+        ("permit", "permission", False),
+        ("card", "cart", False),
+        ("state", "statement", False),
+        # one word is the other run on: four letters in common, one more
+        ("tram", "trams", True),
+        ("tra", "tras", False),
+        ("plon", "plonks", False),
+        # both changed at the end: five letters in common, tails 1 and 3
+        ("plinky", "plinkies", True),
+        ("plinky", "plinkiest", False),
+        ("vexilo", "vexila", True),
+        ("vexil", "vexim", False),
+        ("vexa", "vexo", False),
+        ("zorbat", "zorbilt", False),
+    ],
+)
+def test_two_words_fold_by_shape_alone(a, b, want) -> None:
+    assert folds(a, b) is want and folds(b, a) is want
+
+
+@pytest.mark.parametrize(
+    "cap_id, text, block",
+    [
+        ("glider_holdbacks", "keep balance caps", "ledger_glider"),
+        ("quill_permits", "member rosters", "quill_roster"),
+    ],
+)
+def test_a_capability_in_another_form_of_the_blocks_words_still_clears(fake_store, cap_id, text, block) -> None:
+    cand = fake_store.candidate(block, cap_id, text)
+    assert cand is not None and cand.clears and cand.strong
+
+
+@pytest.mark.parametrize(
+    "cap_id, block",
+    [("glidepath_permission", "quill_roster"), ("holder_glimmer", "ledger_glider")],
+)
+def test_a_word_that_only_starts_alike_does_not_fold_into_a_fit(fake_store, cap_id, block) -> None:
+    cand = fake_store.candidate(block, cap_id, "")
+    assert cand is not None and not cand.clears
 
 
 # --- the draft rule -----------------------------------------------------------
@@ -247,3 +294,29 @@ def test_the_model_is_shown_each_blocks_declared_function(monkeypatch, fake_stor
     system = seen[0]["content"]
     want = f"- {block}: {declared_function(block, _STORE[block])}  [certified]"
     assert want in system
+
+
+_OFF_ID = {
+    "nimbus_helper": {"name": "Nimbus helper", "description": "Answers sprocket lattice questions"},
+    "corvid_aide": {"name": "Corvid aide", "description": "Explains brindle tamarack readings"},
+}
+
+
+@pytest.mark.parametrize(
+    "block, cap_id",
+    [("nimbus_helper", "sprocket_lattice_view"), ("corvid_aide", "brindle_tamarack_log")],
+)
+def test_a_block_matching_only_by_incidental_words_is_not_bound_unasked(monkeypatch, block, cap_id) -> None:
+    """Two of the capability's id words in the block's prose, none of them a
+    word of the block's own id: a model's pick of it is kept, but it is not
+    added when nobody chose it."""
+    store = {**_FILLER, **_OFF_ID}
+    monkeypatch.setattr(store_kits, "block_manifests", lambda store_root=None: dict(store))
+    monkeypatch.setattr(store_kits, "kit_closure", lambda vertical, *a, **k: frozenset())
+    cand = StoreIndex(store).candidate(block, cap_id, "")
+    assert cand is not None and cand.clears and not cand.strong
+    dual = sorted(store)
+    unasked = _blueprint_from_llm_payload(_payload((cap_id, "show it", [])), "a brief", None, dual)
+    picked = _blueprint_from_llm_payload(_payload((cap_id, "show it", [block])), "a brief", None, dual)
+    assert _bound(unasked) == {cap_id: []}
+    assert _bound(picked) == {cap_id: [block]}
