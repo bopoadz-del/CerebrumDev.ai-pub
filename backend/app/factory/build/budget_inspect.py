@@ -57,8 +57,10 @@ NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD = 0.5
 #: class wall is kept, so no class can get less than another by accident.
 WRITER_FIRST_PASS_MIN_S = 7200.0
 #: Room above the first pass for the contract gate, grader and a rework
-#: round before the hard ceiling.
-CEILING_ROOM_S = 3600.0
+#: round (30 min, one granted fix) before the hard ceiling. Bounded above:
+#: the post-deploy smoke jobs wait ready + ceiling + Store-gate wall, and
+#: their job timeout must outlast that (``test_release_cycle``).
+CEILING_ROOM_S = 1800.0
 #: Last-resort ceiling. Never the default; never granted silently.
 #: Computed from the first-pass floor, so raising the floor moves it too.
 #:

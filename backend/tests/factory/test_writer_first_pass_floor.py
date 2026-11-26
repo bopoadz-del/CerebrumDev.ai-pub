@@ -33,7 +33,7 @@ BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "up
 
 @pytest.mark.parametrize(
     "name, value",
-    [("WRITER_FIRST_PASS_MIN_S", 7200.0), ("CEILING_ROOM_S", 3600.0), ("CEILING_S", 10800.0)],
+    [("WRITER_FIRST_PASS_MIN_S", 7200.0), ("CEILING_ROOM_S", 1800.0), ("CEILING_S", 9000.0)],
 )
 def test_the_floor_is_two_hours_and_the_ceiling_is_floor_plus_room(name, value):
     assert getattr(budget_inspect, name) == value
@@ -99,7 +99,7 @@ def test_a_default_budget_holds_the_first_pass_and_the_one_ceiling(kwargs, phase
     assert b.hard_ceiling_s == ceiling
 
 
-@pytest.mark.parametrize("class_wall, expected", [(None, 7200.0), (9000.0, 9000.0)])
+@pytest.mark.parametrize("class_wall, expected", [(None, 7200.0), (8400.0, 8400.0)])
 def test_a_runner_with_no_budget_gets_the_floored_class_wall(
     monkeypatch, tmp_path, class_wall, expected
 ):
@@ -135,7 +135,7 @@ def _floor_run(monkeypatch, tmp_path, *, auto_pilot: str):
 
 @pytest.mark.parametrize(
     "auto_pilot, class_wall, expected",
-    [("0", None, 7200.0), ("1", None, 7200.0), ("0", 9000.0, 9000.0)],
+    [("0", None, 7200.0), ("1", None, 7200.0), ("0", 8400.0, 8400.0)],
 )
 def test_the_floor_build_path_uses_the_same_floor(
     monkeypatch, tmp_path, auto_pilot, class_wall, expected
@@ -159,3 +159,20 @@ def test_an_operator_pinned_wall_is_honoured_unchanged(monkeypatch, tmp_path, pi
     budget = _floor_run(monkeypatch, tmp_path, auto_pilot="0")
     assert budget.wall_clock_s == float(pinned)
     assert budget.phase_wall_clock_s == float(pinned)
+
+
+@pytest.mark.parametrize("floor_s, room_s", [(7200.0, 1800.0), (6000.0, 900.0)])
+def test_the_runner_reads_the_floor_and_ceiling_when_a_budget_is_made(
+    monkeypatch, floor_s, room_s
+):
+    """``_first_pass_floor_s`` and ``_ceiling_s`` read ``budget_inspect`` at
+    call time, so a default ``BuildBudget`` follows the floor it names."""
+    from app.factory.build import runner
+
+    monkeypatch.setattr(budget_inspect, "WRITER_FIRST_PASS_MIN_S", floor_s)
+    monkeypatch.setattr(budget_inspect, "CEILING_S", floor_s + room_s)
+    assert runner._first_pass_floor_s() == floor_s
+    assert runner._ceiling_s() == floor_s + room_s
+    b = BuildBudget()
+    assert b.phase_wall_clock_s == floor_s
+    assert b.hard_ceiling_s == floor_s + room_s
