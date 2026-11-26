@@ -1822,7 +1822,9 @@ test('Floor 510s coder call inside the 40 min wall stays Building — never STOP
   await page.goto('/')
   await expect(page.getByTestId('floor-coder-takeover')).toBeVisible({ timeout: 20_000 })
   await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
-  await expect(page.getByText(/still inside 2400s watchdog/)).toBeVisible()
+  // PR-12 (L5-14): the running card is one line; the watchdog heartbeat is
+  // not on its face. A model call inside the wall still reads as running.
+  await expect(page.getByTestId('floor-running-line')).toBeVisible()
   await expect(page.getByRole('heading', { name: /^Stopped/ })).toHaveCount(0)
   await expect(page.getByText(/coder LLM timed out/)).toHaveCount(0)
   await expectNoGoldFinished(page)

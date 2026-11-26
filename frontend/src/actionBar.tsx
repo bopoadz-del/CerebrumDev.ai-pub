@@ -41,6 +41,7 @@ const TEST_IDS: Record<ActionId, string> = {
   download_platform: 'floor-download-platform',
   run_pilot: 'continue-to-pilot',
   open_repo: 'floor-repo-link',
+  check_again: 'floor-check-again',
 }
 
 export function actionTestId(id: ActionId): string {
