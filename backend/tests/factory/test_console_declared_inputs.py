@@ -46,7 +46,8 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
         _block()
         + "\nconst CALLS = " + json.dumps(calls) + ";\n"
         + "const FNS = { capIdOf, resolveRef, pathMatches, fieldsFromSchema, declaredFields,"
-        + " choicesOf, kindOf, valueOf };\n"
+        + " choicesOf, kindOf, valueOf, unwrap, rangeOf,"
+        + " recordFrom: (fields, values) => recordFrom(fields, (f) => values[f.name]) };\n"
         + "const out = CALLS.map((c) => { const r = FNS[c.fn](...c.args);"
         + " return r === undefined ? '<undefined>' : r; });\n"
         + "process.stdout.write(JSON.stringify(out, (k, v) => (v === undefined ? '<undefined>' : v)));\n"
@@ -251,3 +252,138 @@ class TestEachControlSendsTheDeclaredType:
     )
     def test_a_control_sends_the_declared_type(self, field, raw, sent, tmp_path):
         assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [sent]
+
+    @pytest.mark.parametrize(
+        "field, kind",
+        [
+            ({"name": "a", "type": "list"}, "json"),
+            ({"name": "b", "type": "Dict"}, "json"),
+            ({"name": "c", "type": "array"}, "json"),
+            ({"name": "d", "type": "object"}, "json"),
+            ({"name": "e", "type": "string"}, "text"),
+        ],
+    )
+    def test_a_list_or_object_field_is_a_json_control(self, field, kind, tmp_path):
+        assert _run([{"fn": "kindOf", "args": [field]}], tmp_path) == [kind]
+
+    @pytest.mark.parametrize(
+        "field, raw, sent",
+        [
+            ({"name": "l", "type": "list"}, '["x", "y"]', ["x", "y"]),
+            ({"name": "o", "type": "dict"}, '{"k": 1}', {"k": 1}),
+            ({"name": "l", "type": "array"}, "x, y", "x, y"),
+            ({"name": "o", "type": "object"}, "", "<undefined>"),
+        ],
+    )
+    def test_a_json_control_sends_parsed_json_or_what_was_typed(self, field, raw, sent, tmp_path):
+        assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [sent]
+
+    @pytest.mark.parametrize(
+        "field, hint",
+        [
+            ({"name": "n", "type": "int", "min": 0}, "at least 0"),
+            ({"name": "n", "type": "int", "max": 9}, "at most 9"),
+            ({"name": "n", "type": "int", "min": 1, "max": 5}, "1 to 5"),
+            ({"name": "n", "type": "int", "min": None, "max": ""}, "number"),
+            ({"name": "n", "type": "int"}, "number"),
+        ],
+    )
+    def test_a_number_box_shows_its_declared_bounds(self, field, hint, tmp_path):
+        assert _run([{"fn": "rangeOf", "args": [field]}], tmp_path) == [hint]
+
+    @pytest.mark.parametrize(
+        "fields, values, record",
+        [
+            (
+                [{"name": "room", "allowed_values": ["a", "b"], "required": True},
+                 {"name": "note"}, {"name": "n", "type": "int"}],
+                {"room": "", "note": "", "n": " 3 "},
+                {"n": 3},
+            ),
+            (
+                [{"name": "room", "allowed_values": ["a", "b"]}, {"name": "paid", "type": "bool"},
+                 {"name": "tags", "type": "list"}],
+                {"room": "b", "paid": False, "tags": '["x"]'},
+                {"room": "b", "tags": ["x"]},
+            ),
+            ([{"name": "gone"}], {}, {}),
+        ],
+    )
+    def test_a_record_holds_only_what_was_entered(self, fields, values, record, tmp_path):
+        assert _run([{"fn": "recordFrom", "args": [fields, values]}], tmp_path) == [record]
+
+
+OPTIONAL_DOC = {
+    "components": {
+        "schemas": {
+            "Kind": {"type": "string", "enum": ["open", "closed"]},
+            "Body": {
+                "type": "object",
+                "required": ["n"],
+                "properties": {
+                    "n": {"anyOf": [{"type": "integer", "maximum": 9}, {"type": "null"}]},
+                    "k": {"anyOf": [{"$ref": "#/components/schemas/Kind"}, {"type": "null"}]},
+                    "t": {"type": ["number", "null"], "minimum": 2},
+                    "either": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
+                },
+            },
+            "Extra": {"type": "object", "required": ["z"], "properties": {"z": {"type": "boolean"}}},
+        }
+    }
+}
+
+
+class TestTheStandardSchemaShapesAreRead:
+    @pytest.mark.parametrize(
+        "schema",
+        [{"$ref": "#/components/schemas/Body"}, {"allOf": [{"$ref": "#/components/schemas/Body"}]}],
+    )
+    def test_optional_fields_keep_their_type_bounds_and_choices(self, schema, tmp_path):
+        [fields] = _run([{"fn": "fieldsFromSchema", "args": [OPTIONAL_DOC, schema]}], tmp_path)
+        by = {f["name"]: f for f in fields}
+        assert sorted(by) == ["either", "k", "n", "t"]
+        assert by["n"]["type"] == "integer" and by["n"]["max"] == 9 and by["n"]["required"] is True
+        assert by["k"]["allowed_values"] == ["open", "closed"] and by["k"]["required"] is False
+        assert by["t"]["type"] == "number" and by["t"]["min"] == 2
+        # Two real alternatives are not resolved into either one.
+        assert by["either"]["type"] == "string" and by["either"]["allowed_values"] == "<undefined>"
+
+    @pytest.mark.parametrize(
+        "schema, names, required",
+        [
+            ({"allOf": [{"$ref": "#/components/schemas/Body"}, {"$ref": "#/components/schemas/Extra"}]},
+             ["either", "k", "n", "t", "z"], ["n", "z"]),
+            ({"allOf": [{"$ref": "#/components/schemas/Extra"}],
+              "properties": {"own": {"type": "string"}}, "required": ["own"]},
+             ["own", "z"], ["own", "z"]),
+        ],
+    )
+    def test_all_of_members_are_merged(self, schema, names, required, tmp_path):
+        [fields] = _run([{"fn": "fieldsFromSchema", "args": [OPTIONAL_DOC, schema]}], tmp_path)
+        assert sorted(f["name"] for f in fields) == names
+        assert sorted(f["name"] for f in fields if f["required"]) == required
+
+    @pytest.mark.parametrize(
+        "node, expected",
+        [
+            ({"anyOf": [{"type": "null"}, {"type": "integer"}], "title": "N"},
+             {"title": "N", "type": "integer"}),
+            ({"type": ["string", "null"]}, {"type": "string"}),
+            ({"type": ["string", "integer"]}, {"type": "<undefined>"}),
+            ({"anyOf": [{"type": "null"}]}, {"anyOf": [{"type": "null"}]}),
+        ],
+    )
+    def test_only_a_null_branch_is_dropped(self, node, expected, tmp_path):
+        assert _run([{"fn": "unwrap", "args": [{}, node]}], tmp_path) == [expected]
+
+    @pytest.mark.parametrize(
+        "fields, expected",
+        [
+            ([{"type": "int"}, {"name": ""}, None, {"name": "ok"}], ["ok"]),
+            (["x", "y"], ["x", "y"]),
+            ([{"name": 3}, "z", ""], ["z"]),
+        ],
+    )
+    def test_named_entries_only_and_plain_names_count(self, fields, expected, tmp_path):
+        [got] = _run([{"fn": "declaredFields", "args": [{"id": "c", "fields": fields}, {}, "c"]}], tmp_path)
+        assert _names(got) == expected

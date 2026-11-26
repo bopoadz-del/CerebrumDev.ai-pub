@@ -932,12 +932,48 @@ function pathMatches(template, path) {
     || (seg.length > 2 && seg.charAt(0) === "{" && seg.charAt(seg.length - 1) === "}" && b[i] !== ""));
 }
 
+// The one schema a node stands for: $ref followed, an Optional's null branch
+// (anyOf / oneOf beside {type: "null"}, or a type list holding "null")
+// dropped, and allOf members merged. Two real alternatives stay unresolved.
+function unwrap(doc, node, depth) {
+  depth = depth || 0;
+  node = resolveRef(doc, node);
+  if (!node || typeof node !== "object" || depth > 8) return node;
+  for (const key of ["anyOf", "oneOf"]) {
+    if (!Array.isArray(node[key])) continue;
+    const real = node[key].map((n) => resolveRef(doc, n)).filter((n) => n && n.type !== "null");
+    if (real.length !== 1) continue;
+    const rest = Object.assign({}, node);
+    delete rest[key];
+    return unwrap(doc, Object.assign(rest, real[0]), depth + 1);
+  }
+  if (Array.isArray(node.allOf)) {
+    const merged = Object.assign({}, node, { properties: Object.assign({}, node.properties || {}) });
+    merged.required = Array.isArray(node.required) ? node.required.slice() : [];
+    delete merged.allOf;
+    node.allOf.forEach((part) => {
+      const p = unwrap(doc, part, depth + 1) || {};
+      Object.keys(p).forEach((k) => {
+        if (k !== "properties" && k !== "required" && merged[k] === undefined) merged[k] = p[k];
+      });
+      Object.assign(merged.properties, p.properties || {});
+      if (Array.isArray(p.required)) merged.required = merged.required.concat(p.required);
+    });
+    return merged;
+  }
+  if (Array.isArray(node.type)) {
+    const types = node.type.filter((t) => t !== "null");
+    return Object.assign({}, node, { type: types.length === 1 ? types[0] : undefined });
+  }
+  return node;
+}
+
 function fieldsFromSchema(doc, schema) {
-  schema = resolveRef(doc, schema);
+  schema = unwrap(doc, schema);
   const props = (schema && schema.properties && typeof schema.properties === "object") ? schema.properties : {};
   const required = Array.isArray(schema && schema.required) ? schema.required : [];
   return Object.keys(props).map((name) => {
-    const p = resolveRef(doc, props[name]) || {};
+    const p = unwrap(doc, props[name]) || {};
     return { name: name, type: p.type || "string", required: required.indexOf(name) !== -1,
              allowed_values: p.enum, min: p.minimum, max: p.maximum };
   });
@@ -946,7 +982,8 @@ function fieldsFromSchema(doc, schema) {
 function declaredFields(item, doc, cap) {
   if (item && typeof item === "object") {
     if (Array.isArray(item.fields)) {
-      return item.fields.filter((f) => f && typeof f.name === "string" && f.name !== "");
+      return item.fields.map((f) => (typeof f === "string" ? { name: f } : f))
+        .filter((f) => f && typeof f.name === "string" && f.name !== "");
     }
     if (item.input_schema && typeof item.input_schema === "object") {
       return fieldsFromSchema(doc, item.input_schema);
@@ -970,17 +1007,28 @@ function choicesOf(field) {
 
 const NUMERIC = ["int", "integer", "float", "number", "decimal"];
 const BOOLEAN = ["bool", "boolean"];
+const STRUCTURED = ["list", "dict", "array", "object", "tuple", "set"];
 function kindOf(field) {
   if (choicesOf(field).length) return "choice";
   const t = String(field.type || "").toLowerCase();
   if (NUMERIC.indexOf(t) !== -1) return "number";
   if (BOOLEAN.indexOf(t) !== -1) return "boolean";
+  if (STRUCTURED.indexOf(t) !== -1) return "json";
   return "text";
 }
 
+// The hint a number box shows: the declared bounds, or just "number".
+function rangeOf(field) {
+  const has = (v) => v !== undefined && v !== null && v !== "";
+  if (has(field.min) && has(field.max)) return field.min + " to " + field.max;
+  if (has(field.min)) return "at least " + field.min;
+  if (has(field.max)) return "at most " + field.max;
+  return "number";
+}
+
 // What the form sends for one control. An empty optional control sends
-// nothing; a value that does not parse is sent as typed so the product's
-// own validation answers it honestly rather than the console hiding it.
+// nothing. The console never judges a value: one that does not parse as the
+// declared type is sent as typed, and the product's own validation answers.
 function valueOf(field, raw) {
   const kind = kindOf(field);
   if (kind === "boolean") return raw === true ? true : (field.required ? false : undefined);
@@ -993,7 +1041,21 @@ function valueOf(field, raw) {
     const hit = choicesOf(field).find((v) => String(v) === String(raw));
     return hit === undefined ? raw : hit;
   }
+  if (kind === "json") {
+    try { return JSON.parse(String(raw)); } catch (e) { return raw; }
+  }
   return raw;
+}
+
+// The record one Create sends: each declared field read from its control by
+// read(field) and passed through valueOf; a field valued undefined is left out.
+function recordFrom(fields, read) {
+  const record = {};
+  fields.forEach((f) => {
+    const value = valueOf(f, read(f));
+    if (value !== undefined) record[f.name] = value;
+  });
+  return record;
 }
 // <</declared-inputs>>
 
@@ -1002,15 +1064,23 @@ function controlFor(field) {
   let el;
   if (kind === "choice") {
     el = document.createElement("select");
-    if (!field.required) el.appendChild(new Option("", ""));
+    // Always a blank first option, required or not: an untouched choice sends
+    // nothing, so no record gets a value nobody picked.
+    el.appendChild(new Option("", ""));
     choicesOf(field).forEach((v) => el.appendChild(new Option(String(v), String(v))));
+  } else if (kind === "json") {
+    el = document.createElement("textarea");
+    el.rows = 2;
+    el.cols = 30;
+    el.placeholder = "JSON";
   } else {
     el = document.createElement("input");
-    el.type = kind === "number" ? "number" : (kind === "boolean" ? "checkbox" : "text");
+    // A number box is a text box: a browser number input empties what does
+    // not parse, and the console sends what the user typed.
+    el.type = kind === "boolean" ? "checkbox" : "text";
     if (kind === "number") {
-      el.step = "any";
-      if (field.min !== undefined && field.min !== null) el.min = String(field.min);
-      if (field.max !== undefined && field.max !== null) el.max = String(field.max);
+      el.inputMode = "decimal";
+      el.placeholder = rangeOf(field);
     }
   }
   el.dataset.f = field.name;
@@ -1059,17 +1129,16 @@ function renderCapability(item) {
       try { record = raw.value.trim() ? JSON.parse(raw.value) : {}; }
       catch (e) { out.textContent = "The body is not valid JSON: " + e.message; return; }
     } else {
-      fields.forEach((f) => {
+      record = recordFrom(fields, (f) => {
         const input = form.querySelector('[data-f="' + CSS.escape(f.name) + '"]');
-        if (!input) return;
-        const value = valueOf(f, input.type === "checkbox" ? input.checked : input.value);
-        if (value !== undefined) record[f.name] = value;
+        if (!input) return undefined;
+        return input.type === "checkbox" ? input.checked : input.value;
       });
     }
-    const res = await call("/v1/" + cap, { method: "POST", body: JSON.stringify(record) });
+    const res = await call("/v1/" + encodeURIComponent(cap), { method: "POST", body: JSON.stringify(record) });
     show(out, res);
   };
-  card.querySelector('[data-act="list"]').onclick = async () => show(out, await call("/v1/" + cap));
+  card.querySelector('[data-act="list"]').onclick = async () => show(out, await call("/v1/" + encodeURIComponent(cap)));
   $("caps").appendChild(card);
 }
 
