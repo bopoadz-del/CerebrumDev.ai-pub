@@ -927,6 +927,25 @@ def test_gitignore_is_read_the_way_git_reads_it(tmp_path, files, kept, hidden):
         ("m/**\n", {"mm.py"}, {"m/1/2/3.py", "m/top.py"}),
         # a POSIX class names its characters; a reversed range matches nothing
         ("[[:digit:]]*.py\n[z-a].py\n", {"a1.py", "b.py"}, {"1a.py", "9.py"}),
+        # a run of three or more stars bounded by the edge and / is **
+        ("***/t.py\n", {"tt.py", "a/u.py"}, {"t.py", "a/t.py", "a/b/t.py"}),
+        ("****/q.py\n", {"qq.py"}, {"q.py", "a/q.py", "a/b/q.py"}),
+        ("a/***/b.py\n", {"x/a/b.py", "a/c.py"}, {"a/b.py", "a/x/b.py", "a/x/y/b.py"}),
+        ("w/***\n", {"ww.py"}, {"w/1.py", "w/1/2.py"}),
+        # re-including the directory does not re-include files the run took
+        ("v/***\n!v/1/\n", {"vv.py"}, {"v/1.py", "v/1/2.py"}),
+        ("v/*\n!v/1/\n", {"vv.py", "v/1/2.py"}, {"v/1.py"}),
+        # an escaped / does not bound the run: it stays one segment deep
+        ("**\\/e.py\n", {"ee.py", "e.py"}, {"d/e.py"}),
+        # a run not bounded on both sides is a plain * and never crosses /
+        ("r***s.py\nx/***y.py\n", {"r/s.py", "x/z/y.py"}, {"rxs.py", "x/zy.py"}),
+        ("g***/h.py\n", {"g/k/h.py", "h.py"}, {"g/h.py", "gk/h.py"}),
+        # a positive class never matches /
+        ("p[/a]q.py\n", {"p/q.py", "pbq.py"}, {"paq.py"}),
+        # an unknown POSIX class makes the pattern match nothing
+        ("u[[:foo:]]x.py\n", {"ufx.py", "u1x.py", "uf]x.py"}, set()),
+        # ^ negates a class as ! does
+        ("[^a]b.py\n[^0-9]z.py\n", {"ab.py", "1z.py"}, {"cb.py", "az.py"}),
     ],
 )
 def test_gitignore_edge_patterns_match_git(tmp_path, gitignore, kept, hidden):
@@ -948,6 +967,78 @@ def test_gitignore_edge_patterns_match_git(tmp_path, gitignore, kept, hidden):
     assert not (hidden & authored)
     git_kept = {p for p in _git_untracked(root, tmp_path) if is_exported(Path(p))}
     assert authored == git_kept
+
+
+#: Where a run of stars can sit in a ``.gitignore`` line: alone, leading,
+#: in the middle, trailing, beside a plain character, beside an escaped
+#: ``/``, after an anchoring ``/``, before a directory-only ``/`` and twice.
+_STAR_TEMPLATES = (
+    "{s}",
+    "{s}/t.py",
+    "{s}t.py",
+    "a/{s}/t.py",
+    "a{s}/t.py",
+    "a/{s}t.py",
+    "a{s}t.py",
+    "a/{s}",
+    "a{s}",
+    "{s}\\/t.py",
+    "a/{s}\\/t.py",
+    "a\\/{s}/t.py",
+    "/{s}/t.py",
+    "a/{s}/",
+    "{s}/b/{s}/t.py",
+)
+#: One tree under every case: names at depth 0 to 3 that each template can
+#: take or leave.
+_STAR_TREE = (
+    "t.py",
+    "at.py",
+    "u.py",
+    "a/t.py",
+    "a/xt.py",
+    "a/u.py",
+    "ax/t.py",
+    "a/b/t.py",
+    "a/b/c/t.py",
+    "b/t.py",
+    "b/a/t.py",
+    "x/a/b/t.py",
+    "x/b/y/t.py",
+)
+
+
+@pytest.mark.parametrize("stars", [1, 2, 3, 4, 5])
+def test_star_runs_at_every_position_match_git(tmp_path, stars):
+    """Generated differential against real ``git ls-files --others
+    --exclude-standard``: every template above with a run of ``stars``
+    stars, each in its own directory with its own ``.gitignore`` over the
+    same tree. Any run bounded by ``/`` (escaped or not) or the pattern's
+    edge on both sides crosses directories; any other run is one ``*``."""
+    from app.factory.build.builds_push import is_exported
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    root = tmp_path / "tree"
+    root.mkdir()
+    for index, template in enumerate(_STAR_TEMPLATES):
+        case = root / f"c{index}"
+        case.mkdir()
+        (case / ".gitignore").write_text(template.format(s="*" * stars) + "\n", encoding="utf-8")
+        for rel in _STAR_TREE:
+            (case / rel).parent.mkdir(parents=True, exist_ok=True)
+            (case / rel).write_text("x", encoding="utf-8")
+    authored = set(iter_authored_source(root))
+    git_kept = {p for p in _git_untracked(root, tmp_path) if is_exported(Path(p))}
+    differing = sorted(
+        (_STAR_TEMPLATES[int(p.split("/", 1)[0][1:])], p.split("/", 1)[1])
+        for p in authored ^ git_kept
+        if p.split("/", 1)[0][1:].isdigit()
+    )
+    assert differing == []
+    assert authored == git_kept
+    # the tree is not trivially all-kept or all-hidden
+    assert len(git_kept) > len(_STAR_TEMPLATES)
+    assert len(git_kept) < len(_STAR_TEMPLATES) * (len(_STAR_TREE) + 1)
 
 
 @pytest.mark.parametrize(

@@ -2809,28 +2809,34 @@ def _bracket_class(pattern: str, start: int) -> Tuple[str, int]:
 def _gitignore_regex(pattern: str) -> "re.Pattern[str]":
     """One ``.gitignore`` pattern as git matches it (gitignore(5)).
 
-    ``*`` and ``?`` and a ``[...]`` class never match ``/``; a leading
-    ``**/`` matches in every directory, a middle ``/**/`` matches zero or
-    more directories and a trailing ``/**`` matches everything inside; any
-    other run of stars is a plain ``*``. A backslash makes the next
+    ``*`` and ``?`` and a ``[...]`` class never match ``/``. A run of two or
+    more stars that starts a segment (the pattern's start or after ``/``)
+    and ends one (the pattern's end, ``/`` or an escaped ``/``) crosses
+    directories, as git's wildmatch reads it: followed by ``/`` it matches
+    zero or more directories, followed by an escaped ``/`` one or more, and
+    at the end everything inside. Any other run of stars is a plain ``*``. A backslash makes the next
     character literal; a trailing lone backslash or an unclosed ``[`` makes
     the pattern match nothing (git's wildmatch aborts on both)."""
     out: List[str] = []
     i, n = 0, len(pattern)
     while i < n:
-        at_segment = i == 0 or pattern[i - 1] == "/"
-        if at_segment and pattern.startswith("**/", i):
-            out.append("(?:[^/]*/)*")
-            i += 3
-            continue
-        if pattern.startswith("/**", i) and i + 3 == n:
-            out.append("/.*")
-            i += 3
-            continue
         char = pattern[i]
         if char == "*":
+            at_segment = i == 0 or pattern[i - 1] == "/"
+            run_start = i
             while i < n and pattern[i] == "*":
                 i += 1
+            if at_segment and i - run_start >= 2:
+                if i == n:
+                    out.append(".*")
+                    continue
+                if pattern[i] == "/":
+                    out.append("(?:[^/]*/)*")
+                    i += 1
+                    continue
+                if pattern.startswith("\\/", i):
+                    out.append(".*")
+                    continue
             out.append("[^/]*")
             continue
         if char == "?":
