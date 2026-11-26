@@ -448,6 +448,12 @@ describe('OPUSGRADE F295 ffbfc04: the guards the grader found untested', () => {
     expect(ranForWords(seconds)).toBe(words)
   })
 
+  // TEST DEBT (OPUSGRADE F295 4befa69): a time that is not a number is no
+  // time at all, even when it would read as one.
+  it.each([['120'], [true], [{}], [[90]]])('ranForWords(%j) = null', (seconds) => {
+    expect(ranForWords(seconds)).toBeNull()
+  })
+
   it.each([
     [45, 'Writing the code ran out of time after less than a minute.'],
     [75, 'Writing the code ran out of time after about 1 minute.'],
