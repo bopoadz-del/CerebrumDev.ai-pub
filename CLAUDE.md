@@ -19,4 +19,6 @@ everything at once and then start trial and error.
 
 The core is chosen by rule from what the Store declares and what the brief
 needs. No product, kit, document or formula is named in Factory code to pick
-it.
+it. The core path is switched on by a project setting, never by a
+project's name in code. The single reference for this design is the
+advisor's DESIGN_26NOV_HARNESSED_LLM.md (26 Nov).
