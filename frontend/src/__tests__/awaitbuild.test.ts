@@ -60,6 +60,15 @@ describe('awaitBuild', () => {
     expect(result.state).toBe('succeeded')
     expect(result.authorship?.agent_written).toBe(2)
   })
+
+  // OPUSGRADE F295 5698ca8, fault 3 (M7): polling again cannot find a build
+  // the server does not have; awaitBuild returns it after one read.
+  it('returns a build the server cannot find after one read, as not_found', async () => {
+    const spy = vi.spyOn(product, 'buildStatus').mockResolvedValue({ ok: true, build: { state: 'not_found' } })
+    const result = await awaitBuild('sess', undefined, { intervalMs: 1, timeoutMs: 200 })
+    expect(result.state).toBe('not_found')
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('watchBuildStatus', () => {
@@ -145,5 +154,25 @@ describe('watchBuildStatus', () => {
     await watchBuildStatus('sess', (s) => seen.push(s), { intervalMs: 1 })
     expect(seen).toHaveLength(1)
     expect(seen[0]?.state).toBe('stalled')
+  })
+})
+
+describe('watchBuildStatus: a build the server cannot find', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // Fault 3 (M8): the watch stops on not_found by itself, without an abort.
+  it('stops after the one read that says not_found', async () => {
+    const ac = new AbortController()
+    const seen: string[] = []
+    const spy = vi.spyOn(product, 'buildStatus').mockResolvedValue({ ok: true, build: { state: 'not_found' } })
+    const watching = watchBuildStatus('sess', (s) => seen.push(s.state), { intervalMs: 1, signal: ac.signal })
+    const ended = await Promise.race([watching.then(() => 'ended'), new Promise((r) => setTimeout(() => r('still polling'), 100))])
+    ac.abort()
+    await watching
+    expect(ended).toBe('ended')
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(seen).toEqual(['not_found'])
   })
 })

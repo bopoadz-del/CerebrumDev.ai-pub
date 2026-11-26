@@ -183,4 +183,72 @@ describe('stopKind', () => {
     expect(stopKind(BUILDS.checkFailed)).toBe('check')
     expect(stopKind(BUILDS.timedOut)).toBe('our_side')
   })
+
+  // OPUSGRADE F295 5698ca8, fault 4: the record's kind decides on its own,
+  // with no other field (no coder_control, no stopped flag) to lean on.
+  it.each([
+    ['user_stopped', 'by_you'],
+    ['check_failed', 'check'],
+    ['time_ran_out', 'our_side'],
+    ['service_interrupted', 'our_side'],
+    ['nothing_produced', 'our_side'],
+    ['no_progress', 'our_side'],
+  ])('the stop record kind %s alone reads as %s', (kind, expected) => {
+    expect(stopKind({ state: 'failed', stop: { kind } } as BuildStatus)).toBe(expected)
+  })
+
+  it('the record overrides a stop flag that would say otherwise', () => {
+    expect(stopKind({ state: 'failed', stopped: STOP_DECISION, stop: { kind: 'user_stopped' } } as BuildStatus)).toBe('by_you')
+    expect(stopKind({ state: 'failed', coder_control: 'stop', stop: { kind: 'time_ran_out' } } as BuildStatus)).toBe('our_side')
+  })
+})
+
+/**
+ * The server's allowed actions for each stop state (floor_actions.
+ * allowed_build_actions). The page offers exactly that set: every button it
+ * draws is one the server accepts, and every action the server accepts is on
+ * screen. "Copy error report" sends nothing and is the page's own.
+ */
+describe('buildActions: the server action list decides', () => {
+  const STOPPED = ['try_again', 'download_copy', 'change_answers', 'start_over']
+  const MATRIX: [string, Partial<BuildStatus>, string[]][] = [
+    ['time ran out', { state: 'failed', stop: { kind: 'time_ran_out' } }, STOPPED],
+    ['check failed', { state: 'failed', stop: { kind: 'check_failed' } }, ['try_again', 'change_answers', 'download_copy', 'start_over']],
+    ['user stopped', { state: 'failed', stop: { kind: 'user_stopped' } }, STOPPED],
+    ['service interrupted', { state: 'failed', stop: { kind: 'service_interrupted' } }, STOPPED],
+    ['nothing produced', { state: 'failed', stop: { kind: 'nothing_produced' } }, STOPPED],
+    ['stall', { state: 'stalled', stop: { kind: 'no_progress' } }, ['try_again', 'start_over']],
+    ['stall seen as failed by awaitBuild', { state: 'failed', stop: { kind: 'no_progress' } }, ['try_again', 'start_over']],
+    ['not found', { state: 'not_found', stop: { kind: 'not_found' } }, ['check_again', 'start_over']],
+    ['running', { state: 'building' }, ['stop']],
+    ['waiting on the owner', { state: 'building', n3_waiting: true } as Partial<BuildStatus>, ['try_again']],
+  ]
+
+  it.each(MATRIX)('%s: offered == allowed', (_name, build, allowed) => {
+    const plan = buildActions({ build: { ...build, actions: allowed } as BuildStatus })
+    const offered = [...plan.bar, ...plan.more].map((a) => a.id).filter((id) => id !== 'copy_report')
+    expect(new Set(offered)).toEqual(new Set(allowed))
+    // One primary whenever a safe action is offered; never on a destructive one.
+    const safe = [...plan.bar, ...plan.more].some((a) => a.style !== 'danger' && a.id !== 'copy_report')
+    expect(plan.bar.filter((a) => a.style === 'primary')).toHaveLength(safe ? 1 : 0)
+  })
+
+  it.each([
+    // The server refuses Download copy on a stall: it is not drawn.
+    [{ state: 'stalled', stop: { kind: 'no_progress' } }, ['try_again', 'start_over'], 'download_copy'],
+    // The server refuses Try again on a finished build: it is not drawn.
+    [{ state: 'succeeded', pilot_ready: true }, ['download_platform'], 'try_again'],
+  ])('an action the server refuses is never drawn (%#)', (build, allowed, refused) => {
+    const plan = buildActions({ build: { ...build, actions: allowed } as BuildStatus })
+    expect([...plan.bar, ...plan.more].map((a) => a.id)).not.toContain(refused)
+  })
+
+  it.each([
+    [null, true],
+    [['try_again'], false],
+  ])('with no server list (before the first read) the layout stands (%j)', (actions, hasCopy) => {
+    const build = { state: 'stalled', stop: { kind: 'no_progress' }, actions } as BuildStatus
+    const ids = [...buildActions({ build }).bar, ...buildActions({ build }).more].map((a) => a.id)
+    expect(ids.includes('download_copy')).toBe(hasCopy)
+  })
 })
