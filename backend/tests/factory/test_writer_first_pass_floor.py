@@ -31,11 +31,13 @@ SMOKE = ROOT / "blueprints/examples/runner_smoke.yaml"
 BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}'
 
 
-def test_the_floor_is_two_hours_and_the_ceiling_is_floor_plus_room():
-    assert WRITER_FIRST_PASS_MIN_S == 7200.0
-    assert CEILING_ROOM_S == 3600.0
-    assert CEILING_S == WRITER_FIRST_PASS_MIN_S + CEILING_ROOM_S == 10800.0
-    assert CEILING_S > WRITER_FIRST_PASS_MIN_S
+@pytest.mark.parametrize(
+    "name, value",
+    [("WRITER_FIRST_PASS_MIN_S", 7200.0), ("CEILING_ROOM_S", 3600.0), ("CEILING_S", 10800.0)],
+)
+def test_the_floor_is_two_hours_and_the_ceiling_is_floor_plus_room(name, value):
+    assert getattr(budget_inspect, name) == value
+    assert CEILING_S == WRITER_FIRST_PASS_MIN_S + CEILING_ROOM_S
 
 
 @pytest.mark.parametrize(
@@ -84,13 +86,17 @@ def test_no_class_gets_a_shorter_first_pass_than_another():
     assert new >= small >= WRITER_FIRST_PASS_MIN_S
 
 
-def test_a_default_budget_holds_the_first_pass_and_the_one_ceiling():
-    b = BuildBudget()
-    assert b.phase_wall_clock_s == WRITER_FIRST_PASS_MIN_S
-    assert b.hard_ceiling_s == CEILING_S
-    explicit = BuildBudget(phase_wall_clock_s=1500.0, hard_ceiling_s=0.0)
-    assert explicit.phase_wall_clock_s == 1500.0
-    assert explicit.hard_ceiling_s == 0.0
+@pytest.mark.parametrize(
+    "kwargs, phase, ceiling",
+    [
+        ({}, WRITER_FIRST_PASS_MIN_S, CEILING_S),
+        ({"phase_wall_clock_s": 1500.0, "hard_ceiling_s": 0.0}, 1500.0, 0.0),
+    ],
+)
+def test_a_default_budget_holds_the_first_pass_and_the_one_ceiling(kwargs, phase, ceiling):
+    b = BuildBudget(**kwargs)
+    assert b.phase_wall_clock_s == phase
+    assert b.hard_ceiling_s == ceiling
 
 
 @pytest.mark.parametrize("class_wall, expected", [(None, 7200.0), (9000.0, 9000.0)])

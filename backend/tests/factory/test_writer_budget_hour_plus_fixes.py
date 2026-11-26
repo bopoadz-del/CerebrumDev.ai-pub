@@ -121,7 +121,11 @@ def test_the_pilot_cycle_is_unchanged_by_the_ruling(passes):
     )
 
 
-def test_the_code_cycle_defaults_hold_the_writer_s_first_pass(monkeypatch):
+@pytest.mark.parametrize(
+    "reader, expected",
+    [("_wall_clock_s", FIRST_PASS_S), ("_phase_wall_clock_s", 7200.0)],
+)
+def test_the_code_cycle_defaults_hold_the_writer_s_first_pass(monkeypatch, reader, expected):
     """The Floor's code build: the cycle wall is an hour, and the phase box
     is at least the first-pass floor, so it never ends the pass first.
 
@@ -132,8 +136,7 @@ def test_the_code_cycle_defaults_hold_the_writer_s_first_pass(monkeypatch):
 
     monkeypatch.delenv("FACTORY_BUILD_WALL_CLOCK_S", raising=False)
     monkeypatch.delenv("FACTORY_PHASE_WALL_CLOCK_S", raising=False)
-    assert build_jobs._wall_clock_s() == FIRST_PASS_S
-    assert build_jobs._phase_wall_clock_s() == writer_first_pass_wall()
+    assert getattr(build_jobs, reader)() == expected
     assert build_jobs._phase_wall_clock_s() >= writer_first_pass_wall(FIRST_PASS_S)
 
 
