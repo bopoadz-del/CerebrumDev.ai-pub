@@ -42,8 +42,16 @@ _STORE: Dict[str, Dict[str, Any]] = {
         "inputs": [{"name": "script"}],
         "outputs": [{"name": "output"}],
     },
+    # In the Store with a full contract, but not on the Factory shelf: not
+    # registered, so a pick of it is never kept, however well it covers.
+    "unshelved_tally": {
+        "name": "Tally",
+        "description": "Counts tallies",
+        "inputs": [{"name": "action"}],
+        "outputs": [{"name": "roster"}],
+    },
 }
-_DUAL = sorted(_STORE)
+_DUAL = sorted(b for b in _STORE if b != "unshelved_tally")
 
 
 @pytest.fixture
@@ -238,6 +246,14 @@ def test_a_pick_whose_contract_covers_the_capability_is_kept(fake_store, cap, wa
             "inputs": ["action"],
             "outputs": ["roster"],
         },
+        # covered by the Store manifest, but the block is not registered
+        {
+            "id": "permit_list",
+            "description": "d",
+            "block_ids": ["unshelved_tally"],
+            "inputs": ["action"],
+            "outputs": ["roster"],
+        },
         # block_ids is not a list
         {
             "id": "permit_list",
@@ -374,4 +390,5 @@ def test_the_prompt_offers_every_block_as_a_catalogue_line(monkeypatch, fake_sto
         line = index_line(catalogue_entry(bid, _STORE[bid]))
         assert line in system
         assert (line + "  [certified]" in system) is (bid in proven)
+    assert "unshelved_tally" not in system
     assert '"inputs": [' in system and '"outputs": [' in system
