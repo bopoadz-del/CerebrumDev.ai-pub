@@ -438,6 +438,15 @@ def raw_picks(item: Dict[str, Any]) -> List[str]:
     return [b for b in picks if isinstance(b, str)] if isinstance(picks, list) else []
 
 
+def _free_id(base: str, taken: set) -> str:
+    """``base`` when no capability holds it, else the first ``base_N`` (N>=2) free."""
+    cand, n = base, 1
+    while cand in taken:
+        n += 1
+        cand = f"{base}_{n}"
+    return cand
+
+
 def _blueprint_from_llm_payload(
     data: Dict[str, Any],
     brief: str,
@@ -467,6 +476,9 @@ def _blueprint_from_llm_payload(
         raise ValueError("LLM draft has no capabilities")
 
     caps = []
+    # What each capability declares it takes and gives: a closure block is
+    # bound onto a capability only on the same fact check as a model's pick.
+    declared: Dict[str, tuple] = {}
     for item in raw_caps[:8]:
         if not isinstance(item, dict):
             continue
@@ -494,6 +506,7 @@ def _blueprint_from_llm_payload(
             for s in (connector_slug(c) for c in (item.get("connectors") or []) if isinstance(c, str))
             if s and s not in dual
         ]
+        declared[cap_id.replace("-", "_")] = (item.get("inputs"), item.get("outputs"))
         caps.append(
             {
                 "id": cap_id.replace("-", "_"),
@@ -510,19 +523,23 @@ def _blueprint_from_llm_payload(
     # The closure is the source of record, not a filter on the model's pick:
     # the model chooses WHERE a closure block goes, it cannot drop one. Every
     # closure block no capability bound is bound anyway, the way the no-LLM
-    # draft binds a block: its own REUSE capability (or the capability that
-    # already carries its id). An empty closure adds nothing, so the draft
-    # stays an honest pure-GENERATE plan.
+    # draft binds a block: its own REUSE capability. A capability that carries
+    # the block's id takes it only when the block's declared contract covers
+    # what that capability declares, the same check as any pick; otherwise it
+    # stays GENERATE and the block gets its own capability under a free id.
+    # An empty closure adds nothing, so the draft stays an honest
+    # pure-GENERATE plan.
     bound = {b for cap in caps for b in cap["block_ids"]}
     for bid in sorted(allowed - bound):
         same = next((c for c in caps if c["id"] == bid), None)
-        if same is not None:
+        if same is not None and contract_covers(manifests.get(bid), *declared.get(bid, (None, None))):
             same["block_ids"].append(bid)
             same["strategy_hint"] = "REUSE"
             continue
+        own_id = _free_id(bid, {c["id"] for c in caps})
         caps.append(
             {
-                "id": bid,
+                "id": own_id,
                 "description": f"{bid.replace('_', ' ').title()} capability (reused from the block store)",
                 "block_ids": [bid],
                 "strategy_hint": "REUSE",

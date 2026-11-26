@@ -215,10 +215,20 @@ _INDEX_FIELDS = 12
 
 
 def _field_names(fields: Any) -> List[str]:
-    """The declared names of a manifest's input or output fields, in order."""
+    """The declared names of a manifest's input or output fields, in order.
+
+    The one reader of a block's contract, used by the catalogue entry and the
+    fact check alike. It reads both shapes a manifest may declare: a list of
+    ``{name: ...}`` field objects, or an object keyed by field name."""
+    if isinstance(fields, dict):
+        named: Any = [str(key) for key in fields]
+    elif isinstance(fields, list):
+        named = [field.get("name") if isinstance(field, dict) else None for field in fields]
+    else:
+        named = ()
     out: List[str] = []
-    for field in fields if isinstance(fields, list) else ():
-        name = str(field.get("name") or "").strip() if isinstance(field, dict) else ""
+    for raw in named:
+        name = str(raw or "").strip()
         if name and name not in out:
             out.append(name)
     return out

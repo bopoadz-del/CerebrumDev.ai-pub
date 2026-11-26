@@ -42,6 +42,14 @@ _STORE: Dict[str, Dict[str, Any]] = {
         "inputs": [{"name": "script"}],
         "outputs": [{"name": "output"}],
     },
+    # Declares its outputs in the keyed form (an object keyed by field name),
+    # the other shape the registry accepts besides a list of named fields.
+    "keyed_hook": {
+        "name": "Keyed hook",
+        "description": "Receives a signed payload",
+        "inputs": [{"name": "input"}],
+        "outputs": {"result": {"type": "object"}, "status": {"type": "string"}},
+    },
     # In the Store with a full contract, but not on the Factory shelf: not
     # registered, so a pick of it is never kept, however well it covers.
     "unshelved_tally": {
@@ -392,3 +400,119 @@ def test_the_prompt_offers_every_block_as_a_catalogue_line(monkeypatch, fake_sto
         assert (line + "  [certified]" in system) is (bid in proven)
     assert "unshelved_tally" not in system
     assert '"inputs": [' in system and '"outputs": [' in system
+
+
+# --- both declared shapes, one reader (catalogue and fact check alike) ----------
+
+
+@pytest.mark.parametrize(
+    "bid, want_out",
+    [("quill_roster", ["roster", "count"]), ("keyed_hook", ["result", "status"])],
+)
+def test_outputs_are_read_in_list_and_keyed_form(bid, want_out) -> None:
+    entry = catalogue_entry(bid, _STORE[bid])
+    assert [f["name"] for f in entry["outputs"]] == want_out
+    assert "outputs" not in entry["gaps"]
+    assert f"outputs: {', '.join(want_out)}" in index_line(entry)
+    assert contract_covers(_STORE[bid], None, [want_out[-1]]) is True
+    assert contract_covers(_STORE[bid], None, [want_out[0], "not_declared"]) is False
+
+
+@pytest.mark.parametrize(
+    "inputs, outputs",
+    [({"cmd": {}, "": {}, " cmd ": {}}, ["cmd"]), ([{"name": "cmd"}, {"name": " cmd "}, "cmd"], ["cmd"])],
+)
+def test_one_reader_trims_and_dedupes_both_shapes(inputs, outputs) -> None:
+    manifest = {"description": "d", "inputs": inputs}
+    assert [f["name"] for f in catalogue_entry("b", manifest)["inputs"]] == outputs
+    assert contract_covers(manifest, ["cmd"], None) is True
+    assert contract_covers(manifest, [""], None) is False
+
+
+@pytest.mark.parametrize(
+    "cap, want",
+    [
+        (
+            {"id": "hook_in", "description": "d", "block_ids": ["keyed_hook"], "inputs": ["input"], "outputs": ["result"]},
+            (["keyed_hook"], "REUSE"),
+        ),
+        (
+            {"id": "hook_in", "description": "d", "block_ids": ["keyed_hook"], "inputs": ["input"], "outputs": ["body"]},
+            ([], "GENERATE"),
+        ),
+    ],
+)
+def test_a_keyed_form_pick_is_checked_on_the_public_path(fake_store, cap, want) -> None:
+    assert _bound(_draft(cap))["hook_in"] == want
+
+
+# --- a kit block on a capability that carries its id: the same fact check -------
+
+
+@pytest.mark.parametrize(
+    "bid, inputs, outputs",
+    [("slate", ["no_such_field"], ["output"]), ("quill_roster", None, None)],
+)
+def test_a_kit_block_is_not_rebound_onto_an_uncovered_capability_of_its_id(
+    fake_store, monkeypatch, bid, inputs, outputs
+) -> None:
+    cap = {"id": bid, "description": "d", "block_ids": [bid], "inputs": inputs, "outputs": outputs}
+    bound = _bound(_draft(cap, closure=frozenset({bid}), monkeypatch=monkeypatch))
+    # The same uncovered pick under any other id gives the same result.
+    assert bound[bid] == ([], "GENERATE")
+    assert bound[f"{bid}_2"] == ([bid], "REUSE")
+    other = _bound(_draft({**cap, "id": "elsewhere"}, closure=frozenset({bid}), monkeypatch=monkeypatch))
+    assert other["elsewhere"] == ([], "GENERATE") and other[bid] == ([bid], "REUSE")
+
+
+@pytest.mark.parametrize(
+    "bid, inputs, outputs",
+    [("slate", ["script"], ["output"]), ("quill_roster", ["action"], None)],
+)
+def test_a_kit_block_binds_onto_a_covered_capability_of_its_id(
+    fake_store, monkeypatch, bid, inputs, outputs
+) -> None:
+    # The model named the capability after the block but picked nothing: the
+    # closure binds it there only because the declared contract covers it.
+    cap = {"id": bid, "description": "d", "block_ids": [], "inputs": inputs, "outputs": outputs}
+    bound = _bound(_draft(cap, closure=frozenset({bid}), monkeypatch=monkeypatch))
+    assert bound == {bid: ([bid], "REUSE")}
+
+
+@pytest.mark.parametrize(
+    "base, taken, want",
+    [("slate", set(), "slate"), ("slate", {"slate"}, "slate_2"), ("slate", {"slate", "slate_2"}, "slate_3")],
+)
+def test_free_id_is_the_first_id_no_capability_holds(base, taken, want) -> None:
+    assert product_architect._free_id(base, set(taken)) == want
+
+
+# --- the entry's text and names are trimmed as the manifest is read -------------
+
+
+@pytest.mark.parametrize("when", ["line one\nline two", "  line one \t\n line two  "])
+def test_a_multiline_when_field_stays_on_one_index_line(when) -> None:
+    entry = catalogue_entry("b", {"description": "d", "when_to_use": when})
+    assert entry["when_to_use"] == "line one line two"
+    line = index_line(entry)
+    assert "\n" not in line and "use when: line one line two |" in line
+
+
+@pytest.mark.parametrize(
+    "inputs, want",
+    [
+        ([{"name": "action"}, {"name": "action"}], ["action"]),
+        ([{"name": " pad "}, {"name": "action"}, {"name": "pad"}], ["pad", "action"]),
+    ],
+)
+def test_manifest_field_names_are_trimmed_and_listed_once(inputs, want) -> None:
+    manifest = {"description": "d", "inputs": inputs}
+    assert [f["name"] for f in catalogue_entry("b", manifest)["inputs"]] == want
+    assert f"inputs: {', '.join(want)} |" in index_line(catalogue_entry("b", manifest))
+    assert contract_covers(manifest, [want[0]], None) is True
+
+
+@pytest.mark.parametrize("want_in", [[" action "], ["\taction", "action"]])
+def test_a_capability_name_is_trimmed_before_the_check(want_in) -> None:
+    assert contract_covers(_STORE["quill_roster"], want_in, None) is True
+    assert contract_covers(_STORE["quill_roster"], [n + "x" for n in want_in], None) is False
