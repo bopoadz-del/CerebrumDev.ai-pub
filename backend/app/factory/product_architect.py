@@ -458,10 +458,10 @@ def _blueprint_from_llm_payload(
         cap_id = _slug(str(item.get("id", "")), default="")
         if not cap_id:
             continue
-        # The model may propose blocks, but the closure it may vendor is the
-        # deterministic one for this vertical + brief (kit blocks + governance
-        # + blocks the brief names). Identical pin + vertical -> identical
-        # closure, so the build never inherits the model's free pick.
+        # The model may propose blocks; a pick is kept only when the
+        # deterministic closure for this vertical + brief holds it or the
+        # block's own declaration clears the relevance floor below, so the
+        # build never inherits a pick the Store's declarations do not back.
         requirements = _sanitize_requirements(item.get("requirements"))
         description = str(item.get("description", ""))[:300] or f"Capability {cap_id}"
         cap_text = " ".join([description, *requirements])

@@ -312,18 +312,19 @@ _OFF_ID = {
 )
 def test_a_block_matching_only_by_incidental_words_is_not_bound_unasked(monkeypatch, block, cap_id) -> None:
     """Two of the capability's id words in the block's prose, none of them a
-    word of the block's own id: a model's pick of it is kept, but it is not
-    added when nobody chose it."""
+    word the block declares about what it IS (id, name, tags): it is not
+    added when nobody chose it, and a model's pick of it is dropped too."""
     store = {**_FILLER, **_OFF_ID}
     monkeypatch.setattr(store_kits, "block_manifests", lambda store_root=None: dict(store))
     monkeypatch.setattr(store_kits, "kit_closure", lambda vertical, *a, **k: frozenset())
     cand = StoreIndex(store).candidate(block, cap_id, "")
-    assert cand is not None and cand.clears and not cand.strong
+    assert cand is not None and len(cand.shared) >= 2
+    assert not cand.clears and not cand.strong
     dual = sorted(store)
     unasked = _blueprint_from_llm_payload(_payload((cap_id, "show it", [])), "a brief", None, dual)
     picked = _blueprint_from_llm_payload(_payload((cap_id, "show it", [block])), "a brief", None, dual)
     assert _bound(unasked) == {cap_id: []}
-    assert _bound(picked) == {cap_id: [block]}
+    assert _bound(picked) == {cap_id: []}
 
 
 @pytest.mark.parametrize(
@@ -339,3 +340,128 @@ def test_a_field_that_is_not_a_declaration_is_skipped(fields, kept, dropped) -> 
     got = declared_words("blk", {"inputs": fields})
     assert kept <= got
     assert not (dropped & got)
+
+
+# --- homonyms, identity anchors and the informative boundary ------------------
+
+# Thirty pads, so a word two blocks declare is still informative (limit 3.2).
+_PADS30 = {f"pad{i:02d}": {"description": "Generic helper"} for i in range(30)}
+_HOMONYM: Dict[str, Dict[str, Any]] = {
+    **_PADS30,
+    "lathe": {"name": "Lathe", "description": "Turns timber on a spindle", "tags": ["woodwork", "spindle"]},
+    "kiln": {"name": "Kiln", "description": "Fires glazed pottery", "tags": ["pottery", "glaze"]},
+}
+
+
+@pytest.mark.parametrize(
+    "block, cap_id, text",
+    [("lathe", "tax_lathe_rebate", "claim a rebate"), ("kiln", "kiln_permit_fee", "pay the council fee")],
+)
+def test_one_id_word_spelled_like_a_block_is_a_homonym_not_a_fit(monkeypatch, block, cap_id, text) -> None:
+    """The capability id holds the block's one-word id, and nothing else in
+    the block's declaration agrees: not bound unasked, and a pick of it is
+    dropped."""
+    monkeypatch.setattr(store_kits, "block_manifests", lambda store_root=None: dict(_HOMONYM))
+    monkeypatch.setattr(store_kits, "kit_closure", lambda vertical, *a, **k: frozenset())
+    cand = StoreIndex(_HOMONYM).candidate(block, cap_id, text)
+    assert cand is not None and cand.shared == (block,)
+    assert not cand.clears and not cand.strong
+    dual = sorted(_HOMONYM)
+    unasked = _blueprint_from_llm_payload(_payload((cap_id, text, [])), "a brief", None, dual)
+    picked = _blueprint_from_llm_payload(_payload((cap_id, text, [block])), "a brief", None, dual)
+    assert _bound(unasked) == {cap_id: []}
+    assert _bound(picked) == {cap_id: []}
+
+
+@pytest.mark.parametrize(
+    "block, cap_id, text",
+    [("lathe", "lathe_booking", "book the spindle"), ("kiln", "kiln_schedule", "glaze firing slots")],
+)
+def test_an_id_word_the_declaration_agrees_with_is_bound(monkeypatch, block, cap_id, text) -> None:
+    """Same id word, and the block's declaration agrees on a second word:
+    the fit is real and is bound when nobody chose it."""
+    monkeypatch.setattr(store_kits, "block_manifests", lambda store_root=None: dict(_HOMONYM))
+    monkeypatch.setattr(store_kits, "kit_closure", lambda vertical, *a, **k: frozenset())
+    cand = StoreIndex(_HOMONYM).candidate(block, cap_id, text)
+    assert cand is not None and cand.clears and cand.strong
+    bp = _blueprint_from_llm_payload(_payload((cap_id, text, [])), "a brief", None, sorted(_HOMONYM))
+    assert _bound(bp) == {cap_id: [block]}
+
+
+@pytest.mark.parametrize("block", ["lathe", "kiln"])
+def test_a_capability_named_exactly_for_the_block_is_bound(block) -> None:
+    cand = StoreIndex(_HOMONYM).candidate(block, block, "")
+    assert cand is not None and cand.clears and cand.strong
+    assert StoreIndex(_HOMONYM).best_fit(block, "") == cand
+
+
+@pytest.mark.parametrize(
+    "cap_id, text, block, want",
+    [
+        # "permit" is a TAG of quill_roster: what the block is.
+        ("permit_ledger", "quill holders", "quill_roster", True),
+        # "glider" is in ledger_glider's id.
+        ("glider_ledger", "holdback list", "ledger_glider", True),
+        # "balance" is only a FIELD name of ledger_glider: what it touches.
+        ("balance_view", "glider holdback", "ledger_glider", False),
+        # "members" is only in quill_roster's prose.
+        ("member_view", "quill permit", "quill_roster", False),
+    ],
+)
+def test_a_kept_pick_needs_an_id_word_the_block_declares_it_is(
+    monkeypatch, fake_store, cap_id, text, block, want
+) -> None:
+    cand = fake_store.candidate(block, cap_id, text)
+    assert cand is not None and len(cand.shared) >= 2
+    assert cand.clears is want
+    bp = _draft(monkeypatch, _payload((cap_id, text, [block])))
+    assert _bound(bp)[cap_id] == ([block] if want else [])
+
+
+@pytest.mark.parametrize("pads, informative_at, filler_at", [(18, 1, 2), (28, 2, 3)])
+def test_a_word_is_informative_only_under_a_tenth_of_the_store(pads, informative_at, filler_at) -> None:
+    """20 blocks: limit 2.0, so a word 1 block declares is informative and
+    one 2 blocks declare is not. 30 blocks: limit 3.0, so 2 and 3."""
+    store: Dict[str, Dict[str, Any]] = {f"pad{i:02d}": {"description": "Generic helper"} for i in range(pads)}
+    store["holder_a"] = {"tags": ["sprocket"] if informative_at >= 1 else []}
+    store["holder_b"] = {"tags": ["sprocket"] if informative_at >= 2 else []}
+    for i in range(filler_at):
+        store[f"pad{i:02d}"] = {"description": "Generic helper", "tags": ["lattice"]}
+    index = StoreIndex(store)
+    assert index.size == pads + 2
+    assert index.informative("sprocket") is True
+    assert index.informative("lattice") is False
+
+
+@pytest.mark.parametrize(
+    "block, cap_id, text",
+    [
+        ("hr_v2", "zeta_plan", "staff onboarding"),
+        ("qa_9", "omega_list", "sprocket lattice"),
+        ("hr_v2", "ab_12", "staff onboarding"),
+    ],
+)
+def test_a_block_id_with_no_meaningful_word_is_never_named(block, cap_id, text) -> None:
+    """An id made of short words and digits names nothing, so it can never
+    be bound or kept for being "named" by a capability's id."""
+    store = {
+        **_PADS30,
+        "hr_v2": {"tags": ["staff", "onboarding"]},
+        "qa_9": {"tags": ["sprocket", "lattice"]},
+    }
+    cand = StoreIndex(store).candidate(block, cap_id, text)
+    assert cand is not None and len(cand.shared) == 2
+    assert not cand.clears and not cand.strong
+
+
+@pytest.mark.parametrize("text, first", [("glaze the pots", "kiln_alpha"), ("clay bodies", "kiln_beta")])
+def test_the_capability_text_decides_between_two_strong_fits(text, first) -> None:
+    store = {
+        **_PADS30,
+        "kiln_alpha": {"tags": ["kiln", "batch", "glaze"]},
+        "kiln_beta": {"tags": ["kiln", "batch", "clay"]},
+    }
+    index = StoreIndex(store)
+    both = [c for c in index.rank("kiln_batch", text) if c.strong]
+    assert {c.block_id for c in both} == {"kiln_alpha", "kiln_beta"}
+    assert index.best_fit("kiln_batch", text).block_id == first

@@ -10,12 +10,20 @@ tags, input and output field names and options) shares its words.
 The score is a pure function of the pinned Store and the capability's text:
 no model, no list of words or ids for any product. Words are weighted by how
 rare they are across the Store, so words most blocks declare ("input",
-"configuration", "action") count for nothing. A block CLEARS the floor for a
-capability when the capability's id holds every word of the block's id,
-or when they share ``MIN_SHARED`` words that fewer than
-``INFORMATIVE_SHARE`` of the Store's blocks declare (in their names or their
-prose), at least one of them a word of the capability's id. The vertical is only a
-tie-break between equal scores, never a gate.
+"configuration", "action") count for nothing. A shared word is INFORMATIVE
+when fewer than ``INFORMATIVE_SHARE`` of the Store's blocks declare it.
+
+A block CLEARS the floor for a capability when
+- the capability is named exactly for the block (same id words), or
+- the capability's id holds every word of the block's id AND they agree on
+  ``MIN_SHARED`` informative words (one id word spelled alike is a homonym,
+  not a fit: a capability about a discount code is not served by a block
+  that runs program code), or
+- they share ``MIN_SHARED`` informative words, one of them a word of the
+  capability's id that the block declares about what it IS (its id, name
+  or tags). A word only in the block's prose or field names says what the
+  block touches, not what it is.
+The vertical is only a tie-break between equal scores, never a gate.
 """
 
 from __future__ import annotations
@@ -96,6 +104,18 @@ def declared_words(block_id: str, manifest: Mapping[str, Any]) -> FrozenSet[str]
     return words(" ".join(parts))
 
 
+def identity_words(block_id: str, manifest: Mapping[str, Any]) -> FrozenSet[str]:
+    """The words a block declares about what it IS: its id, name and tags
+    (not its prose or field names, which say what it touches)."""
+    tags = manifest.get("tags")
+    parts = [
+        block_id,
+        str(manifest.get("name") or ""),
+        *(str(t) for t in (tags if isinstance(tags, list) else ())),
+    ]
+    return words(" ".join(parts))
+
+
 def declared_function(block_id: str, manifest: Mapping[str, Any], limit: int = 110) -> str:
     """One line saying what the block declares it does: its description,
     else its name and tags, else nothing (an honest blank)."""
@@ -114,9 +134,10 @@ class Candidate:
     score: float
     shared: Tuple[str, ...]
     clears: bool
-    #: Clears on strong evidence: the capability's id names the block, or
-    #: shares ``MIN_SHARED`` of its own words with the block's declaration,
-    #: one of them a word of the block's own id (what the block IS).
+    #: Clears on strong evidence: the capability is named for the block (as
+    #: the module docstring says), or shares ``MIN_SHARED`` of its own id
+    #: words with the block's declaration, one of them a word of the block's
+    #: own id (what the block IS).
     strong: bool = False
 
 
@@ -133,14 +154,14 @@ class StoreIndex:
         for word in sorted(set().union(*raw.values()) if raw else (), key=lambda w: (len(w), w)):
             self._canon[word] = self._root_of(word, add=True)
         self.terms: Dict[str, FrozenSet[str]] = {bid: self.fold(ws) for bid, ws in raw.items()}
+        #: What each block declares it IS: its id, name and tags.
+        self.identity: Dict[str, FrozenSet[str]] = {
+            bid: self.fold(identity_words(bid, m)) for bid, m in sorted(self.manifests.items())
+        }
         self.size = len(self.terms)
+        # Prose words are part of every block's declared words, so this one
+        # count already makes a word many blocks write in passing filler.
         self._df = _counts(self.terms.values())
-        # How many blocks use a word in their description PROSE. A word many
-        # blocks write in passing ("the", "from", "value") is filler, however
-        # rarely a block names a field after it.
-        self._prose_df = _counts(
-            self.fold(words(m.get("description") or "")) for m in self.manifests.values()
-        )
 
     def _root_of(self, word: str, add: bool = False) -> str:
         bucket = self._roots.setdefault(word[:MIN_ROOT], []) if add else self._roots.get(word[:MIN_ROOT], [])
@@ -161,15 +182,14 @@ class StoreIndex:
 
     def informative(self, term: str) -> bool:
         limit = INFORMATIVE_SHARE * self.size
-        return 0 < self._df.get(term, 0) < limit and self._prose_df.get(term, 0) < limit
+        return 0 < self._df.get(term, 0) < limit
 
     def candidate(
         self, block_id: str, capability_id: Any, capability_text: Any = ""
     ) -> Optional[Candidate]:
-        """How ``block_id`` serves a capability. It CLEARS the floor when the
-        capability's id holds every word of the block's id, or when they share ``MIN_SHARED`` informative
-        words and at least one of them is a word of the capability's own id
-        (a fit is about what the capability IS, not a word in its prose)."""
+        """How ``block_id`` serves a capability (the rule is in the module
+        docstring): a fit is about what the capability IS (its id) and what
+        the block IS (its id, name, tags), never a word only in prose."""
         terms = self.terms.get(block_id)
         if terms is None:
             return None
@@ -177,11 +197,14 @@ class StoreIndex:
         cap = own_cap | self.fold(words(capability_text))
         shared = tuple(sorted(t for t in cap & terms if self.informative(t)))
         own = self.fold(words(block_id))
-        named = bool(own) and own <= own_cap
+        exact = bool(own) and own == own_cap
+        named = bool(own) and own <= own_cap and len(shared) >= MIN_SHARED
         anchors = sum(1 for t in shared if t in own_cap)
+        identity = self.identity.get(block_id, frozenset())
+        anchored = any(t in own_cap and t in identity for t in shared)
         score = sum(self.idf(t) for t in shared)
-        clears = named or (anchors >= 1 and len(shared) >= MIN_SHARED)
-        strong = named or (anchors >= MIN_SHARED and bool(own & own_cap & set(shared)))
+        clears = exact or named or (anchored and len(shared) >= MIN_SHARED)
+        strong = exact or named or (anchors >= MIN_SHARED and bool(own & own_cap & set(shared)))
         return Candidate(block_id, score, shared, clears, strong)
 
     def clears(self, block_id: str, capability_id: Any, capability_text: Any = "") -> bool:
