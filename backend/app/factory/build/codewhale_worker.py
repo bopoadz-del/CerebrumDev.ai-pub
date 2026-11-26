@@ -2701,7 +2701,11 @@ def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool, bool]]:
     output the same way (a cache or report directory carrying a ``*``
     ``.gitignore``), so one reader covers both. A ``!`` line re-includes
     what an earlier rule excluded, as git reads it: the last matching rule
-    decides. A leading backslash makes a first ``#`` or ``!`` literal.
+    decides. As gitignore(5): leading spaces are part of the pattern,
+    trailing spaces are dropped unless a backslash escapes them, and every
+    backslash stays in the pattern for ``_gitignore_regex`` to read (so a
+    first ``#`` or ``!`` after a backslash is literal, as is any other
+    escaped character).
     """
     try:
         text = (directory / ".gitignore").read_text(encoding="utf-8", errors="replace")
@@ -2709,11 +2713,11 @@ def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool, bool]]:
         return []
     rules: List[Tuple[str, bool, bool, bool]] = []
     for raw in text.splitlines():
-        line = raw.strip()
+        line = _trim_trailing_spaces(raw)
         if not line or line.startswith("#"):
             continue
         negated = line.startswith("!")
-        if negated or line.startswith("\\"):
+        if negated:
             line = line[1:]
         dir_only = line.endswith("/")
         line = line.rstrip("/")
@@ -2724,6 +2728,83 @@ def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool, bool]]:
     return rules
 
 
+def _trim_trailing_spaces(line: str) -> str:
+    """``line`` without its trailing spaces, keeping one a backslash escapes
+    (git's ``trim_trailing_spaces``); leading spaces are never touched."""
+    end = len(line)
+    while end and line[end - 1] == " ":
+        end -= 1
+    escapes = 0
+    while escapes < end and line[end - 1 - escapes] == "\\":
+        escapes += 1
+    if escapes % 2 and end < len(line):
+        end += 1
+    return line[:end]
+
+
+#: The POSIX classes wildmatch reads inside a bracket expression.
+_POSIX_CLASSES = {
+    "alnum": r"a-zA-Z0-9",
+    "alpha": r"a-zA-Z",
+    "blank": r" \t",
+    "cntrl": r"\x00-\x1f\x7f",
+    "digit": r"0-9",
+    "graph": r"!-~",
+    "lower": r"a-z",
+    "print": r" -~",
+    "punct": r"!-/:-@\[-`{-~",
+    "space": r" \t\n\r\f\v",
+    "upper": r"A-Z",
+    "xdigit": r"0-9a-fA-F",
+}
+#: A regex that matches nothing: wildmatch aborts on a malformed pattern.
+_NEVER = "(?!)"
+
+
+def _bracket_class(pattern: str, start: int) -> Tuple[str, int]:
+    """The ``[...]`` expression opening at ``pattern[start]`` as a regex
+    class, and the index just past its closing ``]`` -- as wildmatch reads
+    it: a ``]`` first (after an optional ``!``/``^``) is literal, a
+    backslash escapes the next character, ``[:name:]`` is a POSIX class and
+    the class never matches ``/``. An unclosed class gives ``_NEVER`` and
+    the end of the pattern: git's wildmatch matches nothing then."""
+    n = len(pattern)
+    i = start + 1
+    negated = i < n and pattern[i] in "!^"
+    if negated:
+        i += 1
+    parts: List[str] = []
+    first = True
+    while i < n and (first or pattern[i] != "]"):
+        first = False
+        char = pattern[i]
+        if char == "\\":
+            if i + 1 >= n:
+                return _NEVER, n
+            parts.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        if char == "[" and pattern.startswith("[:", i):
+            close = pattern.find(":]", i + 2)
+            name = pattern[i + 2 : close] if close >= 0 else ""
+            if name in _POSIX_CLASSES:
+                parts.append(_POSIX_CLASSES[name])
+                i = close + 2
+                continue
+            if close >= 0:
+                return _NEVER, n
+        if char == "-" and parts and i + 1 < n and pattern[i + 1] != "]":
+            parts.append("-")
+            i += 1
+            continue
+        parts.append(re.escape(char))
+        i += 1
+    if i >= n:
+        return _NEVER, n
+    body = "".join(parts)
+    return (f"[^/{body}]" if negated else f"(?!/)[{body}]"), i + 1
+
+
 @functools.lru_cache(maxsize=512)
 def _gitignore_regex(pattern: str) -> "re.Pattern[str]":
     """One ``.gitignore`` pattern as git matches it (gitignore(5)).
@@ -2732,7 +2813,8 @@ def _gitignore_regex(pattern: str) -> "re.Pattern[str]":
     ``**/`` matches in every directory, a middle ``/**/`` matches zero or
     more directories and a trailing ``/**`` matches everything inside; any
     other run of stars is a plain ``*``. A backslash makes the next
-    character literal."""
+    character literal; a trailing lone backslash or an unclosed ``[`` makes
+    the pattern match nothing (git's wildmatch aborts on both)."""
     out: List[str] = []
     i, n = 0, len(pattern)
     while i < n:
@@ -2753,29 +2835,24 @@ def _gitignore_regex(pattern: str) -> "re.Pattern[str]":
             continue
         if char == "?":
             out.append("[^/]")
-        elif char == "\\" and i + 1 < n:
+        elif char == "\\":
+            if i + 1 >= n:
+                return re.compile(_NEVER)
             i += 1
             out.append(re.escape(pattern[i]))
         elif char == "[":
-            j = i + 1
-            if j < n and pattern[j] in "!^":
-                j += 1
-            if j < n and pattern[j] == "]":
-                j += 1
-            while j < n and pattern[j] != "]":
-                j += 1
-            if j >= n:
-                out.append(re.escape(char))
-            else:
-                body = pattern[i + 1 : j]
-                negated = body[:1] in ("!", "^")
-                body = (body[1:] if negated else body).replace("\\", "\\\\")
-                out.append(f"[^/{body}]" if negated else f"[{body}]")
-                i = j
+            klass, i = _bracket_class(pattern, i)
+            if klass == _NEVER:
+                return re.compile(_NEVER)
+            out.append(klass)
+            continue
         else:
             out.append(re.escape(char))
         i += 1
-    return re.compile("".join(out) + r"\Z")
+    try:
+        return re.compile("".join(out) + r"\Z")
+    except re.error:  # a reversed range such as [z-a]: wildmatch matches nothing
+        return re.compile(_NEVER)
 
 
 def _ignored(

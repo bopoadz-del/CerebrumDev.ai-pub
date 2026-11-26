@@ -910,7 +910,47 @@ def test_gitignore_is_read_the_way_git_reads_it(tmp_path, files, kept, hidden):
     assert authored == git_kept
 
 
-@pytest.mark.parametrize("gitignore, extra", [("app/*.json\n", "app/data/seed.json"), ("*.json\n", "app/seed.json")])
+@pytest.mark.parametrize(
+    "gitignore, kept, hidden",
+    [
+        # leading spaces belong to the pattern; trailing ones do not
+        ("  lead.txt\n foo.txt   \n", {"lead.txt", "foo.txt"}, {" foo.txt"}),
+        # a backslash escapes any character, not only a first # or !
+        ("\\[x].txt\n\\#hash.txt\n", {"x.txt", "hash.txt"}, {"[x].txt", "#hash.txt"}),
+        # a ] first in a (negated) class is literal
+        ("[!]a]z.txt\n[]]q.txt\n", {"az.txt", "]z.txt", "aq.txt"}, {"bz.txt", "]q.txt"}),
+        # an unclosed class and a trailing lone backslash match nothing
+        ("un[closed.txt\nlone\\\n", {"un[closed.txt", "unxclosed.txt", "lone"}, set()),
+        # ? and a negated class never match / in an anchored pattern
+        ("d/a?b.txt\nd/c[!x]e.txt\n", {"d/a/b.txt", "d/c/e.txt", "d/cxe.txt"}, {"d/aXb.txt", "d/cye.txt"}),
+        # a trailing /** takes everything inside and nothing beside it
+        ("m/**\n", {"mm.py"}, {"m/1/2/3.py", "m/top.py"}),
+        # a POSIX class names its characters; a reversed range matches nothing
+        ("[[:digit:]]*.py\n[z-a].py\n", {"a1.py", "b.py"}, {"1a.py", "9.py"}),
+    ],
+)
+def test_gitignore_edge_patterns_match_git(tmp_path, gitignore, kept, hidden):
+    """Differential against real git on the lines the grader's probe
+    ``gi_diff2`` found read differently: whitespace, escapes, ``]`` first in
+    a class, an unclosed class, ``?``/``[!x]`` facing ``/`` and a trailing
+    ``/**``."""
+    from app.factory.build.builds_push import is_exported
+    from app.factory.build.codewhale_worker import iter_authored_source
+
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / ".gitignore").write_text(gitignore, encoding="utf-8")
+    for rel in kept | hidden:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("x", encoding="utf-8")
+    authored = set(iter_authored_source(root))
+    assert kept <= authored
+    assert not (hidden & authored)
+    git_kept = {p for p in _git_untracked(root, tmp_path) if is_exported(Path(p))}
+    assert authored == git_kept
+
+
+@pytest.mark.parametrize("gitignore, extra",[("app/*.json\n", "app/data/seed.json"), ("*.json\n", "app/seed.json")])
 def test_the_specialist_merge_back_carries_files_the_product_ignores(tmp_path, gitignore, extra):
     """The merge-back is not narrowed by the product's .gitignore (grader
     probe ``merge_probe``): every file a specialist wrote reaches the tree."""
@@ -1008,6 +1048,38 @@ def test_a_vendored_test_record_is_not_the_products(tmp_path, skipped_dir):
     _pytest_cache(tmp_path / skipped_dir, ["tests/test_v.py::test_v"], {"tests/test_v.py::test_v": True})
     _pytest_cache(tmp_path, ["tests/test_main.py::test_a"], {"tests/test_main.py::test_a": True})
     assert wc.failing_tests(tmp_path) == ("tests/test_main.py::test_a",)
+
+
+@pytest.mark.parametrize("record", [[1, 2], "tests/test_main.py::test_a"])
+def test_a_lastfailed_record_that_is_not_a_mapping_names_nothing(tmp_path, record):
+    _tree(tmp_path, {})
+    _pytest_cache(tmp_path, ["tests/test_main.py::test_a"], record)
+    assert wc.failing_tests(tmp_path) == ()
+
+
+@pytest.mark.parametrize("sub", ["svc", "pkg/api"])
+def test_a_record_in_a_subdirectory_is_named_from_the_checkout(tmp_path, sub):
+    _tree(tmp_path, {f"{sub}/tests/test_a.py": b"def test_x():\n    assert 0\n"})
+    _pytest_cache(tmp_path / sub, ["tests/test_a.py::test_x"], {"tests/test_a.py::test_x": True})
+    assert wc.failing_tests(tmp_path) == (f"{sub}/tests/test_a.py::test_x",)
+
+
+@pytest.mark.parametrize("log", ["writer_progress.log", "app/writer_progress_2.txt"])
+def test_the_merge_back_view_leaves_out_the_progress_log(tmp_path, log):
+    from app.factory.build.codewhale_worker import agent_file_paths
+
+    _tree(tmp_path, {log: b"STEP 1: a\n"})
+    paths = set(agent_file_paths(tmp_path))
+    assert log not in paths
+    assert {"app/main.py", "tests/test_main.py"} <= paths
+
+
+@pytest.mark.parametrize("audit", ["docs/writer_prompt.txt", "docs/writer_argv.json"])
+def test_a_resumed_pass_is_not_told_the_dispatch_audit_files(tmp_path, audit):
+    _tree(tmp_path, {audit: b"x", "docs/guide.md": b"# guide\n"})
+    files = wc.done_files(tmp_path)
+    assert audit not in files
+    assert {"app/main.py", "docs/guide.md"} <= set(files)
 
 
 @pytest.mark.parametrize("count", [wc.TESTS_LISTED, wc.TESTS_LISTED + 7])
