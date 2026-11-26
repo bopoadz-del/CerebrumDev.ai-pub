@@ -131,25 +131,27 @@ class TestTheFormComesFromTheProductsOwnDeclaration:
         assert by_name["kind"]["required"] is False
         assert by_name["kind"]["allowed_values"] == ["open", "closed"]
 
-    def test_an_input_schema_on_the_entry_is_read(self, tmp_path):
-        items = [
-            {"id": "a", "input_schema": {"properties": {"x": {"type": "integer"}}, "required": ["x"]}},
-            {"id": "b", "input_schema": {"$ref": "#/components/schemas/Record"}},
-        ]
-        got = _run([{"fn": "declaredFields", "args": [i, TEMPLATED_DOC, i["id"]]} for i in items], tmp_path)
-        assert _names(got[0]) == ["x"] and got[0][0]["required"] is True
-        assert _names(got[1]) == ["amount", "kind"]
+    @pytest.mark.parametrize(
+        "item, expected, required",
+        [
+            ({"id": "a", "input_schema": {"properties": {"x": {"type": "integer"}}, "required": ["x"]}},
+             ["x"], [True]),
+            ({"id": "b", "input_schema": {"$ref": "#/components/schemas/Record"}},
+             ["amount", "kind"], [True, False]),
+        ],
+    )
+    def test_an_input_schema_on_the_entry_is_read(self, item, expected, required, tmp_path):
+        [got] = _run([{"fn": "declaredFields", "args": [item, TEMPLATED_DOC, item["id"]]}], tmp_path)
+        assert _names(got) == expected
+        assert [f["required"] for f in got] == required
 
-    def test_a_literal_route_still_wins_over_a_template(self, tmp_path):
+    @pytest.mark.parametrize("cap, expected", [("orders", ["only_here"]), ("visits", ["amount", "kind"])])
+    def test_a_literal_route_still_wins_over_a_template(self, cap, expected, tmp_path):
         doc = json.loads(json.dumps(TEMPLATED_DOC))
         doc["paths"]["/v1/orders"] = {"post": {"requestBody": {"content": {"application/json": {
             "schema": {"properties": {"only_here": {"type": "string"}}}}}}}}
-        got = _run([
-            {"fn": "declaredFields", "args": ["orders", doc, "orders"]},
-            {"fn": "declaredFields", "args": ["visits", doc, "visits"]},
-        ], tmp_path)
-        assert _names(got[0]) == ["only_here"]
-        assert _names(got[1]) == ["amount", "kind"]
+        [got] = _run([{"fn": "declaredFields", "args": [cap, doc, cap]}], tmp_path)
+        assert _names(got) == expected
 
 
 class TestNothingIsInvented:
@@ -171,66 +173,81 @@ class TestNothingIsInvented:
         assert '["reference", "status"]' not in html
         assert "No inputs declared for this capability" in html
 
-    def test_a_template_does_not_match_a_different_depth_or_an_empty_segment(self, tmp_path):
-        got = _run([
-            {"fn": "pathMatches", "args": ["/v1/{capability_id}", "/v1/orders"]},
-            {"fn": "pathMatches", "args": ["/v1/{capability_id}", "/v1/orders/7"]},
-            {"fn": "pathMatches", "args": ["/v1/{capability_id}", "/v1/"]},
-            {"fn": "pathMatches", "args": ["/v2/{capability_id}", "/v1/orders"]},
-            {"fn": "pathMatches", "args": ["/v1/{}", "/v1/orders"]},
-        ], tmp_path)
-        assert got == [True, False, False, False, False]
+    @pytest.mark.parametrize(
+        "template, path, expected",
+        [
+            ("/v1/{capability_id}", "/v1/orders", True),
+            ("/v1/{id}", "/v1/site_visits", True),
+            ("/v1/{capability_id}", "/v1/orders/7", False),
+            ("/v1/{capability_id}", "/v1/", False),
+            ("/v2/{capability_id}", "/v1/orders", False),
+            ("/v1/{}", "/v1/orders", False),
+        ],
+    )
+    def test_a_template_matches_only_one_whole_segment(self, template, path, expected, tmp_path):
+        assert _run([{"fn": "pathMatches", "args": [template, path]}], tmp_path) == [expected]
 
-    def test_a_ref_loop_or_a_foreign_ref_resolves_to_nothing(self, tmp_path):
-        loop = {"components": {"schemas": {"A": {"$ref": "#/components/schemas/A"}}}}
-        got = _run([
-            {"fn": "resolveRef", "args": [loop, {"$ref": "#/components/schemas/A"}]},
-            {"fn": "resolveRef", "args": [{}, {"$ref": "other.json#/X"}]},
-            {"fn": "resolveRef", "args": [{}, {"type": "string"}]},
-        ], tmp_path)
-        assert got[0] is None and got[1] is None
-        assert got[2] == {"type": "string"}
+    @pytest.mark.parametrize(
+        "doc, node, expected",
+        [
+            ({"components": {"schemas": {"A": {"$ref": "#/components/schemas/A"}}}},
+             {"$ref": "#/components/schemas/A"}, None),
+            ({}, {"$ref": "other.json#/X"}, None),
+            ({}, {"$ref": "#/components/schemas/Missing"}, None),
+            ({}, {"type": "string"}, {"type": "string"}),
+            ({"components": {"schemas": {"B": {"type": "integer"}}}},
+             {"$ref": "#/components/schemas/B"}, {"type": "integer"}),
+        ],
+    )
+    def test_a_ref_resolves_or_gives_nothing(self, doc, node, expected, tmp_path):
+        assert _run([{"fn": "resolveRef", "args": [doc, node]}], tmp_path) == [expected]
 
-    def test_entries_without_an_id_are_not_cards(self, tmp_path):
-        got = _run([
-            {"fn": "capIdOf", "args": [{"capability_id": "orders"}]},
-            {"fn": "capIdOf", "args": ["visits"]},
-            {"fn": "capIdOf", "args": [{"label": "no id"}]},
-            {"fn": "capIdOf", "args": [None]},
-        ], tmp_path)
-        assert got == ["orders", "visits", "", ""]
+    @pytest.mark.parametrize(
+        "item, expected",
+        [
+            ({"capability_id": "orders"}, "orders"),
+            ({"id": "visits", "capability_id": "other"}, "visits"),
+            ("rooms", "rooms"),
+            ({"label": "no id"}, ""),
+            (None, ""),
+        ],
+    )
+    def test_entries_without_an_id_are_not_cards(self, item, expected, tmp_path):
+        assert _run([{"fn": "capIdOf", "args": [item]}], tmp_path) == [expected]
 
 
 class TestEachControlSendsTheDeclaredType:
-    def test_the_kind_follows_the_declaration(self, tmp_path):
-        fields = [
-            {"name": "a", "type": "int"},
-            {"name": "b", "type": "number"},
-            {"name": "c", "type": "bool"},
-            {"name": "d", "type": "str", "allowed_values": ["x"]},
-            {"name": "e", "type": "str", "enum": []},
-            {"name": "f"},
-        ]
-        got = _run([{"fn": "kindOf", "args": [f]} for f in fields], tmp_path)
-        assert got == ["number", "number", "boolean", "choice", "text", "text"]
+    @pytest.mark.parametrize(
+        "field, kind",
+        [
+            ({"name": "a", "type": "int"}, "number"),
+            ({"name": "b", "type": "Number"}, "number"),
+            ({"name": "c", "type": "bool"}, "boolean"),
+            ({"name": "d", "type": "str", "allowed_values": ["x"]}, "choice"),
+            ({"name": "e", "type": "int", "options": [1, 2]}, "choice"),
+            ({"name": "f", "type": "str", "enum": []}, "text"),
+            ({"name": "g"}, "text"),
+        ],
+    )
+    def test_the_kind_follows_the_declaration(self, field, kind, tmp_path):
+        assert _run([{"fn": "kindOf", "args": [field]}], tmp_path) == [kind]
 
-    def test_values_are_typed_and_empty_optional_sends_nothing(self, tmp_path):
-        num = {"name": "n", "type": "int"}
-        flag = {"name": "f", "type": "bool"}
-        must = {"name": "m", "type": "bool", "required": True}
-        pick = {"name": "p", "type": "int", "allowed_values": [1, 2]}
-        got = _run([
-            {"fn": "valueOf", "args": [num, "42"]},
-            {"fn": "valueOf", "args": [num, " 7.5 "]},
-            {"fn": "valueOf", "args": [num, "abc"]},
-            {"fn": "valueOf", "args": [num, ""]},
-            {"fn": "valueOf", "args": [num, "   "]},
-            {"fn": "valueOf", "args": [flag, True]},
-            {"fn": "valueOf", "args": [flag, False]},
-            {"fn": "valueOf", "args": [must, False]},
-            {"fn": "valueOf", "args": [pick, "2"]},
-            {"fn": "valueOf", "args": [pick, "3"]},
-            {"fn": "valueOf", "args": [{"name": "t"}, "hello"]},
-        ], tmp_path)
-        assert got == [42, 7.5, "abc", "<undefined>", "<undefined>", True, "<undefined>",
-                       False, 2, "3", "hello"]
+    @pytest.mark.parametrize(
+        "field, raw, sent",
+        [
+            ({"name": "n", "type": "int"}, "42", 42),
+            ({"name": "n", "type": "int"}, " 7.5 ", 7.5),
+            ({"name": "n", "type": "int"}, "abc", "abc"),
+            ({"name": "n", "type": "int"}, "", "<undefined>"),
+            ({"name": "n", "type": "int"}, "   ", "<undefined>"),
+            ({"name": "f", "type": "bool"}, True, True),
+            ({"name": "f", "type": "bool"}, False, "<undefined>"),
+            ({"name": "m", "type": "bool", "required": True}, False, False),
+            ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "2", 2),
+            ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "3", "3"),
+            ({"name": "t"}, "hello", "hello"),
+            ({"name": "t"}, "", "<undefined>"),
+        ],
+    )
+    def test_a_control_sends_the_declared_type(self, field, raw, sent, tmp_path):
+        assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [sent]
