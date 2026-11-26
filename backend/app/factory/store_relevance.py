@@ -216,9 +216,7 @@ class StoreIndex:
         word shared by sense-blind matching is enough to keep a pick made
         from the blocks' declared functions, not to add one unasked."""
         for cand in self.rank(capability_id, capability_text, prefer=prefer, limit=self.size):
-            if not cand.clears:
-                return None
-            if cand.strong:
+            if cand.clears and cand.strong:
                 return cand
         return None
 

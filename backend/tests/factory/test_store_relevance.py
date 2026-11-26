@@ -13,7 +13,7 @@ import pytest
 
 from app.factory import product_architect, store_kits
 from app.factory.product_architect import _blueprint_from_llm_payload
-from app.factory.store_relevance import StoreIndex, declared_function, folds, words
+from app.factory.store_relevance import StoreIndex, declared_function, declared_words, folds, words
 
 # Twelve filler blocks so a word they all share is common (not informative)
 # and the INFORMATIVE_SHARE limit (10% of 14 blocks = 1.4) admits only words
@@ -180,6 +180,10 @@ def test_words_split_ids_and_drop_short_words_and_numbers(text, want) -> None:
         ("vexil", "vexim", False),
         ("vexa", "vexo", False),
         ("zorbat", "zorbilt", False),
+        # one word is itself, even when shorter than a root ("orb" / "orb")
+        ("orb", "orb", True),
+        ("kin", "kin", True),
+        ("orb", "kin", False),
     ],
 )
 def test_two_words_fold_by_shape_alone(a, b, want) -> None:
@@ -320,3 +324,18 @@ def test_a_block_matching_only_by_incidental_words_is_not_bound_unasked(monkeypa
     picked = _blueprint_from_llm_payload(_payload((cap_id, "show it", [block])), "a brief", None, dual)
     assert _bound(unasked) == {cap_id: []}
     assert _bound(picked) == {cap_id: [block]}
+
+
+@pytest.mark.parametrize(
+    "fields, kept, dropped",
+    [
+        (["stray_note", {"name": "tally_mark"}], {"tally", "mark"}, {"stray", "note"}),
+        ([7, None, {"name": "quorum", "options": ["open", 3]}], {"quorum", "open"}, set()),
+    ],
+)
+def test_a_field_that_is_not_a_declaration_is_skipped(fields, kept, dropped) -> None:
+    """A manifest field list may hold stray entries; only dict fields declare
+    words, and a stray entry neither breaks the read nor adds its text."""
+    got = declared_words("blk", {"inputs": fields})
+    assert kept <= got
+    assert not (dropped & got)
