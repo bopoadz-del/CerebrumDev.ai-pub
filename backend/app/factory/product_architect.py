@@ -442,6 +442,11 @@ def _blueprint_from_llm_payload(
 
     vertical = chosen_vertical(vertical_hint)
     allowed = _deterministic_closure(vertical, brief, dual)
+    from app.factory.store_relevance import store_index
+
+    # Relevance across the WHOLE Store, not the vertical's kit: a block stays
+    # on a capability when its own declaration serves that capability's text.
+    index = store_index(dual)
     raw_caps = data.get("capabilities")
     if not isinstance(raw_caps, list) or not raw_caps:
         raise ValueError("LLM draft has no capabilities")
@@ -457,11 +462,27 @@ def _blueprint_from_llm_payload(
         # deterministic one for this vertical + brief (kit blocks + governance
         # + blocks the brief names). Identical pin + vertical -> identical
         # closure, so the build never inherits the model's free pick.
-        block_ids = [
-            b
-            for b in item.get("block_ids", [])
-            if isinstance(b, str) and b in dual and b in allowed
-        ]
+        requirements = _sanitize_requirements(item.get("requirements"))
+        description = str(item.get("description", ""))[:300] or f"Capability {cap_id}"
+        cap_text = " ".join([description, *requirements])
+        # A model's pick survives when the closure holds it or the block's own
+        # declaration clears the relevance floor for this capability; a pick
+        # nothing in the Store supports is dropped.
+        block_ids = list(
+            dict.fromkeys(
+                b
+                for b in item.get("block_ids", [])
+                if isinstance(b, str)
+                and b in dual
+                and (b in allowed or index.clears(b, cap_id, cap_text))
+            )
+        )
+        # A real fit the model left out is not lost: when no kept block clears
+        # the floor for this capability, the Store's best fit is bound.
+        if not any(index.clears(b, cap_id, cap_text) for b in block_ids):
+            best = index.best_fit(cap_id, cap_text, prefer=allowed)
+            if best is not None:
+                block_ids.append(best.block_id)
         # A connector a block supplies is that block, not a placeholder.
         connectors = [
             s
@@ -471,11 +492,10 @@ def _blueprint_from_llm_payload(
         caps.append(
             {
                 "id": cap_id.replace("-", "_"),
-                "description": str(item.get("description", ""))[:300]
-                or f"Capability {cap_id}",
+                "description": description,
                 "block_ids": block_ids,
                 "strategy_hint": "REUSE" if block_ids else "GENERATE",
-                "requirements": _sanitize_requirements(item.get("requirements")),
+                "requirements": requirements,
                 "connectors": connectors,
             }
         )
@@ -563,10 +583,18 @@ def _draft_with_llm(
     # note matters as much as the mark: an unproven block is still the right
     # choice when it is the one that fits.
     proven = _certified_ids()
-    block_list = (
-        "\n".join(f"- {b}" + ("  [certified]" if b in proven else "") for b in dual)
-        or "- (none registered)"
-    )
+    # Each block with the one line it declares about itself, so the model can
+    # match a capability to a block by function, not by how its id reads.
+    from app.factory.store_relevance import declared_function, store_index
+
+    manifests = store_index(dual).manifests
+    lines = []
+    for b in dual:
+        said = declared_function(b, manifests.get(b) or {})
+        lines.append(
+            f"- {b}" + (f": {said}" if said else "") + ("  [certified]" if b in proven else "")
+        )
+    block_list = "\n".join(lines) or "- (none registered)"
     if proven:
         block_list += (
             "\n(A [certified] block is one whose tests go red when its entry "
