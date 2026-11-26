@@ -799,6 +799,7 @@ def test_a_long_id_the_grade_does_not_name_is_still_redacted(cid):
         ("Zorblat_Release_Schedule_By_Work_Package_Q3_Interim", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"),
         ("plinket_count", "AKIAABCDEFGHIJKLMNOP"),
     ],
+    ids=["long-id-gh-token", "short-id-cloud-key"],
 )
 def test_the_words_after_a_kept_feature_id_are_still_redacted(cid, secret):
     """Keeping a named feature id whole never lets a key through the words
@@ -813,7 +814,9 @@ def test_the_words_after_a_kept_feature_id_are_still_redacted(cid, secret):
     assert secret not in grader_findings.log_line(row)
 
 
-@pytest.mark.parametrize("where", ["ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4", "AKIAABCDEFGHIJKLMNOP"])
+@pytest.mark.parametrize(
+    "where", ["ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4", "AKIAABCDEFGHIJKLMNOP"], ids=["gh-token", "cloud-key"]
+)
 def test_a_row_that_names_no_feature_is_redacted_whole_on_every_read(where):
     """A ledger row whose sentence is not its shape's own (it names no
     feature) keeps nothing whole when read back: its locator is redacted."""
@@ -829,6 +832,7 @@ def test_a_row_that_names_no_feature_is_redacted_whole_on_every_read(where):
 @pytest.mark.parametrize(
     "cid, secret",
     [("zorblat_total", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"), ("plinket_count", "AKIAABCDEFGHIJKLMNOP")],
+    ids=["gh-token", "cloud-key"],
 )
 def test_a_ledger_row_naming_a_feature_loses_a_key_in_its_quote_on_read(cid, secret):
     """A row read back from the ledger that names one feature keeps its id
