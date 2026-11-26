@@ -378,19 +378,27 @@ def test_an_uncertified_kit_for_the_chosen_vertical_is_named_not_denied(monkeypa
     """Live 2026-09-30: the shelf held a kit (uncertified) for the business and
     the notice still opened with the no-kit line -- absent and uncertified are
     different truths. The user CHOSE the vertical; the Store kit serving it is
-    not declared ready, so the notice names that kit and how to build on it."""
+    not declared ready, so the notice names that kit and how to build on it.
+    It names Approve & build, so it is given on the turn that shows that
+    control (the draft), not on a question turn before it."""
     state = _real_draft_state(monkeypatch)
     _catalog(monkeypatch, kits=("zorblat",))
     _domain_kits(monkeypatch, {"zorblat": {"serves_verticals": ["zorblat_yards"], "build_ready": False}})
     state.product_design.vertical = "zorblat_yards"
     _script(
         monkeypatch,
-        [{"action": "ask_user", "message": "One question before drafting."}],
+        [
+            {"action": "ask_user", "message": "One question before drafting."},
+            {"action": "draft_platform", "brief": "b"},
+        ],
     )
 
-    result = _say(state, "an operations platform for our yards")
+    asked = _say(state, "an operations platform for our yards")["summary"]
+    assert "uncertified" not in asked and "Approve & build" not in asked, asked
+    result = _say(state, "yards, as said")
 
     s2 = result["summary"]
+    assert "Approve & build" in s2, s2
     assert "zorblat" in s2, s2
     assert "uncertified" in s2 or "unverified" in s2, s2
     assert "don't have a top-notch kit" not in s2, (

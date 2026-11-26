@@ -845,7 +845,12 @@ test.describe('stepper at 360x780', () => {
 
   const STEP_WIRE = ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER', 'GRADER', 'RESEARCHER', 'WORKERS']
 
-  for (const state of BUILD_STATES) {
+  test('not-found: no stepper, because the server knows no steps of this build', async ({ page }) => {
+    await openState(page, 'not-found')
+    await expect(page.getByTestId('floor-stepper-row')).toHaveCount(0)
+  })
+
+  for (const state of BUILD_STATES.filter((s) => s !== 'not-found')) {
     test(`${state}: one row, at most 56px tall, no wire id on the face`, async ({ page }) => {
       await openState(page, state)
       const row = page.getByTestId('floor-stepper-row')
@@ -950,3 +955,83 @@ test.describe('grader findings at 360x780', () => {
   }
 })
 
+/*
+ * PR-12: words when it breaks, and the running line. The stop sentence is
+ * written from the server's stop record; the running card is one line, one
+ * whole-build bar and the timers; a stop you asked for is its own neutral
+ * card; a build the server cannot find is its own state with "Check again".
+ */
+test.describe('stop words and the running line at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  test('building: one progress line, one whole-build bar and the three timers', async ({ page }) => {
+    await openState(page, 'building')
+    const card = page.getByTestId('floor-coder-takeover')
+    await expect(card.getByTestId('floor-running-line')).toHaveCount(1)
+    await expect(card.getByTestId('floor-running-line')).toHaveText('Step 3 of 5 — Writing the code — 2 of 5 features')
+    await expect(card.getByRole('progressbar')).toHaveCount(1)
+    const timers = card.getByTestId('floor-running-timers')
+    await expect(timers.locator('[data-timer]')).toHaveCount(3)
+    await expect(timers.locator('[data-timer="started"]')).toContainText('Started')
+    await expect(timers.locator('[data-timer="updated"]')).toContainText('Last update')
+    await expect(timers.locator('[data-timer="expected"]')).toContainText('Expected end')
+    // Everything on the running face is inside the card's width.
+    const box = (await card.boundingBox())!
+    for (const el of await card.locator('.running *').all()) {
+      const b = await el.boundingBox()
+      if (b) expect(b.x + b.width).toBeLessThanOrEqual(box.x + box.width + 1)
+    }
+  })
+
+  test('stopped: the sentence is written from the stop record', async ({ page }) => {
+    await openState(page, 'stopped')
+    await expect(page.getByTestId('floor-build-state')).toContainText('Stopped at step 3 of 5')
+    await expect(page.getByTestId('floor-build-sentence')).toHaveText(
+      'Writing the code ran out of time after about 38 minutes. This is on our side, not in your brief. Steps 1 and 2 are done and kept.',
+    )
+    await expect(page.getByTestId('floor-try-again')).toContainText('Try again')
+  })
+
+  test('user-stopped: its own neutral card, Try again first', async ({ page }) => {
+    await openState(page, 'user-stopped')
+    const card = page.getByTestId('floor-coder-takeover')
+    await expect(card).toHaveAttribute('data-tone', 'neutral')
+    await expect(page.getByTestId('floor-build-sentence')).toHaveText(
+      'You stopped this build at step 3. Steps 1 and 2 are done and kept.',
+    )
+    await expect(page.getByTestId('floor-try-again')).toBeInViewport()
+  })
+
+  test('user-stopped: the buttons are exactly the actions the server allows', async ({ page }) => {
+    await openState(page, 'user-stopped')
+    const bar = page.getByTestId('floor-action-bar')
+    if (await bar.getByTestId('floor-action-more').count()) await bar.getByTestId('floor-action-more').click()
+    // The fixture's build-status sends the server's list for an owner stop.
+    for (const id of ['floor-try-again', 'floor-take-copy', 'floor-continue-with-intake', 'floor-start-over']) {
+      await expect(bar.getByTestId(id)).toHaveCount(1)
+    }
+    await expect(bar.getByTestId('floor-coder-stop')).toHaveCount(0)
+    await expect(bar.getByTestId('floor-check-again')).toHaveCount(0)
+    await expect(bar.getByTestId('continue-to-pilot')).toHaveCount(0)
+  })
+
+  test('not-found: its own state, "Check again" asks the server once more', async ({ page }) => {
+    await openState(page, 'not-found')
+    await expect(page.getByTestId('floor-build-state')).toContainText("We can't find this build")
+    await expect(page.getByTestId('floor-build-sentence')).toHaveText(
+      "We can't find this build on the server. Your brief and feature list are safe.",
+    )
+    let reads = 0
+    page.on('request', (req) => {
+      if (req.url().includes('/product/build-status')) reads += 1
+    })
+    const check = page.getByTestId('floor-check-again')
+    await expect(check).toBeInViewport()
+    await check.click()
+    await expect.poll(() => reads).toBeGreaterThanOrEqual(1)
+    await expect(page.getByTestId('floor-action-result')).toContainText('Still not found')
+    // One press is one read: past the 4 s poll interval, no watch has resumed.
+    await page.waitForTimeout(5000)
+    expect(reads).toBe(1)
+  })
+})

@@ -27,6 +27,8 @@ export const FLOOR_STATES = [
   'fix-round',
   'stopped',
   'stalled',
+  'user-stopped',
+  'not-found',
   'finished-prototype',
   'finished-pilot',
   'grader-sent-back',
@@ -40,6 +42,8 @@ export const BUILD_STATES: FloorState[] = [
   'fix-round',
   'stopped',
   'stalled',
+  'user-stopped',
+  'not-found',
   'finished-prototype',
   'finished-pilot',
   'grader-sent-back',
@@ -54,6 +58,8 @@ export const SID: Record<FloorState, string> = {
   'fix-round': 'sess_state_fixround',
   stopped: 'sess_state_stopped',
   stalled: 'sess_state_stalled',
+  'user-stopped': 'sess_state_userstop',
+  'not-found': 'sess_state_notfound',
   'finished-prototype': 'sess_state_okproto',
   'finished-pilot': 'sess_state_okpilot',
   'grader-sent-back': 'sess_state_gradeback',
@@ -150,6 +156,9 @@ const BUILD_WRITER: BuildStatus = {
     { role: 'writer', text: 'wrote handler variation_orders' },
   ],
   coder_control: 'run',
+  // The build's own declared end (server clock): the run started 25 minutes
+  // ago under a 90-minute wall.
+  deadline: { anchor: 'RUN_STARTED', ceiling_s: 5400, gate_wall_s: 1800, deadline_in_s: 3900 },
 }
 
 const REWORK_DECISION = {
@@ -228,6 +237,68 @@ const BUILD_STOPPED: BuildStatus = {
     source: 'ledger',
   },
   decisions: [REWORK_DECISION],
+  // The one "ended because" record the server attaches (PR-11): the last
+  // failure was a worker timeout, after one fix round.
+  stop: {
+    kind: 'time_ran_out',
+    plain: 'This step ran out of time before it finished.',
+    step: 'WRITER',
+    step_index: 3,
+    steps_total: 5,
+    steps_done: 2,
+    fix_rounds: 1,
+    elapsed_s: 2289,
+    technical: {
+      code: 'worker_timed_out',
+      reason_chain: ['codewhale_worker_failed', 'worker_timed_out'],
+      message: TIMEOUT,
+      reference: '7461cb639b',
+    },
+  },
+  // The actions the server accepts here (floor_actions.allowed_build_actions).
+  actions: ['try_again', 'download_copy', 'change_answers', 'start_over'],
+}
+
+/** You pressed Stop build at step 3; the server's stop record says so. */
+const BUILD_USER_STOPPED: BuildStatus = {
+  state: 'failed',
+  cycle: 'code',
+  outcome: 'STOPPED_BY_OWNER',
+  build_level: LEVEL_PROTO,
+  phases: PHASES,
+  completed: ['COLLECTOR', 'CLONER'],
+  phases_done: 2,
+  phases_total: 5,
+  coder_control: 'stop',
+  stop: {
+    kind: 'user_stopped',
+    plain: 'You stopped this build.',
+    step: 'WRITER',
+    step_index: 3,
+    steps_total: 5,
+    steps_done: 2,
+    fix_rounds: 0,
+    elapsed_s: 1260,
+    technical: { code: 'STOPPED_BY_OWNER', reason_chain: [], message: '', reference: '' },
+  },
+  actions: ['try_again', 'download_copy', 'change_answers', 'start_over'],
+}
+
+/** The session names a workspace the server does not have. */
+const BUILD_NOT_FOUND: BuildStatus = {
+  state: 'not_found',
+  stop: {
+    kind: 'not_found',
+    plain: "We can't find this build on the server.",
+    step: '',
+    step_index: null,
+    steps_total: null,
+    steps_done: 0,
+    fix_rounds: 0,
+    elapsed_s: null,
+    technical: { code: '', reason_chain: [], message: '', reference: '' },
+  },
+  actions: ['check_again', 'start_over'],
 }
 
 /** The grader's rows as the server writes them (grader_findings.finding_row). */
@@ -465,6 +536,8 @@ function makeSessions(): Record<string, SessionWorld> {
     [SID['fix-round']]: builtSession(SID['fix-round'], BUILD_FIX_ROUND),
     [SID.stopped]: builtSession(SID.stopped, BUILD_STOPPED),
     [SID.stalled]: builtSession(SID.stalled, BUILD_STALLED),
+    [SID['user-stopped']]: builtSession(SID['user-stopped'], BUILD_USER_STOPPED),
+    [SID['not-found']]: builtSession(SID['not-found'], BUILD_NOT_FOUND),
     [SID['finished-prototype']]: builtSession(SID['finished-prototype'], BUILD_OK_PROTO),
     [SID['finished-pilot']]: pilot,
     [SID['grader-sent-back']]: builtSession(SID['grader-sent-back'], BUILD_GRADER_SENT_BACK),
@@ -544,7 +617,9 @@ export async function mockFloorStates(page: Page): Promise<void> {
           })
         }
         if (rest === '/product/build-status') {
-          return json({ ok: true, product_id: w.productId, build: w.build ?? { state: 'not_started' } })
+          // The server sends its allowed actions beside the build, not in it.
+          const { actions, ...build } = w.build ?? { state: 'not_started' as const }
+          return json({ ok: true, product_id: w.productId, build, ...(actions ? { actions } : {}) })
         }
         if (rest === '/product/coder-control') return json({ ok: true, control: { action: 'run' } })
         if (rest === '/product/package') {

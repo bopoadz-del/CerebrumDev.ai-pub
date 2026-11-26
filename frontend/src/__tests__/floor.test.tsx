@@ -15,6 +15,7 @@ const coderControlMock = vi.fn()
 const getHealthMock = vi.fn()
 const approveMock = vi.fn()
 const sessionStateMock = vi.fn()
+const buildStatusMock = vi.fn()
 
 vi.mock('../api/factory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/factory')>()
@@ -30,6 +31,7 @@ vi.mock('../api/factory', async (importOriginal) => {
       get: (...args: unknown[]) => getMock(...args),
       coderControl: (...args: unknown[]) => coderControlMock(...args),
       approve: (...args: unknown[]) => approveMock(...args),
+      buildStatus: (...args: unknown[]) => buildStatusMock(...args),
     },
     sessions: {
       ...actual.sessions,
@@ -62,6 +64,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     coderControlMock.mockResolvedValue({ ok: true, control: { action: 'pause' } })
     sessionStateMock.mockReset()
     sessionStateMock.mockResolvedValue({ chat_history: [] })
+    buildStatusMock.mockReset()
     getHealthMock.mockReset()
     getHealthMock.mockResolvedValue({
       factory_code_cli: { available: true, credentials_file_present: true },
@@ -153,11 +156,16 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     for (const old of ['COLLECTOR', 'WORKERS', 'Binding surveyor', 'Platform manufacturer', 'Block stocker']) {
       expect(screen.queryByText(old)).not.toBeInTheDocument()
     }
-    expect(await screen.findByText('Step 3 of 5 — Writing the code')).toBeInTheDocument()
-    expect(screen.getByText(/next: Test/)).toBeInTheDocument()
-    expect(screen.getByText('7/7 handlers')).toBeInTheDocument()
-    expect(screen.getByText(/Last: wrote handler payments/)).toBeInTheDocument()
-    expect(screen.getByText(/still working/)).toBeInTheDocument()
+    // PR-12: the running card is one line (step, the step's running name, the
+    // share of features), one whole-build bar and the timers. The second
+    // fraction, the "next:" chip, the "Last:" line and the heartbeat sentence
+    // left the face; the agent's narration is in Technical detail.
+    expect(await screen.findByTestId('floor-running-line')).toHaveTextContent(
+      'Step 3 of 5 — Writing the code — 7 of 7 features',
+    )
+    expect(screen.getByTestId('floor-running-bar')).toHaveAttribute('aria-valuenow', '60')
+    expect(screen.getByTestId('floor-running-timers')).toHaveTextContent('Last update just now')
+    expect(screen.queryByText('7/7 handlers')).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText(/coding agent has taken over/i)).toBeDisabled()
     // The build is still running (WRITER 3/5), so the Floor must not offer the
     // platforms CTA yet — there is no platform to open until the agent lands.
@@ -263,6 +271,34 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByText(/Blueprint drafted: Vineyard Platform/)).toBeInTheDocument()
     // ...and the takeover line renders once (the card), never twice.
     expect(screen.getAllByText('The coding agent has taken over the floor.')).toHaveLength(1)
+  })
+
+  // OPUSGRADE F295 5698ca8, fault 3 (M9): "Check again" is one status read;
+  // a build the server finds again is watched again, one it still cannot
+  // find is not.
+  it.each([
+    ['found again', 'building', 2],
+    ['still not found', 'not_found', 1],
+  ])('Check again on a missing build: %s', async (_name, nextState, watches) => {
+    getMock.mockResolvedValue({
+      blueprint: LLM_BLUEPRINT,
+      blueprint_approved: true,
+      generation: { engine: 'runner', product_id: 'vineyard', triggered_by: 'chat_llm' },
+    })
+    watchBuildMock.mockImplementation(async (_sid: string, onProgress: (s: object) => void) => {
+      onProgress({ state: 'not_found', stop: { kind: 'not_found', step: '', step_index: null, steps_total: null, steps_done: 0 } })
+    })
+    buildStatusMock.mockResolvedValue({ ok: true, build: { state: nextState } })
+    render(<Floor sessionId="sess_gone" goPlatforms={() => {}} />)
+    const again = await screen.findByRole('button', { name: /Check again/ })
+    expect(watchBuildMock).toHaveBeenCalledTimes(1)
+    fireEvent.click(again)
+    await waitFor(() => expect(buildStatusMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(watchBuildMock).toHaveBeenCalledTimes(watches))
+    // Settle, then the count still holds: no extra watch, no extra read.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(watchBuildMock).toHaveBeenCalledTimes(watches)
+    expect(buildStatusMock).toHaveBeenCalledTimes(1)
   })
 
   it('restores a pending blueprint after remount so Approve & build is still there', async () => {

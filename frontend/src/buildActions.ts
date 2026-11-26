@@ -27,6 +27,7 @@ export type ActionId =
   | 'download_platform'
   | 'run_pilot'
   | 'open_repo'
+  | 'check_again'
 
 export type ActionStyle = 'primary' | 'secondary' | 'quiet' | 'danger'
 
@@ -68,6 +69,11 @@ export type StopKind = 'by_you' | 'check' | 'our_side'
 
 export function stopKind(build: BuildStatus | null | undefined): StopKind | null {
   if (!build || (build.state !== 'failed' && build.state !== 'stalled')) return null
+  // The server's stop record names the kind (a closed set); it decides.
+  const recorded = build.stop?.kind
+  if (recorded === 'user_stopped') return 'by_you'
+  if (recorded === 'check_failed') return 'check'
+  if (recorded) return 'our_side'
   if (build.coder_control === 'stop') return 'by_you'
   if (build.state === 'stalled') return 'our_side'
   // The runner's own STOP decision: a check used up its fix rounds.
@@ -99,6 +105,7 @@ export const BUSY_LABEL: Record<ActionId, string> = {
   download_platform: 'Packing…',
   run_pilot: 'Starting…',
   open_repo: 'Opening…',
+  check_again: 'Checking…',
 }
 
 /** The pressed action shows its busy label and cannot be pressed twice. */
@@ -282,12 +289,82 @@ function finishedPlan(input: ActionInput, build: BuildStatus): Pick<ActionPlan, 
 }
 
 export function buildActions(input: ActionInput): ActionPlan {
-  return withPending(planFor(input), input.pending)
+  return withPending(followServer(planFor(input), input), input.pending)
+}
+
+/** Actions the page answers without asking the server: they send nothing. */
+const LOCAL_ONLY: ReadonlySet<ActionId> = new Set<ActionId>(['copy_report'])
+
+/** A server-allowed action the page's layout left out, drawn quiet in "More". */
+function extraAction(id: string, input: ActionInput, build: BuildStatus): BuildAction | null {
+  switch (id) {
+    case 'try_again':
+      return { ...tryAgain(input, stopKind(build), stoppedAt(build)), style: 'quiet' }
+    case 'change_answers':
+      return changeAnswers(input, 'quiet')
+    case 'download_copy':
+      return downloadCopy(input, 'quiet')
+    case 'start_over':
+      return startOver(input)
+    case 'check_again':
+      return { ...checkAgain(input), style: 'quiet' }
+    default:
+      return null
+  }
+}
+
+/**
+ * The server says which actions it accepts in this state (build-status
+ * ``actions``); the page offers exactly those. One it refuses is never drawn,
+ * and one it accepts that the layout left out is added to "More". Before the
+ * first status read there is no list, and the layout stands.
+ */
+function followServer(plan: ActionPlan, input: ActionInput): ActionPlan {
+  const build = input.build
+  const allowed = build?.actions
+  if (!build || !Array.isArray(allowed)) return plan
+  const accepted = new Set(allowed)
+  const keep = (a: BuildAction) => LOCAL_ONLY.has(a.id) || accepted.has(a.id)
+  const bar = plan.bar.filter(keep)
+  const more = plan.more.filter(keep)
+  const shown = new Set<string>([...bar, ...more].map((a) => a.id))
+  for (const id of allowed) {
+    if (shown.has(id)) continue
+    const extra = extraAction(id, input, build)
+    if (extra) {
+      more.push(extra)
+      shown.add(id)
+    }
+  }
+  // The state keeps one primary: the first safe action left on the bar, or
+  // the first one the server allows when the bar lost every action.
+  if (!bar.length) {
+    const first = more.findIndex((a) => !LOCAL_ONLY.has(a.id))
+    if (first >= 0) bar.push(...more.splice(first, 1))
+  }
+  if (!bar.some((a) => a.style === 'primary')) {
+    const i = bar.findIndex((a) => a.style !== 'danger')
+    if (i >= 0) bar[i] = { ...bar[i], style: 'primary' }
+  }
+  return { ...plan, bar, more }
+}
+
+function checkAgain(input: ActionInput): BuildAction {
+  return {
+    id: 'check_again',
+    label: 'Check again',
+    sub: 'Asks the server for this build once more.',
+    style: 'primary',
+    disabled: input.busy ? WAIT : null,
+  }
 }
 
 function planFor(input: ActionInput): ActionPlan {
   const build = input.build
   const accessPaused = Boolean(input.accessPaused)
+  if (build?.state === 'not_found') {
+    return { bar: [checkAgain(input), startOver(input)], more: [], accessPaused }
+  }
   if (build?.state === 'succeeded') return { ...finishedPlan(input, build), accessPaused }
   if (build && (build.state === 'failed' || build.state === 'stalled')) {
     return { ...stoppedPlan(input, build), accessPaused }

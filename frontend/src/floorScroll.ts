@@ -31,7 +31,7 @@ export function shouldFollow(event: StreamEvent, distancePx: number): boolean {
 }
 
 /** Build states that end a run: the card is brought into view once on reaching one. */
-const SETTLED_STATES = new Set(['failed', 'stalled', 'succeeded'])
+const SETTLED_STATES = new Set(['failed', 'stalled', 'succeeded', 'not_found'])
 
 /**
  * The key of a settled build state, or null while the build is still moving.

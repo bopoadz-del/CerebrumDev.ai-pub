@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Sequence
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -41,7 +41,6 @@ from app.factory.blocks_source import resolve_blocks_root
 from app.factory.blueprint import BlueprintError, ProductBlueprint, customer_settable
 from app.factory.dual_registry import DualRegistryError
 from app.factory.floor_actions import require_build_level
-from app.factory.locale_choice import intake_state
 from app.factory.paths import UnsafeOutputDir, factory_outputs_root, safe_output_dir
 from app.factory.product_architect import (
     _golden_for_draft,
@@ -317,10 +316,20 @@ _PROTOTYPE_MARKER_BODY = (
     "PRODUCT (pytest -m pilot) and STORE ops have not passed. Dual certification\n"
     "is pending. Frontend modules and some handlers may be Factory templates.\n"
     "\n"
-    "Say continue on the Factory Floor (or POST /product/pilot) to open a\n"
-    "Store-green cycle on the same workspace. Do not treat this zip as a\n"
-    "finished production platform.\n"
+    "%s Do not treat this zip as a finished production\n"
+    "platform.\n"
 )
+#: The next-step sentence of the note, by whether the server offers the
+#: ``run_pilot`` action for this build (floor_actions.allowed_build_actions).
+_PILOT_NEXT_STEP = {
+    True: "Press Run pilot checks on the Factory Floor to run the pilot\ntests on the same workspace.",
+    False: "The build level this platform was built to stops at code, so\nthe Factory Floor offers no pilot checks for it.",
+}
+
+
+def _prototype_marker_body(actions: Sequence[str]) -> str:
+    """The note's text, naming Run pilot checks only when it is offered."""
+    return _PROTOTYPE_MARKER_BODY % _PILOT_NEXT_STEP["run_pilot" in actions]
 
 
 def _maybe_write_prototype_marker(zf: zipfile.ZipFile, out: Path) -> None:
@@ -334,6 +343,7 @@ def _maybe_write_prototype_marker(zf: zipfile.ZipFile, out: Path) -> None:
             return
         if not ledger.succeeded():
             return
+        actions = _succeeded_build_actions(ledger)
     except Exception:  # noqa: BLE001
         return
     if _PROTOTYPE_MARKER in zf.namelist():
@@ -342,7 +352,20 @@ def _maybe_write_prototype_marker(zf: zipfile.ZipFile, out: Path) -> None:
 
     info = zipfile.ZipInfo(_PROTOTYPE_MARKER, date_time=_time.localtime()[:6])
     info.compress_type = zipfile.ZIP_DEFLATED
-    zf.writestr(info, _PROTOTYPE_MARKER_BODY)
+    zf.writestr(info, _prototype_marker_body(actions))
+
+
+def _succeeded_build_actions(ledger: Any) -> list:
+    """The actions the server offers this succeeded, not pilot-ready run, at
+    the build level the run recorded (its BUILD_LEVEL note)."""
+    from app.factory.build.build_level import ledger_bar
+    from app.factory.floor_actions import allowed_build_actions
+
+    level = ledger_bar(ledger.events())
+    reaches_pilot = None if level is None else level.get("stop_gate") not in ("", "CODE")
+    return allowed_build_actions(
+        {"state": "succeeded", "pilot_ready": False}, reaches_pilot=reaches_pilot
+    )
 
 
 def zip_generated_product(out: Path, archive_base: Path) -> Path:
@@ -750,6 +773,8 @@ def not_found_build_status() -> Dict[str, Any]:
         "stop": {
             "kind": fr.STOP_NOT_FOUND,
             "plain": fr.NOT_FOUND_PLAIN,
+            "check_plain": None,
+            "restarted": False,
             "step": "",
             "step_index": None,
             "steps_total": None,
@@ -854,6 +879,7 @@ def product_verticals(
     """The Floor's vertical picker: what the Store's kits DECLARE they serve,
     and the user's current choice. The user picks one or types their own;
     the Factory never infers it."""
+    from app.factory import platform_chat_flow
     from app.factory.store_kits import NO_VERTICAL, declared_verticals
 
     state = _require_session(session_id, principal)
@@ -871,8 +897,30 @@ def product_verticals(
         # The build level the user chose; None = not chosen (no default).
         "build_level": state.product_design.build_level,
         # The Floor's intake line: declared fields + any pending proposal.
-        "intake": intake_state(state.product_design),
+        "intake": platform_chat_flow.intake_view(state),
     }
+
+
+def _refuse_on_frozen_intake(state: Any, rule: Any = None) -> None:
+    """409 with the typed INTAKE_FROZEN whenever the chat would refuse the
+    same request: by default the Save rule (a build is running, or the
+    blueprint is approved and the intake is not reopened,
+    platform_chat_flow.intake_frozen); a draft passes the chat Draft's own
+    rule (platform_chat_flow.draft_refused)."""
+    from app.factory import platform_chat_flow
+
+    rule = rule or platform_chat_flow.intake_frozen
+    if rule(state):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "refused": platform_chat_flow.INTAKE_FROZEN,
+                "message": (
+                    "The blueprint is approved and its answers are frozen "
+                    "with it; nothing was changed."
+                ),
+            },
+        )
 
 
 @router.post("/{session_id}/product/draft")
@@ -880,6 +928,11 @@ def draft_product(
     session_id: str, body: DraftBody, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    # A draft replaces the blueprint and writes the request's industry,
+    # country and currency: refused whenever the chat's Draft would be.
+    from app.factory import platform_chat_flow
+
+    _refuse_on_frozen_intake(state, platform_chat_flow.draft_refused)
     # Outside the try/except below on purpose: that handler catches bare
     # Exception and re-raises as 400, which would mask the 429.
     _enforce_draft_quota(principal.account_id)
@@ -996,6 +1049,7 @@ def accept_golden(
     409 if there is no draft, or no golden was offered for it.
     """
     state = _require_session(session_id, principal)
+    _refuse_on_frozen_intake(state)
     bp_dict = state.product_design.blueprint
     if not bp_dict:
         raise HTTPException(
@@ -1059,6 +1113,7 @@ def decline_golden(
     409 if there is no draft.
     """
     state = _require_session(session_id, principal)
+    _refuse_on_frozen_intake(state)
     bp_dict = state.product_design.blueprint
     if not bp_dict:
         raise HTTPException(
@@ -1081,6 +1136,9 @@ def plan_product(
     session_id: str, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    # Planning re-syncs the intake onto the blueprint and replaces the plan
+    # an approval was given on: refused on a frozen intake.
+    _refuse_on_frozen_intake(state)
     if not state.product_design.blueprint:
         raise HTTPException(status_code=400, detail="draft a blueprint first")
     require_llm_rate(principal, "plan")
@@ -1105,6 +1163,10 @@ def approve_blueprint(
     session_id: str, body: ApproveBody, principal: Principal = Depends(require_entitled)
 ) -> Dict[str, Any]:
     state = _require_session(session_id, principal)
+    if body.blueprint is not None or not body.approve:
+        # Replacing or un-approving the blueprint is a change to its frozen
+        # inputs; approving an approved blueprint again changes nothing.
+        _refuse_on_frozen_intake(state)
     ignored_fields: list[str] = []
     if body.blueprint is not None:
         try:

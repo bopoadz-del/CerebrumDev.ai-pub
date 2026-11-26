@@ -41,7 +41,7 @@ from app.factory.floor_actions import (
     FloorActionError,
     parse_action,
 )
-from app.factory.locale_choice import intake_state, shaped_proposal
+from app.factory.locale_choice import declared_intake, shaped_proposal
 from app.factory.product_architect import LlmSoftMiss
 
 #: Refinements the model may apply itself. The vertical is the user's typed
@@ -132,7 +132,7 @@ or interrupted (no RUN_FAILED) and the user says continue / resume / keep \
 going, OR (3) the last run FAILED (rework exhausted / TESTER still red) \
 and the user asks to continue or try again — that RESUMES the platform \
 on its own branch at the failing phase with the rework budget it had left (only \
-the user's Start over control makes a fresh workspace). Do not require a \
+the user's Start from scratch control makes a fresh workspace). Do not require a \
 pending unapproved \
 blueprint to resume. If the last run already succeeded AND the product is \
 pilot-ready, do NOT call start_coder — reply that it finished. If \
@@ -150,11 +150,13 @@ about their vertical (only if they named one), country (2-letter code), \
 currency (3-letter code) and build level (only one of prototype | light | \
 pilot | production, and only if they chose it in so many words -- never \
 from how their business sounds). Leave a field "" when they have not said \
-it. The Floor shows your proposal with Confirm / Change buttons; it stores \
-nothing until the user presses Confirm.
+it. The Floor shows your proposal in the brief; it stores nothing until \
+the user presses Save.
 - reply: questions, chit-chat, or a pending blueprint with no confirmation. \
-Set "message" to a short grounded reply. Tell them they can confirm to start \
-the coding agent. Do not pretend a build started.
+Set "message" to a short grounded reply. Tell them they can press Approve & build to start \
+the coding agent. Do not pretend a build started. When a reply points the \
+user at a control, use the Floor's name for it: Approve & build, Try again, \
+Run pilot checks, Start from scratch, Save.
 
 The session facts carry the STORE: ready-made blocks, CONNECTORS and MCP \
 parts that are attachable, parts that are in the store but NOT cleared for \
@@ -215,7 +217,7 @@ def _intake_facts(pd: Any) -> str:
     are the user's; anything unset is to be ASKED, never assumed."""
     if pd is None:
         return ""
-    declared = intake_state(pd)["declared"]
+    declared = declared_intake(pd)
     shown = ", ".join(
         f"{k}={v}" if v else f"{k}=NOT DECLARED"
         for k, v in declared.items()
@@ -274,9 +276,9 @@ def _session_facts(state: Any) -> str:
             "Do NOT say 'same blueprint hash — not starting over'. A new "
             "platform brief MUST call draft_platform. continue / try again / "
             "start_coder RESUMES this platform on its own branch at the "
-            "failing phase with a reset rework budget; only the user's Start "
-            "over control makes a FRESH workspace (the old head is kept as an "
-            "archive tag)."
+            "failing phase with the rework budget it had left; only the user's "
+            "Start from scratch control makes a FRESH workspace (the old head "
+            "is kept as an archive tag)."
         )
     elif platform_chat_flow.is_generation_resumable(state):
         point = platform_chat_flow._ledger_resume_point(state) or "the last phase"
@@ -791,9 +793,9 @@ KIT_NOTICE = (
 #: shelf).
 UNCERTIFIED_KIT_NOTICE = (
     "Heads up: the store holds an uncertified '%s' kit \u2014 its domain depth "
-    'is not verified yet. Say "build on %s" to compose on it anyway, or '
-    "continue and we build a simple one fresh \u2014 that will take longer and "
-    "may cost more than a certified ready kit."
+    'is not verified yet. Ask in the chat to "build on %s" to use it anyway, '
+    "or press Approve & build and we build a simple one fresh \u2014 that will "
+    "take longer and may cost more than a certified ready kit."
 )
 
 
@@ -829,6 +831,10 @@ def _kit_notice(state: Any) -> str:
     )
     if status == SERVED and kit and kits.get(kit, {}).get("build_ready") is True:
         return ""
+    if status == SERVED and kit and not platform_chat_flow.has_pending_blueprint(state):
+        # The uncertified notice names Approve & build: it waits for the turn
+        # that shows that control (a pending blueprint), and is given then.
+        return ""
     pd.kit_notice_given = True
     if status == SERVED and kit:
         return UNCERTIFIED_KIT_NOTICE % (kit, kit)
@@ -861,7 +867,7 @@ def apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[s
     result = _apply_decision(state, message, decision)
     pd = getattr(state, "product_design", None)
     if pd is not None and isinstance(result, dict):
-        result["intake"] = intake_state(pd)
+        result["intake"] = platform_chat_flow.intake_view(state)
     return result
 
 
@@ -877,9 +883,9 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
             "sse": "info",
             "ok": True,
             "summary": (
-                "Press Approve to start the coding agent on this feature list."
+                "Press Approve & build to start the coding agent on this feature list."
                 if pending
-                else "Press Continue to resume the build."
+                else "Press Try again to resume the build."
             ),
             "stream_delta": True,
             "awaiting_action": "approve" if pending else "continue",
@@ -900,6 +906,10 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
         }
 
     if action == "draft_platform":
+        if platform_chat_flow.draft_refused(state):
+            # The model's Draft replaces the blueprint like the typed Draft
+            # and POST /product/draft, so it obeys their one frozen rule.
+            return platform_chat_flow.frozen_draft_reply(state)
         brief = _consolidated_brief(state, message, decision.get("brief") or "")
         result = platform_chat_flow.draft_from_chat(state, brief)
         state.product_design.elicitation_turns = []
@@ -933,7 +943,7 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
                 return {
                     "sse": "info",
                     "ok": True,
-                    "summary": "Confirm the proposed vertical on the Floor to use it.",
+                    "summary": "Press Confirm these on the brief to use the suggested industry.",
                     "stream_delta": True,
                 }
             if op in _MODEL_REFINEMENTS:
@@ -949,13 +959,13 @@ def _apply_decision(state: Any, message: str, decision: Dict[str, Any]) -> Dict[
             "ok": True,
             "summary": (
                 "I could not apply that change. Use the feature-list editor, "
-                "rename or build-level controls on the Floor, or Approve to build."
+                "rename or Edit brief on the Floor, or Approve & build."
             ),
             "stream_delta": True,
         }
 
     summary = decision.get("message") or (
-        "A blueprint is drafted. Confirm to start the coding agent, or refine it."
+        "A blueprint is drafted. Approve & build starts the coding agent, or refine it."
         if platform_chat_flow.has_pending_blueprint(state)
         else "Describe the platform you want and I will draft a blueprint."
     )

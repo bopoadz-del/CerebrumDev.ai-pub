@@ -198,3 +198,18 @@ describe('the level strip', () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+describe('PR-12: the stopped step takes its colour from the stop record', () => {
+  afterEach(cleanup)
+  const base: BuildStatus = { state: 'failed', phases: PHASES, completed: ['COLLECTOR', 'CLONER'] }
+  it.each([
+    ['user_stopped', 'halted'],
+    ['time_ran_out', 'halted'],
+    ['service_interrupted', 'halted'],
+    ['check_failed', 'failed'],
+    ['no_progress', 'failed'],
+  ])('%s -> %s', (kind, tone) => {
+    render(<Stepper build={{ ...base, stop: { kind, step: 'WRITER', step_index: 3, steps_total: 5, steps_done: 2 } }} />)
+    expect(screen.getByTestId(`floor-phase-${tone}-WRITER`)).toBeInTheDocument()
+  })
+})

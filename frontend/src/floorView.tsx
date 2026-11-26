@@ -21,16 +21,12 @@ import { SuggestedChecks } from './suggestedChecks'
 import {
   exportAffordance,
   formatFinishedAuthorship,
-  formatHeartbeat,
-  formatPhaseCounts,
-  formatPhaseHeadline,
   measuredScore,
   hasSourcedLevel,
   honestLevel,
   isAcceptancePendingPrototype,
   isPilotZipReady,
   shouldDemoteFounding,
-  phaseBarFraction,
   nRequiredFromProductInputs,
   preferHonestBuild,
   stampBuildObservation,
@@ -39,8 +35,8 @@ import {
 } from './buildProgress'
 import { LevelGradeDetail, LevelGradeStrip } from './levelGradeView'
 import { Stepper } from './stepper'
-import { checksSkipped, CHECK_NAMES, levelWord, orList, stepLabel } from './stepNames'
-import { BuildCard, errorReport } from './buildCard'
+import { checksSkipped, CHECK_NAMES, levelWord, orList } from './stepNames'
+import { BuildCard, RunningLine, errorReport } from './buildCard'
 import { ActionBar, useWideLayout } from './actionBar'
 import { buildActions, type ActionId } from './buildActions'
 import { actionOutcome, doneText, holdCardTop, humanError, type ActionOutcome, type InfoReply } from './actionResult'
@@ -304,46 +300,6 @@ export function BlueprintCard({
           </div>
         </>
       )}
-    </div>
-  )
-}
-
-function CoderProgress({ build, nowMs }: { build: BuildStatus; nowMs: number }) {
-  const headline = formatPhaseHeadline(build)
-  const counts = formatPhaseCounts(build)
-  const heartbeat = formatHeartbeat(build, nowMs)
-  // The agent's own narration (the activity log) and the session log live
-  // in Technical detail; the face keeps the newest line only.
-  const last = build.last_event || build.activity
-  const next = build.next_phase?.id
-  const fraction = phaseBarFraction(build)
-  return (
-    <div className="coder-progress">
-      <p className="coder-phase">
-        <strong>{headline}</strong>
-        {next ? <span className="coder-next"> · next: {stepLabel(next)}</span> : null}
-      </p>
-      {build.queued ? (
-        <p className="coder-queued" role="status">
-          Waiting for a build slot — position {build.queued.position ?? '?'}
-          {build.queued.ahead ? ` (${build.queued.ahead} ahead)` : ''}
-        </p>
-      ) : null}
-      {fraction != null && (
-        <div
-          className="coder-bar"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(fraction * 100)}
-          aria-label={counts ?? headline}
-        >
-          <span style={{ width: `${Math.round(fraction * 100)}%` }} />
-        </div>
-      )}
-      {counts && <p className="coder-counts">{counts}</p>}
-      {(build.activity_log?.length ?? 0) === 0 && last && <p className="coder-last">Last: {last}</p>}
-      {heartbeat && <p className="coder-heartbeat">{heartbeat}</p>}
     </div>
   )
 }
@@ -885,10 +841,10 @@ export function Floor({
               { role: 'factory', text: summary, card: 'generation', engine, triggeredBy },
             ])
           } else if (ev.event === 'error') {
-            setMsgs((m) => [
-              ...m.slice(0, -1),
-              { role: 'factory', text: String(ev.data ?? 'Something went wrong.'), card: 'error' },
-            ])
+            // An error event is a press that did not go through: never "done".
+            const errorText = humanError(String(ev.data ?? ''), 'The Factory could not do that. Nothing was changed.')
+            failed = errorText
+            setMsgs((m) => [...m.slice(0, -1), { role: 'factory', text: errorText, card: 'error' }])
           } else if (ev.event === 'chain' || ev.event === 'rules') {
             setMsgs((m) => {
               const copy = [...m]
@@ -1191,6 +1147,22 @@ export function Floor({
     return result
   }
 
+  // "Check again": one fresh status read. A build the server finds again is
+  // watched as usual; one it still cannot find says so in the bar.
+  async function checkAgain(): Promise<ActionOutcome | null> {
+    try {
+      const { build } = await product.buildStatus(sessionId)
+      setCoderBuild(build)
+      if (build.state === 'not_found') {
+        return { tone: 'refused', text: 'Still not found on the server.', next: null }
+      }
+      setWatchEpoch((n) => n + 1)
+      return { tone: 'done', text: doneText('check_again'), next: null }
+    } catch (err) {
+      return { tone: 'error', text: humanError(err, 'Could not reach the Factory. Try again.'), next: null }
+    }
+  }
+
   function pressOf(id: ActionId): Promise<ActionOutcome | null> {
     if (id === 'try_again') return typedPress(id, { action: 'continue' })
     if (id === 'change_answers') return typedPress(id, { action: 'continue_with_intake' })
@@ -1200,6 +1172,7 @@ export function Floor({
     if (id === 'download_copy') return downloadCopy()
     if (id === 'download_platform') return download()
     if (id === 'copy_report') return copyErrorReport()
+    if (id === 'check_again') return checkAgain()
     return Promise.resolve(null)
   }
 
@@ -1244,10 +1217,11 @@ export function Floor({
     coderActive &&
     liveCoderBuild?.state !== 'succeeded' &&
     liveCoderBuild?.state !== 'failed' &&
-    liveCoderBuild?.state !== 'stalled'
+    liveCoderBuild?.state !== 'stalled' &&
+    liveCoderBuild?.state !== 'not_found'
   const coderSucceeded = liveCoderBuild?.state === 'succeeded'
   const coderTerminal =
-    liveCoderBuild?.state === 'failed' || liveCoderBuild?.state === 'stalled'
+    liveCoderBuild?.state === 'failed' || liveCoderBuild?.state === 'stalled' || liveCoderBuild?.state === 'not_found'
   const designBp = productDesign?.blueprint as
     | { product_name?: string; name?: string }
     | null
@@ -1458,15 +1432,19 @@ export function Floor({
             steps={
               <>
                 {coderSucceeded && <LevelGradeStrip build={liveCoderBuild} testIdPrefix="floor" />}
-                <Stepper build={liveCoderBuild} />
+                {/* A build the server cannot find has no steps to show. */}
+                {liveCoderBuild?.state !== 'not_found' && <Stepper build={liveCoderBuild} />}
                 {liveCoderBuild && liveCoderBuild.state === 'building' && (
-                  <CoderProgress build={liveCoderBuild} nowMs={nowMs} />
+                  <RunningLine build={liveCoderBuild} nowMs={nowMs} />
                 )}
               </>
             }
             detail={
               // Grade names, the stop gate and raw gate verdicts: Technical detail only.
-              <LevelGradeDetail build={liveCoderBuild} testIdPrefix="floor" />
+              // A build the server cannot find has no record to show.
+              liveCoderBuild?.state === 'not_found' ? undefined : (
+                <LevelGradeDetail build={liveCoderBuild} testIdPrefix="floor" />
+              )
             }
             footer={
               <>

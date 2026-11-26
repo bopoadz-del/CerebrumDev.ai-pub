@@ -243,8 +243,6 @@ def allowed_build_actions(build: Any, *, reaches_pilot: Optional[bool] = None) -
         return ["try_again", "start_over"]
     if state == "failed":
         kind = str((build.get("stop") or {}).get("kind") or "")
-        if kind == "user_stopped":
-            return ["try_again", "download_copy", "start_over"]
         if kind == "check_failed":
             return ["try_again", "change_answers", "download_copy", "start_over"]
         return ["try_again", "download_copy", "change_answers", "start_over"]

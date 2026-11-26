@@ -600,6 +600,12 @@ def full_input_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+#: The typed reason a stage time check's hard stop records on the run's
+#: terminal event. The run ends as FAILED_BUDGET_SPENT, which is also the
+#: outcome of a spent rework budget; this reason tells the two apart.
+STAGE_TIME_CHECK_STOP = "stage_time_check_stop"
+
+
 class Outcome(str, Enum):
     SUCCESS = "SUCCESS"
     #: Instrumented collect-all run: every phase executed, every gate
@@ -3563,6 +3569,7 @@ class RoleRunner:
                         rework=rework_used,
                         findings=list(halt.get("pilot_ready_blockers") or [])
                         + list(halt.get("contract_misses") or [])[:8],
+                        decision={"reason": STAGE_TIME_CHECK_STOP},
                     )
                 if deadline is not None and self.clock() >= deadline:
                     snap = self._stage_inspect(reason="wall_reached", stage="wall")
@@ -3694,6 +3701,7 @@ class RoleRunner:
                         rework=rework_used,
                         findings=list(halt.get("pilot_ready_blockers") or [])
                         + list(halt.get("contract_misses") or [])[:8],
+                        decision={"reason": STAGE_TIME_CHECK_STOP},
                     )
 
                 # The GRADER, inside the build: the writer's tree is graded

@@ -87,7 +87,10 @@ export function Stepper({ build }: { build: BuildStatus | null }) {
   const steps = stepViews(build)
   const review = reviewState(build)
   // Red only for a check that refused the work; a timeout or a Stop is halted.
-  const tone = stopTone(build?.failure)
+  // With the server's stop record, its kind decides, as it does on the card:
+  // only a check that did not pass, or a build that went quiet, is red.
+  const kind = build?.stop?.kind
+  const tone = kind ? (kind === 'check_failed' || kind === 'no_progress' ? 'failed' : 'halted') : stopTone(build?.failure)
   const reviewAt = review ? reviewStep(steps) : undefined
   const focus = steps.find((s) => s.state === 'current' || s.state === 'stopped' || s.state === 'fixing')
   const doneCount = steps.filter((s) => s.state === 'done').length
