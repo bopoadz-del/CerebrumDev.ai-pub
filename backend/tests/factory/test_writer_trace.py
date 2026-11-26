@@ -256,11 +256,14 @@ def test_a_pass_keeps_logs_and_ledgers_its_trace(
     assert f"actions={len(commands)}" in trace_lines[0]
 
 
-def test_a_pass_with_no_stream_events_keeps_no_trace(monkeypatch, tmp_path):
-    legacy = json.dumps(
-        {"status": "completed", "termination_reason": "resolved", "tools": [{"tool": "write"}]}
-    )
-    receipt = _run(monkeypatch, tmp_path, [legacy], "sess_cccc3333")
+@pytest.mark.parametrize(
+    "tools, session_id",
+    [([{"tool": "write"}], "sess_cccc3333"), ([{"tool": "read"}, {"tool": "edit"}], None)],
+)
+def test_a_pass_with_no_stream_events_keeps_no_trace(monkeypatch, tmp_path, tools, session_id):
+    legacy = json.dumps({"status": "completed", "termination_reason": "resolved", "tools": tools})
+    receipt = _run(monkeypatch, tmp_path, [legacy], session_id)
+    assert receipt.tools == tools
     assert receipt.status == "completed"
     assert "time" not in receipt.rounds
     assert not (tmp_path / WRITER_TRACE_REL).exists()
@@ -274,11 +277,12 @@ def test_the_trace_file_never_ships(rel, ships):
     assert is_exported(Path(rel)) is ships
 
 
-def test_the_trace_file_is_not_the_agents_output(tmp_path):
-    (tmp_path / "docs").mkdir()
-    (tmp_path / WRITER_TRACE_REL).write_text("{}", encoding="utf-8")
-    (tmp_path / "docs" / "notes.md").write_text("x", encoding="utf-8")
-    assert worker_mod.agent_file_paths(tmp_path) == frozenset({"docs/notes.md"})
+@pytest.mark.parametrize("authored", ["docs/notes.md", "app/main.py"])
+def test_the_trace_file_is_not_the_agents_output(tmp_path, authored):
+    for rel in (WRITER_TRACE_REL, authored):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("{}", encoding="utf-8")
+    assert worker_mod.agent_file_paths(tmp_path) == frozenset({authored})
 
 
 @pytest.mark.parametrize("session_id, shown", [(None, "-"), ("sess_dddd4444ffff", "sess_dddd444")])
@@ -303,10 +307,11 @@ def test_an_unwritable_checkout_still_returns_the_summary(
     assert any(f"session={shown} " in m for m in messages)
 
 
-def test_an_action_without_a_result_logs_no_run_time(tmp_path, caplog):
-    events = [(1.0, _use("bash", "sleep 9")), (3.0, _use("read")), (4.0, _result())]
+@pytest.mark.parametrize("first_t, result_t, run", [(1.0, 4.0, "3.0s"), (2.0, 7.0, "5.0s")])
+def test_an_action_without_a_result_logs_no_run_time(tmp_path, caplog, first_t, result_t, run):
+    events = [(first_t, _use("bash", "sleep 9")), (2.5, _use("read")), (result_t, _result())]
     with caplog.at_level(logging.INFO, logger="app.factory.build.writer_trace"):
-        record_writer_trace(tmp_path, events, 0.0, 6.0, "sess_eeee5555")
+        record_writer_trace(tmp_path, events, 0.0, 9.0, "sess_eeee5555")
     lines = [
         r.getMessage()
         for r in caplog.records
@@ -314,5 +319,5 @@ def test_an_action_without_a_result_logs_no_run_time(tmp_path, caplog):
     ]
     assert len(lines) == 2
     # The id-less result closes the earliest open call; the second has none.
-    assert " run=3.0s " in lines[0]
+    assert f" run={run} " in lines[0]
     assert " run=- exit=- " in lines[1]
