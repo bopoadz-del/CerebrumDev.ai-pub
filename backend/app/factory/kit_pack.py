@@ -80,81 +80,53 @@ def kit_map_from_store(blocks_root: Optional[Path] = None) -> Dict[str, str]:
     return out
 
 
-def capability_bindings(blueprint: Any) -> List[Tuple[str, str, List[str]]]:
-    """``(capability id, capability text, bound block ids)`` for each
-    capability of a blueprint or plan; the text is its description and
-    requirements, the words selection judged it by."""
-    out: List[Tuple[str, str, List[str]]] = []
+def capability_picks(blueprint: Any) -> List[Tuple[str, List[str], List[str]]]:
+    """``(capability id, bound block ids, picked kit ids)`` for each
+    capability of a blueprint or plan that binds a block and picks a kit."""
+    out: List[Tuple[str, List[str], List[str]]] = []
     for cap in getattr(blueprint, "capabilities", None) or ():
         cap_id = str(getattr(cap, "id", "") or getattr(cap, "capability_id", "") or "")
         blocks = [str(b) for b in (getattr(cap, "block_ids", None) or []) if str(b).strip()]
-        if not cap_id or not blocks:
-            continue
-        reqs = getattr(cap, "requirements", None) or []
-        text = " ".join([str(getattr(cap, "description", "") or ""), *(str(r) for r in reqs)])
-        out.append((cap_id, text, blocks))
+        kits = [str(k) for k in (getattr(cap, "kit_ids", None) or []) if str(k).strip()]
+        if cap_id and blocks and kits:
+            out.append((cap_id, blocks, kits))
     return out
 
 
 def drawn_kits(
-    bindings: Iterable[Tuple[str, str, Sequence[str]]],
+    picks: Iterable[Tuple[str, Sequence[str], Sequence[str]]],
     blocks_root: Optional[Path] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """``block_id -> {"kit", "for"}``: the Store kit each bound block is
     drawn from, and the capabilities that drew it.
 
-    A kit is drawn because selection chose it, never because it happens to
-    list a bound block: kits also list the generic blocks they were composed
-    with (a database, a dashboard, a workflow), and membership alone would
-    stock one product's kit in every build. So a block draws a kit only when
-    the kit lists the block AND either
-      * the kit's own declaration (id, name, description, tags) clears the
-        relevance floor for the capability the block is bound to, or
-      * the block's own declaration names the kit by a word of the kit's id
-        (the block says which domain it is for; a generic block does not).
-    Several such kits: one whose declaration fits the capability first, then
-    the best score for the capability, then the kit id.
-    A block no kit is drawn for goes to the base pack.
+    The architect picks a capability's kits from the kit index it is shown;
+    code checks facts only. A block draws a kit when a capability that binds
+    the block picked the kit, the Store marks the kit available, and the
+    kit's manifest lists the block. Kits also list the generic blocks they
+    were composed with, so membership alone never draws a kit: only a pick
+    does. When picks disagree on a block, the first capability's first
+    qualifying pick wins (blueprint order). A block no kit is drawn for goes
+    to the base pack.
     """
-    from app.factory import store_kits
-    from app.factory.store_relevance import StoreIndex, declared_words, kit_index, words
-
     root = _store_root(blocks_root)
     kits = available_kit_manifests(root) if root is not None else {}
-    if not kits:
-        return {}
-    manifests = store_kits.block_manifests(root)
-    index = kit_index(kits, common=StoreIndex(manifests).common_words())
-
-    def _names_kit(bid: str, kit_id: str) -> bool:
-        if bid not in manifests:
-            return False
-        own = index.fold(declared_words(bid, manifests[bid]))
-        return any(index.informative(t) for t in own & index.fold(words(kit_id)))
-
-    holders: Dict[str, List[str]] = {}
-    for kit_id, data in kits.items():
-        for bid in data.get("blocks") or []:
-            if bid:
-                holders.setdefault(str(bid), []).append(kit_id)
-    # Best first: a kit whose own declaration fits the capability, then the
-    # higher score, then the kit id.
-    best: Dict[str, Tuple[bool, float, str]] = {}
-    drawn_for: Dict[Tuple[str, str], List[str]] = {}
-    for cap_id, text, block_ids in bindings:
-        for bid in block_ids:
-            for kit_id in holders.get(str(bid), ()):
-                cand = index.candidate(kit_id, cap_id, text)
-                if cand is None or not (cand.clears or _names_kit(str(bid), kit_id)):
+    out: Dict[str, Dict[str, Any]] = {}
+    for cap_id, block_ids, kit_ids in picks:
+        for kit_id in kit_ids:
+            data = kits.get(str(kit_id))
+            if data is None:
+                continue
+            listed = {str(b) for b in data.get("blocks") or [] if b}
+            for bid in block_ids:
+                if str(bid) not in listed:
                     continue
-                drawn_for.setdefault((str(bid), kit_id), []).append(cap_id)
-                key = (not cand.clears, -cand.score, kit_id)
-                if str(bid) not in best or key < best[str(bid)]:
-                    best[str(bid)] = key
-    return {
-        bid: {"kit": key[2], "for": sorted(set(drawn_for[(bid, key[2])]))}
-        for bid, key in sorted(best.items())
-    }
+                rec = out.setdefault(str(bid), {"kit": str(kit_id), "for": []})
+                if rec["kit"] == str(kit_id) and cap_id not in rec["for"]:
+                    rec["for"].append(cap_id)
+    for rec in out.values():
+        rec["for"] = sorted(rec["for"])
+    return dict(sorted(out.items()))
 
 
 def load_shelf_kit_map(shelf_path: Optional[Path] = None) -> Dict[str, str]:
@@ -376,7 +348,7 @@ def _kit_groups(
     """The kit grouping a build stocks, and the kits selection drew."""
     drawn: Dict[str, Dict[str, Any]] = {}
     if blueprint is not None:
-        drawn = drawn_kits(capability_bindings(blueprint), _store_root(blocks_root))
+        drawn = drawn_kits(capability_picks(blueprint), _store_root(blocks_root))
     return kits_for_blocks(block_ids, shelf_path=shelf_path, drawn=drawn), drawn
 
 

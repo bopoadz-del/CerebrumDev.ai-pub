@@ -281,6 +281,39 @@ def index_line(entry: Dict[str, Any]) -> str:
     )
 
 
+def kit_index_line(kit_id: str, manifest: Any) -> str:
+    """One Store kit as the line the architect reads: what the kit is for,
+    when to use it and when not, and the blocks its manifest lists. Every
+    value is the kit's own declaration; a blank one reads "(not declared)"."""
+    m = manifest if isinstance(manifest, dict) else {}
+    purpose = " ".join(str(m.get("description") or "").split())
+    when = {f: " ".join(str(m.get(f) or "").split()) for f in _WHEN_FIELDS}
+    listed = [str(b) for b in (m.get("blocks") or []) if isinstance(b, str) and b.strip()]
+    return (
+        f"- {kit_id}: for: {purpose or '(not declared)'}"
+        f" | use when: {when['when_to_use'] or '(not declared)'}"
+        f" | not when: {when['when_not'] or '(not declared)'}"
+        f" | blocks: {', '.join(listed) or '(none listed)'}"
+    )
+
+
+def kept_kit_picks(picks: Any, block_ids: List[str], kits: Dict[str, Any]) -> List[str]:
+    """The kit ids a capability picked that pass the fact check: the kit is
+    one the Store marks available (a key of ``kits``) and its manifest lists
+    at least one block the capability binds. Anything else is dropped."""
+    if not isinstance(picks, list):
+        return []
+    bound = set(block_ids)
+    out: List[str] = []
+    for kit_id in picks:
+        data = kits.get(kit_id) if isinstance(kit_id, str) else None
+        if not isinstance(data, dict) or kit_id in out:
+            continue
+        if bound & {str(b) for b in data.get("blocks") or [] if b}:
+            out.append(kit_id)
+    return out
+
+
 def _wanted(value: Any) -> Optional[set]:
     """The field names a capability declares (strings, or objects with a
     ``name``), or None when the value is not a list of them."""

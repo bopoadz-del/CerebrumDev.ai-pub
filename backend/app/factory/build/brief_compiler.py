@@ -73,7 +73,7 @@ from app.factory.coder import coder_budget_s
 from app.factory.delivery_standard import DOMAIN_PACK_FIELDS
 from app.factory.dual_registry import dual_registered_ids
 from app.factory.kit_pack import (
-    capability_bindings,
+    capability_picks,
     drawn_kits,
     find_kit_manifest,
     kit_brief_view,
@@ -331,7 +331,7 @@ def _load_kit_manifests(
 ) -> Dict[str, Any]:
     # The same grouping the CLONER stocks, so the brief names the kits the
     # workspace holds.
-    drawn = drawn_kits(capability_bindings(blueprint), blocks_root) if blueprint is not None else {}
+    drawn = drawn_kits(capability_picks(blueprint), blocks_root) if blueprint is not None else {}
     grouped = kits_for_blocks(block_ids, drawn=drawn)
     out: Dict[str, Any] = {}
     for kit_id, bids in grouped.items():

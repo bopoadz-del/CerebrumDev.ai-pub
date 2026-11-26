@@ -1705,7 +1705,7 @@ def run_cloner(ctx: RoleContext) -> RoleResult:
     from app.factory.kit_pack import stock_kits_via_workspace
 
     # The kit a domain block is drawn from is an output of selection: the
-    # blueprint's capabilities say which kit's own declaration serves them.
+    # kits the architect picked per capability, checked against the Store.
     kit_lock = stock_kits_via_workspace(
         ctx.workspace,
         vendored,

@@ -173,6 +173,7 @@ Return ONLY a JSON object with this shape:
       "block_ids": ["<ids from the AVAILABLE BLOCKS list only>"],
       "inputs": ["<the input names, from the picked block's inputs:, this capability uses>"],
       "outputs": ["<the output names, from the picked block's outputs:, it returns>"],
+      "kit_ids": ["<ids from the KITS list only>"],
       "strategy_hint": "REUSE",
       "connectors": ["<external systems this capability calls that no AVAILABLE BLOCK supplies>"]
     }
@@ -199,6 +200,12 @@ Rules:
   new (GENERATE).
 - If no available block fits a capability, use "block_ids": [] and
   "strategy_hint": "GENERATE".
+- kit_ids may ONLY contain ids from the KITS list. Each kit line says what the
+  kit is for, when to use it and when not, and the blocks it lists. Pick a kit
+  when what it is for serves this capability; a kit brings its domain files
+  only for a block it lists that this capability picked. Kits also list the
+  generic blocks they were built with, so listing your block is not a reason
+  to pick a kit. Use [] when no kit serves the capability.
 - connectors names the outside systems (a CRM, a DMS, a bank) a capability
   calls that no available block supplies. Each ships as a marked placeholder
   until it is built, and the capability says so; use [] when it calls none.
@@ -471,6 +478,10 @@ def _blueprint_from_llm_payload(
 
     # The Store's own declarations, read once: the facts a pick is checked on.
     manifests = block_manifests()
+    from app.factory.kit_pack import available_kit_manifests
+    from app.factory.store_catalog import kept_kit_picks
+
+    kits = available_kit_manifests()
     raw_caps = data.get("capabilities")
     if not isinstance(raw_caps, list) or not raw_caps:
         raise ValueError("LLM draft has no capabilities")
@@ -512,6 +523,9 @@ def _blueprint_from_llm_payload(
                 "id": cap_id.replace("-", "_"),
                 "description": description,
                 "block_ids": block_ids,
+                # A kit pick is kept only on facts: the kit is available and
+                # lists a block this capability kept.
+                "kit_ids": kept_kit_picks(item.get("kit_ids"), block_ids, kits),
                 "strategy_hint": "REUSE" if block_ids else "GENERATE",
                 "requirements": requirements,
                 "connectors": connectors,
@@ -627,12 +641,23 @@ def _draft_with_llm(
             "Prefer one when it fits the capability; the rest are unproven, "
             "not unusable.)"
         )
+    # Every kit the Store marks available, one index line each, so the model
+    # can pick the kit that serves a capability. No vertical narrows it.
+    from app.factory.kit_pack import available_kit_manifests
+    from app.factory.store_catalog import kit_index_line
+
+    kit_list = (
+        "\n".join(kit_index_line(k, m) for k, m in sorted(available_kit_manifests().items()))
+        or "- (none available)"
+    )
     # The brief is caller-supplied and was previously sent whole.
     bounded_brief = truncate_brief(brief)
     messages = [
         {
             "role": "system",
-            "content": _LLM_DRAFT_SYSTEM + f"\nAVAILABLE BLOCKS:\n{block_list}\n",
+            "content": _LLM_DRAFT_SYSTEM
+            + f"\nAVAILABLE BLOCKS:\n{block_list}\n"
+            + f"\nKITS:\n{kit_list}\n",
         },
         {"role": "user", "content": bounded_brief},
     ]
