@@ -385,3 +385,83 @@ def test_the_prompt_offers_every_available_kit_as_an_index_line(monkeypatch, fak
         assert kit_index_line(kit_id, manifest) in kit_part
     assert ("- (none available)" in kit_part) is (not kits)
     assert '"kit_ids": [' in seen["system"]
+
+
+# --- edges: what a pick may not do -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kit, block, name, inputs",
+    [
+        ("zorvex_ops", "zorvex_ledger", "Zorvex Ops Pack", {"zorvex_ledger": ["period"]}),
+        ("quillon_land", "quillon_registry", "Quillon Parcels", {"quillon_registry": ["parcel_ref"]}),
+    ],
+)
+def test_the_brief_kit_view_carries_the_stores_own_manifest(store, monkeypatch, kit, block, name, inputs):
+    """``_load_kit_manifests`` reads the Store's manifest, so the brief shows
+    the kit's declared name and contract, not a synthesized stand-in."""
+    from app.factory.build import brief_compiler
+
+    path = store / "block_store" / "kits" / kit / "manifest.json"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(dict(body, name=name, inputs=inputs)), encoding="utf-8")
+    monkeypatch.setattr(kit_pack, "load_shelf_kit_map", lambda *a, **k: {})
+
+    pick = ("cap_" + block, [block], [kit])
+    view = brief_compiler._load_kit_manifests([block], blocks_root=store, blueprint=_bp(pick))[kit]
+
+    assert view["name"] == name
+    assert view["inputs"] == inputs
+
+
+@pytest.mark.parametrize(
+    "records, drawn",
+    [
+        # The drawn kit was never stocked: nothing to record on, no error.
+        ({"platform": {"blocks": ["grid_panel"]}}, {"zorvex_ledger": {"kit": "zorvex_ops", "for": ["c1"]}}),
+        # The kit was stocked but without this block: it was not drawn for it.
+        ({"quillon_land": {"blocks": ["pagereader"]}}, {"quillon_registry": {"kit": "quillon_land", "for": ["c2"]}}),
+    ],
+)
+def test_with_drawn_for_records_nothing_a_stocked_kit_does_not_hold(records, drawn):
+    before = json.loads(json.dumps(records))
+    assert kit_pack._with_drawn_for(records, drawn) == before
+
+
+@pytest.mark.parametrize("blocks_root", ["store-a", "store-b"])
+def test_copy_referenced_kits_does_not_consult_the_store_for_a_product_without_blocks(
+    tmp_path, monkeypatch, blocks_root
+):
+    """A product with no vendored blocks stocks no kit and never reads the
+    Store for one (``_copy_referenced_kits``)."""
+    from app.factory.generator import ProductGenerator
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("stock_kits ran for a product with no blocks")
+
+    monkeypatch.setattr(kit_pack, "stock_kits", _must_not_run)
+    gen = object.__new__(ProductGenerator)
+    gen.plan = NS(dual_registered_blocks=[])
+    gen.blocks_root = tmp_path / blocks_root
+    gen.blueprint = _bp(("c", [], ["zorvex_ops"]))
+    out = tmp_path / "product"
+
+    gen._copy_referenced_kits(out)
+
+    assert not (out / "kits").exists()
+
+
+@pytest.mark.parametrize("block", ["zorvex_ledger", "quillon_registry"])
+def test_copy_referenced_kits_stocks_the_kits_of_a_product_with_blocks(tmp_path, monkeypatch, block):
+    from app.factory.generator import ProductGenerator
+
+    seen = {}
+    monkeypatch.setattr(kit_pack, "stock_kits", lambda out, ids, **k: seen.update(ids=list(ids)))
+    gen = object.__new__(ProductGenerator)
+    gen.plan = NS(dual_registered_blocks=[block])
+    gen.blocks_root = tmp_path
+    gen.blueprint = _bp(("c", [block], []))
+
+    gen._copy_referenced_kits(tmp_path / "product")
+
+    assert seen == {"ids": [block]}
