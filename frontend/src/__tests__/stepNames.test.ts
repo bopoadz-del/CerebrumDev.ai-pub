@@ -35,6 +35,24 @@ describe('the step name table', () => {
     expect(labels).not.toContain(REVIEW_NAME)
   })
 
+  it.each([
+    ['label', (id: string) => stepLabel(id), ['Collector', 'Researcher', 'Workers', 'Tester', 'Store Manager']],
+    [
+      'running form',
+      (id: string) => stepRunning(id),
+      [
+        'Collector (planning the parts)',
+        'Researcher (gathering building blocks)',
+        'Workers (writing the code)',
+        'Tester (testing)',
+        'Store Manager (packaging)',
+      ],
+    ],
+  ])('names the five stages in build order (%s)', (_kind, name, expected) => {
+    expect(STEP_ORDER).toEqual(['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER'])
+    expect(STEP_ORDER.map(name)).toEqual(expected)
+  })
+
   it('never returns a wire id as a name', () => {
     const names = [
       ...STEP_ORDER.flatMap((id) => [stepLabel(id), stepRunning(id)]),

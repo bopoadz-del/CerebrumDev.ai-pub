@@ -141,6 +141,25 @@ describe('the stepper', () => {
     expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent('Workers')
   })
 
+  it.each([
+    ['a running build with its phases list', BUILDING_FIX_ROUND],
+    ['a stopped build', TIMEOUT_STOP],
+    ['a record with only a phase trail', { state: 'failed', phase_trail: PHASES.map((phase) => ({ phase })) } as BuildStatus],
+    ['no record at all', null],
+  ])('shows the five stage names under the dots, in build order, for %s', (_title, build) => {
+    render(<Stepper build={build} />)
+    const names = screen.getAllByTestId('floor-stepper-name').map((el) => el.textContent)
+    expect(names).toEqual(['Collector', 'Researcher', 'Workers', 'Tester', 'Store Manager'])
+  })
+
+  it.each([
+    [['COLLECTOR', 'SOME_NEW_ROLE'], ['Collector', 'Step 2']],
+    [['WRITER', 'TESTER'], ['Workers', 'Tester']],
+  ])('a run with its own phase list %j names those steps, and an unknown one by position', (phases, expected) => {
+    render(<Stepper build={{ state: 'building', phases } as BuildStatus} />)
+    expect(screen.getAllByTestId('floor-stepper-name').map((el) => el.textContent)).toEqual(expected)
+  })
+
   it('says each state in words, not colour alone', () => {
     render(<Stepper build={TIMEOUT_STOP} />)
     const text = screen.getByTestId('floor-stepper-row').textContent ?? ''
