@@ -2683,22 +2683,31 @@ def is_narration_line(line: str) -> bool:
     return text.startswith(_STEP_PREFIX) or text.startswith(HEARTBEAT_PREFIX)
 
 
-def count_authored_files(root: Path) -> int:
-    """Files the pass has put on disk so far, the factory's own view.
+def _authored_paths(root: Path) -> Iterator[str]:
+    """The one walk behind every authored-file view: relative POSIX paths of
+    the files the pass has put on disk, the factory's own view.
 
     Vendored blocks, VCS internals, the writer CLI's own runtime home and
-    the progress logs themselves are not the agent's output. Best-effort:
-    an unreadable tree counts as zero.
+    the progress logs themselves are not the agent's output. A tree being
+    rewritten under the walk may raise ``OSError`` part-way; each caller
+    decides what a partial walk means.
     """
     skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
+    for path in Path(root).rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if set(rel.parts) & skip or path.name.startswith("writer_progress"):
+            continue
+        yield rel.as_posix()
+
+
+def count_authored_files(root: Path) -> int:
+    """Files the pass has put on disk so far (``_authored_paths``).
+    Best-effort: a walk that raised counts what it reached."""
     total = 0
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            parts = set(path.relative_to(root).parts)
-            if parts & skip or path.name.startswith("writer_progress"):
-                continue
+        for _rel in _authored_paths(root):
             total += 1
     except OSError:
         return total
@@ -2708,24 +2717,14 @@ def count_authored_files(root: Path) -> int:
 def authored_files_or_none(root: Path) -> Optional[int]:
     """``count_authored_files``, but None when the walk raised part-way.
 
-    A tree being rewritten under the walk (a test run creating and removing
-    temporary paths) can raise mid-walk; the partial count it would return
-    is indistinguishable from a tree that shrank. The heartbeat and the
-    stall watchdog read None as "no sample", never as an empty tree.
+    The partial count is indistinguishable from a tree that shrank. The
+    heartbeat and the stall watchdog read None as "no sample", never as an
+    empty tree.
     """
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
-    total = 0
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            parts = set(path.relative_to(root).parts)
-            if parts & skip or path.name.startswith("writer_progress"):
-                continue
-            total += 1
+        return sum(1 for _rel in _authored_paths(root))
     except OSError:
         return None
-    return total
 
 
 #: Files the WORKER itself writes (the brief pointer target, the argv audit
@@ -2739,19 +2738,11 @@ def agent_file_paths(root: Path) -> FrozenSet[str]:
     """Relative paths of the files ``count_authored_files`` counts, minus the
     worker's own dispatch audit files. A pass's new files are the difference
     of two snapshots taken around it."""
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
     found = set()
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root)
-            if set(rel.parts) & skip or path.name.startswith("writer_progress"):
-                continue
-            posix = rel.as_posix()
-            if posix in DISPATCH_AUDIT_FILES:
-                continue
-            found.add(posix)
+        for posix in _authored_paths(root):
+            if posix not in DISPATCH_AUDIT_FILES:
+                found.add(posix)
     except OSError:
         pass
     return frozenset(found)
