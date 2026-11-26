@@ -29,6 +29,12 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tupl
 #: A shared word counts towards the floor only when fewer than this share of
 #: the Store's blocks declare it.
 INFORMATIVE_SHARE = 0.1
+#: The same bar for a KIT's declaration, counted across the Store's kits. A
+#: kit index holds a few dozen documents, not hundreds, and the domain
+#: suites share one template sentence ("typed document analysis, entity
+#: extraction, metrics ..."); a word a quarter of the kits declare says
+#: nothing about which kit serves a capability.
+KIT_INFORMATIVE_SHARE = 0.25
 #: Distinct informative words a block and a capability must share to clear
 #: the floor (when the capability text does not name the block).
 MIN_SHARED = 2
@@ -123,8 +129,14 @@ class Candidate:
 class StoreIndex:
     """The declared words of a set of Store blocks and how rare each word is."""
 
-    def __init__(self, manifests: Mapping[str, Mapping[str, Any]]):
+    def __init__(
+        self,
+        manifests: Mapping[str, Mapping[str, Any]],
+        share: float = INFORMATIVE_SHARE,
+        common: Iterable[str] = (),
+    ):
         self.manifests: Dict[str, Mapping[str, Any]] = dict(manifests)
+        self.share = share
         raw = {bid: declared_words(bid, m) for bid, m in sorted(self.manifests.items())}
         # One root per word the Store declares, shortest form first, so a
         # word's forms ("permit", "permits") count as one word.
@@ -141,6 +153,9 @@ class StoreIndex:
         self._prose_df = _counts(
             self.fold(words(m.get("description") or "")) for m in self.manifests.values()
         )
+        #: Words another, larger index found common in prose ("with",
+        #: "from"): filler here too, however few of these documents use them.
+        self._common = self.fold(common)
 
     def _root_of(self, word: str, add: bool = False) -> str:
         bucket = self._roots.setdefault(word[:MIN_ROOT], []) if add else self._roots.get(word[:MIN_ROOT], [])
@@ -160,8 +175,16 @@ class StoreIndex:
         return math.log((self.size + 1) / (self._df.get(term, 0) + 1))
 
     def informative(self, term: str) -> bool:
-        limit = INFORMATIVE_SHARE * self.size
+        limit = self.share * self.size
+        if term in self._common:
+            return False
         return 0 < self._df.get(term, 0) < limit and self._prose_df.get(term, 0) < limit
+
+    def common_words(self) -> FrozenSet[str]:
+        """The words too many of these documents write in their prose to say
+        anything about one of them."""
+        limit = self.share * self.size
+        return frozenset(t for t, n in self._prose_df.items() if n >= limit)
 
     def candidate(
         self, block_id: str, capability_id: Any, capability_text: Any = ""
@@ -240,3 +263,12 @@ def store_index(block_ids: Iterable[str], store_root: Any = None) -> StoreIndex:
 
     manifests = store_kits.block_manifests(store_root)
     return StoreIndex({str(b): manifests[str(b)] for b in block_ids or () if str(b) in manifests})
+
+
+def kit_index(kits: Mapping[str, Mapping[str, Any]], common: Iterable[str] = ()) -> StoreIndex:
+    """An index over KIT manifests (id, name, description, tags), so a kit
+    is judged against a capability by what the kit itself declares it is
+    for, with the same floor a block meets. Rarity is counted across kits;
+    ``common`` (the block Store's prose filler) is filler here too, since a
+    few dozen kit sentences cannot tell an everyday word from a rare one."""
+    return StoreIndex(kits, share=KIT_INFORMATIVE_SHARE, common=common)
