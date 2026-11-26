@@ -2,6 +2,35 @@
 
 **One account. Tell the factory. Receive your platform.**
 
+## The five build stages
+
+Every build runs these stages in this order. The names are the ones the build
+screen shows; they come from one table, `frontend/src/stepNames.json`. The build
+record keeps each stage's role id (shown in brackets) unchanged.
+
+1. **Collector** (`COLLECTOR`): resolves each planned capability to the Store
+   blocks that back it and names every capability no block backs. It writes
+   nothing. `run_collector` in `backend/app/factory/build/roles_handlers.py`.
+2. **Researcher** (`CLONER`, with the architect step): the capability planner
+   decides per capability whether a Store block is reused or the code is
+   generated (`backend/app/factory/planner.py`). That verdict goes into the
+   compiled brief (`backend/app/factory/build/brief_compiler.py`), and the
+   architect writes the brief's narrative over it
+   (`backend/app/factory/build/architect.py`). The CLONER then copies each
+   reused block's source into the workspace (`run_cloner` in
+   `backend/app/factory/build/roles_handlers.py`).
+3. **Workers** (`WRITER`): the coding session that writes what the Store does
+   not have, one handler per capability (`run_writer` in
+   `backend/app/factory/build/roles_handlers.py`; the headless worker is
+   `backend/app/factory/build/codewhale_worker.py`).
+4. **Tester** (`TESTER`): writes the code-phase test suite, which its gate
+   then runs. It is not an LLM role (`run_tester` in
+   `backend/app/factory/build/roles_handlers.py`; the gate is
+   `gate_tester_contract` in `backend/app/factory/build/gates.py`).
+5. **Store Manager** (`STORE_MANAGER`): records what the build took from the
+   Store (`run_store_manager` in
+   `backend/app/factory/build/roles_handlers.py`).
+
 CerebrumDev.ai is a conversational platform factory. A user registers, lands on
 the **Factory Floor**, describes the platform they need in plain language, and
 the factory drafts a blueprint. On the user's word — *approve* — the generator

@@ -128,7 +128,7 @@ describe('Your Platforms — coding-agent build', () => {
       'Vineyard Platform',
     )
     expect(screen.getByText('runner')).toBeInTheDocument()
-    expect(await screen.findByText(/Coding agent at work — Step 3 of 5 — Writing the code/)).toBeInTheDocument()
+    expect(await screen.findByText(/Coding agent at work — Step 3 of 5 — Workers \(writing the code\)/)).toBeInTheDocument()
     expect(screen.getByText(/2\/4 handlers/)).toBeInTheDocument()
     const building = screen.getByRole('button', { name: 'Building…' })
     expect(building).toBeDisabled()
@@ -157,7 +157,7 @@ describe('Your Platforms — coding-agent build', () => {
       })
     })
     render(<Platforms sessionId="sess_ui" />)
-    expect(await screen.findByText(/Coding agent at work — Step 1 of 5 — Planning the parts/)).toBeInTheDocument()
+    expect(await screen.findByText(/Coding agent at work — Step 1 of 5 — Collector \(planning the parts\)/)).toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('platforms-pilot-ready-pill')).not.toBeInTheDocument()

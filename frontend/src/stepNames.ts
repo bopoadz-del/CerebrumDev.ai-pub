@@ -9,21 +9,22 @@
  * Raw ids appear only inside Technical detail.
  */
 
+import stepTable from './stepNames.json'
+
 export interface StepName {
-  /** The label: "Write the code". */
+  /** The stage name: "Workers". */
   label: string
-  /** The running form: "Writing the code". */
+  /** The running form: "Workers: writing the code". */
   running: string
 }
 
-/** The five build steps, keyed by their wire id, in build order. */
-export const STEP_NAMES: Readonly<Record<string, StepName>> = {
-  COLLECTOR: { label: 'Plan the parts', running: 'Planning the parts' },
-  CLONER: { label: 'Gather building blocks', running: 'Gathering building blocks' },
-  WRITER: { label: 'Write the code', running: 'Writing the code' },
-  TESTER: { label: 'Test', running: 'Testing' },
-  STORE_MANAGER: { label: 'Package', running: 'Packaging' },
-}
+/**
+ * The five build steps, keyed by their wire id, in build order. The table is
+ * data (stepNames.json): the README's stage list and the backend's BuildRole
+ * are checked against the same file, so the screen, the README and the code
+ * cannot drift apart.
+ */
+export const STEP_NAMES: Readonly<Record<string, StepName>> = stepTable
 
 /** The run's step order when the record does not carry its own list. */
 export const STEP_ORDER: readonly string[] = Object.keys(STEP_NAMES)

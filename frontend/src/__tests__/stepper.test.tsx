@@ -138,15 +138,15 @@ describe('the stepper', () => {
     const atNow = steps.filter((li) => ['current', 'fixing', 'stopped'].includes(li.dataset.state ?? ''))
     expect(atNow).toHaveLength(1)
     expect(atNow[0]).toHaveAttribute('data-step', 'WRITER')
-    expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent('Write the code')
+    expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent('Workers')
   })
 
   it('says each state in words, not colour alone', () => {
     render(<Stepper build={TIMEOUT_STOP} />)
     const text = screen.getByTestId('floor-stepper-row').textContent ?? ''
-    expect(text).toContain('Step 1, Plan the parts: done')
-    expect(text).toContain('Step 3, Write the code: stopped')
-    expect(text).toContain('Step 4, Test: not reached')
+    expect(text).toContain('Step 1, Collector: done')
+    expect(text).toContain('Step 3, Workers: stopped')
+    expect(text).toContain('Step 4, Tester: not reached')
   })
 
   it('a timeout that carries a contract send-back does not produce a "rejected" review', () => {
@@ -170,7 +170,7 @@ describe('the stepper', () => {
     const mark = screen.getByTestId('floor-phase-grader-failed')
     expect(mark.closest('li')).toHaveAttribute('data-step', 'WRITER')
     expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent(
-      'Write the code — Quality check did not pass',
+      'Workers — Quality check did not pass',
     )
   })
 
