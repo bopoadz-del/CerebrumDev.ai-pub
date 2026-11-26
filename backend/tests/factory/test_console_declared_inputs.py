@@ -46,8 +46,8 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
         _block()
         + "\nconst CALLS = " + json.dumps(calls) + ";\n"
         + "const FNS = { capIdOf, resolveRef, pathMatches, fieldsFromSchema, declaredFields,"
-        + " choicesOf, kindOf, valueOf, unwrap, rangeOf,"
-        + " recordFrom: (fields, values) => recordFrom(fields, (f) => values[f.name]) };\n"
+        + " choicesOf, kindOf, valueOf, unwrap, rangeOf, shownOf,"
+        + " bodyFrom: (fields, values) => bodyFrom(fields, (f) => values[f.name]) };\n"
         + "const out = CALLS.map((c) => { const r = FNS[c.fn](...c.args);"
         + " return r === undefined ? '<undefined>' : r; });\n"
         + "process.stdout.write(JSON.stringify(out, (k, v) => (v === undefined ? '<undefined>' : v)));\n"
@@ -59,6 +59,11 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
     )
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
+
+
+def _sent(text: Any) -> Any:
+    """What the product reads from one control's JSON text (Python keeps every digit)."""
+    return text if text == "<undefined>" else json.loads(text)
 
 
 def _names(fields: List[Dict[str, Any]]) -> List[str]:
@@ -242,6 +247,8 @@ class TestEachControlSendsTheDeclaredType:
             ({"name": "n", "type": "int"}, "", "<undefined>"),
             ({"name": "n", "type": "int"}, "   ", "<undefined>"),
             ({"name": "f", "type": "bool"}, True, True),
+            ({"name": "f", "type": "bool", "default": True}, False, False),
+            ({"name": "f", "type": "bool", "default": True}, True, "<undefined>"),
             ({"name": "f", "type": "bool"}, False, "<undefined>"),
             ({"name": "m", "type": "bool", "required": True}, False, False),
             ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "2", 2),
@@ -251,7 +258,72 @@ class TestEachControlSendsTheDeclaredType:
         ],
     )
     def test_a_control_sends_the_declared_type(self, field, raw, sent, tmp_path):
-        assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [sent]
+        assert [_sent(t) for t in _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)] == [sent]
+
+    @pytest.mark.parametrize(
+        "field, raw, text",
+        [
+            ({"name": "n", "type": "int"}, "12345678901234567890", "12345678901234567890"),
+            ({"name": "n", "type": "integer"}, " 9007199254740993 ", "9007199254740993"),
+            ({"name": "n", "type": "float"}, "1e400", "1e400"),
+            ({"name": "n", "type": "float"}, "Infinity", '"Infinity"'),
+            ({"name": "n", "type": "int"}, "0x10", '"0x10"'),
+            ({"name": "n", "type": "int"}, "0b101", '"0b101"'),
+            ({"name": "l", "type": "list"}, "[12345678901234567890]", "[12345678901234567890]"),
+            ({"name": "l", "type": "list"}, "5", '"5"'),
+            ({"name": "o", "type": "dict"}, "null", '"null"'),
+        ],
+    )
+    def test_typed_json_is_sent_as_the_typed_text(self, field, raw, text, tmp_path):
+        assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [text]
+
+    @pytest.mark.parametrize(
+        "field, raw, sent",
+        [
+            ({"name": "t", "default": "memo"}, "memo", "<undefined>"),
+            ({"name": "t", "default": "memo"}, "", ""),
+            ({"name": "t", "default": "memo"}, "other", "other"),
+            ({"name": "n", "type": "int", "default": 3}, "3", "<undefined>"),
+            ({"name": "n", "type": "int", "default": 3}, " ", None),
+            ({"name": "n", "type": "int", "default": 3}, "4", 4),
+            ({"name": "c", "allowed_values": ["a", "b"], "default": "a"}, "", None),
+            ({"name": "c", "allowed_values": ["a", "b"], "default": "a"}, "b", "b"),
+            ({"name": "o", "type": "dict", "default": {"a": 1}}, '{"a":1}', "<undefined>"),
+            ({"name": "o", "type": "dict", "default": {"a": 1}}, "", None),
+            ({"name": "n", "type": "int", "default": None}, "", "<undefined>"),
+        ],
+    )
+    def test_a_default_kept_sends_nothing_and_a_change_or_clear_is_sent(self, field, raw, sent, tmp_path):
+        assert [_sent(t) for t in _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)] == [sent]
+
+    @pytest.mark.parametrize(
+        "field, shown",
+        [
+            ({"name": "t", "default": "memo"}, "memo"),
+            ({"name": "t"}, ""),
+            ({"name": "n", "type": "int", "default": 0}, "0"),
+            ({"name": "n", "type": "int", "default": None}, ""),
+            ({"name": "b", "type": "bool", "default": True}, True),
+            ({"name": "b", "type": "bool", "default": "yes"}, False),
+            ({"name": "b", "type": "bool"}, False),
+            ({"name": "c", "allowed_values": ["a", "b"], "default": "b"}, "b"),
+            ({"name": "c", "allowed_values": ["a", "b"], "default": "z"}, ""),
+            ({"name": "l", "type": "list", "default": [1, "x"]}, '[1,"x"]'),
+        ],
+    )
+    def test_a_control_starts_at_the_declared_default(self, field, shown, tmp_path):
+        assert _run([{"fn": "shownOf", "args": [field]}], tmp_path) == [shown]
+
+    @pytest.mark.parametrize("hops, leaf", [(3, "q"), (4, "w")])
+    def test_a_chain_of_refs_reaches_the_last_schema(self, hops, leaf, tmp_path):
+        names = ["S%d" % i for i in range(hops + 1)]
+        schemas = {a: {"$ref": "#/components/schemas/" + b} for a, b in zip(names, names[1:])}
+        schemas[names[-1]] = {"type": "object", "required": [leaf],
+                              "properties": {leaf: {"type": "integer", "minimum": 1}}}
+        doc = {"components": {"schemas": schemas}}
+        [fields] = _run([{"fn": "fieldsFromSchema", "args": [doc, {"$ref": "#/components/schemas/S0"}]}],
+                        tmp_path)
+        assert [(f["name"], f["type"], f["required"], f["min"]) for f in fields] == [(leaf, "integer", True, 1)]
 
     @pytest.mark.parametrize(
         "field, kind",
@@ -276,7 +348,7 @@ class TestEachControlSendsTheDeclaredType:
         ],
     )
     def test_a_json_control_sends_parsed_json_or_what_was_typed(self, field, raw, sent, tmp_path):
-        assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [sent]
+        assert [_sent(t) for t in _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)] == [sent]
 
     @pytest.mark.parametrize(
         "field, hint",
@@ -310,7 +382,7 @@ class TestEachControlSendsTheDeclaredType:
         ],
     )
     def test_a_record_holds_only_what_was_entered(self, fields, values, record, tmp_path):
-        assert _run([{"fn": "recordFrom", "args": [fields, values]}], tmp_path) == [record]
+        assert [json.loads(t) for t in _run([{"fn": "bodyFrom", "args": [fields, values]}], tmp_path)] == [record]
 
 
 OPTIONAL_DOC = {

@@ -864,7 +864,7 @@ async function call(path, init) {
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch (e) { body = text; }
-  return { status: res.status, body };
+  return { status: res.status, body, text };
 }
 
 // Every label an answer may carry its authority under.
@@ -975,7 +975,7 @@ function fieldsFromSchema(doc, schema) {
   return Object.keys(props).map((name) => {
     const p = unwrap(doc, props[name]) || {};
     return { name: name, type: p.type || "string", required: required.indexOf(name) !== -1,
-             allowed_values: p.enum, min: p.minimum, max: p.maximum };
+             allowed_values: p.enum, min: p.minimum, max: p.maximum, default: p.default };
   });
 }
 
@@ -1026,36 +1026,64 @@ function rangeOf(field) {
   return "number";
 }
 
-// What the form sends for one control. An empty optional control sends
-// nothing. The console never judges a value: one that does not parse as the
-// declared type is sent as typed, and the product's own validation answers.
-function valueOf(field, raw) {
+// What a control shows before anyone touches it: the declared default (a
+// checkbox is checked only for a default of true; a choice shows its default
+// only when that default is one of the choices), otherwise empty.
+function shownOf(field) {
   const kind = kindOf(field);
-  if (kind === "boolean") return raw === true ? true : (field.required ? false : undefined);
-  if (raw === undefined || raw === null || String(raw).trim() === "") return undefined;
-  if (kind === "number") {
-    const n = Number(String(raw).trim());
-    return Number.isFinite(n) ? n : raw;
-  }
-  if (kind === "choice") {
-    const hit = choicesOf(field).find((v) => String(v) === String(raw));
-    return hit === undefined ? raw : hit;
-  }
-  if (kind === "json") {
-    try { return JSON.parse(String(raw)); } catch (e) { return raw; }
-  }
-  return raw;
+  const d = field.default;
+  if (kind === "boolean") return d === true;
+  if (d === undefined || d === null) return "";
+  if (kind === "choice") return choicesOf(field).some((v) => String(v) === String(d)) ? String(d) : "";
+  return kind === "json" ? JSON.stringify(d) : String(d);
 }
 
-// The record one Create sends: each declared field read from its control by
-// read(field) and passed through valueOf; a field valued undefined is left out.
-function recordFrom(fields, read) {
-  const record = {};
+// The JSON text one control sends, or undefined for no key. The console never
+// judges or rewrites a value:
+//  - untouched (the control still shows what it started with, the declared
+//    default included) sends nothing, so the product applies its own default;
+//    a required checkbox is the exception, since a checkbox always holds a
+//    value and the one shown is the answer;
+//  - a checkbox the user changed sends its boolean;
+//  - a control the user cleared sends "" for text and null otherwise;
+//  - a number or JSON control whose text is valid JSON of that kind sends the
+//    typed text itself, digit for digit (no float rounding, no 0x10 -> 16);
+//    anything else is sent as the typed string and the product's own
+//    validation answers.
+function valueOf(field, raw) {
+  if (raw === undefined || raw === null) return undefined;
+  const kind = kindOf(field);
+  const shown = shownOf(field);
+  const blank = (v) => typeof v === "string" && v.trim() === "";
+  if (raw === shown || (blank(raw) && blank(shown))) {
+    return kind === "boolean" && field.required ? JSON.stringify(raw === true) : undefined;
+  }
+  if (kind === "boolean") return JSON.stringify(raw === true);
+  const typed = String(raw);
+  if (blank(typed)) return kind === "text" ? JSON.stringify("") : "null";
+  if (kind === "number" || kind === "json") {
+    let parsed;
+    try { parsed = JSON.parse(typed); } catch (e) { return JSON.stringify(typed); }
+    const fits = kind === "number" ? typeof parsed === "number" : parsed !== null && typeof parsed === "object";
+    return fits ? typed.trim() : JSON.stringify(typed);
+  }
+  if (kind === "choice") {
+    const hit = choicesOf(field).find((v) => String(v) === typed);
+    return JSON.stringify(hit === undefined ? typed : hit);
+  }
+  return JSON.stringify(typed);
+}
+
+// The body one Create sends: each declared field read from its control by
+// read(field) and passed through valueOf, joined as the JSON text of one
+// object; a field valued undefined is left out.
+function bodyFrom(fields, read) {
+  const parts = [];
   fields.forEach((f) => {
     const value = valueOf(f, read(f));
-    if (value !== undefined) record[f.name] = value;
+    if (value !== undefined) parts.push(JSON.stringify(f.name) + ":" + value);
   });
-  return record;
+  return "{" + parts.join(",") + "}";
 }
 // <</declared-inputs>>
 
@@ -1084,6 +1112,8 @@ function controlFor(field) {
     }
   }
   el.dataset.f = field.name;
+  if (kind === "boolean") el.checked = shownOf(field);
+  else el.value = shownOf(field);
   if (field.required && kind !== "boolean") el.required = true;
   return el;
 }
@@ -1124,27 +1154,30 @@ function renderCapability(item) {
   card.insertAdjacentHTML("beforeend", "<pre data-out>—</pre>");
   const out = card.querySelector("[data-out]");
   card.querySelector('[data-act="create"]').onclick = async () => {
-    let record = {};
+    let body = "{}";
     if (raw) {
-      try { record = raw.value.trim() ? JSON.parse(raw.value) : {}; }
+      // The raw box is sent as typed once it parses, so its numbers stay exact.
+      try { if (raw.value.trim()) { JSON.parse(raw.value); body = raw.value; } }
       catch (e) { out.textContent = "The body is not valid JSON: " + e.message; return; }
     } else {
-      record = recordFrom(fields, (f) => {
+      body = bodyFrom(fields, (f) => {
         const input = form.querySelector('[data-f="' + CSS.escape(f.name) + '"]');
         if (!input) return undefined;
         return input.type === "checkbox" ? input.checked : input.value;
       });
     }
-    const res = await call("/v1/" + encodeURIComponent(cap), { method: "POST", body: JSON.stringify(record) });
+    const res = await call("/v1/" + encodeURIComponent(cap), { method: "POST", body: body });
     show(out, res);
   };
   card.querySelector('[data-act="list"]').onclick = async () => show(out, await call("/v1/" + encodeURIComponent(cap)));
   $("caps").appendChild(card);
 }
 
+// A record answer is shown as the product sent it: re-serialising the parsed
+// body would round any integer above 2^53 on screen.
 function show(node, res) {
   const labels = labelsIn(res.body);
-  node.textContent = res.status + "  " + JSON.stringify(res.body, null, 2);
+  node.textContent = res.status + "  " + res.text;
   if (labels.length) {
     const tag = document.createElement("span");
     tag.className = "label";

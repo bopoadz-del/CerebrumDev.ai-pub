@@ -63,6 +63,12 @@ const plan = JSON.parse(process.env.PLAN);
     for (const [name, value] of Object.entries(step.pick || {})) {
       await card.locator('[data-f="' + name + '"]').selectOption(value);
     }
+    for (const [name, value] of step.fill || []) {
+      await card.locator('[data-f="' + name + '"]').fill(value);
+    }
+    for (const name of step.click || []) {
+      await card.locator('[data-f="' + name + '"]').click();
+    }
     if (step.raw !== undefined) await card.locator("textarea").first().fill(step.raw);
     const pre = card.locator("[data-out]");
     await card.locator('[data-act="create"]').click();
@@ -101,8 +107,9 @@ def _product(caps: List[Any], doc: Dict[str, Any]) -> Iterator[Tuple[str, List[T
 
         def do_POST(self):  # noqa: N802
             n = int(self.headers.get("Content-Length") or 0)
-            posts.append((self.path, json.loads(self.rfile.read(n) or b"null")))
-            self._send(201, b'{"created": true}')
+            sent = self.rfile.read(n) or b"null"
+            posts.append((self.path, json.loads(sent)))
+            self._send(201, sent)  # the stand-in stores and answers with what it received
 
         def log_message(self, *a):
             pass
@@ -246,3 +253,115 @@ def test_optional_pydantic_fields_get_their_declared_controls(cap, pick, tmp_pat
     assert by["k"]["tag"] == "select" and by["k"]["options"] == ["", "open", "closed"]
     assert by["n"]["placeholder"] == "at most 9"
     assert posts == [("/v1/" + cap, {"k": pick, "n": 4})]
+
+
+# Every declared type, walked through the four states a control can be left in.
+# Each row: name, schema, what the control shows for the default, the steps
+# that leave it "kept" at its default, "changed" and "cleared", and what the
+# product then receives (MISSING = no key at all).
+MISSING = object()
+TYPES = [
+    # name, schema with a default, shown, changed steps, changed sent, cleared sent
+    ("note", {"type": "string", "default": "memo"}, "memo",
+     {"fill": [["note", "second memo"]]}, "second memo", ""),
+    ("rate", {"type": "number", "default": 1.5}, "1.5",
+     {"fill": [["rate", "2.25"]]}, 2.25, None),
+    ("ref", {"type": "integer", "default": 3}, "3",
+     {"fill": [["ref", "12345678901234567890"]]}, 12345678901234567890, None),
+    ("notify", {"type": "boolean", "default": True}, "true",
+     {"click": ["notify"]}, False, False),
+    ("state", {"type": "string", "enum": ["open", "closed"], "default": "open"}, "open",
+     {"pick": {"state": "closed"}}, "closed", None),
+    ("ids", {"type": "array", "items": {"type": "integer"}, "default": [1]}, "[1]",
+     {"fill": [["ids", "[2, 9007199254740993]"]]}, [2, 9007199254740993], None),
+    ("meta", {"type": "object", "default": {"a": 1}}, '{"a":1}',
+     {"fill": [["meta", '{"b": 2}']]}, {"b": 2}, None),
+]
+
+
+def _doc(optional: bool) -> Dict[str, Any]:
+    """One POST body declaring every type: with its default, or as an Optional
+    (anyOf the type and null, default null) the way pydantic writes it."""
+    props = {}
+    for name, schema, *_ in TYPES:
+        if optional:
+            bare = {k: v for k, v in schema.items() if k != "default"}
+            props[name] = {"anyOf": [bare, {"type": "null"}], "default": None}
+        else:
+            props[name] = schema
+    return {"paths": {"/v1/{capability_id}": {"post": {"requestBody": {"content": {
+        "application/json": {"schema": {"type": "object", "properties": props}}}}}}}}
+
+
+def _steps(state: str, optional: bool) -> Dict[str, Any]:
+    """The browser steps that leave every control in ``state``."""
+    plan: Dict[str, Any] = {"fill": [], "click": [], "pick": {}}
+    for name, schema, shown, changed, *_ in TYPES:
+        kind = "click" if schema["type"] == "boolean" else ("pick" if "enum" in schema else "fill")
+        start = "" if optional and kind != "click" else shown
+        if state == "kept":  # touched, then left showing what it started with
+            if kind == "click":
+                plan["click"] += [name, name]
+            elif kind == "pick":
+                plan["pick"][name] = start
+            else:
+                plan["fill"] += [[name, "x"], [name, start]]
+        elif state == "changed":
+            for key, value in changed.items():
+                if key == "pick":
+                    plan["pick"].update(value)
+                else:
+                    plan[key] += value
+        elif state == "cleared":
+            if kind == "click":  # a checkbox has no empty state: cleared is unchecked
+                plan["click"] += [name] if (not optional) else [name, name]
+            elif kind == "pick":
+                plan["pick"][name] = ""
+            else:
+                plan["fill"] += [[name, "x"], [name, ""]]
+    return plan
+
+
+def _expected(state: str, optional: bool) -> Dict[str, Any]:
+    want: Dict[str, Any] = {}
+    for name, schema, _shown, _changed, changed_sent, cleared_sent in TYPES:
+        if state == "changed":
+            # From an Optional's unchecked box a click checks it.
+            want[name] = True if (optional and schema["type"] == "boolean") else changed_sent
+        elif state == "cleared" and not optional:
+            want[name] = cleared_sent
+    return want
+
+
+@pytest.mark.parametrize("optional", [False, True])
+@pytest.mark.parametrize("state", ["untouched", "kept", "changed", "cleared"])
+def test_every_declared_type_sends_exactly_what_the_control_holds(state, optional, tmp_path):
+    step = dict({"cap": "orders"}, **(_steps(state, optional) if state != "untouched" else {}))
+    [seen], posts = _drive(["orders"], _doc(optional), [step], tmp_path)
+    assert posts == [("/v1/orders", _expected(state, optional))]
+    if state == "untouched":
+        shown = {c["name"]: c["value"] for c in seen["controls"]}
+        assert shown == {name: ("false" if s["type"] == "boolean" else "") if optional else sh
+                         for name, s, sh, *_ in TYPES}
+
+
+@pytest.mark.parametrize("typed", ["12345678901234567890", "9007199254740993", "-9999999999999999"])
+def test_a_typed_integer_is_sent_digit_for_digit(typed, tmp_path):
+    caps = [{"id": "orders", "fields": [{"name": "ref", "type": "int", "required": True}]}]
+    [step], posts = _drive(caps, {}, [{"cap": "orders", "type": {"ref": typed}}], tmp_path)
+    assert posts == [("/v1/orders", {"ref": int(typed)})]
+    assert step["shown"] == '201  {"ref":%s}' % typed  # the answer is shown as the product sent it
+
+
+@pytest.mark.parametrize("typed", ["0x10", "0b101", "Infinity", "+5", ".5"])
+def test_a_number_json_does_not_read_is_sent_as_the_typed_text(typed, tmp_path):
+    caps = [{"id": "orders", "fields": [{"name": "ref", "type": "integer"}]}]
+    _, posts = _drive(caps, {}, [{"cap": "orders", "type": {"ref": typed}}], tmp_path)
+    assert posts == [("/v1/orders", {"ref": typed})]
+
+
+@pytest.mark.parametrize("names", [["must"], ["agreed", "signed"]])
+def test_an_untouched_required_checkbox_sends_false(names, tmp_path):
+    caps = [{"id": "forms", "fields": [{"name": n, "type": "bool", "required": True} for n in names]}]
+    _, posts = _drive(caps, {}, [{"cap": "forms"}], tmp_path)
+    assert posts == [("/v1/forms", {n: False for n in names})]
