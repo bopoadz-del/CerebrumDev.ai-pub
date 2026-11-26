@@ -220,3 +220,16 @@ def test_a_cycle_wall_above_the_floor_is_kept_on_the_build_path(
     monkeypatch.setattr(build_jobs, "_DEFAULT_WALL_CLOCK_S", cycle_wall)
     budget = _floor_run(monkeypatch, tmp_path, auto_pilot=auto_pilot)
     assert budget.wall_clock_s == cycle_wall
+
+
+@pytest.mark.parametrize("auto_pilot", ["0", "1"])
+@pytest.mark.parametrize("zero", ["0", " 0 ", "0.0"])
+def test_a_zero_wall_pin_disables_the_wall_on_the_build_path(
+    monkeypatch, tmp_path, auto_pilot, zero
+):
+    """Must not fire: a pin of zero is an operator pin (the wall is off). It is
+    not lifted to the floor and not replaced by a cycle default."""
+    monkeypatch.setenv("FACTORY_BUILD_WALL_CLOCK_S", zero)
+    monkeypatch.delenv("FACTORY_PHASE_WALL_CLOCK_S", raising=False)
+    budget = _floor_run(monkeypatch, tmp_path, auto_pilot=auto_pilot)
+    assert budget.wall_clock_s == 0.0
