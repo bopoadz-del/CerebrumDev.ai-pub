@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.factory.dual_registry import certified_ids, load_block_certifications
 from app.factory.store_catalog import build_store_catalog, render_for_chat
 
@@ -109,11 +111,19 @@ class TestTheArchitectIsToldWhichBlocksAreProven:
             pass
         return captured["system"]
 
-    def test_certified_blocks_are_marked(self, monkeypatch):
-        text = self._block_list(monkeypatch, ["proven", "unproven"], {"proven"})
+    @pytest.mark.parametrize(
+        "dual, proven",
+        [(["proven", "unproven"], {"proven"}), (["a", "b", "c"], {"b", "c"})],
+    )
+    def test_certified_blocks_are_marked(self, monkeypatch, dual, proven):
+        text = self._block_list(monkeypatch, dual, proven)
 
-        assert "- proven  [certified]" in text
-        assert "- unproven\n" in text
+        # One catalogue line per block ("- <id>: for: ..."); the mark ends
+        # the line of a certified block and no other.
+        lines = {b: [ln for ln in text.splitlines() if ln.startswith(f"- {b}: ")] for b in dual}
+        for b in dual:
+            assert len(lines[b]) == 1, b
+            assert lines[b][0].endswith("  [certified]") is (b in proven), lines[b][0]
 
     def test_the_mark_is_explained_so_it_is_a_preference_not_a_filter(self, monkeypatch):
         text = self._block_list(monkeypatch, ["proven", "unproven"], {"proven"})
