@@ -184,9 +184,10 @@ def names_one_feature(row: Mapping[str, Any]) -> bool:
 def redact_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     """``row`` with every string redacted again (a row read back from the
     ledger is redacted on every read), keeping whole the feature id that
-    :func:`finding_row` already judged to be one: in ``where`` and in the
-    slot of ``quote``. Every other word, the rest of the quote included, is
-    redacted as usual."""
+    :func:`finding_row` already judged to be one: in ``where``, in the
+    ``place`` the card shows (derived again from that ``where``, never read
+    from the stored row) and in the slot of ``quote``. Every other word, the
+    rest of the quote included, is redacted as usual."""
     from app.factory.build.sanitize import sanitize_for_status
 
     out: Dict[str, Any] = {
@@ -195,6 +196,7 @@ def redact_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     if names_one_feature(row):
         where = str(row.get("where") or "")
         out["where"] = where
+        out["place"] = plain_place(where, CAPABILITY)
         out["quote"] = _redacted(str(row.get("quote") or ""), {where}, sanitize_for_status)
     return out
 

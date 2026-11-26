@@ -780,6 +780,47 @@ def test_a_long_feature_id_the_grade_names_is_kept_whole(cid, tmp_path):
 
     (seen,) = _grader_rows({"grader_findings": [row]}, [])
     assert seen["where"] == cid and cid in seen["quote"]
+    assert seen["place"] == row["place"] and "[redacted]" not in seen["place"]
+
+
+@pytest.mark.parametrize(
+    "cid, stored",
+    [("plinketcertificatewithretentionreleaseperstage", "[redacted]"), ("zorblat_total", "something else")],
+    ids=["long-id-place-erased", "short-id-place-stale"],
+)
+def test_the_card_place_of_a_feature_row_is_derived_again_from_its_id(cid, stored):
+    """A ledger row read back for the build view shows the place of the
+    feature its locator names, derived from that locator: a stored place
+    that was erased or differs is never what the card shows."""
+    from app.factory.build_jobs import _grader_rows
+
+    shape = next(s for s in grader_findings.ITEM_SHAPES if s[0] == "function grade FAIL: ")
+    row = {"rule": shape[1], "what": shape[2], "where": cid, "place": stored, "owner": WRITER,
+           "quote": f"function grade FAIL: {cid}"}
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    assert seen["place"] == grader_findings.plain_place(cid, grader_findings.CAPABILITY)
+    assert seen["place"] != stored and seen["place"]
+
+
+@pytest.mark.parametrize(
+    "prefix, secret",
+    [("UI step FAIL: ", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"), ("UI step FAIL: ", "AKIAABCDEFGHIJKLMNOP")]
+    + [(s[0], "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4") for s in grader_findings.ITEM_SHAPES
+       if s[4] != grader_findings.CAPABILITY and s[0] != "UI step FAIL: "],
+)
+def test_a_row_of_a_shape_that_names_no_feature_keeps_nothing_whole(prefix, secret):
+    """Only a feature-slot shape keeps its locator whole on read: a row of
+    any other shape, with its own sentence, has a key in its locator
+    redacted on the build view and on the log line."""
+    from app.factory.build_jobs import _grader_rows
+
+    shape = next(s for s in grader_findings.ITEM_SHAPES if s[0] == prefix)
+    row = {"rule": shape[1], "what": shape[2], "where": secret, "place": "", "owner": WRITER,
+           "quote": f"{prefix}{secret}"}
+    assert not grader_findings.names_one_feature(row)
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    assert secret not in seen["where"] and "[redacted]" in seen["where"]
+    assert secret not in grader_findings.log_line(row)
 
 
 @pytest.mark.parametrize("cid", LONG_IDS)
