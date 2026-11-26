@@ -144,3 +144,175 @@ def test_an_empty_stream_is_all_tail(end_t):
     assert summary["actions"] == 0
     assert summary["after_last_action_s"] == summary["wall_s"] == end_t
     assert summary["tool_s"] == {} and summary["slowest"] == [] and summary["repeated"] == {}
+
+
+# --------------------------------------------------------------------------
+# Slice 2: the trace is kept, logged and put on the ledger at the end of
+# every pass, through the worker's public run path.
+# --------------------------------------------------------------------------
+
+import io  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from app.factory.build import codewhale_worker as worker_mod  # noqa: E402
+from app.factory.build.builds_push import is_exported  # noqa: E402
+from app.factory.build.writer_trace import (  # noqa: E402
+    LEDGER_KEYS,
+    WRITER_TRACE_REL,
+    record_writer_trace,
+)
+
+
+def _stream_ev(kind, **fields):
+    return {
+        "type": kind,
+        "schema": worker_mod.EXEC_STREAM_SCHEMA,
+        "schema_version": 1,
+        **fields,
+    }
+
+
+def _meta_line():
+    return json.dumps(
+        _stream_ev(
+            "metadata",
+            meta={
+                "receipt_kind": "terminal",
+                "provider": "prov",
+                "model": "mdl",
+                "status": "completed",
+                "termination_reason": "resolved",
+                "error_category": None,
+                "error": None,
+            },
+        )
+    )
+
+
+def _run(monkeypatch, tmp_path, lines, session_id):
+    from app.factory.build.tenant_bind import TenantStoreBinding
+
+    stdout_text = "".join(line + "\n" for line in lines)
+
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            self.stdout = io.StringIO(stdout_text)
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 9
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(worker_mod, "worker_cli_path", lambda: "/nonexistent/codewhale")
+    binding = TenantStoreBinding(
+        tenant_key="key_trace", store_dir=Path("/tmp/tenant-trace"), bound_at=0.0
+    )
+    return worker_mod.run_worker_job(
+        "build it", tmp_path, tenant_store=binding, session_id=session_id
+    )
+
+
+@pytest.mark.parametrize(
+    "commands, session_id",
+    [(["ls -la", "pytest -q tests/a"], "sess_aaaa1111"), (["cat x"], "sess_bbbb2222")],
+)
+def test_a_pass_keeps_logs_and_ledgers_its_trace(
+    monkeypatch, tmp_path, caplog, commands, session_id
+):
+    lines = []
+    for command in commands:
+        lines.append(json.dumps(_stream_ev("tool_use", name="bash", input={"command": command})))
+        lines.append(json.dumps(_stream_ev("tool_result", exit_code=0)))
+    lines += [_meta_line(), json.dumps(_stream_ev("done"))]
+    with caplog.at_level(logging.INFO, logger="app.factory.build.writer_trace"):
+        receipt = _run(monkeypatch, tmp_path, lines, session_id)
+
+    kept = json.loads((tmp_path / WRITER_TRACE_REL).read_text(encoding="utf-8"))
+    assert kept["session_id"] == session_id
+    assert [a["command"] for a in kept["actions"]] == commands
+    assert all(a["exit_code"] == 0 for a in kept["actions"])
+
+    ledger = receipt.rounds["time"]
+    assert tuple(ledger) == LEDGER_KEYS
+    assert ledger["actions"] == len(commands)
+    assert "slowest" not in ledger and "repeated" not in ledger
+
+    messages = [r.getMessage() for r in caplog.records]
+    action_lines = [m for m in messages if m.startswith("codewhale writer action:")]
+    trace_lines = [m for m in messages if m.startswith("codewhale writer trace:")]
+    assert len(action_lines) == len(commands)
+    assert len(trace_lines) == 1
+    # The log shows the first 12 characters, as the dispatch line does.
+    assert all(f"session={session_id[:12]} " in m for m in action_lines + trace_lines)
+    for command, line in zip(commands, action_lines):
+        assert line.endswith(f"cmd={command}")
+    assert f"actions={len(commands)}" in trace_lines[0]
+
+
+def test_a_pass_with_no_stream_events_keeps_no_trace(monkeypatch, tmp_path):
+    legacy = json.dumps(
+        {"status": "completed", "termination_reason": "resolved", "tools": [{"tool": "write"}]}
+    )
+    receipt = _run(monkeypatch, tmp_path, [legacy], "sess_cccc3333")
+    assert receipt.status == "completed"
+    assert "time" not in receipt.rounds
+    assert not (tmp_path / WRITER_TRACE_REL).exists()
+
+
+@pytest.mark.parametrize(
+    "rel, ships",
+    [(WRITER_TRACE_REL, False), ("docs/architecture.json", True)],
+)
+def test_the_trace_file_never_ships(rel, ships):
+    assert is_exported(Path(rel)) is ships
+
+
+def test_the_trace_file_is_not_the_agents_output(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / WRITER_TRACE_REL).write_text("{}", encoding="utf-8")
+    (tmp_path / "docs" / "notes.md").write_text("x", encoding="utf-8")
+    assert worker_mod.agent_file_paths(tmp_path) == frozenset({"docs/notes.md"})
+
+
+@pytest.mark.parametrize("session_id, shown", [(None, "-"), ("sess_dddd4444ffff", "sess_dddd444")])
+def test_an_unwritable_checkout_still_returns_the_summary(
+    tmp_path, caplog, session_id, shown
+):
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("file", encoding="utf-8")
+    events = [(2.0, _use("bash", "make")), (5.0, _result())]
+    with caplog.at_level(logging.INFO, logger="app.factory.build.writer_trace"):
+        ledger = record_writer_trace(blocker, events, 0.0, 9.0, session_id)
+    assert ledger == {
+        "wall_s": 9.0,
+        "actions": 1,
+        "model_s": 2.0,
+        "tool_s": {"bash: make": 3.0},
+        "unsplit_s": 0.0,
+        "after_last_action_s": 4.0,
+    }
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("writer trace persistence failed") for m in messages)
+    assert any(f"session={shown} " in m for m in messages)
+
+
+def test_an_action_without_a_result_logs_no_run_time(tmp_path, caplog):
+    events = [(1.0, _use("bash", "sleep 9")), (3.0, _use("read")), (4.0, _result())]
+    with caplog.at_level(logging.INFO, logger="app.factory.build.writer_trace"):
+        record_writer_trace(tmp_path, events, 0.0, 6.0, "sess_eeee5555")
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("codewhale writer action:")
+    ]
+    assert len(lines) == 2
+    # The id-less result closes the earliest open call; the second has none.
+    assert " run=3.0s " in lines[0]
+    assert " run=- " in lines[1]

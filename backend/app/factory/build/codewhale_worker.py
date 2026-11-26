@@ -2503,12 +2503,18 @@ def run_worker_job(
         # writer_no_output abort (Advisor 13:12Z, pilot-live 42633433251).
         receipt = _parse_writer_receipt(stdout_lines, proc.returncode)
         if stream_state["timed"]:
+            from app.factory.build.writer_trace import record_writer_trace
+
             receipt = replace(
                 receipt,
                 rounds={
                     **writer_round_stats(stream_state["timed"], session_end_t),
                     "suite_runs": stream_state["suite_runs"],
                     "suite_denied": suite_denied_count(read_denials(cli_home)),
+                    # Where the pass spent its time (full trace in the file).
+                    "time": record_writer_trace(
+                        cwd, stream_state["timed"], started_at, session_end_t, session_id
+                    ),
                 },
             )
         if rss_state["peak"] is not None:
@@ -2722,9 +2728,11 @@ def authored_files_or_none(root: Path) -> Optional[int]:
     return total
 
 
-#: Files the WORKER itself writes at dispatch (the brief pointer target and
-#: the argv audit). Never evidence that the agent produced anything.
-DISPATCH_AUDIT_FILES = frozenset({"docs/writer_prompt.txt", "docs/writer_argv.json"})
+#: Files the WORKER itself writes (the brief pointer target, the argv audit
+#: and the pass's time trace). Never evidence that the agent produced anything.
+DISPATCH_AUDIT_FILES = frozenset(
+    {"docs/writer_prompt.txt", "docs/writer_argv.json", "docs/writer_trace.json"}
+)
 
 
 def agent_file_paths(root: Path) -> FrozenSet[str]:

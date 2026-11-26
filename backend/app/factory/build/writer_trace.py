@@ -21,9 +21,12 @@ is then counted as ``unsplit_s`` and never guessed into model or tool time.
 
 from __future__ import annotations
 
+import json
+import logging
 import shlex
 from collections import Counter
 from pathlib import PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.factory.build.codewhale_worker import (
@@ -33,6 +36,22 @@ from app.factory.build.codewhale_worker import (
     _first_present,
 )
 from app.factory.build.sanitize import sanitize_for_status
+
+logger = logging.getLogger(__name__)
+
+#: Where the full trace of a pass is kept in the checkout. Factory-internal:
+#: withheld from what ships (builds_push.FACTORY_INTERNAL_PATHS) and never
+#: counted as the agent's output (codewhale_worker.DISPATCH_AUDIT_FILES).
+WRITER_TRACE_REL = "docs/writer_trace.json"
+#: The summary keys that ride the ledger (the full lists stay in the file).
+LEDGER_KEYS = (
+    "wall_s",
+    "actions",
+    "model_s",
+    "tool_s",
+    "unsplit_s",
+    "after_last_action_s",
+)
 
 #: Keys a tool_result may carry the command's exit code under.
 _EXIT_CODE_KEYS = ("exit_code", "returncode", "exit_status")
@@ -148,3 +167,54 @@ def writer_trace(
         "repeated": {cmd: n for cmd, n in runs.most_common() if n > 1},
     }
     return {"actions": public, "summary": summary}
+
+
+def record_writer_trace(
+    checkout: Path,
+    timed_events: List[Tuple[float, Dict[str, Any]]],
+    start_t: float,
+    end_t: float,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Trace one pass, keep it, log it, and return the part for the ledger.
+
+    Writes the full trace to ``WRITER_TRACE_REL`` under ``checkout``, logs
+    one line per action and one summary line (each with the session id),
+    and returns the summary's ``LEDGER_KEYS``. Best-effort: a file that
+    cannot be written is logged and the summary is still returned.
+    """
+    trace = writer_trace(timed_events, start_t, end_t)
+    session = str(session_id or "")[:12] or "-"
+    path = Path(checkout) / WRITER_TRACE_REL
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"session_id": session_id or None, **trace}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.exception("writer trace persistence failed")
+    for action in trace["actions"]:
+        logger.info(
+            "codewhale writer action: session=%s at=%ss tool=%s run=%s exit=%s cmd=%s",
+            session,
+            action["at_s"],
+            action["tool"] or "-",
+            f"{action['run_s']}s" if "run_s" in action else "-",
+            action.get("exit_code", "-"),
+            action.get("command", "-")[:200],
+        )
+    summary = trace["summary"]
+    logger.info(
+        "codewhale writer trace: session=%s wall=%ss actions=%d model=%ss "
+        "unsplit=%ss after_last=%ss repeated=%d tools=%s",
+        session,
+        summary["wall_s"],
+        summary["actions"],
+        summary["model_s"],
+        summary["unsplit_s"],
+        summary["after_last_action_s"],
+        len(summary["repeated"]),
+        ",".join(f"{k}:{v}s" for k, v in summary["tool_s"].items()) or "-",
+    )
+    return {k: summary[k] for k in LEDGER_KEYS}

@@ -94,6 +94,8 @@ FACTORY_INTERNAL_PATHS = frozenset(
         "docs/writer_argv.json",
         "docs/writer_progress.jsonl",
         "docs/writer_progress.log",
+        # Where each writer pass spent its time (writer_trace.WRITER_TRACE_REL).
+        "docs/writer_trace.json",
         "docs/build_provenance.json",
         # The Factory's receipt of what it stamped/vendored/declared: read
         # locally at gate ingest to own audit findings, never shipped.
