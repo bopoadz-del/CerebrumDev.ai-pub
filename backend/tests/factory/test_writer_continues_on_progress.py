@@ -1072,7 +1072,7 @@ def test_a_vendored_test_record_is_not_the_products(tmp_path, skipped_dir):
     assert wc.failing_tests(tmp_path) == ("tests/test_main.py::test_a",)
 
 
-@pytest.mark.parametrize("record", [[1, 2], "tests/test_main.py::test_a"])
+@pytest.mark.parametrize("record", [["tests/test_main.py::test_a"], ["tests/test_main.py", 2]])
 def test_a_lastfailed_record_that_is_not_a_mapping_names_nothing(tmp_path, record):
     _tree(tmp_path, {})
     _pytest_cache(tmp_path, ["tests/test_main.py::test_a"], record)
