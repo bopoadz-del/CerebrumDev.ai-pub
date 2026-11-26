@@ -228,7 +228,13 @@ class TestEachControlSendsTheDeclaredType:
         [
             ({"name": "a", "type": "int"}, "number"),
             ({"name": "b", "type": "Number"}, "number"),
-            ({"name": "c", "type": "bool"}, "boolean"),
+            ({"name": "c", "type": "bool", "required": True}, "boolean"),
+            ({"name": "c", "type": "bool", "default": False}, "boolean"),
+            ({"name": "c", "type": "bool"}, "choice"),
+            ({"name": "c", "type": "boolean", "default": None}, "choice"),
+            ({"name": "x", "default": {"k": 1}}, "json"),
+            ({"name": "y", "type": "string", "default": [1, 2]}, "json"),
+            ({"name": "z", "default": 5}, "text"),
             ({"name": "d", "type": "str", "allowed_values": ["x"]}, "choice"),
             ({"name": "e", "type": "int", "options": [1, 2]}, "choice"),
             ({"name": "f", "type": "str", "enum": []}, "text"),
@@ -246,10 +252,13 @@ class TestEachControlSendsTheDeclaredType:
             ({"name": "n", "type": "int"}, "abc", "abc"),
             ({"name": "n", "type": "int"}, "", "<undefined>"),
             ({"name": "n", "type": "int"}, "   ", "<undefined>"),
-            ({"name": "f", "type": "bool"}, True, True),
+            ({"name": "f", "type": "bool"}, "true", True),
+            ({"name": "f", "type": "bool"}, "false", False),
+            ({"name": "f", "type": "bool", "default": None}, "false", False),
+            ({"name": "f", "type": "bool", "default": None}, "", "<undefined>"),
             ({"name": "f", "type": "bool", "default": True}, False, False),
             ({"name": "f", "type": "bool", "default": True}, True, "<undefined>"),
-            ({"name": "f", "type": "bool"}, False, "<undefined>"),
+            ({"name": "f", "type": "bool", "default": False}, False, "<undefined>"),
             ({"name": "m", "type": "bool", "required": True}, False, False),
             ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "2", 2),
             ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "3", "3"),
@@ -304,8 +313,19 @@ class TestEachControlSendsTheDeclaredType:
             ({"name": "n", "type": "int", "default": 0}, "0"),
             ({"name": "n", "type": "int", "default": None}, ""),
             ({"name": "b", "type": "bool", "default": True}, True),
-            ({"name": "b", "type": "bool", "default": "yes"}, False),
-            ({"name": "b", "type": "bool"}, False),
+            ({"name": "b", "type": "bool", "default": "yes"}, ""),
+            ({"name": "b", "type": "bool"}, ""),
+            ({"name": "b", "type": "bool", "required": True}, False),
+            ({"name": "e", "default": {"k": 1}}, '{"k":1}'),
+            ({"name": "u", "type": "string", "default": [1, 2]}, "[1,2]"),
+            ({"name": "g", "type": "integer", "default": 12345678901234567890,
+              "default_text": "12345678901234567890"}, "12345678901234567890"),
+            ({"name": "g", "type": "integer", "default": -9999999999999999,
+              "default_text": "-9999999999999999"}, "-9999999999999999"),
+            ({"name": "g", "type": "integer", "default": 12345678901234567890}, ""),
+            ({"name": "g", "type": "integer", "default": 9007199254740992}, ""),
+            ({"name": "g", "type": "integer", "default": 9007199254740991}, "9007199254740991"),
+            ({"name": "g", "type": "integer", "default": 7, "default_text": "8"}, "7"),
             ({"name": "c", "allowed_values": ["a", "b"], "default": "b"}, "b"),
             ({"name": "c", "allowed_values": ["a", "b"], "default": "z"}, ""),
             ({"name": "l", "type": "list", "default": [1, "x"]}, '[1,"x"]'),
@@ -375,8 +395,8 @@ class TestEachControlSendsTheDeclaredType:
             (
                 [{"name": "room", "allowed_values": ["a", "b"]}, {"name": "paid", "type": "bool"},
                  {"name": "tags", "type": "list"}],
-                {"room": "b", "paid": False, "tags": '["x"]'},
-                {"room": "b", "tags": ["x"]},
+                {"room": "b", "paid": "false", "tags": '["x"]'},
+                {"room": "b", "paid": False, "tags": ["x"]},
             ),
             ([{"name": "gone"}], {}, {}),
         ],
@@ -459,3 +479,29 @@ class TestTheStandardSchemaShapesAreRead:
     def test_named_entries_only_and_plain_names_count(self, fields, expected, tmp_path):
         [got] = _run([{"fn": "declaredFields", "args": [{"id": "c", "fields": fields}, {}, "c"]}], tmp_path)
         assert _names(got) == expected
+
+
+class TestAControlCanHoldTheDeclaredDefault:
+    @pytest.mark.parametrize(
+        "field, choices",
+        [
+            ({"name": "b", "type": "bool"}, [True, False]),
+            ({"name": "b", "type": "Boolean", "default": None}, [True, False]),
+            ({"name": "b", "type": "bool", "default": True}, []),
+            ({"name": "b", "type": "bool", "default": False}, []),
+            ({"name": "b", "type": "bool", "required": True}, []),
+            ({"name": "b", "type": "bool", "allowed_values": [True]}, [True]),
+            ({"name": "s", "type": "str"}, []),
+        ],
+    )
+    def test_only_an_optional_boolean_without_a_boolean_default_is_a_choice(self, field, choices, tmp_path):
+        assert _run([{"fn": "choicesOf", "args": [field]}], tmp_path) == [choices]
+
+    @pytest.mark.parametrize("text", ["12345678901234567890", "-9999999999999999"])
+    def test_the_kept_digits_of_a_default_reach_the_field(self, text, tmp_path):
+        schema = {"type": "object", "properties": {
+            "g": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": int(text), "default_text": text},
+            "h": {"type": "integer", "default": 3}}}
+        [fields] = _run([{"fn": "fieldsFromSchema", "args": [{}, schema]}], tmp_path)
+        assert [(f["name"], f.get("default_text", "<undefined>")) for f in fields] == [
+            ("g", text), ("h", "<undefined>")]

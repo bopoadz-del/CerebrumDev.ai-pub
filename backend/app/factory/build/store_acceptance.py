@@ -886,10 +886,12 @@ async function boot() {
     $("who").innerHTML = '<span class="err">' + caps.status + " — check the token</span>";
     return;
   }
-  const items = ((caps.body && (caps.body.items || caps.body.capabilities)) || []).filter(capIdOf);
+  let listed = caps.body;
+  try { listed = parseExact(caps.text); } catch (e) { /* keep the plain parse */ }
+  const items = ((listed && (listed.items || listed.capabilities)) || []).filter(capIdOf);
   $("who").textContent = items.length + " capability(ies)";
   try {
-    const doc = await (await fetch("/openapi.json")).json();
+    const doc = parseExact(await (await fetch("/openapi.json")).text());
     SCHEMA = doc || {};
   } catch (e) { SCHEMA = {}; }
   items.forEach(renderCapability);
@@ -900,6 +902,19 @@ async function boot() {
 }
 
 // <<declared-inputs>>
+
+// The product's openapi.json parsed so that a declared default integer beyond
+// 2^53 keeps its exact digits: JSON numbers are doubles here, so where the
+// browser gives a value's source text it is kept beside it as default_text.
+function parseExact(text) {
+  return JSON.parse(text, function (key, value, ctx) {
+    if (key === "default" && Number.isInteger(value) && !Number.isSafeInteger(value)
+        && ctx && typeof ctx.source === "string") {
+      this.default_text = ctx.source;
+    }
+    return value;
+  });
+}
 // A capability's form comes from what the product itself declares: first its
 // own entry in GET /v1/capabilities (fields, or an input_schema), then the
 // request body of the matching POST in openapi.json, where a templated path
@@ -975,7 +990,8 @@ function fieldsFromSchema(doc, schema) {
   return Object.keys(props).map((name) => {
     const p = unwrap(doc, props[name]) || {};
     return { name: name, type: p.type || "string", required: required.indexOf(name) !== -1,
-             allowed_values: p.enum, min: p.minimum, max: p.maximum, default: p.default };
+             allowed_values: p.enum, min: p.minimum, max: p.maximum, default: p.default,
+             default_text: p.default_text };
   });
 }
 
@@ -998,9 +1014,16 @@ function declaredFields(item, doc, cap) {
   return json && json.schema ? fieldsFromSchema(doc, json.schema) : [];
 }
 
+// A checkbox can only hold true or false. An optional boolean whose declared
+// default is not a boolean (null, or none at all) is a choice of true / false
+// beside the blank, so the control can show the default and send false.
 function choicesOf(field) {
   for (const key of ["allowed_values", "enum", "options"]) {
     if (Array.isArray(field[key]) && field[key].length) return field[key];
+  }
+  const t = String(field.type || "").toLowerCase();
+  if (BOOLEAN.indexOf(t) !== -1 && !field.required && typeof field.default !== "boolean") {
+    return [true, false];
   }
   return [];
 }
@@ -1014,6 +1037,8 @@ function kindOf(field) {
   if (NUMERIC.indexOf(t) !== -1) return "number";
   if (BOOLEAN.indexOf(t) !== -1) return "boolean";
   if (STRUCTURED.indexOf(t) !== -1) return "json";
+  // A list or object default is JSON whatever the declared type says.
+  if (field.default !== null && typeof field.default === "object") return "json";
   return "text";
 }
 
@@ -1028,13 +1053,17 @@ function rangeOf(field) {
 
 // What a control shows before anyone touches it: the declared default (a
 // checkbox is checked only for a default of true; a choice shows its default
-// only when that default is one of the choices), otherwise empty.
+// only when that default is one of the choices; an integer beyond 2^53 shows
+// its exact digits, or nothing when they were not kept), otherwise empty.
 function shownOf(field) {
   const kind = kindOf(field);
   const d = field.default;
   if (kind === "boolean") return d === true;
   if (d === undefined || d === null) return "";
   if (kind === "choice") return choicesOf(field).some((v) => String(v) === String(d)) ? String(d) : "";
+  if (Number.isInteger(d) && !Number.isSafeInteger(d)) {
+    return typeof field.default_text === "string" ? field.default_text : "";
+  }
   return kind === "json" ? JSON.stringify(d) : String(d);
 }
 

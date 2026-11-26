@@ -297,8 +297,13 @@ def _steps(state: str, optional: bool) -> Dict[str, Any]:
     """The browser steps that leave every control in ``state``."""
     plan: Dict[str, Any] = {"fill": [], "click": [], "pick": {}}
     for name, schema, shown, changed, *_ in TYPES:
-        kind = "click" if schema["type"] == "boolean" else ("pick" if "enum" in schema else "fill")
-        start = "" if optional and kind != "click" else shown
+        # An Optional boolean (default null) is a blank / true / false select.
+        boolean_select = optional and schema["type"] == "boolean"
+        kind = "pick" if ("enum" in schema or boolean_select) else ("click" if schema["type"] == "boolean" else "fill")
+        start = "" if optional else shown
+        if boolean_select and state == "changed":
+            plan["pick"][name] = "false"
+            continue
         if state == "kept":  # touched, then left showing what it started with
             if kind == "click":
                 plan["click"] += [name, name]
@@ -314,7 +319,7 @@ def _steps(state: str, optional: bool) -> Dict[str, Any]:
                     plan[key] += value
         elif state == "cleared":
             if kind == "click":  # a checkbox has no empty state: cleared is unchecked
-                plan["click"] += [name] if (not optional) else [name, name]
+                plan["click"] += [name]
             elif kind == "pick":
                 plan["pick"][name] = ""
             else:
@@ -326,8 +331,8 @@ def _expected(state: str, optional: bool) -> Dict[str, Any]:
     want: Dict[str, Any] = {}
     for name, schema, _shown, _changed, changed_sent, cleared_sent in TYPES:
         if state == "changed":
-            # From an Optional's unchecked box a click checks it.
-            want[name] = True if (optional and schema["type"] == "boolean") else changed_sent
+            # An Optional boolean's select is picked to false: false is sent.
+            want[name] = False if (optional and schema["type"] == "boolean") else changed_sent
         elif state == "cleared" and not optional:
             want[name] = cleared_sent
     return want
@@ -341,8 +346,7 @@ def test_every_declared_type_sends_exactly_what_the_control_holds(state, optiona
     assert posts == [("/v1/orders", _expected(state, optional))]
     if state == "untouched":
         shown = {c["name"]: c["value"] for c in seen["controls"]}
-        assert shown == {name: ("false" if s["type"] == "boolean" else "") if optional else sh
-                         for name, s, sh, *_ in TYPES}
+        assert shown == {name: "" if optional else sh for name, s, sh, *_ in TYPES}
 
 
 @pytest.mark.parametrize("typed", ["12345678901234567890", "9007199254740993", "-9999999999999999"])
@@ -365,3 +369,50 @@ def test_an_untouched_required_checkbox_sends_false(names, tmp_path):
     caps = [{"id": "forms", "fields": [{"name": n, "type": "bool", "required": True} for n in names]}]
     _, posts = _drive(caps, {}, [{"cap": "forms"}], tmp_path)
     assert posts == [("/v1/forms", {n: False for n in names})]
+
+
+@pytest.mark.parametrize("pick, sent", [("false", False), ("true", True)])
+def test_an_optional_boolean_is_sent_as_either_value_or_not_at_all(pick, sent, tmp_path):
+    doc = _doc_with({"paid": {"anyOf": [{"type": "boolean"}, {"type": "null"}], "default": None},
+                     "ref": {"type": "integer"}})
+    plan = [{"cap": "orders", "fill": [["ref", "5"]], "pick": {"paid": pick}},
+            {"cap": "orders", "pick": {"paid": ""}}]
+    seen, posts = _drive(["orders"], doc, plan, tmp_path)
+    paid = next(c for c in seen[0]["controls"] if c["name"] == "paid")
+    assert (paid["tag"], paid["options"], paid["value"]) == ("select", ["", "true", "false"], "")
+    assert posts == [("/v1/orders", {"ref": 5, "paid": sent}), ("/v1/orders", {"ref": 5})]
+
+
+@pytest.mark.parametrize("schema, shown, typed, sent", [
+    ({"default": {"k": 1}}, '{"k":1}', '{"k": 2}', {"k": 2}),
+    ({"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "object"}], "default": [1, 2]},
+     "[1,2]", "[3, 9007199254740993]", [3, 9007199254740993]),
+])
+def test_a_structured_default_is_shown_and_sent_as_json(schema, shown, typed, sent, tmp_path):
+    plan = [{"cap": "orders"}, {"cap": "orders", "fill": [["extra", typed]]}]
+    seen, posts = _drive(["orders"], _doc_with({"extra": schema}), plan, tmp_path)
+    [extra] = seen[0]["controls"]
+    assert (extra["tag"], extra["value"]) == ("textarea", shown)
+    assert posts == [("/v1/orders", {}), ("/v1/orders", {"extra": sent})]
+
+
+@pytest.mark.parametrize("default", [12345678901234567890, -9999999999999999])
+def test_an_integer_default_beyond_2_53_is_shown_digit_for_digit(default, tmp_path):
+    doc = _doc_with({"big": {"type": "integer", "default": default}})
+    plan = [{"cap": "orders"}, {"cap": "orders", "fill": [["big", str(default + 1)]]}]
+    seen, posts = _drive(["orders"], doc, plan, tmp_path)
+    assert [c["value"] for c in seen[0]["controls"]] == [str(default)]
+    assert posts == [("/v1/orders", {}), ("/v1/orders", {"big": default + 1})]
+
+
+@pytest.mark.parametrize("cap, path", [("my cap/x", "/v1/my%20cap%2Fx"), ("a?b#c", "/v1/a%3Fb%23c")])
+def test_create_sends_to_the_encoded_capability_id(cap, path, tmp_path):
+    caps = [{"id": cap, "fields": [{"name": "n", "type": "int"}]}]
+    _, posts = _drive(caps, {}, [{"cap": cap, "type": {"n": "4"}}], tmp_path)
+    assert posts == [(path, {"n": 4})]
+
+
+def _doc_with(props: Dict[str, Any]) -> Dict[str, Any]:
+    """openapi.json whose one templated POST declares ``props``."""
+    return {"paths": {"/v1/{capability_id}": {"post": {"requestBody": {"content": {
+        "application/json": {"schema": {"type": "object", "properties": props}}}}}}}}
