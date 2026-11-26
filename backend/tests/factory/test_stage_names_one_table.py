@@ -70,9 +70,21 @@ def test_every_build_role_has_a_display_name(role):
 @pytest.mark.parametrize(
     "roles, table, missing",
     [
-        (["COLLECTOR", "NEW_ROLE"], {"COLLECTOR": {"label": "Collector", "running": "Collector (x)"}}, ["NEW_ROLE"]),
-        (["A", "B"], {"A": {"label": "", "running": "A (x)"}, "B": {"label": "B", "running": " "}}, ["A", "B"]),
-        (["A", "B"], {"A": {"label": "A", "running": "A (x)"}, "B": {"label": "B", "running": "B (y)"}}, []),
+        (
+            ["COLLECTOR", "NEW_ROLE"],
+            {"COLLECTOR": {"label": "Collector", "running": "Collector (x)"}},
+            ["NEW_ROLE"],
+        ),
+        (
+            ["A", "B"],
+            {"A": {"label": "", "running": "A (x)"}, "B": {"label": "B", "running": " "}},
+            ["A", "B"],
+        ),
+        (
+            ["A", "B"],
+            {"A": {"label": "A", "running": "A (x)"}, "B": {"label": "B", "running": "B (y)"}},
+            [],
+        ),
         ([], {}, []),
     ],
 )
@@ -88,10 +100,26 @@ def test_the_table_covers_the_roles_in_build_order(roles):
     assert list(table) == roles
 
 
-def test_the_display_names_are_the_five_stage_names():
-    labels = [entry["label"] for entry in _table().values()]
-    assert labels == ["Collector", "Researcher", "Workers", "Tester", "Store Manager"]
-    assert len(set(labels)) == len(labels)
+@pytest.mark.parametrize(
+    "field, expected",
+    [
+        ("label", ["Collector", "Researcher", "Workers", "Tester", "Store Manager"]),
+        (
+            "running",
+            [
+                "Collector (planning the parts)",
+                "Researcher (gathering building blocks)",
+                "Workers (writing the code)",
+                "Tester (testing)",
+                "Store Manager (packaging)",
+            ],
+        ),
+    ],
+)
+def test_the_display_names_are_the_five_stage_names(field, expected):
+    names = [entry[field] for entry in _table().values()]
+    assert names == expected
+    assert len(set(names)) == len(names)
 
 
 @pytest.mark.parametrize("index", range(len(BUILD_PHASES)))
