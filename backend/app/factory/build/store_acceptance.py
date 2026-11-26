@@ -886,45 +886,186 @@ async function boot() {
     $("who").innerHTML = '<span class="err">' + caps.status + " — check the token</span>";
     return;
   }
-  const items = (caps.body && (caps.body.items || caps.body.capabilities)) || [];
-  const ids = items.map((c) => (typeof c === "string" ? c : c.id || c.capability_id)).filter(Boolean);
-  $("who").textContent = ids.length + " capability(ies)";
+  const items = ((caps.body && (caps.body.items || caps.body.capabilities)) || []).filter(capIdOf);
+  $("who").textContent = items.length + " capability(ies)";
   try {
     const doc = await (await fetch("/openapi.json")).json();
     SCHEMA = doc || {};
   } catch (e) { SCHEMA = {}; }
-  ids.forEach(renderCapability);
+  items.forEach(renderCapability);
   // Only offer what this product actually declares.
   const paths = (SCHEMA && SCHEMA.paths) || {};
   RAG = Object.keys(paths).find((p) => p.indexOf("/rag/") !== -1 && p.indexOf("query") !== -1) || "";
   $("ask").hidden = !RAG;
 }
 
-function fieldsFor(cap) {
-  const paths = (SCHEMA && SCHEMA.paths) || {};
-  const post = paths["/v1/" + cap] && paths["/v1/" + cap].post;
-  const schema = post && post.requestBody && post.requestBody.content
-    && post.requestBody.content["application/json"]
-    && post.requestBody.content["application/json"].schema;
-  const props = (schema && schema.properties) || {};
-  const names = Object.keys(props);
-  return names.length ? names.slice(0, 8) : ["reference", "status"];
+// <<declared-inputs>>
+// A capability's form comes from what the product itself declares: first its
+// own entry in GET /v1/capabilities (fields, or an input_schema), then the
+// request body of the matching POST in openapi.json, where a templated path
+// such as /v1/{id} matches and $ref is followed. Nothing is invented: a
+// capability that declares no inputs gets a raw JSON body, not guessed fields.
+function capIdOf(item) {
+  if (typeof item === "string") return item;
+  return (item && typeof item === "object" && (item.id || item.capability_id)) || "";
 }
 
-function renderCapability(cap) {
+function resolveRef(doc, node, depth) {
+  depth = depth || 0;
+  if (!node || typeof node !== "object") return null;
+  const ref = node["$ref"];
+  if (typeof ref !== "string") return node;
+  if (ref.indexOf("#/") !== 0 || depth > 8) return null;
+  let cur = doc;
+  for (const part of ref.slice(2).split("/")) {
+    if (!cur || typeof cur !== "object") return null;
+    cur = cur[part.replace(/~1/g, "/").replace(/~0/g, "~")];
+  }
+  return resolveRef(doc, cur, depth + 1);
+}
+
+function pathMatches(template, path) {
+  const a = template.split("/");
+  const b = path.split("/");
+  if (a.length !== b.length) return false;
+  return a.every((seg, i) => seg === b[i]
+    || (seg.length > 2 && seg.charAt(0) === "{" && seg.charAt(seg.length - 1) === "}" && b[i] !== ""));
+}
+
+function fieldsFromSchema(doc, schema) {
+  schema = resolveRef(doc, schema);
+  const props = (schema && schema.properties && typeof schema.properties === "object") ? schema.properties : {};
+  const required = Array.isArray(schema && schema.required) ? schema.required : [];
+  return Object.keys(props).map((name) => {
+    const p = resolveRef(doc, props[name]) || {};
+    return { name: name, type: p.type || "string", required: required.indexOf(name) !== -1,
+             allowed_values: p.enum, min: p.minimum, max: p.maximum };
+  });
+}
+
+function declaredFields(item, doc, cap) {
+  if (item && typeof item === "object") {
+    if (Array.isArray(item.fields)) {
+      return item.fields.filter((f) => f && typeof f.name === "string" && f.name !== "");
+    }
+    if (item.input_schema && typeof item.input_schema === "object") {
+      return fieldsFromSchema(doc, item.input_schema);
+    }
+  }
+  const paths = (doc && doc.paths) || {};
+  const path = "/v1/" + cap;
+  const key = (paths[path] && paths[path].post) ? path
+    : Object.keys(paths).find((t) => paths[t] && paths[t].post && pathMatches(t, path));
+  const body = key ? resolveRef(doc, paths[key].post.requestBody) : null;
+  const json = body && body.content && body.content["application/json"];
+  return json && json.schema ? fieldsFromSchema(doc, json.schema) : [];
+}
+
+function choicesOf(field) {
+  for (const key of ["allowed_values", "enum", "options"]) {
+    if (Array.isArray(field[key]) && field[key].length) return field[key];
+  }
+  return [];
+}
+
+const NUMERIC = ["int", "integer", "float", "number", "decimal"];
+const BOOLEAN = ["bool", "boolean"];
+function kindOf(field) {
+  if (choicesOf(field).length) return "choice";
+  const t = String(field.type || "").toLowerCase();
+  if (NUMERIC.indexOf(t) !== -1) return "number";
+  if (BOOLEAN.indexOf(t) !== -1) return "boolean";
+  return "text";
+}
+
+// What the form sends for one control. An empty optional control sends
+// nothing; a value that does not parse is sent as typed so the product's
+// own validation answers it honestly rather than the console hiding it.
+function valueOf(field, raw) {
+  const kind = kindOf(field);
+  if (kind === "boolean") return raw === true ? true : (field.required ? false : undefined);
+  if (raw === undefined || raw === null || String(raw).trim() === "") return undefined;
+  if (kind === "number") {
+    const n = Number(String(raw).trim());
+    return Number.isFinite(n) ? n : raw;
+  }
+  if (kind === "choice") {
+    const hit = choicesOf(field).find((v) => String(v) === String(raw));
+    return hit === undefined ? raw : hit;
+  }
+  return raw;
+}
+// <</declared-inputs>>
+
+function controlFor(field) {
+  const kind = kindOf(field);
+  let el;
+  if (kind === "choice") {
+    el = document.createElement("select");
+    if (!field.required) el.appendChild(new Option("", ""));
+    choicesOf(field).forEach((v) => el.appendChild(new Option(String(v), String(v))));
+  } else {
+    el = document.createElement("input");
+    el.type = kind === "number" ? "number" : (kind === "boolean" ? "checkbox" : "text");
+    if (kind === "number") {
+      el.step = "any";
+      if (field.min !== undefined && field.min !== null) el.min = String(field.min);
+      if (field.max !== undefined && field.max !== null) el.max = String(field.max);
+    }
+  }
+  el.dataset.f = field.name;
+  if (field.required && kind !== "boolean") el.required = true;
+  return el;
+}
+
+function renderCapability(item) {
+  const cap = capIdOf(item);
+  const fields = declaredFields(typeof item === "string" ? null : item, SCHEMA, cap);
   const card = document.createElement("div");
   card.className = "card";
-  const fields = fieldsFor(cap);
-  card.innerHTML =
-    "<strong>" + cap + "</strong>" +
-    '<div class="row" style="margin:8px 0">' +
-    fields.map((f) => '<input data-f="' + f + '" placeholder="' + f + '" size="14">').join("") +
-    ' <button data-act="create">Create</button> <button data-act="list">List</button></div>' +
-    '<pre data-out>—</pre>';
+  const title = document.createElement("strong");
+  title.textContent = cap;
+  card.appendChild(title);
+  const form = document.createElement("div");
+  form.className = "row";
+  form.style.margin = "8px 0";
+  fields.forEach((f) => {
+    const label = document.createElement("label");
+    label.className = "row";
+    label.appendChild(document.createTextNode(f.name + (f.required ? " *" : "")));
+    label.appendChild(controlFor(f));
+    form.appendChild(label);
+  });
+  let raw = null;
+  if (!fields.length) {
+    const note = document.createElement("span");
+    note.className = "dim";
+    note.textContent = "No inputs declared for this capability; send a JSON body.";
+    raw = document.createElement("textarea");
+    raw.rows = 3;
+    raw.cols = 40;
+    raw.placeholder = "{}";
+    form.appendChild(note);
+    form.appendChild(raw);
+  }
+  form.insertAdjacentHTML("beforeend",
+    ' <button data-act="create">Create</button> <button data-act="list">List</button>');
+  card.appendChild(form);
+  card.insertAdjacentHTML("beforeend", "<pre data-out>—</pre>");
   const out = card.querySelector("[data-out]");
   card.querySelector('[data-act="create"]').onclick = async () => {
-    const record = {};
-    card.querySelectorAll("[data-f]").forEach((i) => { if (i.value) record[i.dataset.f] = i.value; });
+    let record = {};
+    if (raw) {
+      try { record = raw.value.trim() ? JSON.parse(raw.value) : {}; }
+      catch (e) { out.textContent = "The body is not valid JSON: " + e.message; return; }
+    } else {
+      fields.forEach((f) => {
+        const input = form.querySelector('[data-f="' + CSS.escape(f.name) + '"]');
+        if (!input) return;
+        const value = valueOf(f, input.type === "checkbox" ? input.checked : input.value);
+        if (value !== undefined) record[f.name] = value;
+      });
+    }
     const res = await call("/v1/" + cap, { method: "POST", body: JSON.stringify(record) });
     show(out, res);
   };
