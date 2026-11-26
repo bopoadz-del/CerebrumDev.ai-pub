@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -41,12 +42,22 @@ def kit_map_from_store(blocks_root: Optional[Path] = None) -> Dict[str, str]:
     domain kit -- so a finance build was told no kit existed while
     kits/finance_ops sat there marked available, carrying a chart-of-accounts
     governance block the agent then wrote from scratch.
+
+    A block several kits list maps to the last of them, in the Store's own
+    folder order; :func:`kits_for_blocks` reads every kit a block is in.
     """
+    return {bid: kits[-1] for bid, kits in kit_memberships_from_store(blocks_root).items()}
+
+
+def kit_memberships_from_store(blocks_root: Optional[Path] = None) -> Dict[str, List[str]]:
+    """``block_id -> [kit_id, ...]``: every kit the Store marks available that
+    lists the block, in the Store's folder order. Read from
+    block_store/kits/<kit>/manifest.json at the pinned Store."""
     from app.factory.dual_registry import _default_blocks_root
 
     root = Path(blocks_root) if blocks_root else _default_blocks_root()
     kits_dir = root / "block_store" / "kits"
-    out: Dict[str, str] = {}
+    out: Dict[str, List[str]] = {}
     if not kits_dir.is_dir():
         return out
     for entry in sorted(kits_dir.iterdir()):
@@ -63,7 +74,7 @@ def kit_map_from_store(blocks_root: Optional[Path] = None) -> Dict[str, str]:
         kit_id = str(data.get("id") or entry.name).strip()
         for block_id in data.get("blocks") or []:
             if block_id:
-                out[str(block_id)] = kit_id
+                out.setdefault(str(block_id), []).append(kit_id)
     return out
 
 
@@ -102,20 +113,39 @@ def kits_for_blocks(
     block_ids: Iterable[str],
     *,
     shelf_path: Optional[Path] = None,
+    blocks_root: Optional[Path] = None,
 ) -> Dict[str, List[str]]:
-    """Group vendored block ids by the kit the Factory shelf assigns them.
+    """Group vendored block ids by the kit that holds them.
 
+    The Store's own kit manifests decide first (:func:`kit_memberships_from_store`
+    at ``blocks_root``, the pinned Store), so a block a Store kit lists is
+    stocked with that kit's files. A block several kits list goes to the kit
+    holding the most of this build's blocks, the alphabetically first on a
+    tie. A block no Store kit lists, or every block when the Store cannot be
+    read, takes the shelf's kit; an explicit ``shelf_path`` is honoured as-is.
     Unknown ids (tests, GENERATE-only faux blocks) still land in ``platform``
     so a product that has blocks always has a kit pack.
     """
+    ids = list(block_ids)
     shelf = load_shelf_kit_map(shelf_path)
+    store = _store_memberships(blocks_root) if shelf_path is None else {}
+    held = Counter(kit for bid in set(ids) for kit in store.get(bid, ()))
     grouped: Dict[str, List[str]] = {}
-    for bid in block_ids:
-        kit_id = shelf.get(bid, "platform")
+    for bid in ids:
+        kits = store.get(bid)
+        kit_id = min(kits, key=lambda k: (-held[k], k)) if kits else shelf.get(bid, "platform")
         grouped.setdefault(kit_id, []).append(bid)
     for kit_id in grouped:
         grouped[kit_id] = sorted(set(grouped[kit_id]))
     return dict(sorted(grouped.items()))
+
+
+def _store_memberships(blocks_root: Optional[Path]) -> Dict[str, List[str]]:
+    """The Store's kit memberships, or none when no Store can be read."""
+    try:
+        return kit_memberships_from_store(blocks_root)
+    except Exception:  # noqa: BLE001 -- no Store: the shelf decides, as before
+        return {}
 
 
 def _store_root(blocks_root: Optional[Path]) -> Optional[Path]:
@@ -260,7 +290,7 @@ def stock_kits(
     shelf_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Write ``kits/{kit_id}/`` under ``dest_root``. Returns lock-file records."""
-    grouped = kits_for_blocks(block_ids, shelf_path=shelf_path)
+    grouped = kits_for_blocks(block_ids, shelf_path=shelf_path, blocks_root=blocks_root)
     records: Dict[str, Any] = {}
     for kit_id, bids in grouped.items():
         records[kit_id] = _stock_one_kit(
@@ -355,7 +385,7 @@ def stock_kits_via_workspace(
     shelf_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """CLONER path: same kit packs, written through a lane-checked workspace."""
-    grouped = kits_for_blocks(block_ids, shelf_path=shelf_path)
+    grouped = kits_for_blocks(block_ids, shelf_path=shelf_path, blocks_root=blocks_root)
     records: Dict[str, Any] = {}
     for kit_id, bids in grouped.items():
         records[kit_id] = _stock_one_kit_workspace(

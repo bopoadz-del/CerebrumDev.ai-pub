@@ -36,8 +36,10 @@ def test_shelf_maps_winery_blocks_to_platform_kit():
     }
 
 
-def test_estate_blocks_map_to_estate_kit():
-    grouped = kits_for_blocks(["estate_registry", "database"])
+def test_estate_blocks_map_to_estate_kit(tmp_path):
+    """With no Store kit listing them, the shelf's own kits decide. (A Store
+    kit that lists a block now wins: test_kit_files_reach_the_workspace.)"""
+    grouped = kits_for_blocks(["estate_registry", "database"], blocks_root=tmp_path / "no_store")
     assert grouped["private_estate_operations"] == ["estate_registry"]
     assert grouped["platform"] == ["database"]
 

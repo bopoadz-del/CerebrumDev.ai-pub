@@ -326,7 +326,7 @@ def _load_kit_manifests(
     *,
     blocks_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    grouped = kits_for_blocks(block_ids)
+    grouped = kits_for_blocks(block_ids, blocks_root=blocks_root)
     out: Dict[str, Any] = {}
     for kit_id, bids in grouped.items():
         existing: Optional[Mapping[str, Any]] = None
