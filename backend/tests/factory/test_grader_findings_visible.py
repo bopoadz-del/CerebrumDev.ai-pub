@@ -461,6 +461,14 @@ def test_the_verdicts_own_capabilities_decide_what_a_feature_slot_names(cids, it
             },
             frozenset({"a1", "b2", "c3"}),
         ),
+        (
+            {"hardwiring": {"findings": [{"kind": "forbidden_literal", "capability": "d4"}, {"kind": "function", "capability": "e5"}]}},
+            frozenset({"e5"}),
+        ),
+        (
+            {"hardwiring": {"findings": [{"kind": "copied_brief", "capability": "f6"}]}},
+            frozenset(),
+        ),
     ],
 )
 def test_graded_features_reads_every_capability_the_grade_names(grade, expected):
@@ -486,7 +494,8 @@ def test_a_long_review_question_is_cut_at_a_word_and_says_so(words):
 
 @pytest.mark.parametrize("length", [grader_findings.PLACE_CHARS - 1, grader_findings.PLACE_CHARS])
 def test_a_place_within_the_cap_is_kept_whole(length):
-    words = ("ab " * length)[:length].rstrip()
+    words = ("ab " * length)[: length - 1] + "c"
+    assert len(words) == length
     assert grader_findings.plain_place(words, grader_findings.QUESTION) == words
 
 
@@ -578,6 +587,8 @@ def test_every_step_kind_on_the_card_is_one_the_ui_grader_writes(kind):
     [
         ("zorblat_total failed in app/actions/zorblat_total.py", "zorblat total failed in"),
         (r"plinket_count failed in 'app\actions\plinket.py' twice", "plinket count failed in twice"),
+        ("zorblat_total read rates_2025.csv twice", "zorblat total read twice"),
+        ("plinket_count in v2.py failed", "plinket count in failed"),
     ],
 )
 def test_the_card_words_leave_a_file_path_out(text, words):
@@ -731,9 +742,85 @@ def test_a_url_password_is_redacted_whatever_its_user_or_its_characters(url, sec
 
 @pytest.mark.parametrize(
     "url",
-    ["https://plinket.example:8080/a@b", "http://zorblat@host:80/x", "redis://:@cache:6379"],
+    [
+        "https://plinket.example:8080/a@b",
+        "http://zorblat@host:80/x",
+        "redis://:@cache:6379",
+        "http://zorblat:8080@/x",
+        "redis://plinket:6379@",
+    ],
 )
 def test_a_url_with_no_password_is_left_alone(url):
     from app.factory.build.sanitize import sanitize_for_status
 
     assert sanitize_for_status(f"open {url} now") == f"open {url} now"
+
+
+LONG_IDS = ["Zorblat_Release_Schedule_By_Work_Package_Q3_Interim", "plinketcertificatewithretentionreleaseperstage"]
+
+
+def _verdict(item: str, grade):
+    from app.factory.build.grader import NOT_CERTIFIED, GraderVerdict
+
+    return GraderVerdict(tier=NOT_CERTIFIED, items=(item,), writer_items=(item,), grade=grade)
+
+
+@pytest.mark.parametrize("cid", LONG_IDS)
+def test_a_long_feature_id_the_grade_names_is_kept_whole(cid, tmp_path):
+    """An id the verdict's grade names is the Factory's own name for a
+    feature: however long, and whatever its letters, the redaction rules do
+    not erase it, so the row names that feature (not "the features as a
+    whole") in its locator, its card place, its log line and the build view."""
+    (row,) = finding_rows(_verdict(f"function grade FAIL: {cid}", _grade_naming(cid)))
+    assert row["where"] == cid
+    assert row["what"] != NOT_ONE_FEATURE and "[redacted]" not in row["quote"]
+    assert row["place"] and "[redacted]" not in row["place"]
+    assert f"where={cid} " in grader_findings.log_line(row)
+    from app.factory.build_jobs import _grader_rows
+
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    assert seen["where"] == cid and cid in seen["quote"]
+
+
+@pytest.mark.parametrize("cid", LONG_IDS)
+def test_a_long_id_the_grade_does_not_name_is_still_redacted(cid):
+    """Only an id the grade names is kept: the same text in a feature slot
+    of a verdict whose grade does not name it, or of a verdict with no
+    grade, is redacted like any other long run, on the row and on the log."""
+    for grade in (_grade_naming("zorblat_total"), None):
+        (row,) = finding_rows(_verdict(f"function grade FAIL: {cid}", grade))
+        assert cid not in row["quote"] and cid not in row["where"]
+        assert cid not in grader_findings.log_line(row)
+
+
+@pytest.mark.parametrize(
+    "cid, secret",
+    [
+        ("Zorblat_Release_Schedule_By_Work_Package_Q3_Interim", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"),
+        ("plinket_count", "AKIAABCDEFGHIJKLMNOP"),
+    ],
+)
+def test_the_words_after_a_kept_feature_id_are_still_redacted(cid, secret):
+    """Keeping a named feature id whole never lets a key through the words
+    that follow it in the same item, on the row, the log or the build view."""
+    from app.factory.build_jobs import _grader_rows
+
+    (row,) = finding_rows(_verdict(f"de-hardwire {cid}: returns {secret} for every input", _grade_naming(cid)))
+    assert row["where"] == cid
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    for shown in (row, seen):
+        assert all(secret not in str(v) for v in shown.values())
+    assert secret not in grader_findings.log_line(row)
+
+
+@pytest.mark.parametrize("where", ["ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4", "AKIAABCDEFGHIJKLMNOP"])
+def test_a_row_that_names_no_feature_is_redacted_whole_on_every_read(where):
+    """A ledger row whose sentence is not its shape's own (it names no
+    feature) keeps nothing whole when read back: its locator is redacted."""
+    from app.factory.build_jobs import _grader_rows
+
+    row = {"rule": "function_check", "what": NOT_ONE_FEATURE, "where": where, "place": "", "owner": WRITER,
+           "quote": f"function grade FAIL: {where}"}
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    assert where not in seen["where"] and where not in seen["quote"]
+    assert where not in grader_findings.log_line(row)

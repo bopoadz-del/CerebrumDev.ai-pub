@@ -1264,14 +1264,14 @@ def _grader_rows(payload: Mapping[str, Any], prior: List[Dict[str, str]]) -> Lis
     verdict NOTE written before rows were recorded) its quoted items with the
     owner unknown, else ``prior`` -- an event with neither carries no verdict
     of its own and never wipes the one it follows."""
-    from app.factory.build.grader_findings import MAX_ROWS, finding_row
+    from app.factory.build.grader_findings import MAX_ROWS, finding_row, redact_row
 
     rows = payload.get("grader_findings")
     if isinstance(rows, list):
-        return [_redacted(dict(r)) for r in rows if isinstance(r, Mapping)][:MAX_ROWS]
+        return [redact_row(r) for r in rows if isinstance(r, Mapping)][:MAX_ROWS]
     items = payload.get("grader_items")
     if isinstance(items, list):
-        return [_redacted(finding_row(str(i), "")) for i in items][:MAX_ROWS]
+        return [redact_row(finding_row(str(i), "")) for i in items][:MAX_ROWS]
     return prior
 
 

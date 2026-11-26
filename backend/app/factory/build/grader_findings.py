@@ -15,7 +15,10 @@ verdict after it is made.
   writer's to fix and the only rows sent back to it; ``factory_owed`` are the
   Factory's; everything else is a part the grader could not check.
 * Every item is redacted before any part of its row is cut from it, so no
-  row field (ledger, log or card) can hold a key or a piece of one.
+  row field (ledger, log or card) can hold a key or a piece of one. The one
+  part kept whole is a feature slot holding an id the verdict's own grade
+  names: that id is the Factory's own name for a feature, not a secret, and
+  the redaction rules (long runs of letters) must not erase it.
 """
 
 from __future__ import annotations
@@ -136,7 +139,7 @@ def finding_row(item: str, owner: str, features: Optional[Collection[str]] = Non
     verdict that carries no grade) a slot holding no whitespace is an id."""
     from app.factory.build.sanitize import sanitize_for_status
 
-    text = sanitize_for_status(str(item or "").strip())
+    text = _redacted(str(item or "").strip(), features, sanitize_for_status)
     prefix, rule, what, sep, names = _shape(text)
     rest = text[len(prefix):]
     where = ((rest.split(sep, 1)[0] if sep else rest).strip() or "-") if prefix else "-"
@@ -156,6 +159,44 @@ def finding_row(item: str, owner: str, features: Optional[Collection[str]] = Non
         "owner": owner,
         "quote": text,
     }
+
+
+def _redacted(raw: str, features: Optional[Collection[str]], sanitize: Any) -> str:
+    """``raw`` redacted, except a feature slot holding one of ``features``
+    (the ids the verdict's grade names), which is kept whole; the words
+    after the slot are redacted as usual."""
+    prefix, _rule, _what, sep, names = _shape(raw)
+    if prefix and names == CAPABILITY and features:
+        head, cut, tail = raw[len(prefix):].partition(sep) if sep else (raw[len(prefix):], "", "")
+        if head.strip() in features:
+            return prefix + head + cut + sanitize(tail)
+    return sanitize(raw)
+
+
+def names_one_feature(row: Mapping[str, Any]) -> bool:
+    """A row names one feature when its quote has a feature-slot shape and
+    its sentence is still that shape's own: :func:`finding_row` replaces the
+    sentence whenever the slot names no feature the verdict graded."""
+    prefix, _rule, what, _sep, names = _shape(str(row.get("quote") or ""))
+    return bool(prefix) and names == CAPABILITY and row.get("what") == what
+
+
+def redact_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    """``row`` with every string redacted again (a row read back from the
+    ledger is redacted on every read), keeping whole the feature id that
+    :func:`finding_row` already judged to be one: in ``where`` and in the
+    slot of ``quote``. Every other word, the rest of the quote included, is
+    redacted as usual."""
+    from app.factory.build.sanitize import sanitize_for_status
+
+    out: Dict[str, Any] = {
+        key: sanitize_for_status(value) if isinstance(value, str) else value for key, value in row.items()
+    }
+    if names_one_feature(row):
+        where = str(row.get("where") or "")
+        out["where"] = where
+        out["quote"] = _redacted(str(row.get("quote") or ""), {where}, sanitize_for_status)
+    return out
 
 
 def _names_feature(where: str, features: Optional[Collection[str]]) -> bool:
@@ -301,10 +342,9 @@ def log_line(row: Mapping[str, str]) -> str:
     the grader's own words. Everything the grader wrote is redacted; the quote
     is capped. Whether it went back to the writer is logged where that is
     decided (:func:`log_handback`), never guessed here."""
-    from app.factory.build.sanitize import sanitize_for_status
-
-    quote = one_line(sanitize_for_status(str(row.get("quote") or "")))[:QUOTE_CHARS]
-    where = one_line(sanitize_for_status(str(row.get("where") or "")))[:QUOTE_CHARS]
+    clean = redact_row(row)
+    quote = one_line(clean["quote"])[:QUOTE_CHARS]
+    where = one_line(clean["where"])[:QUOTE_CHARS]
     return (
         f"rule={row.get('rule')} where={where} owner={row.get('owner')} "
         f"what={row.get('what')} quote={quote}"
