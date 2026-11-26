@@ -112,25 +112,35 @@ def _uses_pilot_budget(cycle: str = "code", auto_pilot: bool = False) -> bool:
     return auto_pilot or (cycle or "code").strip().lower() == "pilot"
 
 
-def _wall_clock_s(cycle: str = "code", auto_pilot: bool = False) -> float:
+def _pinned_wall_clock_s() -> Optional[float]:
+    """The operator's pinned build wall, or None when no wall is pinned.
+
+    A setting that is absent or cannot be read as a number pins nothing.
+    The one reader of the pin: the wall and the first-pass floor both ask it.
+    """
     raw = os.getenv(BUILD_WALL_CLOCK_ENV)
-    if raw is not None:
-        try:
-            value = float(raw)
-        except ValueError:
-            value = None
-        else:
-            if value == 0:
-                return 0.0
-            if 0 < value <= _DEEPSEEK_LEFTOVER_WALL_MAX_S:
-                from app.factory.build.coder_session import deepseek_cli_ready
-                from app.factory.build.roles_handlers import writer_uses_codewhale
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
-                if deepseek_cli_ready() or writer_uses_codewhale(None):
-                    from app.factory.build.budget_inspect import writer_first_pass_wall
 
-                    return writer_first_pass_wall(_DEFAULT_WALL_CLOCK_S)
-            return value
+def _wall_clock_s(cycle: str = "code", auto_pilot: bool = False) -> float:
+    value = _pinned_wall_clock_s()
+    if value is not None:
+        if value == 0:
+            return 0.0
+        if 0 < value <= _DEEPSEEK_LEFTOVER_WALL_MAX_S:
+            from app.factory.build.coder_session import deepseek_cli_ready
+            from app.factory.build.roles_handlers import writer_uses_codewhale
+
+            if deepseek_cli_ready() or writer_uses_codewhale(None):
+                from app.factory.build.budget_inspect import writer_first_pass_wall
+
+                return writer_first_pass_wall(_DEFAULT_WALL_CLOCK_S)
+        return value
     if _uses_pilot_budget(cycle, auto_pilot):
         from app.factory.build.auto_pilot import AUTO_PILOT_WALL_CLOCK_S
 
@@ -2162,7 +2172,7 @@ def _run(
             blocks_root = resolve_blocks_root()
         plan = assert_generatable(CapabilityPlanner(blocks_root).plan(blueprint))
         wall = _wall_clock_s(cycle, auto_pilot=auto)
-        if not os.getenv(BUILD_WALL_CLOCK_ENV):
+        if _pinned_wall_clock_s() is None:
             # No operator-pinned wall: the cycle's wall and the plan class's
             # wall, lifted to the writer's first-pass floor. One function,
             # the same one the runner uses; no literals here.
