@@ -807,6 +807,9 @@ def test_the_card_place_of_a_feature_row_is_derived_again_from_its_id(cid, store
     [("UI step FAIL: ", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"), ("UI step FAIL: ", "AKIAABCDEFGHIJKLMNOP")]
     + [(s[0], "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4") for s in grader_findings.ITEM_SHAPES
        if s[4] != grader_findings.CAPABILITY and s[0] != "UI step FAIL: "],
+    # a key-shaped value never becomes a test id (the secret scan reads the
+    # pytest cache's node ids)
+    ids=lambda v: {"ghp_": "gh-token", "AKIA": "cloud-key"}.get(v[:4], v.strip().rstrip(":").replace(" ", "-")),
 )
 def test_a_row_of_a_shape_that_names_no_feature_keeps_nothing_whole(prefix, secret):
     """Only a feature-slot shape keeps its locator whole on read: a row of
