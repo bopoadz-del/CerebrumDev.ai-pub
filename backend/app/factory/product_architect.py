@@ -171,6 +171,8 @@ Return ONLY a JSON object with this shape:
       "description": "<what this capability does>",
       "requirements": ["<the customer's own asks for THIS capability, one verbatim clause/line each>"],
       "block_ids": ["<ids from the AVAILABLE BLOCKS list only>"],
+      "inputs": ["<the input names, from the picked block's inputs:, this capability uses>"],
+      "outputs": ["<the output names, from the picked block's outputs:, it returns>"],
       "strategy_hint": "REUSE",
       "connectors": ["<external systems this capability calls that no AVAILABLE BLOCK supplies>"]
     }
@@ -188,6 +190,13 @@ Rules:
   traceability demand). Use [] when the brief says nothing specific for it.
   Never summarize away a requirement the customer named.
 - block_ids may ONLY contain ids from the AVAILABLE BLOCKS list. Never invent ids.
+  Each line says what the block is for, when to use it and when not, and the
+  input and output names its contract declares. Pick a block by what it is
+  for, never because its id reads like the capability's name.
+- When you pick a block, list in inputs and outputs the names from that
+  block's line this capability uses. A pick is kept only when every name you
+  list is one each picked block declares; otherwise the capability is built
+  new (GENERATE).
 - If no available block fits a capability, use "block_ids": [] and
   "strategy_hint": "GENERATE".
 - connectors names the outside systems (a CRM, a DMS, a bank) a capability
@@ -423,6 +432,12 @@ def _sanitize_requirements(value: Any) -> List[str]:
     return out
 
 
+def raw_picks(item: Dict[str, Any]) -> List[str]:
+    """The block ids a model capability lists (strings only, in order)."""
+    picks = item.get("block_ids")
+    return [b for b in picks if isinstance(b, str)] if isinstance(picks, list) else []
+
+
 def _blueprint_from_llm_payload(
     data: Dict[str, Any],
     brief: str,
@@ -442,11 +457,11 @@ def _blueprint_from_llm_payload(
 
     vertical = chosen_vertical(vertical_hint)
     allowed = _deterministic_closure(vertical, brief, dual)
-    from app.factory.store_relevance import store_index
+    from app.factory.store_catalog import contract_covers
+    from app.factory.store_kits import block_manifests
 
-    # Relevance across the WHOLE Store, not the vertical's kit: a block stays
-    # on a capability when its own declaration serves that capability's text.
-    index = store_index(dual)
+    # The Store's own declarations, read once: the facts a pick is checked on.
+    manifests = block_manifests()
     raw_caps = data.get("capabilities")
     if not isinstance(raw_caps, list) or not raw_caps:
         raise ValueError("LLM draft has no capabilities")
@@ -458,31 +473,21 @@ def _blueprint_from_llm_payload(
         cap_id = _slug(str(item.get("id", "")), default="")
         if not cap_id:
             continue
-        # The model may propose blocks; a pick is kept only when the
-        # deterministic closure for this vertical + brief holds it or the
-        # block's own declaration clears the relevance floor below, so the
-        # build never inherits a pick the Store's declarations do not back.
         requirements = _sanitize_requirements(item.get("requirements"))
         description = str(item.get("description", ""))[:300] or f"Capability {cap_id}"
-        cap_text = " ".join([description, *requirements])
-        # A model's pick survives when the closure holds it or the block's own
-        # declaration clears the relevance floor for this capability; a pick
-        # nothing in the Store supports is dropped.
+        # The model picks blocks from the whole Store's catalogue; code only
+        # checks facts. A pick is kept when the block is registered and its
+        # declared contract covers the inputs and outputs the capability
+        # declares. Anything else, or no pick at all, is GENERATE: code never
+        # binds a block the model did not pick, and the vertical never gates.
         block_ids = list(
             dict.fromkeys(
                 b
-                for b in item.get("block_ids", [])
-                if isinstance(b, str)
-                and b in dual
-                and (b in allowed or index.clears(b, cap_id, cap_text))
+                for b in raw_picks(item)
+                if b in dual
+                and contract_covers(manifests.get(b), item.get("inputs"), item.get("outputs"))
             )
         )
-        # A real fit the model left out is not lost: when no kept block clears
-        # the floor for this capability, the Store's best fit is bound.
-        if not any(index.clears(b, cap_id, cap_text) for b in block_ids):
-            best = index.best_fit(cap_id, cap_text, prefer=allowed)
-            if best is not None:
-                block_ids.append(best.block_id)
         # A connector a block supplies is that block, not a placeholder.
         connectors = [
             s
@@ -583,18 +588,21 @@ def _draft_with_llm(
     # note matters as much as the mark: an unproven block is still the right
     # choice when it is the one that fits.
     proven = _certified_ids()
-    # Each block with the one line it declares about itself, so the model can
-    # match a capability to a block by function, not by how its id reads.
-    from app.factory.store_relevance import declared_function, store_index
+    # Every registered block, one catalogue index line each (what it is for,
+    # when to use it and when not, its declared inputs and outputs), so the
+    # model picks by function. No vertical narrows the list.
+    from app.factory.store_catalog import catalogue_entry, index_line
+    from app.factory.store_kits import block_manifests
 
-    manifests = store_index(dual).manifests
-    lines = []
-    for b in dual:
-        said = declared_function(b, manifests.get(b) or {})
-        lines.append(
-            f"- {b}" + (f": {said}" if said else "") + ("  [certified]" if b in proven else "")
+    manifests = block_manifests()
+    block_list = (
+        "\n".join(
+            index_line(catalogue_entry(b, manifests.get(b)))
+            + ("  [certified]" if b in proven else "")
+            for b in dual
         )
-    block_list = "\n".join(lines) or "- (none registered)"
+        or "- (none registered)"
+    )
     if proven:
         block_list += (
             "\n(A [certified] block is one whose tests go red when its entry "
