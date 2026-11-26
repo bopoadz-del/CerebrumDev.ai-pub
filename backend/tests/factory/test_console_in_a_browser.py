@@ -71,6 +71,8 @@ const plan = JSON.parse(process.env.PLAN);
     }
     if (step.raw !== undefined) await card.locator("textarea").first().fill(step.raw);
     const pre = card.locator("[data-out]");
+    // Each step waits for its own answer, not one an earlier step left.
+    await pre.evaluate((el) => { el.textContent = "—"; });
     await card.locator('[data-act="create"]').click();
     await page.waitForFunction((el) => el.textContent !== "—", await pre.elementHandle());
     out.push({ controls, shown: await pre.textContent() });
