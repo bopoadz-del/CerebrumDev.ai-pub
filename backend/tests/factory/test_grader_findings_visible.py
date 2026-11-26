@@ -824,3 +824,21 @@ def test_a_row_that_names_no_feature_is_redacted_whole_on_every_read(where):
     (seen,) = _grader_rows({"grader_findings": [row]}, [])
     assert where not in seen["where"] and where not in seen["quote"]
     assert where not in grader_findings.log_line(row)
+
+
+@pytest.mark.parametrize(
+    "cid, secret",
+    [("zorblat_total", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"), ("plinket_count", "AKIAABCDEFGHIJKLMNOP")],
+)
+def test_a_ledger_row_naming_a_feature_loses_a_key_in_its_quote_on_read(cid, secret):
+    """A row read back from the ledger that names one feature keeps its id
+    whole, and the rest of its quote is redacted again on that read."""
+    from app.factory.build_jobs import _grader_rows
+
+    shape = next(s for s in grader_findings.ITEM_SHAPES if s[0] == "de-hardwire ")
+    row = {"rule": shape[1], "what": shape[2], "where": cid, "place": cid, "owner": WRITER,
+           "quote": f"de-hardwire {cid}: returns {secret} for every input"}
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    assert seen["where"] == cid and seen["quote"].startswith(f"de-hardwire {cid}: ")
+    assert secret not in seen["quote"]
+    assert secret not in grader_findings.log_line(row)
