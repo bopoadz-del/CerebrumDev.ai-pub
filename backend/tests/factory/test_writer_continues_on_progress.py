@@ -950,7 +950,29 @@ def test_gitignore_edge_patterns_match_git(tmp_path, gitignore, kept, hidden):
     assert authored == git_kept
 
 
-@pytest.mark.parametrize("gitignore, extra",[("app/*.json\n", "app/data/seed.json"), ("*.json\n", "app/seed.json")])
+@pytest.mark.parametrize(
+    "line, pattern, name, matches",
+    [
+        # a backslash keeps the one trailing space it escapes, no more
+        ("foo\\ ", "foo\\ ", "foo ", True),
+        ("bar\\   ", "bar\\ ", "bar ", True),
+        # an escaped backslash escapes nothing after it: the spaces go
+        ("baz\\\\   ", "baz\\\\", "baz\\", True),
+        # a trailing lone backslash makes the pattern match nothing
+        ("lone\\", "lone\\", "lone\\", False),
+        ("dir/end\\", "dir/end\\", "dir/end\\", False),
+    ],
+)
+def test_trailing_spaces_and_backslashes_as_git_reads_them(line, pattern, name, matches):
+    """File names a Windows tree cannot hold (a trailing space or
+    backslash), so these two git rules are pinned on the reader itself."""
+    from app.factory.build.codewhale_worker import _gitignore_regex, _trim_trailing_spaces
+
+    assert _trim_trailing_spaces(line) == pattern
+    assert bool(_gitignore_regex(pattern).match(name)) is matches
+
+
+@pytest.mark.parametrize("gitignore, extra", [("app/*.json\n", "app/data/seed.json"), ("*.json\n", "app/seed.json")])
 def test_the_specialist_merge_back_carries_files_the_product_ignores(tmp_path, gitignore, extra):
     """The merge-back is not narrowed by the product's .gitignore (grader
     probe ``merge_probe``): every file a specialist wrote reaches the tree."""
