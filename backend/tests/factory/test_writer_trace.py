@@ -227,9 +227,9 @@ def test_a_pass_keeps_logs_and_ledgers_its_trace(
     monkeypatch, tmp_path, caplog, commands, session_id
 ):
     lines = []
-    for command in commands:
+    for code, command in enumerate(commands):
         lines.append(json.dumps(_stream_ev("tool_use", name="bash", input={"command": command})))
-        lines.append(json.dumps(_stream_ev("tool_result", exit_code=0)))
+        lines.append(json.dumps(_stream_ev("tool_result", exit_code=code + 1)))
     lines += [_meta_line(), json.dumps(_stream_ev("done"))]
     with caplog.at_level(logging.INFO, logger="app.factory.build.writer_trace"):
         receipt = _run(monkeypatch, tmp_path, lines, session_id)
@@ -237,7 +237,7 @@ def test_a_pass_keeps_logs_and_ledgers_its_trace(
     kept = json.loads((tmp_path / WRITER_TRACE_REL).read_text(encoding="utf-8"))
     assert kept["session_id"] == session_id
     assert [a["command"] for a in kept["actions"]] == commands
-    assert all(a["exit_code"] == 0 for a in kept["actions"])
+    assert [a["exit_code"] for a in kept["actions"]] == list(range(1, len(commands) + 1))
 
     ledger = receipt.rounds["time"]
     assert tuple(ledger) == LEDGER_KEYS
@@ -251,8 +251,8 @@ def test_a_pass_keeps_logs_and_ledgers_its_trace(
     assert len(trace_lines) == 1
     # The log shows the first 12 characters, as the dispatch line does.
     assert all(f"session={session_id[:12]} " in m for m in action_lines + trace_lines)
-    for command, line in zip(commands, action_lines):
-        assert line.endswith(f"cmd={command}")
+    for code, (command, line) in enumerate(zip(commands, action_lines)):
+        assert line.endswith(f" exit={code + 1} cmd={command}")
     assert f"actions={len(commands)}" in trace_lines[0]
 
 
@@ -315,4 +315,4 @@ def test_an_action_without_a_result_logs_no_run_time(tmp_path, caplog):
     assert len(lines) == 2
     # The id-less result closes the earliest open call; the second has none.
     assert " run=3.0s " in lines[0]
-    assert " run=- " in lines[1]
+    assert " run=- exit=- " in lines[1]
