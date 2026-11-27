@@ -267,6 +267,46 @@ function roundText(d: BuildDecision): string {
   return `${d.class} ${d.gate} ${round}${ceiling} — ${d.check}${d.finding ? `: ${d.finding}` : ''}`
 }
 
+/** Rows the card face shows; the rest are counted and kept in Technical detail. */
+export const FACE_FINDINGS = 6
+
+/**
+ * What the grader asked for, on the card face: the server's headline and one
+ * plain line per finding (what, and the feature or step in plain words). Shown only when
+ * the grader sent work back or did not pass the build; every word comes from
+ * the build status, none is written here per case.
+ */
+export function GraderFindings({ build }: { build: BuildStatus | null }) {
+  const grader = build?.grader
+  const rows = grader?.findings ?? []
+  if (!grader || !grader.headline || rows.length === 0) return null
+  const shown = rows.slice(0, FACE_FINDINGS)
+  const more = rows.length - shown.length
+  return (
+    <div className="grader-findings" data-testid="floor-grader-findings" data-state={grader.state}>
+      <p className="grader-findings-headline">{grader.headline}</p>
+      <ul className="grader-findings-list">
+        {shown.map((row, i) => (
+          <li key={i} data-testid="floor-grader-finding" data-owner={row.owner}>
+            {row.what}
+            {row.place ? (
+              <>
+                {' '}
+                <span className="grader-findings-where">({row.place})</span>
+              </>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {more > 0 ? (
+        <p className="grader-findings-more" data-testid="floor-grader-findings-more">
+          {more} more in Technical detail.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 export function TechnicalDetail({
   build,
   sessionId,
@@ -292,9 +332,19 @@ export function TechnicalDetail({
   const recovered = !failure ? build.recovered_failure : null
   const notDelivered = build.not_delivered ?? []
   const hasLog = Boolean(build.coder_log || build.coder_log_present)
+  const graderRows = build.grader?.findings?.length ?? 0
   const hasAnything =
     Boolean(
-      failure || raw || reference || decisions.length || activity.length || recovered || notDelivered.length || hasLog || extra,
+      failure ||
+        raw ||
+        reference ||
+        decisions.length ||
+        activity.length ||
+        recovered ||
+        notDelivered.length ||
+        hasLog ||
+        extra ||
+        graderRows,
     )
   if (!hasAnything) return null
   return (
@@ -327,6 +377,18 @@ export function TechnicalDetail({
           <p className="tech-line" data-testid="floor-failure-ref">
             Reference <code>{reference}</code>
           </p>
+        )}
+        {(build.grader?.findings ?? []).length > 0 && (
+          <>
+            <p className="tech-label">Quality check findings</p>
+            <ol className="tech-list" data-testid="floor-grader-findings-raw">
+              {(build.grader?.findings ?? []).map((row, i) => (
+                <li key={i}>
+                  {row.rule} ({row.owner || 'owner not recorded'}) at {row.where}: {row.quote}
+                </li>
+              ))}
+            </ol>
+          </>
         )}
         {decisions.length > 0 && (
           <>
@@ -467,6 +529,7 @@ export function BuildCard({
           {passLine}
         </p>
       )}
+      <GraderFindings build={build} />
       {actions ? <div className="build-actions-slot">{actions}</div> : null}
       {steps ? <div className="build-steps-slot" data-testid="floor-build-steps">{steps}</div> : null}
       <TechnicalDetail

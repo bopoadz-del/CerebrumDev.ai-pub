@@ -2,6 +2,46 @@
 
 **One account. Tell the factory. Receive your platform.**
 
+## The five build stages
+
+The names are the ones the build screen shows; they come from one table,
+`frontend/src/stepNames.json`. The build record keeps each stage's role id
+(shown in brackets) unchanged.
+
+Before the first stage, when the build is set up, the capability planner
+decides per capability whether a Store block is reused or the code is
+generated (`CapabilityPlanner` in `backend/app/factory/planner.py`, called by
+`RoleRunner` in `backend/app/factory/build/runner.py`). Then every build runs
+these stages in this order:
+
+1. **Collector** (`COLLECTOR`): resolves each planned capability to the Store
+   blocks that back it and names every capability no block backs. It writes
+   nothing. `run_collector` in `backend/app/factory/build/roles_handlers.py`.
+2. **Researcher** (`CLONER`): copies each reused block's source into the
+   workspace and then writes the coder brief (docs/coder_brief.md in the
+   workspace) from the blueprint and the planner's plan. It writes the brief
+   only when the plan reuses at least one block: a plan that reuses none ends
+   the stage at "no blocks to vendor", with no brief (`run_cloner` in
+   `backend/app/factory/build/roles_handlers.py`; the brief is
+   `ensure_coder_brief` in `backend/app/factory/build/domain_handoff.py`).
+3. **Workers** (`WRITER`): the coding session that writes what the Store does
+   not have (`run_writer` in `backend/app/factory/build/roles_handlers.py`).
+   The headless worker reads the coder brief when the Researcher wrote one;
+   on a build that reuses no block it gets the user's brief and the
+   capability list without a compiled brief (`run_worker_job` in
+   `backend/app/factory/build/codewhale_worker.py`). When that worker is off,
+   the writer compiles the brief itself (`compile_brief_from_ctx` in
+   `backend/app/factory/build/brief_compiler.py`) and the architect writes
+   the brief's narrative, off by default (`attach_narrative` in
+   `backend/app/factory/build/architect.py`).
+4. **Tester** (`TESTER`): writes the code-phase test suite, which its gate
+   then runs. It is not an LLM role (`run_tester` in
+   `backend/app/factory/build/roles_handlers.py`; the gate is
+   `gate_tester_contract` in `backend/app/factory/build/gates.py`).
+5. **Store Manager** (`STORE_MANAGER`): records what the build took from the
+   Store (`run_store_manager` in
+   `backend/app/factory/build/roles_handlers.py`).
+
 CerebrumDev.ai is a conversational platform factory. A user registers, lands on
 the **Factory Floor**, describes the platform they need in plain language, and
 the factory drafts a blueprint. On the user's word — *approve* — the generator

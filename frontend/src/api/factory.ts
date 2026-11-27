@@ -674,6 +674,24 @@ export type BuildGrader = {
   tier?: string
   round?: number
   budget?: number
+  /** One row per finding of the grader's newest verdict, written by the server. */
+  findings?: BuildGraderFinding[]
+  /** How many items the hand-back actually sent the writer. */
+  sent_to_writer?: number
+  /** The server's one sentence above the findings; empty when none show. */
+  headline?: string
+}
+
+/** One grader finding: ``what`` and ``place`` are plain words; the rest is machine text. */
+export interface BuildGraderFinding {
+  rule: string
+  what: string
+  /** The grader's own locator (a capability id, a file path): machine text. */
+  where: string
+  /** The locator in plain words for the card face; empty for a file. */
+  place?: string
+  owner: 'writer' | 'factory' | 'run' | ''
+  quote: string
 }
 
 /** One line of the coding agent's own narration. */
