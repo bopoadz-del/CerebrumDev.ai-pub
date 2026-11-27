@@ -198,7 +198,9 @@ def _open_model_call_note(activity_notes: Any) -> Any:
 
     for note in reversed(list(activity_notes or ())):
         payload = getattr(note, "payload", None) or {}
-        if closes_model_call(payload):
+        # A resume starts a new attempt: a call the earlier one left open
+        # (killed by a deploy, a restart, a stop) is not this run's call.
+        if closes_model_call(payload) or payload.get("resumed"):
             return None
         if payload.get("model_call"):
             return note
@@ -374,6 +376,10 @@ def _write_crash_marker(output_dir: Path | str, detail: str) -> None:
 #: tenant's approve read "already running" and start nothing (live
 #: 2026-10-06, 879ed1e1). The workspace path is unique per build.
 _RUNNER_THREADS: Dict[str, threading.Thread] = {}
+#: The newest ledger seq of the workspace when its runner thread was
+#: registered: the events that thread was started after. A thread is the
+#: runner of a resume only when it was started after that resume's NOTE.
+_RUNNER_STARTED_AFTER: Dict[str, int] = {}
 _RUNNER_THREADS_GUARD = threading.Lock()
 
 
@@ -391,9 +397,20 @@ def runner_thread_name(output_dir: Path | str) -> str:
 
 
 def register_runner_thread(output_dir: Path | str, thread: threading.Thread) -> None:
-    """Record ``thread`` as the runner of the build at ``output_dir``."""
+    """Record ``thread`` as the runner of the build at ``output_dir``, with
+    the newest ledger seq it was started after."""
+    started_after = _newest_ledger_seq(output_dir)
     with _RUNNER_THREADS_GUARD:
         _RUNNER_THREADS[runner_key(output_dir)] = thread
+        _RUNNER_STARTED_AFTER[runner_key(output_dir)] = started_after
+
+
+def _newest_ledger_seq(output_dir: Path | str) -> int:
+    from app.factory.build.ledger import BuildLedger
+
+    # A workspace with no ledger yet has no events: the thread was started
+    # after none of them (0), so any later resume NOTE is newer than it.
+    return max((event.seq for event in BuildLedger(_ledger_path(output_dir)).events()), default=0)
 
 
 def live_runner_thread(output_dir: Path | str) -> Optional[threading.Thread]:
@@ -402,12 +419,48 @@ def live_runner_thread(output_dir: Path | str) -> Optional[threading.Thread]:
         thread = _RUNNER_THREADS.get(runner_key(output_dir))
         if thread is not None and not thread.is_alive():
             _RUNNER_THREADS.pop(runner_key(output_dir), None)
+            _RUNNER_STARTED_AFTER.pop(runner_key(output_dir), None)
             thread = None
     return thread
 
 
+def _runner_started_after(output_dir: Path | str) -> Optional[int]:
+    """The ledger seq the live runner of this workspace was started after."""
+    if live_runner_thread(output_dir) is None:
+        return None
+    with _RUNNER_THREADS_GUARD:
+        return _RUNNER_STARTED_AFTER.get(runner_key(output_dir))
+
+
 def _live_runner_thread(output_dir: Path | str) -> bool:
     return live_runner_thread(output_dir) is not None
+
+
+def _reentered_live(events: Sequence[Any], terminal: Any, output_dir: Path | str) -> bool:
+    """True when a failed run has been re-entered and is being worked on.
+
+    Read from typed facts only: the verdict is RUN_FAILED, a resume NOTE
+    (``resumed``) was appended after it, and the live runner thread of this
+    workspace was started after that NOTE. A resume whose thread never
+    started (refused at the door) stays the failure it was, even while an
+    older thread -- the failed run's own, still narrating its verdict -- is
+    alive; a run the re-entry itself ends writes a newer verdict, which this
+    does not reach."""
+    from app.factory.build.ledger import EventKind
+
+    if terminal is None or terminal.kind is not EventKind.RUN_FAILED:
+        return False
+    resumes = [
+        event.seq
+        for event in events
+        if event.seq > terminal.seq
+        and event.kind is EventKind.NOTE
+        and (event.payload or {}).get("resumed")
+    ]
+    if not resumes:
+        return False
+    started_after = _runner_started_after(output_dir)
+    return started_after is not None and started_after >= max(resumes)
 
 
 def _product_id_of(events: Any, output_dir: Path | str) -> str:
@@ -988,14 +1041,23 @@ def _trail(
     standing: Optional[Dict[str, Any]] = None
     started: Dict[str, Any] = {}
     ended = False
+    # A resume NOTE ends the attempt before it, whatever ended that one (a
+    # verdict, or none: a deploy kill, an overdue call, a crash). Its failure
+    # is history from the next phase start, or from a verdict the re-entry
+    # writes before any phase of its own started (a stop in the slot wait).
+    reentry = False
     for event in events:
         role = getattr(event, "role", None)
         kind = getattr(event, "kind", None)
         kind_name = kind.value if hasattr(kind, "value") else str(kind)
         if kind_name in ("RUN_FAILED", "RUN_SUCCEEDED"):
+            if reentry:
+                standing, reentry = None, False
             ended = True
         elif kind_name == "REWORK":
             ended = False
+        elif kind_name == "NOTE" and (getattr(event, "payload", None) or {}).get("resumed"):
+            ended, reentry = True, True
         if role is None:
             continue
         role_name = role.value if hasattr(role, "value") else str(role)
@@ -1005,6 +1067,7 @@ def _trail(
         if kind_name == "PHASE_STARTED":
             if ended:
                 standing, ended = None, False
+            reentry = False
             started[role_name] = event.ts
             # A re-opened phase starts clean. Carrying the previous round's
             # failure text forward would render a running phase next to the
@@ -1499,6 +1562,15 @@ def build_status(
             output_dir,
         )
 
+    # Try again writes the resume NOTE, starts the runner thread and answers
+    # with this status at once -- before the thread has written a phase
+    # event. Until it does (a whole slot wait, if the slot is taken) the old
+    # RUN_FAILED is still the newest verdict, and the reply, the card and the
+    # chat read a live run as the failure it resumed from.
+    reentered = _reentered_live(events, terminal, output_dir)
+    if reentered:
+        terminal = None
+
     phases = [p.value for p in BUILD_PHASES]
     current_role = interrupted or resume
     # A crash marker is a record of a DEAD run. A live runner thread for
@@ -1642,6 +1714,9 @@ def build_status(
     # ledger saw; a stopped run reads the row its NEWEST verdict stopped on,
     # so the label, the red chip, the Continue line and the ref agree.
     phase_trail, history, failure = _trail(events)
+    if reentered:
+        # The stop it resumed from is history now, not this run's failure.
+        failure = None
     stop_payload: Dict[str, Any] = {}
     from app.factory.build.n3_store_gate import handoff_awaiting_n3
 
@@ -1694,9 +1769,13 @@ def build_status(
             if isinstance((e.payload or {}).get("decision"), dict)
             and (e.payload or {})["decision"].get("class")
         ],
-        # The grader's state, from the events the grader itself wrote.
-        "grader": _grader_view(events),
-        "stopped": stopped_by_rule(output_dir),
+        # The grader's state, from the events the grader itself wrote. Like
+        # the failure above, the verdict and the rule stop a re-entered run
+        # resumed from are the earlier attempt's: the re-entry's first phase
+        # event clears both, and the wait before it must not show them on a
+        # run that reads as building.
+        "grader": None if reentered else _grader_view(events),
+        "stopped": None if reentered else stopped_by_rule(output_dir),
         # The build's own declared end (server clock); a poller waits on
         # this, never on a number of its own.
         "deadline": declared_deadline(events),
