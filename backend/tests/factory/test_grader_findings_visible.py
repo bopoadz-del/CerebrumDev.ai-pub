@@ -890,3 +890,30 @@ def test_a_ledger_row_naming_a_feature_loses_a_key_in_its_quote_on_read(cid, sec
     assert seen["where"] == cid and seen["quote"].startswith(f"de-hardwire {cid}: ")
     assert secret not in seen["quote"]
     assert secret not in grader_findings.log_line(row)
+
+
+@pytest.mark.parametrize(
+    "cid, words",
+    [
+        ("plinket-count", "plinket count"),
+        # long enough that the redactor would cut it: kept only because the grade names it
+        ("Zorblat-Release-Schedule-By-Work-Package-Q3-Interim", "Zorblat Release Schedule By Work Package Q3 Interim"),
+    ],
+    ids=["short-slug", "long-slug"],
+)
+def test_a_hyphenated_feature_id_the_grade_names_stays_whole(cid, words):
+    """A feature id written with hyphens is one id: when the grade names it,
+    it stays whole on the row, on read-back from the ledger and on the log
+    line, and the card place reads it as words."""
+    from app.factory.build_jobs import _grader_rows
+
+    (row,) = finding_rows(_verdict(f"function grade FAIL: {cid}", _grade_naming(cid)))
+    assert row["where"] == cid and row["place"] == words
+    assert grader_findings.names_one_feature(row)
+    (seen,) = _grader_rows({"grader_findings": [row]}, [])
+    assert seen["where"] == cid and seen["place"] == words
+    assert seen["quote"] == f"function grade FAIL: {cid}"
+    assert cid in grader_findings.log_line(row)
+    # the same id in a verdict whose grade names another feature is no feature
+    (other,) = finding_rows(_verdict(f"function grade FAIL: {cid}", _grade_naming("zorblat_total")))
+    assert not grader_findings.names_one_feature(other)
