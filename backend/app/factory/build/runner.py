@@ -3798,22 +3798,11 @@ class RoleRunner:
                         for event in grader_events:
                             previous.update((event.payload or {}).get("failure_names") or [])
                         items = tuple(grade_verdict.writer_items)
-                        if rounds >= REWORK_BUDGET:
-                            repeated = sorted(set(items) & previous)
-                            stop_reason = (
-                                "same failing items again: " + "; ".join(repeated)[:300]
-                                if repeated
-                                else f"grader rework budget of {REWORK_BUDGET} rounds spent"
-                            )
-                            self._grader_stop(grade_verdict, "grader_not_certified")
-                            return self._finish(
-                                Outcome.FAILED_GATE,
-                                f"GRADER: {NOT_CERTIFIED} after {rounds} round(s) "
-                                f"-- {stop_reason}: " + ("; ".join(items)[:400] or "-"),
-                                phase=role,
-                                rework=rework_used,
-                                findings=list(grade_verdict.items),
-                            )
+                        # The ceiling is asked FIRST: when the grader's last
+                        # round is also the build's last, the build has no fix
+                        # round left, and the stop must say so (rounds_spent,
+                        # with the rule's STOP record) -- not "a check refused,
+                        # with the rounds this build has left".
                         # The build ceiling governs the grader too: its
                         # rounds count toward the build total, so a grader
                         # round with the build's REWORK_CEILING spent ends the
@@ -3840,6 +3829,22 @@ class RoleRunner:
                                 rework=rework_used,
                                 findings=list(grade_verdict.items),
                                 decision=ceiling.record,
+                            )
+                        if rounds >= REWORK_BUDGET:
+                            repeated = sorted(set(items) & previous)
+                            stop_reason = (
+                                "same failing items again: " + "; ".join(repeated)[:300]
+                                if repeated
+                                else f"grader rework budget of {REWORK_BUDGET} rounds spent"
+                            )
+                            self._grader_stop(grade_verdict, "grader_not_certified")
+                            return self._finish(
+                                Outcome.FAILED_GATE,
+                                f"GRADER: {NOT_CERTIFIED} after {rounds} round(s) "
+                                f"-- {stop_reason}: " + ("; ".join(items)[:400] or "-"),
+                                phase=role,
+                                rework=rework_used,
+                                findings=list(grade_verdict.items),
                             )
                         build_rounds = self._rework_rounds_this_build()
                         # Every round the rule sends back is a decision record

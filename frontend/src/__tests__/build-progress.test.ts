@@ -1458,8 +1458,25 @@ describe('the stop, said once: one step name, one tone, fix rounds as history', 
         graderRecord('REWORK', 2, 6),
         graderRecord('STOP', 2, 6),
       ],
-      'Fix rounds used: 6 of 6 (Workers: 2 of 3).',
+      'Fix rounds used: 6 of 6 (Quality check: 2 of 3).',
     ],
+    // The review's third round is also the build's sixth (two Workers
+    // rounds, one Tester round, three review rounds): the line names the
+    // review and its own count, never the step it sent back.
+    [
+      [
+        gateRound('WRITER', 1, 1),
+        gateRound('WRITER', 2, 2),
+        gateRound('TESTER', 1, 3),
+        graderRecord('REWORK', 1, 4),
+        graderRecord('REWORK', 2, 5),
+        graderRecord('REWORK', 3, 6),
+        graderRecord('STOP', 3, 6),
+      ],
+      'Fix rounds used: 6 of 6 (Quality check: 3 of 3).',
+    ],
+    // A review round below the ceiling, after a Workers round.
+    [[gateRound('WRITER', 1, 1), graderRecord('REWORK', 1, 2)], 'Fix rounds used: 2 of 6 (Quality check: 1 of 3).'],
     // The ceiling met before any grader round: six gate rounds, then the
     // grader's first refusal is the STOP (zero of its three). The last fix
     // round is the tester's.

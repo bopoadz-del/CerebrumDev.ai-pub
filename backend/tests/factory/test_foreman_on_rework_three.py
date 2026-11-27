@@ -994,3 +994,67 @@ def test_with_the_foreman_off_a_failed_run_makes_no_narrative_call(tmp_path, mon
     assert llm.calls == 0
     assert _narrative_calls(runner) == []
     assert _narrative(runner)["source"] == "ledger"
+
+
+@pytest.mark.parametrize("writer_fails, tester_fails", [(2, 1), (1, 2), (3, 0)])
+def test_the_graders_last_round_being_the_builds_last_stops_as_rounds_spent(
+    tmp_path, monkeypatch, writer_fails, tester_fails
+):
+    # Verdict a7946d0 fault 1: three gate rounds, then the grader refuses every
+    # tree. Its third round is the build's sixth, so its next refusal meets the
+    # grader's own budget AND the build's ceiling at once. The build has no fix
+    # round left: the stop is the rule's STOP (rounds_spent), never "a check
+    # refused, using the fix rounds this build has left".
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    _grade_script(monkeypatch, certified_first=tester_fails)
+    runner, out, _ = _run(tmp_path, monkeypatch, script, llm=_no_model(), budget=BuildBudget(max_rework=REWORK_BUDGET))
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+
+    status = build_status(tmp_path / "build")
+    failure = status["failure"]
+    assert (failure["kind"], failure["title"]) == (fr.ROUNDS_SPENT, "used up its fix rounds")
+    assert failure["next"] == (
+        "Continuing does not grant new fix rounds: the step runs again and stops again if "
+        "the same check fails."
+    )
+    assert "has left" not in failure["next"] and "has left" not in failure["summary"]
+
+    decisions = status["decisions"]
+    assert [d["class"] for d in decisions] == [DECISION_REWORK] * REWORK_CEILING + [DECISION_STOP]
+    assert [d["round_build"] for d in decisions] == [1, 2, 3, 4, 5, 6, REWORK_CEILING]
+    graded = [d for d in decisions if d["class"] == DECISION_REWORK and d["gate_name"] == GRADER_GATE]
+    assert [(d["round_gate"], d["gate_budget"], d["round_build"]) for d in graded] == [
+        (1, REWORK_BUDGET, 4),
+        (2, REWORK_BUDGET, 5),
+        (3, REWORK_BUDGET, 6),
+    ]
+    stop = decisions[-1]
+    assert (stop["gate_name"], stop["round_gate"], stop["gate_budget"]) == (GRADER_GATE, REWORK_BUDGET, REWORK_BUDGET)
+    assert stop["round_build"] == REWORK_CEILING == stop["build_ceiling"]
+    assert runner.ledger.terminal_event().payload["decision"]["class"] == DECISION_STOP
+    assert status["stop"]["fix_rounds"] == REWORK_CEILING
+
+
+@pytest.mark.parametrize("writer_fails, tester_fails", [(1, 1), (0, 2), (0, 0)])
+def test_the_graders_budget_spent_below_the_ceiling_still_reads_as_a_refused_check(
+    tmp_path, monkeypatch, writer_fails, tester_fails
+):
+    # The negative: the grader's three rounds spent with build rounds left is
+    # NOT the ceiling. It stays a refused check, and "the fix rounds this build
+    # has left" is then true.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    _grade_script(monkeypatch, certified_first=tester_fails)
+    _runner, out, _ = _run(tmp_path, monkeypatch, script, llm=_no_model(), budget=BuildBudget(max_rework=REWORK_BUDGET))
+    assert out.outcome is Outcome.FAILED_GATE, out.detail
+
+    status = build_status(tmp_path / "build")
+    assert status["failure"]["kind"] == "check_refused"
+    rounds = [d for d in status["decisions"] if d["class"] == DECISION_REWORK]
+    assert len(rounds) == writer_fails + tester_fails + REWORK_BUDGET < REWORK_CEILING
+    assert [d["class"] for d in status["decisions"]].count(DECISION_STOP) == 0
