@@ -1154,9 +1154,8 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   min-height: 32px;
   padding-bottom: 18px;
 }
-/* On a phone a long name wraps to two lines instead of running into its
-   neighbour; the first name aligns left, the last right, the rest centre on
-   their dot. */
+/* The first name aligns left, the last right, the rest centre on their
+   dot. */
 .stepper-name {
   position: absolute;
   top: 100%;
@@ -1170,11 +1169,14 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
 }
 .stepper-step:first-child .stepper-name { right: auto; left: 0; transform: none; text-align: left; }
 .stepper-step:last-child .stepper-name { right: 0; transform: none; text-align: right; }
-/* Two lines of names fit under the dots and the row stays at most 56px
-   tall: a 28px dot row plus 27px for two 13.2px lines. */
+/* On a phone the names take turns below and above the dots, so two
+   neighbours never share a line and no word has to break, whatever the
+   font's width. Each name is one 13.2px line inside a 14px band, so the row
+   is 14 + 28 + 14 = 56px. */
 @media (max-width: 520px) {
-  .stepper-row { min-height: 28px; padding-bottom: 27px; }
-  .stepper-name { white-space: normal; width: max-content; max-width: 64px; line-height: 1.1; }
+  .stepper-row { min-height: 28px; padding-top: 14px; padding-bottom: 14px; }
+  .stepper-name { line-height: 1.1; }
+  .stepper-step:nth-child(even) .stepper-name { top: auto; bottom: 100%; }
 }
 .step-current .stepper-name,
 .step-fixing .stepper-name,

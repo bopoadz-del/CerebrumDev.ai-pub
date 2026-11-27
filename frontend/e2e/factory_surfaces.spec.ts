@@ -321,21 +321,30 @@ for (const run of RECORDED_RUNS) for (const viewport of STAGE_VIEWPORTS) {
     await expect(page.getByTestId('floor-stepper-row').locator('[data-step="STORE_MANAGER"]')).toHaveCount(1)
     await expect(page.getByTestId('floor-stepper')).not.toContainText(/COLLECTOR|CLONER|WRITER|TESTER|STORE_MANAGER/)
     if (viewport) {
-      // On the phone each name starts at or after the previous one's right
-      // edge, stays inside the screen, and the row stays at most 56px tall.
+      // On the phone no two names overlap, each name stays inside the screen
+      // and inside the stepper row, and the row stays at most 56px tall.
       const boxes = await names.evaluateAll((els) =>
         els.map((el) => {
           const r = el.getBoundingClientRect()
-          return { left: r.left, right: r.right }
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
         }),
       )
+      const row = await page.getByTestId('floor-stepper-row').boundingBox()
       expect(boxes.length).toBe(STAGE_NAMES.length)
       for (let i = 0; i < boxes.length; i += 1) {
         expect(boxes[i].left, `${STAGE_NAMES[i]} inside the screen`).toBeGreaterThanOrEqual(0)
         expect(boxes[i].right, `${STAGE_NAMES[i]} inside the screen`).toBeLessThanOrEqual(viewport.width)
-        if (i > 0) expect(boxes[i].left, `${STAGE_NAMES[i]} clear of ${STAGE_NAMES[i - 1]}`).toBeGreaterThanOrEqual(boxes[i - 1].right)
+        expect(boxes[i].top, `${STAGE_NAMES[i]} inside the row`).toBeGreaterThanOrEqual(row!.y)
+        expect(boxes[i].bottom, `${STAGE_NAMES[i]} inside the row`).toBeLessThanOrEqual(row!.y + row!.height)
+        for (let j = 0; j < i; j += 1) {
+          const apart =
+            boxes[i].left >= boxes[j].right ||
+            boxes[j].left >= boxes[i].right ||
+            boxes[i].top >= boxes[j].bottom ||
+            boxes[j].top >= boxes[i].bottom
+          expect(apart, `${STAGE_NAMES[i]} clear of ${STAGE_NAMES[j]}`).toBe(true)
+        }
       }
-      const row = await page.getByTestId('floor-stepper-row').boundingBox()
       expect(row!.height).toBeLessThanOrEqual(56)
     }
     if (process.env.STAGE_NAMES_SHOT_DIR) {
