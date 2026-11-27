@@ -154,3 +154,79 @@ def test_fallback_model_gets_the_same_one_retry(monkeypatch, allowance, primary,
     assert out == {"k": 3}
     assert [p["model"] for p in sent] == [primary, primary, fallback, fallback]
     assert [p["max_tokens"] for p in sent] == [n, 2 * n, n, 2 * n]
+
+
+def _refusal(status: int) -> MagicMock:
+    resp = MagicMock()
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "refused", request=request, response=httpx.Response(status, request=request)
+    )
+    return resp
+
+
+@pytest.mark.parametrize(
+    "allowance, ceiling, retry",
+    [("1000", "1500", 1500), ("4096", "6000", 6000), ("1000", "5000", 2000), ("3000", "6000", 6000)],
+)
+def test_retry_allowance_is_bounded_by_the_provider_ceiling(monkeypatch, allowance, ceiling, retry):
+    _env(monkeypatch, allowance)
+    monkeypatch.setenv("ARCHITECT_LLM_MAX_TOKENS_CEILING", ceiling)
+    out, sent = _run([_reply("", "length", int(allowance)), _reply('{"a": 2}', "stop")])
+    assert out == {"a": 2}
+    assert [p["max_tokens"] for p in sent] == [int(allowance), retry]
+    assert product_architect.llm_retry_allowance(int(allowance)) == retry
+
+
+@pytest.mark.parametrize("allowance, ceiling", [("1000", "1000"), ("3000", "2000")])
+def test_no_retry_when_the_ceiling_leaves_no_room(monkeypatch, allowance, ceiling):
+    _env(monkeypatch, allowance)
+    monkeypatch.setenv("ARCHITECT_LLM_MAX_TOKENS_CEILING", ceiling)
+    out, sent = _run([_reply(None, "length", int(allowance)), _reply('{"a": 1}', "stop")])
+    assert isinstance(out, AllowanceExhausted)
+    assert f"max_tokens={allowance}" in str(out)
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("allowance, ceiling", [("1000", "0"), ("2500", "not-a-number")])
+def test_an_unusable_ceiling_leaves_the_retry_at_double(monkeypatch, allowance, ceiling):
+    _env(monkeypatch, allowance)
+    monkeypatch.setenv("ARCHITECT_LLM_MAX_TOKENS_CEILING", ceiling)
+    _out, sent = _run([_reply("", "length", int(allowance)), _reply('{"a": 1}', "stop")])
+    assert [p["max_tokens"] for p in sent] == [int(allowance), 2 * int(allowance)]
+
+
+@pytest.mark.parametrize("allowance, status", [("1000", 400), ("4096", 422)])
+def test_a_refused_retry_is_still_reported_as_out_of_allowance(monkeypatch, allowance, status):
+    _env(monkeypatch, allowance)
+    out, sent = _run([_reply("", "length", int(allowance)), _refusal(status)])
+    assert isinstance(out, AllowanceExhausted)
+    assert isinstance(out, LlmSoftMiss)
+    assert "ran out of allowance" in str(out)
+    assert f"max_tokens={allowance} " in str(out)
+    assert f"retry at max_tokens={2 * int(allowance)} was refused by the provider (HTTP {status})" in str(out)
+    assert isinstance(out.__cause__, httpx.HTTPStatusError)
+    assert len(sent) == 2
+
+
+@pytest.mark.parametrize("status, kind", [(429, "rate_limited"), (503, "unavailable")])
+def test_a_retry_refused_for_another_reason_keeps_its_own_class(monkeypatch, status, kind):
+    from app.core.model_ladder import ModelUnavailable
+
+    _env(monkeypatch, "1000")
+    out, sent = _run([_reply("", "length", 1000), _refusal(status)])
+    assert not isinstance(out, AllowanceExhausted)
+    assert isinstance(out, ModelUnavailable)
+    assert out.kind == kind
+    assert len(sent) == 2
+
+
+@pytest.mark.parametrize("status", [400, 402])
+def test_a_refused_first_call_is_not_turned_into_out_of_allowance(monkeypatch, status):
+    from app.core.model_ladder import ModelUnavailable
+
+    _env(monkeypatch, "1000")
+    out, sent = _run([_refusal(status), _reply('{"a": 1}', "stop")])
+    assert isinstance(out, ModelUnavailable)
+    assert not isinstance(out, AllowanceExhausted)
+    assert len(sent) == 1

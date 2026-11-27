@@ -121,6 +121,9 @@ LLM_MAX_TOKENS_ENV: Final = "ARCHITECT_LLM_MAX_TOKENS"
 # left a normal brief with nothing for the answer. One retry doubles it.
 LLM_MAX_TOKENS_DEFAULT = 8192
 LLM_RETRY_ALLOWANCE_FACTOR = 2
+# The most the provider accepts as a completion allowance, when the operator
+# knows it. Unset: the provider's own refusal of the retry is the bound.
+LLM_MAX_TOKENS_CEILING_ENV: Final = "ARCHITECT_LLM_MAX_TOKENS_CEILING"
 
 BRIEF_TRUNCATION_MARKER = (
     "\n\n[brief truncated by the server at {limit} characters; "
@@ -163,6 +166,13 @@ def brief_max_chars() -> int:
 
 def llm_max_tokens() -> int:
     return _positive_int_env(LLM_MAX_TOKENS_ENV, LLM_MAX_TOKENS_DEFAULT)
+
+
+def llm_retry_allowance(allowance: int) -> int:
+    """The retry's allowance: the first one times the factor, never above the
+    provider's configured ceiling."""
+    larger = allowance * LLM_RETRY_ALLOWANCE_FACTOR
+    return min(larger, _positive_int_env(LLM_MAX_TOKENS_CEILING_ENV, larger))
 
 
 def truncate_brief(brief: str) -> str:
@@ -289,6 +299,7 @@ def _llm_json_call(
     ``api.cursor.com/v1/chat/completions``.
     """
     from app.core.model_ladder import (
+        BAD_REQUEST,
         NOT_CONFIGURED,
         PAYMENT_REFUSED,
         ModelUnavailable,
@@ -384,8 +395,23 @@ def _llm_json_call(
         allowance = llm_max_tokens()
         try:
             return _post(rung, m, allowance)
-        except AllowanceExhausted:
-            return _post(rung, m, allowance * LLM_RETRY_ALLOWANCE_FACTOR)
+        except AllowanceExhausted as exhausted:
+            retry = llm_retry_allowance(allowance)
+            if retry <= allowance:
+                raise
+            try:
+                return _post(rung, m, retry)
+            except Exception as refused:
+                # The same request was accepted at the smaller allowance, so
+                # a bad-request refusal of the retry is the provider's bound:
+                # the reply still ran out of allowance.
+                kind, status = classify(refused)
+                if kind != BAD_REQUEST:
+                    raise
+                raise AllowanceExhausted(
+                    f"{exhausted}; the retry at max_tokens={retry} was "
+                    f"refused by the provider (HTTP {status})"
+                ) from refused
 
     def _rung(rung: Any) -> Dict[str, Any]:
         try:
