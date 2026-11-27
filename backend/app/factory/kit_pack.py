@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 _FACTORY_DIR = Path(__file__).resolve().parent
 _FACTORY_SHELF = _FACTORY_DIR / "shelves" / "factory_blocks.json"
@@ -32,21 +32,18 @@ _SKIP_DIR_NAMES = {
 _SKIP_SUFFIXES = {".pyc", ".pyo"}
 
 
-def kit_map_from_store(blocks_root: Optional[Path] = None) -> Dict[str, str]:
-    """``block_id -> kit_id`` from the kits the Store marks available.
+def available_kit_manifests(blocks_root: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
+    """``kit_id -> manifest`` for every kit the Store marks available.
 
     Read from block_store/kits/<kit>/manifest.json, which states its own id,
-    status and blocks. The Factory used to take this from its hand-written
-    shelf, which assigned 20 of 25 blocks to "platform" and knew exactly one
-    domain kit -- so a finance build was told no kit existed while
-    kits/finance_ops sat there marked available, carrying a chart-of-accounts
-    governance block the agent then wrote from scratch.
+    status, blocks and what the kit is for. A kit directory starting with
+    ``_`` is a template, not a kit.
     """
     from app.factory.dual_registry import _default_blocks_root
 
     root = Path(blocks_root) if blocks_root else _default_blocks_root()
     kits_dir = root / "block_store" / "kits"
-    out: Dict[str, str] = {}
+    out: Dict[str, Dict[str, Any]] = {}
     if not kits_dir.is_dir():
         return out
     for entry in sorted(kits_dir.iterdir()):
@@ -57,14 +54,79 @@ def kit_map_from_store(blocks_root: Optional[Path] = None) -> Dict[str, str]:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if not isinstance(data, dict):
+            continue
         # The Store's own word on whether a kit may be offered.
         if str(data.get("status") or "").strip().lower() != "available":
             continue
-        kit_id = str(data.get("id") or entry.name).strip()
+        out[str(data.get("id") or entry.name).strip()] = data
+    return out
+
+
+def kit_map_from_store(blocks_root: Optional[Path] = None) -> Dict[str, str]:
+    """``block_id -> kit_id`` from the kits the Store marks available.
+
+    The Factory used to take this from its hand-written shelf, which
+    assigned 20 of 25 blocks to "platform" and knew exactly one domain kit
+    -- so a finance build was told no kit existed while kits/finance_ops sat
+    there marked available, carrying a chart-of-accounts governance block
+    the agent then wrote from scratch.
+    """
+    out: Dict[str, str] = {}
+    for kit_id, data in available_kit_manifests(blocks_root).items():
         for block_id in data.get("blocks") or []:
             if block_id:
                 out[str(block_id)] = kit_id
     return out
+
+
+def capability_picks(blueprint: Any) -> List[Tuple[str, List[str], List[str]]]:
+    """``(capability id, bound block ids, picked kit ids)`` for each
+    capability of a blueprint or plan that binds a block and picks a kit."""
+    out: List[Tuple[str, List[str], List[str]]] = []
+    for cap in getattr(blueprint, "capabilities", None) or ():
+        cap_id = str(getattr(cap, "id", "") or getattr(cap, "capability_id", "") or "")
+        blocks = [str(b) for b in (getattr(cap, "block_ids", None) or []) if str(b).strip()]
+        kits = [str(k) for k in (getattr(cap, "kit_ids", None) or []) if str(k).strip()]
+        if cap_id and blocks and kits:
+            out.append((cap_id, blocks, kits))
+    return out
+
+
+def drawn_kits(
+    picks: Iterable[Tuple[str, Sequence[str], Sequence[str]]],
+    blocks_root: Optional[Path] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """``block_id -> {"kit", "for"}``: the Store kit each bound block is
+    drawn from, and the capabilities that drew it.
+
+    The architect picks a capability's kits from the kit index it is shown;
+    code checks facts only. A block draws a kit when a capability that binds
+    the block picked the kit, the Store marks the kit available, and the
+    kit's manifest lists the block. Kits also list the generic blocks they
+    were composed with, so membership alone never draws a kit: only a pick
+    does. When picks disagree on a block, the first capability's first
+    qualifying pick wins (blueprint order). A block no kit is drawn for goes
+    to the base pack.
+    """
+    root = _store_root(blocks_root)
+    kits = available_kit_manifests(root) if root is not None else {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for cap_id, block_ids, kit_ids in picks:
+        for kit_id in kit_ids:
+            data = kits.get(str(kit_id))
+            if data is None:
+                continue
+            listed = {str(b) for b in data.get("blocks") or [] if b}
+            for bid in block_ids:
+                if str(bid) not in listed:
+                    continue
+                rec = out.setdefault(str(bid), {"kit": str(kit_id), "for": []})
+                if rec["kit"] == str(kit_id) and cap_id not in rec["for"]:
+                    rec["for"].append(cap_id)
+    for rec in out.values():
+        rec["for"] = sorted(rec["for"])
+    return dict(sorted(out.items()))
 
 
 def load_shelf_kit_map(shelf_path: Optional[Path] = None) -> Dict[str, str]:
@@ -102,16 +164,20 @@ def kits_for_blocks(
     block_ids: Iterable[str],
     *,
     shelf_path: Optional[Path] = None,
+    drawn: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Dict[str, List[str]]:
-    """Group vendored block ids by the kit the Factory shelf assigns them.
+    """Group vendored block ids by kit: the kit selection drew the block
+    from (``drawn_kits``) when there is one, else the kit the Factory shelf
+    assigns it.
 
     Unknown ids (tests, GENERATE-only faux blocks) still land in ``platform``
     so a product that has blocks always has a kit pack.
     """
     shelf = load_shelf_kit_map(shelf_path)
+    picked = drawn or {}
     grouped: Dict[str, List[str]] = {}
     for bid in block_ids:
-        kit_id = shelf.get(bid, "platform")
+        kit_id = str((picked.get(bid) or {}).get("kit") or shelf.get(bid, "platform"))
         grouped.setdefault(kit_id, []).append(bid)
     for kit_id in grouped:
         grouped[kit_id] = sorted(set(grouped[kit_id]))
@@ -258,9 +324,10 @@ def stock_kits(
     *,
     blocks_root: Optional[Path] = None,
     shelf_path: Optional[Path] = None,
+    blueprint: Any = None,
 ) -> Dict[str, Any]:
     """Write ``kits/{kit_id}/`` under ``dest_root``. Returns lock-file records."""
-    grouped = kits_for_blocks(block_ids, shelf_path=shelf_path)
+    grouped, drawn = _kit_groups(block_ids, shelf_path, blueprint, blocks_root)
     records: Dict[str, Any] = {}
     for kit_id, bids in grouped.items():
         records[kit_id] = _stock_one_kit(
@@ -269,6 +336,32 @@ def stock_kits(
             bids,
             blocks_root=blocks_root,
         )
+    return _with_drawn_for(records, drawn)
+
+
+def _kit_groups(
+    block_ids: Sequence[str],
+    shelf_path: Optional[Path],
+    blueprint: Any,
+    blocks_root: Optional[Path],
+) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+    """The kit grouping a build stocks, and the kits selection drew."""
+    drawn: Dict[str, Dict[str, Any]] = {}
+    if blueprint is not None:
+        drawn = drawn_kits(capability_picks(blueprint), _store_root(blocks_root))
+    return kits_for_blocks(block_ids, shelf_path=shelf_path, drawn=drawn), drawn
+
+
+def _with_drawn_for(
+    records: Dict[str, Any], drawn: Mapping[str, Mapping[str, Any]]
+) -> Dict[str, Any]:
+    """Record, on each drawn kit's lock entry, which capabilities drew it,
+    so the build record says why a domain kit is in the product."""
+    for bid, pick in drawn.items():
+        rec = records.get(str(pick.get("kit")))
+        if rec is None or bid not in rec.get("blocks", ()):
+            continue
+        rec["drawn_for"] = sorted(set(rec.get("drawn_for", [])) | set(pick.get("for") or ()))
     return records
 
 
@@ -353,15 +446,16 @@ def stock_kits_via_workspace(
     *,
     blocks_root: Optional[Path] = None,
     shelf_path: Optional[Path] = None,
+    blueprint: Any = None,
 ) -> Dict[str, Any]:
     """CLONER path: same kit packs, written through a lane-checked workspace."""
-    grouped = kits_for_blocks(block_ids, shelf_path=shelf_path)
+    grouped, drawn = _kit_groups(block_ids, shelf_path, blueprint, blocks_root)
     records: Dict[str, Any] = {}
     for kit_id, bids in grouped.items():
         records[kit_id] = _stock_one_kit_workspace(
             workspace, kit_id, bids, blocks_root=blocks_root
         )
-    return records
+    return _with_drawn_for(records, drawn)
 
 
 def _stock_one_kit_workspace(

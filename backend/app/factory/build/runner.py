@@ -645,6 +645,20 @@ def _collect_all_enabled() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _first_pass_floor_s() -> float:
+    """``budget_inspect``'s first-pass floor (imported late: no cycle)."""
+    from app.factory.build.budget_inspect import writer_first_pass_wall
+
+    return writer_first_pass_wall()
+
+
+def _ceiling_s() -> float:
+    """``budget_inspect.CEILING_S``, the one ceiling (imported late)."""
+    from app.factory.build.budget_inspect import CEILING_S
+
+    return CEILING_S
+
+
 @dataclass(frozen=True)
 class BuildBudget:
     """Bounds on a run. Exhausting a bound ends the build as a failure.
@@ -659,7 +673,9 @@ class BuildBudget:
     #: Per gate (owner rule): the same REWORK_BUDGET the rule enforces.
     max_rework: int = REWORK_BUDGET
     wall_clock_s: float = 3600.0
-    phase_wall_clock_s: float = 3600.0
+    #: At least the writer's first-pass floor, so the phase box never ends
+    #: a first pass the plan wall still allows.
+    phase_wall_clock_s: float = field(default_factory=lambda: _first_pass_floor_s())
     #: The wall may be RAMPED at an inspect, never past this. It is the same
     #: number ``budget_inspect.CEILING_S`` proposes up to; it lives here as
     #: well because ``_extend_wall`` is the only writer of the deadline and
@@ -668,7 +684,7 @@ class BuildBudget:
     #: never compared to a ceiling. A bound enforced in the module that
     #: PROPOSES values, and not in the one that APPLIES them, is a
     #: convention. ``0`` disables it, matching ``wall_clock_s``.
-    hard_ceiling_s: float = 7200.0
+    hard_ceiling_s: float = field(default_factory=lambda: _ceiling_s())
 
     def deadline_from(self, started: float) -> Optional[float]:
         return (started + self.wall_clock_s) if self.wall_clock_s > 0 else None
@@ -812,12 +828,13 @@ class RoleRunner:
             # turns the class into the number -- one config, no literals
             # here.
             from app.factory.build.budget_inspect import (
-                NEW_PLATFORM_WALL_S,
-                SMALL_PLATFORM_WALL_S,
+                plan_class_wall,
+                writer_first_pass_wall,
             )
 
-            klass = str(getattr(self.plan, "budget_class", "small") or "small")
-            wall = NEW_PLATFORM_WALL_S if klass == "new_platform" else SMALL_PLATFORM_WALL_S
+            wall = writer_first_pass_wall(
+                plan_class_wall(getattr(self.plan, "budget_class", "small"))
+            )
             self.budget = BuildBudget(wall_clock_s=wall)
         else:
             self.budget = budget
@@ -2819,12 +2836,20 @@ class RoleRunner:
             self.ledger.append(EventKind.NOTE, role=phase, detail=detail, payload=payload)
 
         try:
+            # One read of the ledger: the narrative is composed from these
+            # events and names the newest verdict among them. The model call
+            # below can outlast a Try again and an owner stop of the
+            # re-entry; landing after that newer verdict, this narrative
+            # still says which verdict it explains.
+            events = list(self.ledger.events())
             narrative = fn.compose_failure_narrative(
-                list(self.ledger.events()),
+                events,
                 note=note,
                 llm=getattr(self, "narrative_llm", None),
             )
-            fn.attach(self.ledger, narrative, role=phase)
+            fn.attach(
+                self.ledger, narrative, role=phase, verdict_seq=fn.newest_verdict_seq(events)
+            )
         except Exception as exc:  # noqa: BLE001 -- telemetry for the owner, never a verdict
             logger.warning("failure narrative unavailable: %s", type(exc).__name__)
 
