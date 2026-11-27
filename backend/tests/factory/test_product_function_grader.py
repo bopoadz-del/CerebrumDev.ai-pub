@@ -853,9 +853,14 @@ def test_stored_records_reads_back_sqlite_rows_json_lines_and_json_cells(tmp_pat
     assert not any(f"{owner} {amount}" in r for r in got)
 
 
-def test_stored_records_of_an_empty_or_unreadable_store_is_empty(tmp_path):
-    assert fg.stored_records(tmp_path) == []
-    (tmp_path / "broken.db").write_bytes(b"SQLite format 3\x00" + b"\x00" * 50)
+@pytest.mark.parametrize("name,body", [
+    (None, b""),
+    ("broken.db", b"SQLite format 3\x00" + b"\x00" * 50),
+    ("notes.txt", b"not json {"),
+])
+def test_stored_records_of_an_empty_or_unreadable_store_is_empty(tmp_path, name, body):
+    if name:
+        (tmp_path / name).write_bytes(body)
     assert fg.stored_records(tmp_path) == []
 
 
