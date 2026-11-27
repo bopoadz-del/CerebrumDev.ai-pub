@@ -20,17 +20,22 @@ import app.factory.build.runner as runner_mod
 from app.factory.blueprint import load_blueprint
 from app.factory.build.authority import BuildRole
 from app.factory.build.ledger import BuildLedger, EventKind
-from tests.factory.test_stopped_build_on_branch import (  # noqa: F401 -- fixture
+from tests.factory.test_stopped_build_on_branch import (
     BLUEPRINT,
     BRANCH,
     BRIEF,
     _git,
     _on_branch,
     _workspace,
-    remote,
+    bare_builds_remote,
 )
 
 Outcome = runner_mod.Outcome
+
+
+@pytest.fixture
+def remote(tmp_path, monkeypatch):
+    return bare_builds_remote(tmp_path, monkeypatch)
 
 
 def _runner(out):

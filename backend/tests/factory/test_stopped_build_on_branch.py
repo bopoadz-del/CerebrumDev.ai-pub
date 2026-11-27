@@ -58,6 +58,10 @@ def _git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def remote(tmp_path, monkeypatch):
+    return bare_builds_remote(tmp_path, monkeypatch)
+
+
+def bare_builds_remote(tmp_path: Path, monkeypatch) -> Path:
     """A bare cerebrum-builds with ``main`` and the build's branch."""
     bare = tmp_path / "remote.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
@@ -402,28 +406,29 @@ def test_a_stopped_build_offers_its_copy(client, tmp_path, sid, extra, state):
     assert plain in text
 
 
-def test_take_copy_names_the_branch_and_head_the_stop_pushed(client, tmp_path):
+@pytest.mark.parametrize("sid, sha", [("sess_copy_branch_a", "e" * 40), ("sess_copy_branch_b", "1" * 40)])
+def test_take_copy_names_the_branch_and_head_the_stop_pushed(client, tmp_path, sid, sha):
     from app.factory import platform_chat_flow
 
-    sha = "e" * 40
-    _session(tmp_path, "sess_copy_branch", _passed("COLLECTOR", "CLONER") + _grader_stop(sha))
+    _session(tmp_path, sid, _passed("COLLECTOR", "CLONER") + _grader_stop(sha))
 
-    reply = platform_chat_flow.take_copy(get_session("sess_copy_branch"))
+    reply = platform_chat_flow.take_copy(get_session(sid))
 
     assert reply["branch"] == BRANCH and reply["head"] == sha
     assert f"{BRANCH} at {sha[:12]}" in reply["summary"]
 
 
-def test_take_copy_names_no_branch_when_the_push_failed(client, tmp_path):
+@pytest.mark.parametrize("sid, error", [("sess_copy_nopush_a", "BuildsPushError: x"), ("sess_copy_nopush_b", "OSError: y")])
+def test_take_copy_names_no_branch_when_the_push_failed(client, tmp_path, sid, error):
     from app.factory import platform_chat_flow
 
     rows = _passed("COLLECTOR", "CLONER") + _grader_stop("f" * 40) + [
         (EventKind.NOTE, BuildRole.WRITER, "stop checkpoint not pushed",
-         {"stop_checkpoint": "", "branch": BRANCH, "push_error": "BuildsPushError: x"}),
+         {"stop_checkpoint": "", "branch": BRANCH, "push_error": error}),
     ]
-    _session(tmp_path, "sess_copy_nopush", rows)
+    _session(tmp_path, sid, rows)
 
-    reply = platform_chat_flow.take_copy(get_session("sess_copy_nopush"))
+    reply = platform_chat_flow.take_copy(get_session(sid))
 
     assert reply["ok"] is True
     assert reply["branch"] == "" and BRANCH not in reply["summary"]
