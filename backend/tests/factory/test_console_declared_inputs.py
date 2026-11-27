@@ -38,7 +38,8 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
     """Evaluate each call ``{"fn": name, "args": [...]}`` in node; return results.
 
     ``undefined`` comes back as the string "<undefined>" so a sent-nothing
-    answer is told apart from a sent-null one."""
+    answer is told apart from a sent-null one; a thrown error comes back as
+    ``{"error": message}``."""
     node = shutil.which("node")
     if node is None:
         pytest.fail("node is not installed: the console logic cannot run (never a skip)")
@@ -46,9 +47,15 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
         _block()
         + "\nconst CALLS = " + json.dumps(calls) + ";\n"
         + "const FNS = { capIdOf, resolveRef, pathMatches, fieldsFromSchema, declaredFields,"
-        + " choicesOf, kindOf, valueOf, unwrap, rangeOf, shownOf,"
-        + " bodyFrom: (fields, values) => bodyFrom(fields, (f) => values[f.name]) };\n"
-        + "const out = CALLS.map((c) => { const r = FNS[c.fn](...c.args);"
+        + " choicesOf, kindOf, valueOf, unwrap, rangeOf, shownOf, choiceTexts, notSetLabel,"
+        + " bodyFrom: (fields, values) => bodyFrom(fields, (f) => values[f.name]),"
+        + " formFromText: (t) => { const d = parseExact(t); return fieldsFromSchema(d, d)"
+        + ".map((f) => [f.name, kindOf(f), shownOf(f), rangeOf(f)]); },"
+        + " capsFromText: (t) => { const l = parseExact(t); const it = (l.items || l.capabilities)[0];"
+        + " return declaredFields(it, {}, capIdOf(it)).map((f) => [f.name, kindOf(f), shownOf(f)]); },"
+        + " choicesFromText: (t) => { const d = parseExact(t); return choiceTexts(fieldsFromSchema(d, d)[0]); } };\n"
+        + "const out = CALLS.map((c) => { let r; try { r = FNS[c.fn](...c.args); }"
+        + " catch (e) { r = { error: e.message }; }"
         + " return r === undefined ? '<undefined>' : r; });\n"
         + "process.stdout.write(JSON.stringify(out, (k, v) => (v === undefined ? '<undefined>' : v)));\n"
     )
@@ -222,117 +229,233 @@ class TestNothingIsInvented:
         assert _run([{"fn": "capIdOf", "args": [item]}], tmp_path) == [expected]
 
 
-class TestEachControlSendsTheDeclaredType:
-    @pytest.mark.parametrize(
-        "field, kind",
-        [
-            ({"name": "a", "type": "int"}, "number"),
-            ({"name": "b", "type": "Number"}, "number"),
-            ({"name": "c", "type": "bool", "required": True}, "boolean"),
-            ({"name": "c", "type": "bool", "default": False}, "boolean"),
-            ({"name": "c", "type": "bool"}, "choice"),
-            ({"name": "c", "type": "boolean", "default": None}, "choice"),
-            ({"name": "x", "default": {"k": 1}}, "json"),
-            ({"name": "y", "type": "string", "default": [1, 2]}, "json"),
-            ({"name": "z", "default": 5}, "text"),
-            ({"name": "d", "type": "str", "allowed_values": ["x"]}, "choice"),
-            ({"name": "e", "type": "int", "options": [1, 2]}, "choice"),
-            ({"name": "f", "type": "str", "enum": []}, "text"),
-            ({"name": "g"}, "text"),
-        ],
-    )
+def _err(sent: Any) -> str:
+    """The reason a refused control gave, or "" when it was not refused."""
+    return sent["error"] if isinstance(sent, dict) and "error" in sent else ""
+
+
+# The form has exactly three controls. Each row: a declared field, and the
+# kind of control it gets.
+KINDS = [
+    ({"name": "s", "type": "string"}, "text"),
+    ({"name": "s", "type": "str", "default": None}, "text"),
+    ({"name": "s", "type": "String", "default": [1, 2]}, "text"),
+    ({"name": "s", "type": "str", "enum": []}, "text"),
+    ({"name": "b", "type": "bool"}, "choice"),
+    ({"name": "b", "type": "boolean", "required": True}, "choice"),
+    ({"name": "b", "type": "Boolean", "default": True}, "choice"),
+    ({"name": "b", "type": "bool", "default": None}, "choice"),
+    ({"name": "e", "type": "str", "allowed_values": ["x"]}, "choice"),
+    ({"name": "e", "type": "int", "options": [1, 2]}, "choice"),
+    ({"name": "e", "enum": ["a", 1]}, "choice"),
+    ({"name": "n", "type": "int"}, "json"),
+    ({"name": "n", "type": "Number"}, "json"),
+    ({"name": "n", "type": "integer", "default": 5}, "json"),
+    ({"name": "n", "type": "int", "enum": []}, "json"),
+    ({"name": "l", "type": "list"}, "json"),
+    ({"name": "l", "type": "array"}, "json"),
+    ({"name": "o", "type": "Dict"}, "json"),
+    ({"name": "o", "type": "object"}, "json"),
+    ({"name": "u"}, "json"),
+    ({"name": "u", "default": 5}, "json"),
+    ({"name": "u", "type": None, "default": None}, "json"),
+]
+
+
+class TestThreeControlsOnly:
+    @pytest.mark.parametrize("field, kind", KINDS)
     def test_the_kind_follows_the_declaration(self, field, kind, tmp_path):
         assert _run([{"fn": "kindOf", "args": [field]}], tmp_path) == [kind]
 
     @pytest.mark.parametrize(
-        "field, raw, sent",
+        "field, choices",
         [
-            ({"name": "n", "type": "int"}, "42", 42),
-            ({"name": "n", "type": "int"}, " 7.5 ", 7.5),
-            ({"name": "n", "type": "int"}, "abc", "abc"),
-            ({"name": "n", "type": "int"}, "", "<undefined>"),
-            ({"name": "n", "type": "int"}, "   ", "<undefined>"),
-            ({"name": "f", "type": "bool"}, "true", True),
-            ({"name": "f", "type": "bool"}, "false", False),
-            ({"name": "f", "type": "bool", "default": None}, "false", False),
-            ({"name": "f", "type": "bool", "default": None}, "", "<undefined>"),
-            ({"name": "f", "type": "bool", "default": True}, False, False),
-            ({"name": "f", "type": "bool", "default": True}, True, "<undefined>"),
-            ({"name": "f", "type": "bool", "default": False}, False, "<undefined>"),
-            ({"name": "m", "type": "bool", "required": True}, False, False),
-            ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "2", 2),
-            ({"name": "p", "type": "int", "allowed_values": [1, 2]}, "3", "3"),
-            ({"name": "t"}, "hello", "hello"),
-            ({"name": "t"}, "", "<undefined>"),
+            ({"name": "b", "type": "bool"}, [True, False]),
+            ({"name": "b", "type": "Boolean", "default": True}, [True, False]),
+            ({"name": "b", "type": "bool", "required": True}, [True, False]),
+            ({"name": "b", "type": "bool", "allowed_values": [True]}, [True]),
+            ({"name": "e", "type": "str", "enum": ["a", "b"]}, ["a", "b"]),
+            ({"name": "s", "type": "str"}, []),
+            ({"name": "n", "type": "int"}, []),
         ],
     )
-    def test_a_control_sends_the_declared_type(self, field, raw, sent, tmp_path):
-        assert [_sent(t) for t in _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)] == [sent]
+    def test_a_boolean_is_always_a_choice_of_its_two_values(self, field, choices, tmp_path):
+        assert _run([{"fn": "choicesOf", "args": [field]}], tmp_path) == [choices]
 
     @pytest.mark.parametrize(
-        "field, raw, text",
+        "field, texts",
         [
-            ({"name": "n", "type": "int"}, "12345678901234567890", "12345678901234567890"),
-            ({"name": "n", "type": "integer"}, " 9007199254740993 ", "9007199254740993"),
-            ({"name": "n", "type": "float"}, "1e400", "1e400"),
-            ({"name": "n", "type": "float"}, "Infinity", '"Infinity"'),
-            ({"name": "n", "type": "int"}, "0x10", '"0x10"'),
-            ({"name": "n", "type": "int"}, "0b101", '"0b101"'),
-            ({"name": "l", "type": "list"}, "[12345678901234567890]", "[12345678901234567890]"),
-            ({"name": "l", "type": "list"}, "5", '"5"'),
-            ({"name": "o", "type": "dict"}, "null", '"null"'),
+            ({"name": "b", "type": "bool"}, ["true", "false"]),
+            ({"name": "e", "allowed_values": ["open", "closed"]}, ['"open"', '"closed"']),
+            ({"name": "e", "enum": [1, 2.5, None]}, ["1", "2.5", "null"]),
         ],
     )
-    def test_typed_json_is_sent_as_the_typed_text(self, field, raw, text, tmp_path):
+    def test_each_choice_is_its_own_json_text(self, field, texts, tmp_path):
+        assert _run([{"fn": "choiceTexts", "args": [field]}], tmp_path) == [texts]
+
+    @pytest.mark.parametrize(
+        "field, label",
+        [
+            ({"name": "b", "type": "bool"}, "not set"),
+            ({"name": "b", "type": "bool", "default": True}, "not set (default true)"),
+            ({"name": "b", "type": "bool", "default": None}, "not set (default null)"),
+            ({"name": "e", "enum": ["open", "closed"], "default": "open"}, 'not set (default "open")'),
+            ({"name": "e", "enum": [1, 2], "default": 12345678901234567890}, "not set"),
+        ],
+    )
+    def test_not_set_names_the_declared_default(self, field, label, tmp_path):
+        assert _run([{"fn": "notSetLabel", "args": [field]}], tmp_path) == [label]
+
+
+# Every kind of control walked through what a user can leave in it. Each row:
+# a field, what is in its control, and the JSON text sent (MISSING = no key;
+# an {"error": ...} = refused in the page, nothing sent).
+MISSING = "<undefined>"
+SENT = [
+    # text: a declared string is sent as typed, as a JSON string
+    ({"name": "t", "type": "string"}, "hello", '"hello"'),
+    ({"name": "t", "type": "str"}, "  5 ", '"  5 "'),
+    ({"name": "t", "type": "string"}, "", MISSING),
+    ({"name": "t", "type": "string", "default": "memo"}, "memo", MISSING),
+    ({"name": "t", "type": "string", "default": "memo"}, "", '""'),
+    ({"name": "t", "type": "string", "default": "memo"}, "other", '"other"'),
+    ({"name": "t", "type": "string", "default": None}, '{"a":1}', json.dumps('{"a":1}')),
+    ({"name": "t", "type": "string", "default": None}, "", MISSING),
+    # choice: not set sends nothing; a pick sends the value's own text
+    ({"name": "f", "type": "bool"}, "true", "true"),
+    ({"name": "f", "type": "bool"}, "false", "false"),
+    ({"name": "f", "type": "bool", "default": True}, "", MISSING),
+    ({"name": "f", "type": "bool", "default": True}, "false", "false"),
+    ({"name": "f", "type": "bool", "required": True}, "", MISSING),
+    ({"name": "c", "allowed_values": ["open", "closed"]}, '"closed"', '"closed"'),
+    ({"name": "c", "allowed_values": [1, 2]}, "2", "2"),
+    # json: the typed text itself, digit for digit, once it is valid JSON
+    ({"name": "n", "type": "int"}, "42", "42"),
+    ({"name": "n", "type": "int"}, " 7.5 ", "7.5"),
+    ({"name": "n", "type": "int"}, "12345678901234567890", "12345678901234567890"),
+    ({"name": "n", "type": "float"}, "1e400", "1e400"),
+    ({"name": "n", "type": "int"}, "", MISSING),
+    ({"name": "n", "type": "int"}, "   ", MISSING),
+    ({"name": "n", "type": "int", "default": 3}, "3", MISSING),
+    ({"name": "n", "type": "int", "default": 3}, " 3 ", MISSING),
+    ({"name": "n", "type": "int", "default": 3}, "4", "4"),
+    ({"name": "n", "type": "int", "default": None}, "null", MISSING),
+    ({"name": "n", "type": "int", "default": None}, "5", "5"),
+    ({"name": "l", "type": "list"}, "[12345678901234567890]", "[12345678901234567890]"),
+    ({"name": "l", "type": "list"}, "5", "5"),
+    ({"name": "o", "type": "dict"}, "null", "null"),
+    ({"name": "o", "type": "dict", "default": {"a": 1}}, '{"a":1}', MISSING),
+    ({"name": "o", "type": "dict", "default": {"a": 1}}, '{"a":1,"b":2}', '{"a":1,"b":2}'),
+    ({"name": "u"}, "[1,2]", "[1,2]"),
+    ({"name": "u", "default": 5}, "6", "6"),
+    ({"name": "u", "default": 5}, '"6"', '"6"'),
+    ({"name": "i", "type": "array", "default": [12345678901234567000],
+      "default_text": "[12345678901234567890]"}, "[12345678901234567890]", MISSING),
+    ({"name": "i", "type": "array", "default": [12345678901234567000],
+      "default_text": "[12345678901234567890]"}, "[12345678901234567890,7]", "[12345678901234567890,7]"),
+]
+
+
+REFUSED = [
+    ({"name": "n", "type": "int"}, "abc"),
+    ({"name": "n", "type": "integer"}, "0x10"),
+    ({"name": "n", "type": "float"}, "Infinity"),
+    ({"name": "u"}, "hello"),
+    ({"name": "l", "type": "list"}, "x, y"),
+    ({"name": "o", "type": "object", "default": {"a": 1}}, "{a:1}"),
+]
+
+
+class TestEachControlSendsWhatItHolds:
+    @pytest.mark.parametrize("field, raw, text", SENT)
+    def test_the_text_sent(self, field, raw, text, tmp_path):
         assert _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path) == [text]
 
-    @pytest.mark.parametrize(
-        "field, raw, sent",
-        [
-            ({"name": "t", "default": "memo"}, "memo", "<undefined>"),
-            ({"name": "t", "default": "memo"}, "", ""),
-            ({"name": "t", "default": "memo"}, "other", "other"),
-            ({"name": "n", "type": "int", "default": 3}, "3", "<undefined>"),
-            ({"name": "n", "type": "int", "default": 3}, " ", None),
-            ({"name": "n", "type": "int", "default": 3}, "4", 4),
-            ({"name": "c", "allowed_values": ["a", "b"], "default": "a"}, "", None),
-            ({"name": "c", "allowed_values": ["a", "b"], "default": "a"}, "b", "b"),
-            ({"name": "o", "type": "dict", "default": {"a": 1}}, '{"a":1}', "<undefined>"),
-            ({"name": "o", "type": "dict", "default": {"a": 1}}, "", None),
-            ({"name": "n", "type": "int", "default": None}, "", "<undefined>"),
-        ],
-    )
-    def test_a_default_kept_sends_nothing_and_a_change_or_clear_is_sent(self, field, raw, sent, tmp_path):
-        assert [_sent(t) for t in _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)] == [sent]
+    @pytest.mark.parametrize("field, raw", REFUSED)
+    def test_text_that_is_not_json_is_refused_with_the_field_and_reason(self, field, raw, tmp_path):
+        [got] = _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)
+        assert _err(got).startswith(field["name"] + " is not valid JSON: ")
+
+    @pytest.mark.parametrize("field, raw", [
+        ({"name": "c", "allowed_values": [1, 2]}, "3"),
+        ({"name": "f", "type": "bool"}, "yes"),
+    ])
+    def test_a_choice_outside_the_allowed_values_is_refused(self, field, raw, tmp_path):
+        [got] = _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)
+        assert _err(got) == field["name"] + ": not one of the allowed values"
 
     @pytest.mark.parametrize(
         "field, shown",
         [
-            ({"name": "t", "default": "memo"}, "memo"),
-            ({"name": "t"}, ""),
+            ({"name": "t", "type": "string", "default": "memo"}, "memo"),
+            ({"name": "t", "type": "string"}, ""),
+            ({"name": "t", "type": "string", "default": None}, ""),
+            ({"name": "t", "type": "str", "default": 5}, "5"),
+            ({"name": "b", "type": "bool", "default": True}, ""),
+            ({"name": "c", "allowed_values": ["a", "b"], "default": "b"}, ""),
             ({"name": "n", "type": "int", "default": 0}, "0"),
-            ({"name": "n", "type": "int", "default": None}, ""),
-            ({"name": "b", "type": "bool", "default": True}, True),
-            ({"name": "b", "type": "bool", "default": "yes"}, ""),
-            ({"name": "b", "type": "bool"}, ""),
-            ({"name": "b", "type": "bool", "required": True}, False),
+            ({"name": "n", "type": "int", "default": None}, "null"),
+            ({"name": "n", "type": "int"}, ""),
             ({"name": "e", "default": {"k": 1}}, '{"k":1}'),
-            ({"name": "u", "type": "string", "default": [1, 2]}, "[1,2]"),
+            ({"name": "l", "type": "list", "default": [1, "x"]}, '[1,"x"]'),
+            ({"name": "g", "type": "integer", "default": 9007199254740991}, "9007199254740991"),
+            ({"name": "g", "type": "integer", "default": 9007199254740992}, ""),
+            ({"name": "g", "type": "integer", "default": 12345678901234567890}, ""),
+            ({"name": "g", "type": "list", "default": [1, 12345678901234567890]}, ""),
+            ({"name": "g", "type": "dict", "default": {"a": 12345678901234567890}}, ""),
             ({"name": "g", "type": "integer", "default": 12345678901234567890,
               "default_text": "12345678901234567890"}, "12345678901234567890"),
-            ({"name": "g", "type": "integer", "default": -9999999999999999,
-              "default_text": "-9999999999999999"}, "-9999999999999999"),
-            ({"name": "g", "type": "integer", "default": 12345678901234567890}, ""),
-            ({"name": "g", "type": "integer", "default": 9007199254740992}, ""),
-            ({"name": "g", "type": "integer", "default": 9007199254740991}, "9007199254740991"),
-            ({"name": "g", "type": "integer", "default": 7, "default_text": "8"}, "7"),
-            ({"name": "c", "allowed_values": ["a", "b"], "default": "b"}, "b"),
-            ({"name": "c", "allowed_values": ["a", "b"], "default": "z"}, ""),
-            ({"name": "l", "type": "list", "default": [1, "x"]}, '[1,"x"]'),
+            ({"name": "g", "type": "number", "default": 7, "default_text": "7.0"}, "7.0"),
         ],
     )
-    def test_a_control_starts_at_the_declared_default(self, field, shown, tmp_path):
+    def test_a_control_starts_at_the_schemas_own_text(self, field, shown, tmp_path):
         assert _run([{"fn": "shownOf", "args": [field]}], tmp_path) == [shown]
+
+    @pytest.mark.parametrize(
+        "field, hint",
+        [
+            ({"name": "n", "type": "int", "min": 0}, "at least 0"),
+            ({"name": "n", "type": "int", "max": 9}, "at most 9"),
+            ({"name": "n", "type": "int", "min": 1, "max": 5}, "1 to 5"),
+            ({"name": "n", "type": "int", "min": None, "max": ""}, "JSON"),
+            ({"name": "n", "type": "list"}, "JSON"),
+            ({"name": "n", "type": "int", "max": 12345678901234567000,
+              "max_text": "12345678901234567890"}, "at most 12345678901234567890"),
+        ],
+    )
+    def test_a_json_box_hints_its_declared_bounds_in_their_own_text(self, field, hint, tmp_path):
+        assert _run([{"fn": "rangeOf", "args": [field]}], tmp_path) == [hint]
+
+    @pytest.mark.parametrize(
+        "fields, values, body",
+        [
+            (
+                [{"name": "room", "allowed_values": ["a", "b"], "required": True},
+                 {"name": "note", "type": "str"}, {"name": "n", "type": "int"}],
+                {"room": "", "note": "", "n": " 3 "},
+                '{"n":3}',
+            ),
+            (
+                [{"name": "room", "allowed_values": ["a", "b"]}, {"name": "paid", "type": "bool"},
+                 {"name": "tags", "type": "list"}],
+                {"room": '"b"', "paid": "false", "tags": '["x"]'},
+                '{"room":"b","paid":false,"tags":["x"]}',
+            ),
+            ([{"name": "ids", "type": "array"}], {"ids": "[12345678901234567890,7]"},
+             '{"ids":[12345678901234567890,7]}'),
+            ([{"name": "gone"}], {}, "{}"),
+        ],
+    )
+    def test_a_body_is_the_controls_texts_spliced(self, fields, values, body, tmp_path):
+        assert _run([{"fn": "bodyFrom", "args": [fields, values]}], tmp_path) == [body]
+
+    @pytest.mark.parametrize("bad", ["n", "m"])
+    def test_one_refused_box_refuses_the_whole_body(self, bad, tmp_path):
+        fields = [{"name": "n", "type": "int"}, {"name": "m", "type": "list"}]
+        values = {"n": "1", "m": "[2]"}
+        values[bad] = "not json"
+        [got] = _run([{"fn": "bodyFrom", "args": [fields, values]}], tmp_path)
+        assert _err(got).startswith(bad + " is not valid JSON")
 
     @pytest.mark.parametrize("hops, leaf", [(3, "q"), (4, "w")])
     def test_a_chain_of_refs_reaches_the_last_schema(self, hops, leaf, tmp_path):
@@ -344,65 +467,6 @@ class TestEachControlSendsTheDeclaredType:
         [fields] = _run([{"fn": "fieldsFromSchema", "args": [doc, {"$ref": "#/components/schemas/S0"}]}],
                         tmp_path)
         assert [(f["name"], f["type"], f["required"], f["min"]) for f in fields] == [(leaf, "integer", True, 1)]
-
-    @pytest.mark.parametrize(
-        "field, kind",
-        [
-            ({"name": "a", "type": "list"}, "json"),
-            ({"name": "b", "type": "Dict"}, "json"),
-            ({"name": "c", "type": "array"}, "json"),
-            ({"name": "d", "type": "object"}, "json"),
-            ({"name": "e", "type": "string"}, "text"),
-        ],
-    )
-    def test_a_list_or_object_field_is_a_json_control(self, field, kind, tmp_path):
-        assert _run([{"fn": "kindOf", "args": [field]}], tmp_path) == [kind]
-
-    @pytest.mark.parametrize(
-        "field, raw, sent",
-        [
-            ({"name": "l", "type": "list"}, '["x", "y"]', ["x", "y"]),
-            ({"name": "o", "type": "dict"}, '{"k": 1}', {"k": 1}),
-            ({"name": "l", "type": "array"}, "x, y", "x, y"),
-            ({"name": "o", "type": "object"}, "", "<undefined>"),
-        ],
-    )
-    def test_a_json_control_sends_parsed_json_or_what_was_typed(self, field, raw, sent, tmp_path):
-        assert [_sent(t) for t in _run([{"fn": "valueOf", "args": [field, raw]}], tmp_path)] == [sent]
-
-    @pytest.mark.parametrize(
-        "field, hint",
-        [
-            ({"name": "n", "type": "int", "min": 0}, "at least 0"),
-            ({"name": "n", "type": "int", "max": 9}, "at most 9"),
-            ({"name": "n", "type": "int", "min": 1, "max": 5}, "1 to 5"),
-            ({"name": "n", "type": "int", "min": None, "max": ""}, "number"),
-            ({"name": "n", "type": "int"}, "number"),
-        ],
-    )
-    def test_a_number_box_shows_its_declared_bounds(self, field, hint, tmp_path):
-        assert _run([{"fn": "rangeOf", "args": [field]}], tmp_path) == [hint]
-
-    @pytest.mark.parametrize(
-        "fields, values, record",
-        [
-            (
-                [{"name": "room", "allowed_values": ["a", "b"], "required": True},
-                 {"name": "note"}, {"name": "n", "type": "int"}],
-                {"room": "", "note": "", "n": " 3 "},
-                {"n": 3},
-            ),
-            (
-                [{"name": "room", "allowed_values": ["a", "b"]}, {"name": "paid", "type": "bool"},
-                 {"name": "tags", "type": "list"}],
-                {"room": "b", "paid": "false", "tags": '["x"]'},
-                {"room": "b", "paid": False, "tags": ["x"]},
-            ),
-            ([{"name": "gone"}], {}, {}),
-        ],
-    )
-    def test_a_record_holds_only_what_was_entered(self, fields, values, record, tmp_path):
-        assert [json.loads(t) for t in _run([{"fn": "bodyFrom", "args": [fields, values]}], tmp_path)] == [record]
 
 
 OPTIONAL_DOC = {
@@ -438,7 +502,8 @@ class TestTheStandardSchemaShapesAreRead:
         assert by["k"]["allowed_values"] == ["open", "closed"] and by["k"]["required"] is False
         assert by["t"]["type"] == "number" and by["t"]["min"] == 2
         # Two real alternatives are not resolved into either one.
-        assert by["either"]["type"] == "string" and by["either"]["allowed_values"] == "<undefined>"
+        # It keeps no type at all (not "string"), so it gets the JSON box.
+        assert by["either"]["type"] == "<undefined>" and by["either"]["allowed_values"] == "<undefined>"
 
     @pytest.mark.parametrize(
         "schema, names, required",
@@ -481,21 +546,54 @@ class TestTheStandardSchemaShapesAreRead:
         assert _names(got) == expected
 
 
-class TestAControlCanHoldTheDeclaredDefault:
+BIG = 12345678901234567890
+
+
+def _form(schema_text: str, tmp_path: Path) -> List[Any]:
+    """[name, kind, shown, hint] of each field, read from an openapi text by
+    parseExact (as boot reads the product's own text)."""
+    [got] = _run([{"fn": "formFromText", "args": [schema_text]}], tmp_path)
+    return got
+
+
+class TestTheSchemasOwnTextIsKept:
     @pytest.mark.parametrize(
-        "field, choices",
+        "prop, shown",
         [
-            ({"name": "b", "type": "bool"}, [True, False]),
-            ({"name": "b", "type": "Boolean", "default": None}, [True, False]),
-            ({"name": "b", "type": "bool", "default": True}, []),
-            ({"name": "b", "type": "bool", "default": False}, []),
-            ({"name": "b", "type": "bool", "required": True}, []),
-            ({"name": "b", "type": "bool", "allowed_values": [True]}, [True]),
-            ({"name": "s", "type": "str"}, []),
+            ({"type": "array", "items": {"type": "integer"}, "default": [BIG]}, "[%d]" % BIG),
+            ({"type": "object", "default": {"a": BIG, "b": [1, BIG]}}, '{"a":%d,"b":[1,%d]}' % (BIG, BIG)),
+            ({"anyOf": [{"type": "integer"}, {"type": "null"}], "default": BIG}, str(BIG)),
+            ({"type": "integer", "default": -9999999999999999}, "-9999999999999999"),
+            ({"type": "number", "default": 1e20}, "1e+20"),
+            ({"anyOf": [{"type": "array"}, {"type": "object"}], "default": None}, "null"),
+            ({"default": {"default": {"x": BIG}}}, '{"default":{"x":%d}}' % BIG),
         ],
     )
-    def test_only_an_optional_boolean_without_a_boolean_default_is_a_choice(self, field, choices, tmp_path):
-        assert _run([{"fn": "choicesOf", "args": [field]}], tmp_path) == [choices]
+    def test_a_nested_or_top_level_default_shows_every_digit(self, prop, shown, tmp_path):
+        text = json.dumps({"type": "object", "properties": {"f": prop}})
+        [[name, kind, got, _hint]] = _form(text, tmp_path)
+        assert (name, kind, got) == ("f", "json", shown)
+
+    @pytest.mark.parametrize(
+        "prop, hint",
+        [
+            ({"type": "integer", "maximum": BIG}, "at most %d" % BIG),
+            ({"type": "integer", "minimum": -BIG, "maximum": 3}, "%d to 3" % -BIG),
+        ],
+    )
+    def test_a_declared_bound_beyond_2_53_is_hinted_exactly(self, prop, hint, tmp_path):
+        text = json.dumps({"type": "object", "properties": {"f": prop}})
+        assert _form(text, tmp_path)[0][3] == hint
+
+    @pytest.mark.parametrize("cap_text", [
+        json.dumps({"items": [{"id": "c", "fields": [{"name": "n", "type": "int", "default": BIG}]}]}),
+        json.dumps({"capabilities": [{"id": "c", "fields": [{"name": "n", "default": [BIG, 1]}]}]}),
+    ])
+    def test_the_capabilities_text_keeps_its_digits_too(self, cap_text, tmp_path):
+        [got] = _run([{"fn": "capsFromText", "args": [cap_text]}], tmp_path)
+        want = json.loads(cap_text)
+        default = (want.get("items") or want.get("capabilities"))[0]["fields"][0]["default"]
+        assert got == [["n", "json", json.dumps(default, separators=(",", ":"))]]
 
     @pytest.mark.parametrize("text", ["12345678901234567890", "-9999999999999999"])
     def test_the_kept_digits_of_a_default_reach_the_field(self, text, tmp_path):
@@ -505,3 +603,12 @@ class TestAControlCanHoldTheDeclaredDefault:
         [fields] = _run([{"fn": "fieldsFromSchema", "args": [{}, schema]}], tmp_path)
         assert [(f["name"], f.get("default_text", "<undefined>")) for f in fields] == [
             ("g", text), ("h", "<undefined>")]
+
+    @pytest.mark.parametrize("prop", [
+        {"enum": [BIG, 1]},
+        {"type": "integer", "enum": [1, BIG]},
+    ])
+    def test_a_choice_is_sent_as_the_declared_digits(self, prop, tmp_path):
+        text = json.dumps({"type": "object", "properties": {"f": prop}})
+        [got] = _run([{"fn": "choicesFromText", "args": [text]}], tmp_path)
+        assert got == [str(v) for v in prop["enum"]]

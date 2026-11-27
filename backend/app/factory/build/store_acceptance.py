@@ -903,14 +903,44 @@ async function boot() {
 
 // <<declared-inputs>>
 
-// The product's openapi.json parsed so that a declared default integer beyond
-// 2^53 keeps its exact digits: JSON numbers are doubles here, so where the
-// browser gives a value's source text it is kept beside it as default_text.
+// The product's JSON parsed so that every value keeps the exact text it was
+// written as. JSON numbers are doubles here, so 12345678901234567890 parses
+// to a rounded number; where the browser gives a value's source text (the
+// third reviver argument) that text is kept, and a list's or object's text is
+// built from its members' kept texts, so a big integer nested inside a
+// default keeps its digits too. A declared default, minimum or maximum then
+// carries its exact text beside it as default_text, minimum_text, ... A value
+// whose digits the browser did not give has no kept text (null), and neither
+// has anything that holds it.
+const KEPT = new WeakMap();
+const KEPT_KEYS = ["default", "minimum", "maximum", "min", "max"];
+function keptText(holder, key) {
+  const texts = holder && typeof holder === "object" ? KEPT.get(holder) : undefined;
+  return texts && Object.prototype.hasOwnProperty.call(texts, key) ? texts[key] : undefined;
+}
+function textFrom(value, ctx) {
+  if (value !== null && typeof value === "object") {
+    // An object's own keys as written (not a *_text key added beside them).
+    const keys = Array.isArray(value) ? value.map((v, i) => String(i)) : Object.keys(KEPT.get(value) || {});
+    const parts = [];
+    for (const k of keys) {
+      const t = keptText(value, k);
+      if (typeof t !== "string") return null;
+      parts.push(Array.isArray(value) ? t : JSON.stringify(k) + ":" + t);
+    }
+    return Array.isArray(value) ? "[" + parts.join(",") + "]" : "{" + parts.join(",") + "}";
+  }
+  if (ctx && typeof ctx.source === "string") return ctx.source;
+  return Number.isInteger(value) && !Number.isSafeInteger(value) ? null : JSON.stringify(value);
+}
 function parseExact(text) {
   return JSON.parse(text, function (key, value, ctx) {
-    if (key === "default" && Number.isInteger(value) && !Number.isSafeInteger(value)
-        && ctx && typeof ctx.source === "string") {
-      this.default_text = ctx.source;
+    const exact = textFrom(value, ctx);
+    let texts = KEPT.get(this);
+    if (!texts) { texts = Object.create(null); KEPT.set(this, texts); }
+    texts[key] = exact;
+    if (KEPT_KEYS.indexOf(key) !== -1 && typeof exact === "string" && !Array.isArray(this)) {
+      this[key + "_text"] = exact;
     }
     return value;
   });
@@ -983,15 +1013,16 @@ function unwrap(doc, node, depth) {
   return node;
 }
 
+// A property with no single declared type keeps no type: it is not a string.
 function fieldsFromSchema(doc, schema) {
   schema = unwrap(doc, schema);
   const props = (schema && schema.properties && typeof schema.properties === "object") ? schema.properties : {};
   const required = Array.isArray(schema && schema.required) ? schema.required : [];
   return Object.keys(props).map((name) => {
     const p = unwrap(doc, props[name]) || {};
-    return { name: name, type: p.type || "string", required: required.indexOf(name) !== -1,
+    return { name: name, type: p.type, required: required.indexOf(name) !== -1,
              allowed_values: p.enum, min: p.minimum, max: p.maximum, default: p.default,
-             default_text: p.default_text };
+             default_text: p.default_text, min_text: p.minimum_text, max_text: p.maximum_text };
   });
 }
 
@@ -1014,98 +1045,118 @@ function declaredFields(item, doc, cap) {
   return json && json.schema ? fieldsFromSchema(doc, json.schema) : [];
 }
 
-// A checkbox can only hold true or false. An optional boolean whose declared
-// default is not a boolean (null, or none at all) is a choice of true / false
-// beside the blank, so the control can show the default and send false.
+// The form has exactly three kinds of control:
+//  - "text": a plain text box, for a declared string;
+//  - "choice": not set / each allowed value, for a boolean or a declared list
+//    of allowed values (enum);
+//  - "json": a box holding JSON text, for everything else -- numbers,
+//    integers, lists, objects, unions, a field with no single type.
+const STRING = ["string", "str"];
+const BOOLEAN = ["bool", "boolean"];
+
 function choicesOf(field) {
   for (const key of ["allowed_values", "enum", "options"]) {
     if (Array.isArray(field[key]) && field[key].length) return field[key];
   }
-  const t = String(field.type || "").toLowerCase();
-  if (BOOLEAN.indexOf(t) !== -1 && !field.required && typeof field.default !== "boolean") {
-    return [true, false];
-  }
-  return [];
+  return BOOLEAN.indexOf(String(field.type || "").toLowerCase()) !== -1 ? [true, false] : [];
 }
 
-const NUMERIC = ["int", "integer", "float", "number", "decimal"];
-const BOOLEAN = ["bool", "boolean"];
-const STRUCTURED = ["list", "dict", "array", "object", "tuple", "set"];
 function kindOf(field) {
   if (choicesOf(field).length) return "choice";
-  const t = String(field.type || "").toLowerCase();
-  if (NUMERIC.indexOf(t) !== -1) return "number";
-  if (BOOLEAN.indexOf(t) !== -1) return "boolean";
-  if (STRUCTURED.indexOf(t) !== -1) return "json";
-  // A list or object default is JSON whatever the declared type says.
-  if (field.default !== null && typeof field.default === "object") return "json";
-  return "text";
+  return STRING.indexOf(String(field.type || "").toLowerCase()) !== -1 ? "text" : "json";
 }
 
-// The hint a number box shows: the declared bounds, or just "number".
+// The JSON text of each choice, as the product wrote it: an option's value is
+// that text, so picking it sends exactly the declared value.
+function choiceTexts(field) {
+  const list = choicesOf(field);
+  return list.map((v, i) => {
+    const kept = keptText(list, String(i));
+    return typeof kept === "string" ? kept : JSON.stringify(v);
+  });
+}
+
+// The schema's own text of a value: what parseExact kept, else the value
+// written as JSON, unless it holds an integer beyond 2^53 (whose digits were
+// not kept): then nothing, never a rounded number.
+function holdsUnsafe(v) {
+  if (typeof v === "number") return Number.isInteger(v) && !Number.isSafeInteger(v);
+  if (v === null || typeof v !== "object") return false;
+  return Object.keys(v).some((k) => holdsUnsafe(v[k]));
+}
+function schemaText(value, kept) {
+  if (typeof kept === "string") return kept;
+  return value === undefined || holdsUnsafe(value) ? "" : JSON.stringify(value);
+}
+
+// The hint a JSON box shows: the declared bounds in their own text, or "JSON".
 function rangeOf(field) {
   const has = (v) => v !== undefined && v !== null && v !== "";
-  if (has(field.min) && has(field.max)) return field.min + " to " + field.max;
-  if (has(field.min)) return "at least " + field.min;
-  if (has(field.max)) return "at most " + field.max;
-  return "number";
+  const min = has(field.min_text) ? field.min_text : field.min;
+  const max = has(field.max_text) ? field.max_text : field.max;
+  if (has(min) && has(max)) return min + " to " + max;
+  if (has(min)) return "at least " + min;
+  if (has(max)) return "at most " + max;
+  return "JSON";
 }
 
-// What a control shows before anyone touches it: the declared default (a
-// checkbox is checked only for a default of true; a choice shows its default
-// only when that default is one of the choices; an integer beyond 2^53 shows
-// its exact digits, or nothing when they were not kept), otherwise empty.
+// What a control shows before anyone touches it. A text box shows a string
+// default (another declared default in its own text; null shows empty). A
+// choice starts at "not set". A JSON box shows the declared default in the
+// schema's own text (null included), or is empty when there is none.
 function shownOf(field) {
   const kind = kindOf(field);
   const d = field.default;
-  if (kind === "boolean") return d === true;
-  if (d === undefined || d === null) return "";
-  if (kind === "choice") return choicesOf(field).some((v) => String(v) === String(d)) ? String(d) : "";
-  if (Number.isInteger(d) && !Number.isSafeInteger(d)) {
-    return typeof field.default_text === "string" ? field.default_text : "";
+  if (kind === "choice") return "";
+  if (kind === "text") {
+    if (d === undefined || d === null) return "";
+    return typeof d === "string" ? d : schemaText(d, field.default_text);
   }
-  return kind === "json" ? JSON.stringify(d) : String(d);
+  return schemaText(d, field.default_text);
 }
 
-// The JSON text one control sends, or undefined for no key. The console never
-// judges or rewrites a value:
-//  - untouched (the control still shows what it started with, the declared
-//    default included) sends nothing, so the product applies its own default;
-//    a required checkbox is the exception, since a checkbox always holds a
-//    value and the one shown is the answer;
-//  - a checkbox the user changed sends its boolean;
-//  - a control the user cleared sends "" for text and null otherwise;
-//  - a number or JSON control whose text is valid JSON of that kind sends the
-//    typed text itself, digit for digit (no float rounding, no 0x10 -> 16);
-//    anything else is sent as the typed string and the product's own
-//    validation answers.
+// The label of a choice's "not set" option: the declared default, if any.
+function notSetLabel(field) {
+  const d = schemaText(field.default, field.default_text);
+  return d === "" ? "not set" : "not set (default " + d + ")";
+}
+
+// The JSON text one control sends, or undefined for no key. Nothing is
+// parsed into a JavaScript value and written again, so nothing is rounded or
+// turned into a string:
+//  - untouched (still showing what it started with) or empty sends nothing,
+//    so the product applies its own default; a text box the user cleared
+//    from a shown default sends "";
+//  - a text box sends what was typed, as a JSON string;
+//  - a choice sends the picked value's own JSON text;
+//  - a JSON box sends the typed text itself, spliced into the body, once it
+//    is valid JSON; text that is not valid JSON is refused (an Error naming
+//    the field and the reason), and nothing is sent.
 function valueOf(field, raw) {
   if (raw === undefined || raw === null) return undefined;
   const kind = kindOf(field);
-  const shown = shownOf(field);
-  const blank = (v) => typeof v === "string" && v.trim() === "";
-  if (raw === shown || (blank(raw) && blank(shown))) {
-    return kind === "boolean" && field.required ? JSON.stringify(raw === true) : undefined;
-  }
-  if (kind === "boolean") return JSON.stringify(raw === true);
   const typed = String(raw);
-  if (blank(typed)) return kind === "text" ? JSON.stringify("") : "null";
-  if (kind === "number" || kind === "json") {
-    let parsed;
-    try { parsed = JSON.parse(typed); } catch (e) { return JSON.stringify(typed); }
-    const fits = kind === "number" ? typeof parsed === "number" : parsed !== null && typeof parsed === "object";
-    return fits ? typed.trim() : JSON.stringify(typed);
-  }
+  const shown = shownOf(field);
   if (kind === "choice") {
-    const hit = choicesOf(field).find((v) => String(v) === typed);
-    return JSON.stringify(hit === undefined ? typed : hit);
+    if (typed === "") return undefined;
+    if (choiceTexts(field).indexOf(typed) === -1) throw new Error(field.name + ": not one of the allowed values");
+    return typed;
   }
-  return JSON.stringify(typed);
+  if (kind === "text") {
+    if (typed === shown) return undefined;
+    return JSON.stringify(typed);
+  }
+  const text = typed.trim();
+  if (text === "" || text === shown.trim()) return undefined;
+  try { JSON.parse(text); } catch (e) {
+    throw new Error(field.name + " is not valid JSON: " + e.message);
+  }
+  return text;
 }
 
 // The body one Create sends: each declared field read from its control by
 // read(field) and passed through valueOf, joined as the JSON text of one
-// object; a field valued undefined is left out.
+// object; a field valued undefined is left out. A refused field throws.
 function bodyFrom(fields, read) {
   const parts = [];
   fields.forEach((f) => {
@@ -1121,29 +1172,25 @@ function controlFor(field) {
   let el;
   if (kind === "choice") {
     el = document.createElement("select");
-    // Always a blank first option, required or not: an untouched choice sends
+    // Always "not set" first, required or not: an untouched choice sends
     // nothing, so no record gets a value nobody picked.
-    el.appendChild(new Option("", ""));
-    choicesOf(field).forEach((v) => el.appendChild(new Option(String(v), String(v))));
+    el.appendChild(new Option(notSetLabel(field), ""));
+    const texts = choiceTexts(field);
+    choicesOf(field).forEach((v, i) => {
+      el.appendChild(new Option(typeof v === "string" ? v : texts[i], texts[i]));
+    });
   } else if (kind === "json") {
     el = document.createElement("textarea");
-    el.rows = 2;
+    el.rows = 1;
     el.cols = 30;
-    el.placeholder = "JSON";
+    el.placeholder = rangeOf(field);
   } else {
     el = document.createElement("input");
-    // A number box is a text box: a browser number input empties what does
-    // not parse, and the console sends what the user typed.
-    el.type = kind === "boolean" ? "checkbox" : "text";
-    if (kind === "number") {
-      el.inputMode = "decimal";
-      el.placeholder = rangeOf(field);
-    }
+    el.type = "text";
   }
   el.dataset.f = field.name;
-  if (kind === "boolean") el.checked = shownOf(field);
-  else el.value = shownOf(field);
-  if (field.required && kind !== "boolean") el.required = true;
+  el.value = shownOf(field);
+  if (field.required) el.required = true;
   return el;
 }
 
@@ -1189,11 +1236,13 @@ function renderCapability(item) {
       try { if (raw.value.trim()) { JSON.parse(raw.value); body = raw.value; } }
       catch (e) { out.textContent = "The body is not valid JSON: " + e.message; return; }
     } else {
-      body = bodyFrom(fields, (f) => {
-        const input = form.querySelector('[data-f="' + CSS.escape(f.name) + '"]');
-        if (!input) return undefined;
-        return input.type === "checkbox" ? input.checked : input.value;
-      });
+      // A box whose text is not valid JSON is refused here, with the reason.
+      try {
+        body = bodyFrom(fields, (f) => {
+          const input = form.querySelector('[data-f="' + CSS.escape(f.name) + '"]');
+          return input ? input.value : undefined;
+        });
+      } catch (e) { out.textContent = "Not sent. " + e.message; return; }
     }
     const res = await call("/v1/" + encodeURIComponent(cap), { method: "POST", body: body });
     show(out, res);
