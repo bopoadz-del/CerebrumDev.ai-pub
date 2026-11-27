@@ -90,10 +90,10 @@ REWORK_SOURCE = BuildRole.TESTER
 #: unavailable, store contract) is never product work and stays terminal.
 REWORK_SOURCES = frozenset({BuildRole.TESTER, BuildRole.WRITER})
 
-#: Owner rule (ORDERS_08NOV_1330Z): ONE rework round PER GATE (WRITER gate,
-#: TESTER, Store gate); one gate's rounds never reduce another's. A gate that
-#: has used its one and fails again stops the run.
-REWORK_BUDGET = 1
+#: Fleet manager decision (26 Nov 23:32Z): THREE rework rounds PER GATE
+#: (WRITER gate, TESTER, Store gate, grader); one gate's rounds never reduce
+#: another's. A gate that has used its three and fails again stops the run.
+REWORK_BUDGET = 3
 #: Hard ceiling on rework rounds for the whole build, every gate together.
 REWORK_CEILING = 6
 #: Factory-file reprompts and writer test-defect regenerations are NOT
