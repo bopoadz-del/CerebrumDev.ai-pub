@@ -251,7 +251,9 @@ def call_graph(paths: Iterable[Path]) -> Dict[str, frozenset]:
     return {name: frozenset(names) for name, names in uses.items()}
 
 
-def names_not_reached(text: str, roots: Iterable[str], calls: Mapping[str, Iterable[str]]) -> List[str]:
+def names_not_reached(
+    text: str, roots: Iterable[str], calls: Mapping[str, Iterable[str]]
+) -> List[str]:
     """Each ``"`name` in `path.py`"`` of ``text`` that no root reaches.
 
     A root reaches itself and every function its body names, and theirs.
@@ -302,12 +304,16 @@ def _store(root: Path, block_ids: Sequence[str]) -> Path:
         d = store / "block_registry" / bid
         d.mkdir(parents=True)
         (d / "block.py").write_text("VALUE = 1\n", encoding="utf-8")
-        (d / "block.json").write_text(json.dumps({"id": bid, "version": "1.0.0"}) + "\n", encoding="utf-8")
+        (d / "block.json").write_text(
+            json.dumps({"id": bid, "version": "1.0.0"}) + "\n", encoding="utf-8"
+        )
     store.mkdir(exist_ok=True)
     return store
 
 
-@pytest.mark.parametrize("block_ids", [(), ("analytics",), ("analytics", "workflow")], ids=["none", "one", "two"])
+@pytest.mark.parametrize(
+    "block_ids", [(), ("analytics",), ("analytics", "workflow")], ids=["none", "one", "two"]
+)
 def test_the_researcher_writes_the_brief_only_when_a_block_is_reused(tmp_path, block_ids):
     """What README stage 2 says: no reused block, no brief; one or more, a brief."""
     store = _store(tmp_path, block_ids)
@@ -334,7 +340,11 @@ def test_the_researcher_writes_the_brief_only_when_a_block_is_reused(tmp_path, b
     "body, used, not_used",
     [
         ("def a():\n    helpers.b()\n", {"helpers", "b"}, set()),
-        ("def a():\n    self.b()\n    ctx.c()\n    cls.d()\n", {"self", "ctx", "cls"}, {"b", "c", "d"}),
+        (
+            "def a():\n    self.b()\n    ctx.c()\n    cls.d()\n",
+            {"self", "ctx", "cls"},
+            {"b", "c", "d"},
+        ),
         ("def a():\n    return b\n", {"b"}, set()),
     ],
 )
