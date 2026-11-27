@@ -198,7 +198,9 @@ def _open_model_call_note(activity_notes: Any) -> Any:
 
     for note in reversed(list(activity_notes or ())):
         payload = getattr(note, "payload", None) or {}
-        if closes_model_call(payload):
+        # A resume starts a new attempt: a call the earlier one left open
+        # (killed by a deploy, a restart, a stop) is not this run's call.
+        if closes_model_call(payload) or payload.get("resumed"):
             return None
         if payload.get("model_call"):
             return note
@@ -1009,14 +1011,23 @@ def _trail(
     standing: Optional[Dict[str, Any]] = None
     started: Dict[str, Any] = {}
     ended = False
+    # A resume NOTE ends the attempt before it, whatever ended that one (a
+    # verdict, or none: a deploy kill, an overdue call, a crash). Its failure
+    # is history from the next phase start, or from a verdict the re-entry
+    # writes before any phase of its own started (a stop in the slot wait).
+    reentry = False
     for event in events:
         role = getattr(event, "role", None)
         kind = getattr(event, "kind", None)
         kind_name = kind.value if hasattr(kind, "value") else str(kind)
         if kind_name in ("RUN_FAILED", "RUN_SUCCEEDED"):
+            if reentry:
+                standing, reentry = None, False
             ended = True
         elif kind_name == "REWORK":
             ended = False
+        elif kind_name == "NOTE" and (getattr(event, "payload", None) or {}).get("resumed"):
+            ended, reentry = True, True
         if role is None:
             continue
         role_name = role.value if hasattr(role, "value") else str(role)
@@ -1026,6 +1037,7 @@ def _trail(
         if kind_name == "PHASE_STARTED":
             if ended:
                 standing, ended = None, False
+            reentry = False
             started[role_name] = event.ts
             # A re-opened phase starts clean. Carrying the previous round's
             # failure text forward would render a running phase next to the

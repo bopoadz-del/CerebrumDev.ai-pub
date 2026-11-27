@@ -118,7 +118,11 @@ def _owner_stop(ledger: BuildLedger) -> None:
 def _session(sid: str, out: Path) -> str:
     create_session(sid, DEV_LOCAL_TENANT)
     session = get_session(sid)
-    session.product_design.generation = {"product_id": "p", "output_dir": str(out), "engine": "runner"}
+    session.product_design.generation = {
+        "product_id": "p",
+        "output_dir": str(out),
+        "engine": "runner",
+    }
     update_session(sid, session)
     return sid
 
@@ -141,7 +145,9 @@ def test_first_poll_after_try_again_says_running_at_step_three(
     out = tmp_path / f"ws_{reason}"
     ledger = _failed_at_writer(out, reason, failure_kind, f"the writer failed ({reason})")
     sid = _session(f"sess_reenter_{reason}", out)
-    assert client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]["state"] == "failed"
+    assert (
+        client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]["state"] == "failed"
+    )
 
     _resume(ledger, phase)
     live_thread(out)
@@ -241,7 +247,9 @@ def test_a_narrative_written_after_the_newest_verdict_is_still_read(tmp_path, re
 
     _resume(ledger, "WRITER")
     _owner_stop(ledger)
-    fn.attach(ledger, fn.Narrative(text=f"second story ({reason})", source=fn.SOURCE_LEDGER, cites=[]))
+    fn.attach(
+        ledger, fn.Narrative(text=f"second story ({reason})", source=fn.SOURCE_LEDGER, cites=[])
+    )
 
     assert fn.read_narrative(out)["text"] == f"second story ({reason})"
 
@@ -275,3 +283,203 @@ def test_build_status_read_matches_the_route_after_re_entry(tmp_path, live_threa
     st = build_status(out)
 
     assert (st["state"], st["phase_index"], st["failure"]) == ("building", 3, None)
+
+
+# ---------------------------------------------------------------------------
+# A run that ended WITHOUT a run verdict (a deploy kill, an overdue model call,
+# a crash) and was re-entered: its old phase failure is history from the
+# moment the re-entry's own phase starts, and so is a call it left open.
+# ---------------------------------------------------------------------------
+
+
+def _killed_at_writer(out: Path, reason: str, failure_kind: str) -> BuildLedger:
+    """WRITER judged failed, then the process died before the run verdict."""
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    for role in (BuildRole.COLLECTOR, BuildRole.CLONER):
+        ledger.append(EventKind.PHASE_STARTED, role=role)
+        ledger.append(EventKind.GATE_PASSED, role=role, payload={"gate": role.value})
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"{reason}: the writer did not finish",
+        payload={"reason": reason, "location": "WRITER", "failure_kind": failure_kind},
+    )
+    return ledger
+
+
+def _old_open_call(out: Path, ts: str, deadline_s: int) -> None:
+    """A writer model call opened at ``ts`` and never closed (the kill)."""
+    BuildLedger(out / "build_ledger.jsonl", clock=lambda: ts).append(
+        EventKind.NOTE,
+        role=BuildRole.WRITER,
+        detail="codewhale writer CLI started — model call in flight",
+        payload={"model_call": True, "deadline_s": deadline_s},
+    )
+
+
+@pytest.mark.parametrize(
+    "reason, failure_kind",
+    [
+        ("codewhale_worker_failed", "out_of_time"),
+        ("writer_contract", ""),
+    ],
+)
+def test_re_entered_phase_drops_a_failure_no_verdict_closed(
+    client, tmp_path, live_thread, reason, failure_kind
+):
+    out = tmp_path / f"ws_{reason}"
+    ledger = _killed_at_writer(out, reason, failure_kind)
+    sid = _session(f"sess_killed_{reason}", out)
+    _resume(ledger, "WRITER")
+    live_thread(out)
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "building"
+    assert build["phase_index"] == 3
+    assert build["failure"] is None
+    writer = next(row for row in build["phase_trail"] if row["phase"] == "WRITER")
+    assert writer["outcome"] == "running"
+
+
+@pytest.mark.parametrize(
+    "ts, deadline_s",
+    [
+        ("2026-11-27T06:00:00+00:00", 600),
+        ("2026-11-26T20:00:00+00:00", 3553),
+    ],
+)
+def test_a_call_the_killed_attempt_left_open_is_not_this_runs_call(
+    client, tmp_path, live_thread, ts, deadline_s
+):
+    """Candidate (a): the old call outlived its wall; the re-entry is not overdue."""
+    out = tmp_path / f"ws_{deadline_s}"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    _old_open_call(out, ts, deadline_s)
+    sid = _session(f"sess_opencall_{deadline_s}", out)
+    _resume(ledger, "WRITER")
+    live_thread(out)
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "building"
+    assert not build.get("model_call_in_progress")
+    assert "timed out" not in str(build.get("detail") or "")
+
+
+@pytest.mark.parametrize(
+    "ts, deadline_s",
+    [
+        ("2026-11-27T06:00:00+00:00", 600),
+        ("2026-11-26T20:00:00+00:00", 3553),
+    ],
+)
+def test_an_open_call_with_no_re_entry_is_still_read_overdue(
+    client, tmp_path, live_thread, ts, deadline_s
+):
+    """Must not fire: the same open call, no resume, a live worker -> overdue."""
+    out = tmp_path / f"ws_{deadline_s}"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    _old_open_call(out, ts, deadline_s)
+    sid = _session(f"sess_overdue_{deadline_s}", out)
+    live_thread(out)
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] != "building"
+    assert "timed out" in str(build.get("detail") or "")
+
+
+@pytest.mark.parametrize(
+    "reason, verdict_first",
+    [
+        ("codewhale_worker_failed", True),
+        ("writer_contract", False),
+    ],
+)
+def test_owner_stop_before_the_re_entry_starts_a_phase_reads_stopped_by_you(
+    client, tmp_path, reason, verdict_first
+):
+    """Fact 4: a stop in the slot wait writes no PHASE_ABORTED; the old WRITER
+    failure must not be the row the stop is explained by."""
+    out = tmp_path / f"ws_{reason}"
+    if verdict_first:
+        ledger = _failed_at_writer(out, reason, "out_of_time", "old story")
+    else:
+        ledger = _killed_at_writer(out, reason, "")
+    sid = _session(f"sess_slotstop_{reason}", out)
+    _resume(ledger, "WRITER")
+    ledger.append(
+        EventKind.RUN_FAILED,
+        detail="stopped by the owner during the build",
+        payload={"outcome": "STOPPED_BY_OWNER", "decision": {"reason": "stopped_by_owner"}},
+    )
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "failed"
+    assert build["stop"]["kind"] == fr.STOP_USER_STOPPED
+    assert build["failure"]["code"] != reason
+
+
+@pytest.mark.parametrize(
+    "note_payload",
+    [{"resumed": False}, {"handoff": False, "phase": "WRITER"}],
+)
+def test_a_note_that_is_not_a_resume_keeps_the_failure_standing(tmp_path, note_payload):
+    """Must not fire: inside one attempt a later phase start (a send-back)
+    keeps the failure that sent it back standing."""
+    from app.factory.build_jobs import _trail
+
+    out = tmp_path / "ws"
+    ledger = _killed_at_writer(out, "writer_contract", "")
+    ledger.append(EventKind.NOTE, detail="n", payload=note_payload)
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.TESTER)
+
+    _rows, _history, standing = _trail(ledger.events())
+
+    assert standing is not None and standing["reason"] == "writer_contract"
+
+
+@pytest.mark.parametrize(
+    "old_reason, new_reason",
+    [
+        ("codewhale_worker_failed", "writer_contract"),
+        ("writer_contract", "writer_no_output"),
+    ],
+)
+def test_the_re_entrys_own_failure_stands_at_its_verdict(client, tmp_path, old_reason, new_reason):
+    """Must not fire: once the re-entry starts a phase, a failure it records
+    is the run's own and the verdict after it is explained by it."""
+    out = tmp_path / f"ws_{old_reason}"
+    ledger = _killed_at_writer(out, old_reason, "")
+    sid = _session(f"sess_ownfail_{old_reason}", out)
+    _resume(ledger, "WRITER")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"{new_reason}: again",
+        payload={"reason": new_reason, "location": "WRITER"},
+    )
+    ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"WRITER failed: {new_reason}",
+        payload={"outcome": "FAILED_GATE", "reason": new_reason},
+    )
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "failed"
+    assert build["failure"]["code"] == new_reason
