@@ -29,6 +29,10 @@ from app.factory.build.ledger import BuildLedger, EventKind
 ENTRY = "failure_narrative"
 #: NOTE payload key carrying the attached narrative.
 NARRATIVE_KEY = "failure_narrative"
+#: NOTE payload key beside it: the seq of the run verdict the narrative explains.
+VERDICT_KEY = "failure_narrative_verdict_seq"
+#: The events that end an attempt of a run.
+VERDICT_KINDS = (EventKind.RUN_FAILED, EventKind.RUN_SUCCEEDED)
 SOURCE_MODEL = "model"
 SOURCE_LEDGER = "ledger"
 #: The facts a narrative may draw on: verdicts, rework rounds, terminals.
@@ -305,19 +309,66 @@ def compose_failure_narrative(
     return fallback
 
 
-def attach(ledger: BuildLedger, narrative: Narrative, *, role: Optional[BuildRole] = None) -> None:
-    """Record the narrative on the run's ledger (read by build status + MANIFEST)."""
+def newest_verdict_seq(events: Sequence[Any]) -> Optional[int]:
+    """The seq of the newest run verdict among ``events`` (None: no verdict)."""
+    return max((event.seq for event in events if event.kind in VERDICT_KINDS), default=None)
+
+
+def attach(
+    ledger: BuildLedger,
+    narrative: Narrative,
+    *,
+    role: Optional[BuildRole] = None,
+    verdict_seq: Optional[int] = None,
+) -> None:
+    """Record the narrative on the run's ledger (read by build status + MANIFEST).
+
+    ``verdict_seq`` is the verdict the narrative explains: the newest one
+    among the events it was composed from. A narrative lands after a model
+    call, and by then the ledger may hold a newer verdict (the run was
+    re-entered and stopped while the failed attempt was still narrating)."""
     ledger.append(
         EventKind.NOTE,
         role=role,
         detail="failure narrative (" + narrative.source + ")",
-        payload={NARRATIVE_KEY: narrative.to_json()},
+        payload={NARRATIVE_KEY: narrative.to_json(), VERDICT_KEY: verdict_seq},
     )
 
 
+def _narrative_of_newest_verdict(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
+    """The attached narrative that explains the run's NEWEST verdict, if any.
+
+    A narrative that names its verdict is read for that verdict only,
+    wherever it landed. One that names none (written before narratives
+    carried it) is read by position -- after the verdict it follows -- and
+    only while no earlier failed verdict of the run is still without its
+    narrative: with one outstanding, position cannot say whose it is, and
+    the caller renders the explanation from the ledger instead."""
+    verdict: Any = None
+    found: Optional[Dict[str, Any]] = None
+    owed = False
+    for event in events:
+        if event.kind is EventKind.RUN_STARTED:
+            verdict, found, owed = None, None, False
+        elif event.kind in VERDICT_KINDS:
+            owed = owed or (
+                verdict is not None and verdict.kind is EventKind.RUN_FAILED and found is None
+            )
+            verdict, found = event, None
+        elif verdict is not None and event.kind is EventKind.NOTE:
+            payload = event.payload or {}
+            got = payload.get(NARRATIVE_KEY)
+            names = payload.get(VERDICT_KEY)
+            mine = names == verdict.seq or (names is None and not owed)
+            if mine and isinstance(got, Mapping) and got.get("text"):
+                found = dict(got)
+    return found
+
+
 def read_narrative(output_dir: Path | str) -> Optional[Dict[str, Any]]:
-    """The run's narrative: the attached one, else rendered from the ledger now
-    (so every FAILED run -- older ledgers included -- explains itself)."""
+    """The run's narrative: the one attached to its newest verdict, else
+    rendered from the ledger now (so every FAILED run -- older ledgers
+    included -- explains itself)."""
     ledger = BuildLedger(Path(output_dir) / "build_ledger.jsonl")
     try:
         if not ledger.exists():
@@ -325,17 +376,13 @@ def read_narrative(output_dir: Path | str) -> Optional[Dict[str, Any]]:
         events = list(ledger.events())
     except Exception:  # noqa: BLE001 -- a torn ledger has no narrative
         return None
-    for event in reversed(events):
-        if event.kind is EventKind.NOTE and NARRATIVE_KEY in (event.payload or {}):
-            got = (event.payload or {}).get(NARRATIVE_KEY)
-            if isinstance(got, Mapping) and got.get("text"):
-                return dict(got)
-        # A narrative explains the verdict it follows. Past the newest
-        # verdict, a narrative belongs to an earlier attempt: a re-entered
-        # run the owner stopped writes none, and used to be explained by the
-        # failure it had resumed from.
-        if event.kind in (EventKind.RUN_STARTED, EventKind.RUN_FAILED, EventKind.RUN_SUCCEEDED):
-            break
+    # A narrative explains ONE verdict. An earlier attempt's narrative --
+    # written before the newest verdict, or landing after it while that
+    # attempt's thread was still narrating -- is not this stop's explanation:
+    # a re-entered run the owner stopped writes none of its own.
+    found = _narrative_of_newest_verdict(events)
+    if found is not None:
+        return found
     facts = ledger_facts(events)
     if not facts:
         return None

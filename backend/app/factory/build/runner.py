@@ -2674,12 +2674,20 @@ class RoleRunner:
             self.ledger.append(EventKind.NOTE, role=phase, detail=detail, payload=payload)
 
         try:
+            # One read of the ledger: the narrative is composed from these
+            # events and names the newest verdict among them. The model call
+            # below can outlast a Try again and an owner stop of the
+            # re-entry; landing after that newer verdict, this narrative
+            # still says which verdict it explains.
+            events = list(self.ledger.events())
             narrative = fn.compose_failure_narrative(
-                list(self.ledger.events()),
+                events,
                 note=note,
                 llm=getattr(self, "narrative_llm", None),
             )
-            fn.attach(self.ledger, narrative, role=phase)
+            fn.attach(
+                self.ledger, narrative, role=phase, verdict_seq=fn.newest_verdict_seq(events)
+            )
         except Exception as exc:  # noqa: BLE001 -- telemetry for the owner, never a verdict
             logger.warning("failure narrative unavailable: %s", type(exc).__name__)
 

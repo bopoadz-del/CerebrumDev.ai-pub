@@ -639,3 +639,288 @@ def test_the_runner_must_follow_the_newest_resume(
             live_thread(out)
 
     assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is expected
+
+
+# ---------------------------------------------------------------------------
+# The re-entry's own thread, once it has exited without a phase event, is no
+# live run; a thread registered before the workspace had a ledger was started
+# after no event at all, so it is no resume's runner either.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
+def test_a_re_entry_whose_thread_has_exited_reads_failed(client, tmp_path, reason):
+    from app.factory.build_jobs import live_runner_thread
+
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_at_writer(out, reason, "", f"the writer failed ({reason})")
+    sid = _session(f"sess_exited_{reason}", out)
+    _resume(ledger, "WRITER")
+    finished = threading.Thread(target=lambda: None, daemon=True)
+    register_runner_thread(out, finished)
+    finished.start()
+    finished.join(timeout=5)
+    assert not finished.is_alive()
+
+    assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is False
+    assert live_runner_thread(out) is None
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+    assert (build["state"], build["failure"]["code"]) == ("failed", reason)
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
+def test_a_thread_registered_before_any_ledger_is_not_the_re_entry(
+    client, tmp_path, live_thread, reason
+):
+    out = tmp_path / f"ws_{reason}"
+    out.mkdir()
+    live_thread(out)
+    ledger = _failed_at_writer(out, reason, "", f"the writer failed ({reason})")
+    sid = _session(f"sess_noledger_{reason}", out)
+    _resume(ledger, "WRITER")
+
+    assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is False
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+    assert (build["state"], build["failure"]["code"]) == ("failed", reason)
+
+
+# ---------------------------------------------------------------------------
+# A narrative explains ONE verdict: the newest among the events it was
+# composed from. The failed attempt's thread narrates with a model call; the
+# owner can press Try again and Stop before it returns, so its narrative
+# lands AFTER the owner-stop verdict -- and must not be that stop's story.
+# ---------------------------------------------------------------------------
+
+_OWNER_STOP = {"outcome": "STOPPED_BY_OWNER", "decision": {"reason": "stopped_by_owner"}}
+
+
+def _failed_unnarrated(out: Path, reason: str) -> BuildLedger:
+    """WRITER failed and the run verdict is written; no narrative yet."""
+    ledger = _killed_at_writer(out, reason, "")
+    ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"WRITER failed: {reason}",
+        payload={"outcome": "FAILED_GATE", "reason": reason},
+    )
+    return ledger
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
+def test_a_narration_that_outlasts_try_again_and_stop_does_not_explain_the_stop(
+    client, tmp_path, monkeypatch, live_thread, reason
+):
+    """The runner's own write path (``_attach_failure_narrative``): the model
+    call is in flight while the owner re-enters the run and stops it."""
+    from types import SimpleNamespace
+
+    from app.factory.build.runner import RoleRunner
+
+    monkeypatch.setenv("FACTORY_FOREMAN", "on")
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_unnarrated(out, reason)
+    sid = _session(f"sess_latenarr_{reason}", out)
+    url = f"/v1/sessions/{sid}/product/build-status"
+    during: list = []
+
+    def model_call(_messages):
+        if not during:
+            _resume(ledger, "WRITER")
+            live_thread(out)
+            during.append(client.get(url).json()["build"]["state"])
+            ledger.append(
+                EventKind.RUN_FAILED,
+                detail="stopped by the owner during the build",
+                payload=_OWNER_STOP,
+            )
+        return {"sentences": []}
+
+    RoleRunner._attach_failure_narrative(
+        SimpleNamespace(ledger=ledger, narrative_llm=model_call), BuildRole.WRITER
+    )
+
+    events = ledger.events()
+    verdicts = [e.seq for e in events if e.kind is EventKind.RUN_FAILED]
+    old = [e for e in events if (e.payload or {}).get(fn.NARRATIVE_KEY)][-1]
+    assert during == ["building"]
+    assert old.seq > verdicts[-1] > verdicts[0]
+    assert old.payload[fn.VERDICT_KEY] == verdicts[0]
+    assert reason in old.payload[fn.NARRATIVE_KEY]["text"]
+
+    build = client.get(url).json()["build"]
+    assert build["state"] == "failed"
+    assert build["stop"]["kind"] == fr.STOP_USER_STOPPED
+    text = (build["failure_narrative"] or {}).get("text", "")
+    assert reason not in text
+    assert "stopped_by_owner" in text
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
+def test_an_unnamed_narrative_after_an_owner_stop_is_not_read_for_it(client, tmp_path, reason):
+    """A ledger from before narratives named their verdict: the failed
+    attempt had no narrative when the owner stop was written, so a narrative
+    after the stop cannot be told from the earlier attempt's."""
+    out = tmp_path / f"ws_{reason}"
+    old_story = f"the writer failed ({reason}) and the run came back marked FAILED"
+    ledger = _failed_unnarrated(out, reason)
+    sid = _session(f"sess_unnamed_{reason}", out)
+    _resume(ledger, "WRITER")
+    ledger.append(
+        EventKind.RUN_FAILED, detail="stopped by the owner during the build", payload=_OWNER_STOP
+    )
+    fn.attach(ledger, fn.Narrative(text=old_story, source=fn.SOURCE_LEDGER, cites=[]))
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["stop"]["kind"] == fr.STOP_USER_STOPPED
+    text = (build["failure_narrative"] or {}).get("text", "")
+    assert text != old_story and reason not in text
+    assert "stopped_by_owner" in text
+
+
+@pytest.mark.parametrize("old_lands_last", [True, False])
+def test_each_narrative_is_read_for_the_verdict_it_names(tmp_path, old_lands_last):
+    """Must fire: the re-entry failed again and narrated its own verdict;
+    the earlier attempt's narrative lands before or after it."""
+    out = tmp_path / f"ws_{old_lands_last}"
+    ledger = _failed_unnarrated(out, "codewhale_worker_failed")
+    first = fn.newest_verdict_seq(ledger.events())
+    _resume(ledger, "WRITER")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    second = ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.WRITER,
+        detail="WRITER failed: writer_contract",
+        payload={"outcome": "FAILED_GATE", "reason": "writer_contract"},
+    ).seq
+    stories = [("first story", first), ("second story", second)]
+    for text, seq in reversed(stories) if old_lands_last else stories:
+        fn.attach(
+            ledger, fn.Narrative(text=text, source=fn.SOURCE_LEDGER, cites=[]), verdict_seq=seq
+        )
+
+    assert first != second
+    assert fn.read_narrative(out)["text"] == "second story"
+
+
+@pytest.mark.parametrize("verdicts", [0, 2])
+def test_the_newest_verdict_is_the_one_a_narrative_names(tmp_path, verdicts):
+    out = tmp_path / f"ws_{verdicts}"
+    ledger = _killed_at_writer(out, "writer_contract", "")
+    seqs = [
+        ledger.append(EventKind.RUN_FAILED, role=BuildRole.WRITER, payload={"n": n}).seq
+        for n in range(verdicts)
+    ]
+    ledger.append(EventKind.NOTE, detail="after")
+
+    assert fn.newest_verdict_seq(ledger.events()) == (seqs[-1] if seqs else None)
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
+def test_a_narrative_from_before_a_new_run_start_is_not_read(tmp_path, reason):
+    """Must not fire across runs: a narrative belongs to the run it was
+    written in; after a new RUN_STARTED it explains nothing yet."""
+    out = tmp_path / f"ws_{reason}"
+    story = f"first story ({reason})"
+    ledger = _failed_at_writer(out, reason, "", story)
+    assert fn.read_narrative(out)["text"] == story
+
+    ledger.start_run(product_id="p", inputs_hash="h2")
+
+    assert fn.read_narrative(out)["text"] != story
+
+
+# ---------------------------------------------------------------------------
+# Live, 27 Nov: a build that FAILED at the grader, the owner pressed Try
+# again, the log read "re-entering failed run ... phase WRITER" and the writer
+# ran -- while the page still showed the failure.
+# ---------------------------------------------------------------------------
+
+
+def _failed_at_the_grader(out: Path, reason: str, narrative: str) -> BuildLedger:
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    for role in (BuildRole.COLLECTOR, BuildRole.CLONER, BuildRole.WRITER):
+        ledger.append(EventKind.PHASE_STARTED, role=role)
+        ledger.append(EventKind.GATE_PASSED, role=role, payload={"gate": role.value})
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.TESTER)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.TESTER,
+        detail=f"{reason}: the grader refused the product",
+        payload={"reason": reason, "location": "TESTER"},
+    )
+    verdict = ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.TESTER,
+        detail=f"TESTER failed: {reason}",
+        payload={"outcome": "FAILED_GATE", "reason": reason},
+    )
+    fn.attach(
+        ledger,
+        fn.Narrative(text=narrative, source=fn.SOURCE_LEDGER, cites=[]),
+        verdict_seq=verdict.seq,
+    )
+    return ledger
+
+
+@pytest.mark.parametrize("reason", ["suite_failed", "acceptance_floor"])
+def test_try_again_on_a_grader_failure_re_entered_at_the_writer_reads_running(
+    client, tmp_path, live_thread, reason
+):
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_at_the_grader(out, reason, f"the grader refused it ({reason})")
+    sid = _session(f"sess_grader_{reason}", out)
+    url = f"/v1/sessions/{sid}/product/build-status"
+    before = client.get(url).json()["build"]
+    assert (before["state"], before["failure"]["code"]) == ("failed", reason)
+
+    _resume(ledger, "WRITER")
+    live_thread(out)
+    waiting = client.get(url).json()["build"]
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    writing = client.get(url).json()["build"]
+
+    for build in (waiting, writing):
+        assert build["state"] == "building"
+        assert build["failure"] is None
+        assert "failed" not in build and "stop" not in build
+        # Step 3, the writer -- in the slot wait too, where the ledger's last
+        # started phase is still the grader the earlier attempt failed in.
+        assert (build["current_phase"]["id"], build["phase_index"]) == ("WRITER", 3)
+    writer = next(row for row in writing["phase_trail"] if row["phase"] == "WRITER")
+    assert writer["outcome"] == "running"
+
+
+@pytest.mark.parametrize(
+    "named, started_since, expected",
+    [
+        ("WRITER", False, BuildRole.WRITER),
+        ("WRITER", True, None),
+        (None, False, None),
+        ("done", False, None),
+    ],
+)
+def test_the_resume_note_names_the_phase_only_until_a_phase_starts(
+    client, tmp_path, live_thread, named, started_since, expected
+):
+    """Must not fire: once the re-entry has started a phase the ledger says
+    where it is (it moves on to the grader); a NOTE that names no phase
+    leaves the ledger's own answer."""
+    from app.factory.build_jobs import _phase_awaited_by_resume
+
+    out = tmp_path / f"ws_{named}_{started_since}"
+    ledger = _failed_at_the_grader(out, "suite_failed", "x")
+    sid = _session(f"sess_awaited_{named}_{started_since}", out)
+    _resume(ledger, named)
+    live_thread(out)
+    if started_since:
+        ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+        ledger.append(EventKind.GATE_PASSED, role=BuildRole.WRITER, payload={"gate": "WRITER"})
+        ledger.append(EventKind.PHASE_STARTED, role=BuildRole.TESTER)
+
+    assert _phase_awaited_by_resume(ledger.events()) is expected
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+    assert build["state"] == "building"
+    assert build["current_phase"]["id"] == ("WRITER" if expected else "TESTER")
