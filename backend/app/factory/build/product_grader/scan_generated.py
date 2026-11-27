@@ -105,10 +105,13 @@ def prompt_leak(product_root, supplied_text: str, factory_text: str, prompt_text
     string values}. A clause counts only when the writer was actually given
     it (it is in the dispatched prompt) and it is not the Factory's own text
     (the prompt with the brief removed) -- so Factory boilerplate the brief
-    happens to share is never a leak."""
+    happens to share is never a leak. A ``customer_brief.v1`` record
+    contributes only its ``ask``, never the record's own field names."""
+    from app.factory.build.customer_brief import customer_words
+
     spans = [
         clause
-        for clause in _clauses(supplied_text)
+        for clause in _clauses(customer_words(supplied_text or ""))
         if clause in " ".join(prompt_text.split()) and not _token_in(clause, " ".join(factory_text.split()))
     ]
     return _found_in(_constants_by_file(product_root), spans)

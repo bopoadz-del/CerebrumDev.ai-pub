@@ -135,6 +135,50 @@ def test_derive_forbidden_takes_brief_shapes_not_prose():
     assert "lowercase" not in forbidden
 
 
+@pytest.mark.parametrize(
+    "ask, files, said",
+    [
+        ('Track repairs for the "Nimbus" portal by unit.', [], "Nimbus"),
+        ('Bill acct_7731 monthly from the "Orchard Row" rent roll.', ["roll.pdf", "rates.xlsx"], "Orchard Row"),
+    ],
+)
+def test_derive_forbidden_reads_a_customer_brief_record_by_its_ask_only(ask, files, said):
+    from app.factory.build.customer_brief import emit_brief
+
+    forbidden = grader.derive_forbidden({}, emit_brief(ask, files), "")
+    # The record's field names and the Factory-derived file types are not
+    # words the customer wrote ...
+    for key in ("ask", "documents", "uploads", "file_types", "pdf", "xlsx"):
+        assert key not in forbidden
+    # ... while what the customer did write is still caught.
+    assert said in forbidden
+    assert forbidden == grader.derive_forbidden({}, ask, "")
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "Bill acct_7731 from the uploads folder.",  # prose: read as given
+        '{"ask": "Bill acct_7731 from the uploads folder."}',  # incomplete record: read as given
+    ],
+)
+def test_derive_forbidden_reads_text_that_is_not_a_complete_record_as_given(supplied):
+    forbidden = grader.derive_forbidden({}, supplied, "")
+    assert "acct_7731" in forbidden
+    # Not a complete record, so its quoted spans are still read whole.
+    assert ("ask" in forbidden) == supplied.startswith("{")
+
+
+@pytest.mark.parametrize("files", [[], ["roll.pdf", "rates.xlsx"]])
+def test_derive_forbidden_from_a_record_finds_nothing_in_the_stamped_kernel(files):
+    from app.factory.build.customer_brief import emit_brief
+    from app.factory.build.product_grader import scan_generated
+
+    kernel = Path(grader.__file__).resolve().parents[2] / "cerebrum_product_kernel" / "ingestion"
+    forbidden = grader.derive_forbidden({}, emit_brief("Keep a log of site visits per unit.", files), "")
+    assert scan_generated.forbidden_hits(kernel, forbidden) == {}
+
+
 def test_derive_forbidden_reads_structured_blueprint_values():
     bp = {"client": "Blue Harbor Estates", "vertical": "property"}
     forbidden = grader.derive_forbidden(bp, "some brief for blue harbor estates", "")

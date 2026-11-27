@@ -85,6 +85,23 @@ def test_prompt_leak_fires_on_a_copied_brief_clause_only(value, leaked, tmp_path
     assert found == ({"app/x.py": [value]} if leaked else {})
 
 
+@pytest.mark.parametrize("ask, value, leaked", [
+    (SUPPLIED, "Remind the tenant thirty days before renewal", True),   # the customer's ask: still a leak
+    (SUPPLIED, '"documents": {"file_types": []', False),                # the record's own text: never the ask
+    # A line break in the ask is escaped in the record's text; the clause after
+    # it is the customer's and is found only when the ask is read.
+    ("Track every unit\nthirty days before renewal", "thirty days before renewal", True),
+    ("Track every unit\nthirty days before renewal", "days before", False),  # part of a clause
+])
+def test_prompt_leak_reads_a_customer_brief_record_by_its_ask(ask, value, leaked, tmp_path):
+    from app.factory.build.customer_brief import emit_brief
+
+    record = emit_brief(ask)
+    root = _product(tmp_path, {"app/x.py": f"MSG = {value!r}\n"})
+    found = scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}")
+    assert found == ({"app/x.py": [value]} if leaked else {})
+
+
 @pytest.mark.parametrize("prompt, leaked", [
     ("a prompt that never carried the brief", False),   # the writer was never told it
     (SUPPLIED, True),                                   # the writer was told it and copied it

@@ -228,10 +228,16 @@ def derive_forbidden(
     (value hardwiring is the two-dataset check's), never a value the
     Factory defaulted. A literal the Factory's own part of the dispatched
     prompt (``factory_text``) also carries is platform vocabulary, and an
-    identifier the contract requires is never a brief literal."""
+    identifier the contract requires is never a brief literal.
+
+    When ``brief_text`` is a ``customer_brief.v1`` record, only its ``ask``
+    (the customer's own words) is read: the record's field names and the
+    document types the Factory took from file suffixes are not words the
+    customer wrote."""
+    from app.factory.build.customer_brief import customer_words
     from app.factory.build.product_literals import is_identity_token
 
-    text = brief_text or ""
+    text = customer_words(brief_text or "")
     out: set = {v for v in _structured_literals(blueprint) if _said(v, text)}
     for token in _tokens(text):
         # A folded-upload marker carries the file name after the protocol
