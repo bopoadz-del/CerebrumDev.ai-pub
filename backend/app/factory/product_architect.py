@@ -90,6 +90,25 @@ class LlmSoftMiss(Exception):
     stay ``ValueError`` (fail-closed).
     """
 
+
+class AllowanceExhausted(LlmSoftMiss):
+    """The provider stopped at the completion allowance with no content.
+
+    Reported by the reply itself (finish reason ``length``, empty content):
+    a reasoning model spent the whole ``max_tokens`` thinking. That is not
+    the model declining to answer, so the call retries once with a larger
+    allowance before falling back.
+    """
+
+
+def allowance_exhausted(choice: Any) -> bool:
+    """True when a chat-completions choice stopped at the length limit with
+    no content. Decided only by what the provider reports."""
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "length":
+        return False
+    content = (choice.get("message") or {}).get("content")
+    return not (isinstance(content, str) and content.strip())
+
 # Cost ceilings for the drafting call. The brief is caller-supplied and the
 # response was previously unbounded, so a single request could bill an
 # arbitrary number of tokens in each direction (twice, because the call
@@ -98,7 +117,13 @@ class LlmSoftMiss(Exception):
 BRIEF_MAX_CHARS_ENV = "ARCHITECT_BRIEF_MAX_CHARS"
 BRIEF_MAX_CHARS_DEFAULT = 8000
 LLM_MAX_TOKENS_ENV: Final = "ARCHITECT_LLM_MAX_TOKENS"
-LLM_MAX_TOKENS_DEFAULT = 2000
+# Reasoning models spend hidden reasoning tokens inside this allowance; 2000
+# left a normal brief with nothing for the answer. One retry doubles it.
+LLM_MAX_TOKENS_DEFAULT = 8192
+LLM_RETRY_ALLOWANCE_FACTOR = 2
+# The most the provider accepts as a completion allowance, when the operator
+# knows it. Unset: the provider's own refusal of the retry is the bound.
+LLM_MAX_TOKENS_CEILING_ENV: Final = "ARCHITECT_LLM_MAX_TOKENS_CEILING"
 
 BRIEF_TRUNCATION_MARKER = (
     "\n\n[brief truncated by the server at {limit} characters; "
@@ -141,6 +166,13 @@ def brief_max_chars() -> int:
 
 def llm_max_tokens() -> int:
     return _positive_int_env(LLM_MAX_TOKENS_ENV, LLM_MAX_TOKENS_DEFAULT)
+
+
+def llm_retry_allowance(allowance: int) -> int:
+    """The retry's allowance: the first one times the factor, never above the
+    provider's configured ceiling."""
+    larger = allowance * LLM_RETRY_ALLOWANCE_FACTOR
+    return min(larger, _positive_int_env(LLM_MAX_TOKENS_CEILING_ENV, larger))
 
 
 def truncate_brief(brief: str) -> str:
@@ -267,6 +299,7 @@ def _llm_json_call(
     ``api.cursor.com/v1/chat/completions``.
     """
     from app.core.model_ladder import (
+        BAD_REQUEST,
         NOT_CONFIGURED,
         PAYMENT_REFUSED,
         ModelUnavailable,
@@ -304,7 +337,7 @@ def _llm_json_call(
 
     from app.factory.llm_watchdog import call_timeout_s, post_with_deadline
 
-    def _post(rung: Any, m: str) -> Dict[str, Any]:
+    def _post(rung: Any, m: str, max_tokens: int) -> Dict[str, Any]:
         if rung.provider == "claude":
             # The Messages API, not an OpenAI-shaped call: the coder's own
             # request builder, so the two callers cannot drift apart.
@@ -332,7 +365,7 @@ def _llm_json_call(
             # Hard ceiling on the completion. Without it a single draft
             # can bill the model's full context window, and this call
             # retries once against the fallback model.
-            "max_tokens": llm_max_tokens(),
+            "max_tokens": max_tokens,
         }
         if not _is_openrouter_base(rung.base_url):
             payload["response_format"] = {"type": "json_object"}
@@ -347,12 +380,42 @@ def _llm_json_call(
             timeout=call_timeout_s(),
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        return _extract_json(content)
+        data = resp.json()
+        choice = data["choices"][0]
+        if allowance_exhausted(choice):
+            usage = data.get("usage") or {}
+            raise AllowanceExhausted(
+                f"ran out of allowance: {m} stopped at max_tokens={max_tokens} "
+                f"with no content (finish_reason='length', "
+                f"completion_tokens={usage.get('completion_tokens')})"
+            )
+        return _extract_json(choice["message"]["content"])
+
+    def _attempt(rung: Any, m: str) -> Dict[str, Any]:
+        allowance = llm_max_tokens()
+        try:
+            return _post(rung, m, allowance)
+        except AllowanceExhausted as exhausted:
+            retry = llm_retry_allowance(allowance)
+            if retry <= allowance:
+                raise
+            try:
+                return _post(rung, m, retry)
+            except Exception as refused:
+                # The same request was accepted at the smaller allowance, so
+                # a bad-request refusal of the retry is the provider's bound:
+                # the reply still ran out of allowance.
+                kind, status = classify(refused)
+                if kind != BAD_REQUEST:
+                    raise
+                raise AllowanceExhausted(
+                    f"{exhausted}; the retry at max_tokens={retry} was "
+                    f"refused by the provider (HTTP {status})"
+                ) from refused
 
     def _rung(rung: Any) -> Dict[str, Any]:
         try:
-            return _post(rung, rung.model)
+            return _attempt(rung, rung.model)
         except Exception as exc:
             # A payment refusal is the ACCOUNT, not the model: another model
             # on the same endpoint would be refused the same way.
@@ -360,7 +423,7 @@ def _llm_json_call(
             fallback = rung.fallback_model
             if kind == PAYMENT_REFUSED or not fallback or fallback == rung.model:
                 raise
-            return _post(rung, fallback)
+            return _attempt(rung, fallback)
 
     return run_ladder(rungs, _rung)
 
