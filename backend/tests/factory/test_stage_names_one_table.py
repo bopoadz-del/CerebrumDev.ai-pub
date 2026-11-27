@@ -328,3 +328,20 @@ def test_the_researcher_writes_the_brief_only_when_a_block_is_reused(tmp_path, b
     if not block_ids:
         # The README quotes the stage's own word for the no-reuse case.
         assert f'"{result.detail}"' in stage_two
+
+
+@pytest.mark.parametrize(
+    "body, used, not_used",
+    [
+        ("def a():\n    helpers.b()\n", {"helpers", "b"}, set()),
+        ("def a():\n    self.b()\n    ctx.c()\n    cls.d()\n", {"self", "ctx", "cls"}, {"b", "c", "d"}),
+        ("def a():\n    return b\n", {"b"}, set()),
+    ],
+)
+def test_the_call_graph_follows_module_names_and_skips_methods(tmp_path, body, used, not_used):
+    path = tmp_path / "m.py"
+    path.write_text(body, encoding="utf-8")
+    graph = call_graph([path])
+    assert set(graph) == {"a"}
+    assert used <= graph["a"]
+    assert not (not_used & graph["a"])
