@@ -53,7 +53,9 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
         + ".map((f) => [f.name, kindOf(f), shownOf(f), rangeOf(f)]); },"
         + " capsFromText: (t) => { const l = parseExact(t); const it = (l.items || l.capabilities)[0];"
         + " return declaredFields(it, {}, capIdOf(it)).map((f) => [f.name, kindOf(f), shownOf(f)]); },"
-        + " choicesFromText: (t) => { const d = parseExact(t); return choiceTexts(fieldsFromSchema(d, d)[0]); } };\n"
+        + " choicesFromText: (t) => { const d = parseExact(t); return choiceTexts(fieldsFromSchema(d, d)[0]); },"
+        + " fieldsFromText: (t) => { const d = parseExact(t); return fieldsFromSchema(d, d); },"
+        + " docFromText: (t) => parseExact(t) };\n"
         + "const out = CALLS.map((c) => { let r; try { r = FNS[c.fn](...c.args); }"
         + " catch (e) { r = { error: e.message }; }"
         + " return r === undefined ? '<undefined>' : r; });\n"
@@ -319,6 +321,8 @@ SENT = [
     ({"name": "t", "type": "string", "default": "memo"}, "memo", MISSING),
     ({"name": "t", "type": "string", "default": "memo"}, "", '""'),
     ({"name": "t", "type": "string", "default": "memo"}, "other", '"other"'),
+    ({"name": "t", "type": "string", "default": "memo"}, "memo ", '"memo "'),
+    ({"name": "t", "type": "string", "default": "memo"}, " memo", '" memo"'),
     ({"name": "t", "type": "string", "default": None}, '{"a":1}', json.dumps('{"a":1}')),
     ({"name": "t", "type": "string", "default": None}, "", MISSING),
     # choice: not set sends nothing; a pick sends the value's own text
@@ -597,12 +601,11 @@ class TestTheSchemasOwnTextIsKept:
 
     @pytest.mark.parametrize("text", ["12345678901234567890", "-9999999999999999"])
     def test_the_kept_digits_of_a_default_reach_the_field(self, text, tmp_path):
-        schema = {"type": "object", "properties": {
-            "g": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": int(text), "default_text": text},
-            "h": {"type": "integer", "default": 3}}}
-        [fields] = _run([{"fn": "fieldsFromSchema", "args": [{}, schema]}], tmp_path)
+        schema_text = ('{"type":"object","properties":{"g":{"anyOf":[{"type":"integer"},{"type":"null"}],'
+                       '"default":%s},"h":{"type":"integer","default":3},"k":{"type":"integer"}}}' % text)
+        [fields] = _run([{"fn": "fieldsFromText", "args": [schema_text]}], tmp_path)
         assert [(f["name"], f.get("default_text", "<undefined>")) for f in fields] == [
-            ("g", text), ("h", "<undefined>")]
+            ("g", text), ("h", "3"), ("k", "<undefined>")]
 
     @pytest.mark.parametrize("prop", [
         {"enum": [BIG, 1]},
@@ -627,3 +630,48 @@ class TestTheSchemasOwnTextIsKept:
         # given: a list then has no text at all (never one missing a member),
         # and an integer beyond 2^53 has none (never a rounded one).
         assert _run([{"fn": "textFrom", "args": [value]}], tmp_path) == [text]
+
+
+class TestOnlyDeclaredFieldsAndTheirDefaults:
+    """A property named like a schema keyword is just a field; a default
+    written beside a $ref is the field's default."""
+
+    @pytest.mark.parametrize("names", [
+        ["max", "note"],
+        ["ref", "min", "default", "maximum"],
+    ])
+    def test_a_property_named_like_a_keyword_brings_no_other_field(self, names, tmp_path):
+        props = ",".join('"%s":{"type":"integer","default":%d}' % (n, i) for i, n in enumerate(names))
+        text = '{"type":"object","properties":{%s}}' % props
+        assert [row[0] for row in _form(text, tmp_path)] == names
+
+    @pytest.mark.parametrize("key", ["default", "max", "minimum"])
+    def test_the_parsed_document_is_not_added_to(self, key, tmp_path):
+        text = '{"a":{"%s":5,"b":[1,{"%s":2}]}}' % (key, key)
+        assert _run([{"fn": "docFromText", "args": [text]}], tmp_path) == [json.loads(text)]
+
+    @pytest.mark.parametrize("default, label", [
+        ('"open"', 'not set (default "open")'),
+        ('"closed"', 'not set (default "closed")'),
+    ])
+    def test_an_enum_default_beside_a_ref_names_not_set(self, default, label, tmp_path):
+        text = ('{"type":"object","properties":{"status":{"$ref":"#/$defs/S","default":%s}},'
+                '"$defs":{"S":{"type":"string","enum":["open","closed"]}}}' % default)
+        [fields] = _run([{"fn": "fieldsFromText", "args": [text]}], tmp_path)
+        assert _run([{"fn": "notSetLabel", "args": [fields[0]]}], tmp_path) == [label]
+
+    @pytest.mark.parametrize("default", ['{"k":1}', '{"k":12345678901234567890,"j":[2]}'])
+    def test_a_model_default_beside_a_ref_is_shown_in_its_own_text(self, default, tmp_path):
+        text = ('{"type":"object","properties":{"sub":{"$ref":"#/$defs/M","default":%s},'
+                '"bare":{"$ref":"#/$defs/M"}},'
+                '"$defs":{"M":{"type":"object","properties":{"k":{"type":"integer"}}}}}' % default)
+        assert [row[:3] for row in _form(text, tmp_path)] == [
+            ["sub", "json", default], ["bare", "json", ""]]
+
+    @pytest.mark.parametrize("node, expected", [
+        ({"$ref": "#/d/T", "default": 2}, {"type": "integer", "default": 2}),
+        ({"$ref": "#/d/T", "description": "x"}, {"type": "integer", "default": 1, "description": "x"}),
+    ])
+    def test_a_refs_own_keys_lie_over_its_target(self, node, expected, tmp_path):
+        doc = {"d": {"T": {"type": "integer", "default": 1}}}
+        assert _run([{"fn": "resolveRef", "args": [doc, node]}], tmp_path) == [expected]

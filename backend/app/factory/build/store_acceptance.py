@@ -908,15 +908,31 @@ async function boot() {
 // to a rounded number; where the browser gives a value's source text (the
 // third reviver argument) that text is kept, and a list's or object's text is
 // built from its members' kept texts, so a big integer nested inside a
-// default keeps its digits too. A declared default, minimum or maximum then
-// carries its exact text beside it as default_text, minimum_text, ... A value
+// default keeps its digits too. The kept texts live only in KEPT, beside the
+// parsed objects: nothing is added to the product's own objects, so a property
+// named default, min or max never brings a second, invented field. A value
 // whose digits the browser did not give has no kept text (null), and neither
 // has anything that holds it.
 const KEPT = new WeakMap();
-const KEPT_KEYS = ["default", "minimum", "maximum", "min", "max"];
 function keptText(holder, key) {
   const texts = holder && typeof holder === "object" ? KEPT.get(holder) : undefined;
   return texts && Object.prototype.hasOwnProperty.call(texts, key) ? texts[key] : undefined;
+}
+// Object.assign that also carries each source's kept texts to the target, so
+// a schema merged from several nodes keeps the exact text of every value.
+function assignKept(target, ...sources) {
+  let texts = KEPT.get(target);
+  for (const src of sources) {
+    if (!src || typeof src !== "object") continue;
+    Object.assign(target, src);
+    const from = KEPT.get(src);
+    for (const k of Object.keys(src)) {
+      if (!texts) { texts = Object.create(null); KEPT.set(target, texts); }
+      if (from && Object.prototype.hasOwnProperty.call(from, k)) texts[k] = from[k];
+      else delete texts[k];
+    }
+  }
+  return target;
 }
 function textFrom(value, ctx) {
   if (value !== null && typeof value === "object") {
@@ -940,9 +956,6 @@ function parseExact(text) {
     let texts = KEPT.get(this);
     if (!texts) { texts = Object.create(null); KEPT.set(this, texts); }
     texts[key] = exact;
-    if (KEPT_KEYS.indexOf(key) !== -1 && typeof exact === "string" && !Array.isArray(this)) {
-      this[key + "_text"] = exact;
-    }
     return value;
   });
 }
@@ -956,6 +969,9 @@ function capIdOf(item) {
   return (item && typeof item === "object" && (item.id || item.capability_id)) || "";
 }
 
+// A $ref node stands for its target, with the node's own other keys (a
+// default, a description) laid over it: pydantic writes an enum or a nested
+// model's default beside the $ref, never inside the target.
 function resolveRef(doc, node, depth) {
   depth = depth || 0;
   if (!node || typeof node !== "object") return null;
@@ -967,7 +983,12 @@ function resolveRef(doc, node, depth) {
     if (!cur || typeof cur !== "object") return null;
     cur = cur[part.replace(/~1/g, "/").replace(/~0/g, "~")];
   }
-  return resolveRef(doc, cur, depth + 1);
+  const target = resolveRef(doc, cur, depth + 1);
+  const siblings = Object.keys(node).filter((k) => k !== "$ref");
+  if (!target || typeof target !== "object" || !siblings.length) return target;
+  const over = assignKept({}, node);
+  delete over["$ref"];
+  return assignKept({}, target, over);
 }
 
 function pathMatches(template, path) {
@@ -989,18 +1010,21 @@ function unwrap(doc, node, depth) {
     if (!Array.isArray(node[key])) continue;
     const real = node[key].map((n) => resolveRef(doc, n)).filter((n) => n && n.type !== "null");
     if (real.length !== 1) continue;
-    const rest = Object.assign({}, node);
+    const rest = assignKept({}, node);
     delete rest[key];
-    return unwrap(doc, Object.assign(rest, real[0]), depth + 1);
+    return unwrap(doc, assignKept(rest, real[0]), depth + 1);
   }
   if (Array.isArray(node.allOf)) {
-    const merged = Object.assign({}, node, { properties: Object.assign({}, node.properties || {}) });
+    const merged = assignKept({}, node, { properties: Object.assign({}, node.properties || {}) });
     merged.required = Array.isArray(node.required) ? node.required.slice() : [];
     delete merged.allOf;
     node.allOf.forEach((part) => {
       const p = unwrap(doc, part, depth + 1) || {};
       Object.keys(p).forEach((k) => {
-        if (k !== "properties" && k !== "required" && merged[k] === undefined) merged[k] = p[k];
+        if (k !== "properties" && k !== "required" && merged[k] === undefined) {
+          merged[k] = p[k];
+          if (keptText(p, k) !== undefined) KEPT.get(merged)[k] = keptText(p, k);
+        }
       });
       Object.assign(merged.properties, p.properties || {});
       if (Array.isArray(p.required)) merged.required = merged.required.concat(p.required);
@@ -1009,7 +1033,7 @@ function unwrap(doc, node, depth) {
   }
   if (Array.isArray(node.type)) {
     const types = node.type.filter((t) => t !== "null");
-    return Object.assign({}, node, { type: types.length === 1 ? types[0] : undefined });
+    return assignKept({}, node, { type: types.length === 1 ? types[0] : undefined });
   }
   return node;
 }
@@ -1023,7 +1047,8 @@ function fieldsFromSchema(doc, schema) {
     const p = unwrap(doc, props[name]) || {};
     return { name: name, type: p.type, required: required.indexOf(name) !== -1,
              allowed_values: p.enum, min: p.minimum, max: p.maximum, default: p.default,
-             default_text: p.default_text, min_text: p.minimum_text, max_text: p.maximum_text };
+             default_text: keptText(p, "default"), min_text: keptText(p, "minimum"),
+             max_text: keptText(p, "maximum") };
   });
 }
 
@@ -1031,7 +1056,9 @@ function declaredFields(item, doc, cap) {
   if (item && typeof item === "object") {
     if (Array.isArray(item.fields)) {
       return item.fields.map((f) => (typeof f === "string" ? { name: f } : f))
-        .filter((f) => f && typeof f.name === "string" && f.name !== "");
+        .filter((f) => f && typeof f.name === "string" && f.name !== "")
+        .map((f) => Object.assign({}, f, { default_text: keptText(f, "default"),
+                                           min_text: keptText(f, "min"), max_text: keptText(f, "max") }));
     }
     if (item.input_schema && typeof item.input_schema === "object") {
       return fieldsFromSchema(doc, item.input_schema);
