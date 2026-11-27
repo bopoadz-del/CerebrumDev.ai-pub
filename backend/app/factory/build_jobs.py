@@ -34,7 +34,7 @@ import re
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 logger = logging.getLogger("cerebrumdev.factory.build_jobs")
 
@@ -1292,13 +1292,55 @@ def _grader_view(events: Sequence[Any]) -> "Dict[str, Any] | None":
         state = {"REWORK": "sent_back", "GATE_FAILED": "stopped"}.get(
             kind, "certified" if tier == CERTIFIED else "refused"
         )
+        prior = view or {}
         view = {
             "state": state,
             "tier": tier,
-            "round": int(payload.get("round") or (view or {}).get("round") or 0),
+            "round": int(payload.get("round") or prior.get("round") or 0),
             "budget": REWORK_BUDGET,
+            # The verdict's own rows; an event that carries none (a hand-back,
+            # a stop, the Factory-fault note) keeps the rows it follows.
+            "findings": _grader_rows(payload, prior.get("findings", [])),
+            # How many items the verdict holds (the rows stop at MAX_ROWS).
+            "found": _grader_found(payload, prior.get("found", 0)),
+            # What the hand-back actually sent the writer: its own work list.
+            "sent_to_writer": (
+                len(payload.get("work_list") or ()) if kind == "REWORK" else prior.get("sent_to_writer", 0)
+            ),
         }
+    if view is not None:
+        from app.factory.build.grader_findings import headline
+
+        view["headline"] = headline(
+            view["state"], view["findings"], view["sent_to_writer"], view["tier"], view["found"]
+        )
     return view
+
+
+def _grader_found(payload: Mapping[str, Any], prior: int) -> int:
+    """How many items a grader event's verdict holds: its full item list, else
+    its recorded rows, else ``prior`` (an event with neither is no verdict)."""
+    for key in ("grader_items", "grader_findings"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return prior
+
+
+def _grader_rows(payload: Mapping[str, Any], prior: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """The finding rows a grader event carries: its recorded rows, else (a
+    verdict NOTE written before rows were recorded) its quoted items with the
+    owner unknown, else ``prior`` -- an event with neither carries no verdict
+    of its own and never wipes the one it follows."""
+    from app.factory.build.grader_findings import MAX_ROWS, finding_row, redact_row
+
+    rows = payload.get("grader_findings")
+    if isinstance(rows, list):
+        return [redact_row(r) for r in rows if isinstance(r, Mapping)][:MAX_ROWS]
+    items = payload.get("grader_items")
+    if isinstance(items, list):
+        return [redact_row(finding_row(str(i), "")) for i in items][:MAX_ROWS]
+    return prior
 
 
 def _strip_floor_detail(status: Dict[str, Any]) -> Dict[str, Any]:

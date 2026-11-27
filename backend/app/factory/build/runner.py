@@ -1165,7 +1165,9 @@ class RoleRunner:
         tree the grader refused. Recorded as WRITER's GATE_FAILED, a resume
         re-enters WRITER and is seeded from the run's RUN_FAILED findings."""
         from app.factory.build.grader import GRADER_GATE
+        from app.factory.build.grader_findings import log_stop
 
+        log_stop(str(self.state.get("session_id") or ""), reason)
         self.ledger.append(
             EventKind.GATE_FAILED,
             role=BuildRole.WRITER,
@@ -1214,6 +1216,30 @@ class RoleRunner:
             findings=list(grade_verdict.items),
         )
 
+    def _grader_error(self, detail: str, item: str, **extra: Any) -> Any:
+        """An ERROR verdict (the grader could not grade): its NOTE carries the
+        reason as a finding row like every other verdict, and the backend log
+        gets the same row under the session id. Returns the verdict."""
+        from app.factory.build.grader import ERROR, GRADER_GATE, GraderVerdict
+        from app.factory.build.grader_findings import finding_rows, log_verdict
+
+        verdict = GraderVerdict(tier=ERROR, items=(item,))
+        rows = finding_rows(verdict)
+        log_verdict(str(self.state.get("session_id") or ""), ERROR, rows)
+        self.ledger.append(
+            EventKind.NOTE,
+            role=BuildRole.WRITER,
+            detail=detail,
+            payload={
+                "grader_gate": GRADER_GATE,
+                "grader_tier": ERROR,
+                "grader_items": [item],
+                "grader_findings": rows,
+                **extra,
+            },
+        )
+        return verdict
+
     def _writer_grader(self) -> Optional[Any]:
         """The GRADER: the writer's tree is graded BEFORE the TESTER judges
         it. Returns None when the grader is disabled or the verdict is
@@ -1233,7 +1259,7 @@ class RoleRunner:
 
         if not grader_enabled():
             return None
-        from app.factory.build.grader import ERROR, GraderVerdict
+        from app.factory.build.grader import ERROR
         from app.factory.build.writer_prompt import (
             WRITER_RUN_STATE_KEY,
             DispatchRecordMissing,
@@ -1246,13 +1272,7 @@ class RoleRunner:
         try:
             told = dispatched_writer_inputs(self.state)
         except DispatchRecordMissing as exc:
-            self.ledger.append(
-                EventKind.NOTE,
-                role=BuildRole.WRITER,
-                detail=f"GRADER: {ERROR}: {exc}",
-                payload={"grader_gate": GRADER_GATE, "grader_tier": ERROR, "grader_items": [str(exc)]},
-            )
-            return GraderVerdict(tier=ERROR, items=(str(exc),))
+            return self._grader_error(f"GRADER: {ERROR}: {exc}", str(exc))
         product_id = (
             str(getattr(self.blueprint, "product_id", "") or "")
             or str(self.state.get("product_id") or "")
@@ -1276,13 +1296,15 @@ class RoleRunner:
         try:
             verdict = run_grader(**grader_inputs)
         except Exception as exc:  # noqa: BLE001 -- named, never silent
-            self.ledger.append(
-                EventKind.NOTE,
-                role=BuildRole.WRITER,
-                detail=f"grader crashed: {type(exc).__name__}: {exc}",
-                payload={"grader_gate": GRADER_GATE, "grader_crash": True},
-            )
-            return GraderVerdict(tier=ERROR, items=(f"grader crashed: {type(exc).__name__}: {exc}",))
+            crashed = f"grader crashed: {type(exc).__name__}: {exc}"
+            return self._grader_error(crashed, crashed, grader_crash=True)
+        # Every verdict's findings, one row each (what, where, which rule,
+        # whose), into the ledger and the backend log under the session id:
+        # what the grader asked for is read, never guessed.
+        from app.factory.build.grader_findings import finding_rows, log_verdict
+
+        rows = finding_rows(verdict)
+        log_verdict(str(self.state.get("session_id") or ""), verdict.tier, rows)
         self.ledger.append(
             EventKind.NOTE,
             role=BuildRole.WRITER,
@@ -1296,6 +1318,7 @@ class RoleRunner:
                 "grader_ungraded": list(verdict.ungraded),
                 "grader_reasons": [dict(r) for r in verdict.reasons],
                 "grader_notes": list(verdict.notes),
+                "grader_findings": rows,
             },
         )
         if verdict.ok:
@@ -3740,6 +3763,11 @@ class RoleRunner:
                             )
                         self._grant_rework_wall(
                             BuildRole.WRITER, build_round=self._rework_rounds_this_build() + 1
+                        )
+                        from app.factory.build.grader_findings import log_handback
+
+                        log_handback(
+                            str(self.state.get("session_id") or ""), len(items), rounds + 1, REWORK_BUDGET
                         )
                         self.ledger.append(
                             EventKind.REWORK,
