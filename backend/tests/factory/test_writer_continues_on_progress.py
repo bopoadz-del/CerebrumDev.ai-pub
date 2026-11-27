@@ -726,15 +726,31 @@ def _pytest_cache(root, nodeids, lastfailed):
 def test_the_build_status_carries_the_pass_for_the_card(tmp_path, monkeypatch, cut_steps, continuing):
     from app.factory.build_jobs import build_status
 
-    runner, _calls = _runner(tmp_path, monkeypatch, cut_steps=cut_steps)
+    runner, calls = _runner(tmp_path, monkeypatch, cut_steps=cut_steps)
+    during = {}
+    stubbed = runner._run_phase
+
+    def phase(role, work_list):
+        if role is BuildRole.WRITER and calls["writer"] == 1:
+            # The continued pass is running now: what the card is told.
+            during.update(build_status(tmp_path / "build"))
+        return stubbed(role, work_list)
+
+    runner._run_phase = phase  # type: ignore[assignment]
     runner.run()
-    view = build_status(tmp_path / "build")["writer_pass"]
-    assert view["continuing"] is continuing
+    after = build_status(tmp_path / "build")
     if continuing:
+        view = during["writer_pass"]
+        assert during["state"] == "building" and view["continuing"] is True
         assert (view["pass"], view["max_passes"]) == (2, wc.DEFAULT_MAX_PASSES)
         assert view["writer_minutes"] == 60 and view["ceiling_minutes"] == round(20000.0 / 60)
         assert view["text"].startswith("continuing, pass 2 of")
+        # The run then ended: nothing is continuing any more.
+        assert after["state"] != "building" and after["writer_pass"] is None
     else:
+        assert not during, "a writer that was not continued ran no second pass"
+        view = after["writer_pass"]
+        assert view["continuing"] is False
         assert view["text"].startswith("writer not continued")
 
 
@@ -1434,3 +1450,82 @@ def test_extend_wall_reads_a_pass_start_before_the_run_as_the_run_start(tmp_path
     runner._plan_wall_passes = 1
     assert runner._extend_wall(9999.0, progress_evidenced=True, pass_started_s=started) == 3600.0
     assert runner._deadline == 3600.0
+
+
+# -- OPUSGRADE F297 4836ec3 (reviewer 4) fault 2: "continuing" after the pass or the run ended
+
+
+@pytest.mark.parametrize(
+    "after, continuing",
+    [
+        # the continued pass died without being continued
+        ([(EventKind.PHASE_STARTED, BuildRole.WRITER), (EventKind.PHASE_ABORTED, BuildRole.WRITER)], None),
+        ([(EventKind.PHASE_ABORTED, BuildRole.WRITER)], None),
+        # the run gave its verdict
+        ([(EventKind.PHASE_STARTED, BuildRole.WRITER), (EventKind.RUN_FAILED, None)], None),
+        ([(EventKind.RUN_SUCCEEDED, None)], None),
+        # kinds that say nothing about the pass: it is still running
+        ([(EventKind.PHASE_STARTED, BuildRole.WRITER), (EventKind.NOTE, BuildRole.WRITER)], True),
+        ([(EventKind.NOTE, BuildRole.TESTER)], True),
+        ([(EventKind.CLONE, BuildRole.WRITER)], True),
+    ],
+)
+def test_continuing_ends_when_the_pass_aborts_or_the_run_ends(after, continuing):
+    view = wc.floor_view([_note(True)] + [_ev(k, r) for k, r in after])
+    if continuing is None:
+        assert view is None, "the status would say 'continuing' after the pass or the run ended"
+    else:
+        assert view["continuing"] is True
+
+
+@pytest.mark.parametrize("kind", [EventKind.PHASE_ABORTED, EventKind.RUN_FAILED])
+def test_a_stop_decision_is_kept_after_the_run_ended(kind):
+    """Only "continuing" ends with the pass; why a writer was NOT continued
+    stays on the failed build's face."""
+    view = wc.floor_view([_note(False), _ev(kind, BuildRole.WRITER)])
+    assert view is not None and view["continuing"] is False
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_gate_refused"])
+def test_a_continued_pass_that_fails_does_not_read_as_continuing(tmp_path, monkeypatch, reason):
+    """Pass 1 is cut at its wall while working and continued; the continued
+    pass then fails for a reason that is not a wall cut. The run is failed,
+    and its status carries no continuing view."""
+    from app.factory.build_jobs import build_status
+
+    runner, calls = _runner(tmp_path, monkeypatch, cut_steps=4)
+    stubbed = runner._run_phase
+
+    def phase(role, work_list):
+        if role is BuildRole.WRITER and calls["writer"] == 1:
+            calls["writer"] += 1
+            raise RoleError(f"{reason}: the continued pass died", reason=reason)
+        return stubbed(role, work_list)
+
+    runner._run_phase = phase  # type: ignore[assignment]
+    outcome = runner.run()
+    assert outcome.outcome is Outcome.FAILED_ROLE_ERROR
+    assert [record["go"] for _detail, record in _decisions(runner)] == [True]
+    status = build_status(tmp_path / "build")
+    assert status["state"] == "failed" and status["writer_pass"] is None
+
+
+@pytest.mark.parametrize("state, kept", [("building", True), ("stalled", False), ("failed", False), ("succeeded", False)])
+def test_the_status_carries_continuing_only_beside_a_building_state(tmp_path, monkeypatch, state, kept):
+    """A run that died without writing another event (its ledger still ends
+    on the continued pass) is not continuing: the view is settled against
+    the state the status shows it beside."""
+    import app.factory.build_jobs as bj
+
+    go = {"continuing": True, "pass": 2, "max_passes": 3}
+    monkeypatch.setattr(bj, "_read_build_status", lambda *a, **k: {"state": state, "writer_pass": dict(go)})
+    assert bj.build_status(tmp_path)["writer_pass"] == (go if kept else None)
+
+
+@pytest.mark.parametrize("state", ["failed", "stalled"])
+def test_a_stop_decision_is_kept_beside_any_state(tmp_path, monkeypatch, state):
+    import app.factory.build_jobs as bj
+
+    stop = {"continuing": False, "text": "writer not continued: x"}
+    monkeypatch.setattr(bj, "_read_build_status", lambda *a, **k: {"state": state, "writer_pass": dict(stop)})
+    assert bj.build_status(tmp_path)["writer_pass"] == stop

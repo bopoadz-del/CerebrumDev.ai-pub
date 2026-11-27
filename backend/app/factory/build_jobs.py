@@ -1467,6 +1467,24 @@ def build_status(
     blueprint: Any = None,
     plan: Any = None,
 ) -> Dict[str, Any]:
+    """Read the build's state off disk (:func:`_read_build_status`), with the
+    writer-continuation view settled against the state it is shown beside:
+    "continuing" is a statement about a build that is building. A build in
+    any other state (failed, stalled, finished) carries no continuing view,
+    whether or not a later ledger event said the pass was over."""
+    status = _read_build_status(output_dir, blueprint=blueprint, plan=plan)
+    view = status.get("writer_pass")
+    if isinstance(view, dict) and view.get("continuing") and status.get("state") != "building":
+        status["writer_pass"] = None
+    return status
+
+
+def _read_build_status(
+    output_dir: Path | str,
+    *,
+    blueprint: Any = None,
+    plan: Any = None,
+) -> Dict[str, Any]:
     """Read the build's state off disk.
 
     Deliberately reads the LEDGER rather than any in-process registry: the

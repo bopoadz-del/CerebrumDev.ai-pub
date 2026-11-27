@@ -347,14 +347,20 @@ def pass_label(state: Dict[str, Any]) -> str:
     return ""
 
 
-#: Gate verdicts: a continued writer pass is over once its gate has spoken.
-GATE_VERDICT_KINDS = frozenset({"GATE_PASSED", "GATE_FAILED"})
+#: The ledger kinds that end a continued writer pass by themselves: its gate
+#: spoke (GATE_PASSED / GATE_FAILED), the pass died without being continued
+#: (PHASE_ABORTED: a pass that IS continued writes the next decision note
+#: instead, never an abort), or the run gave its verdict (RUN_SUCCEEDED /
+#: RUN_FAILED). Every other kind (NOTE, REWORK, CLONE, PILOT_OPENED) follows
+#: one of these or says nothing about the pass.
+PASS_END_KINDS = frozenset({"GATE_PASSED", "GATE_FAILED", "PHASE_ABORTED", "RUN_SUCCEEDED", "RUN_FAILED"})
 
 
 def _pass_ended(kind: str, event: Any) -> bool:
-    """A gate verdict, or a step other than the writer starting: the
-    continued writer pass is over (its own start is a WRITER phase start)."""
-    if kind in GATE_VERDICT_KINDS:
+    """One of :data:`PASS_END_KINDS`, or a step other than the writer
+    starting: the continued writer pass is over (its own start is a WRITER
+    phase start)."""
+    if kind in PASS_END_KINDS:
         return True
     role = getattr(event, "role", None)
     return kind == "PHASE_STARTED" and str(getattr(role, "value", role) or "") != "WRITER"
@@ -367,8 +373,9 @@ def floor_view(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
     sentence), so the card states exactly what the runner decided: the pass
     now running and its limit, the writer time used and the ceiling. None
     when this run (since its last RUN_STARTED) made no decision, and None
-    once a continued pass has ended (a gate verdict, or a phase starting
-    after the decision), so the card never says "continuing" afterwards.
+    once a continued pass has ended (a gate verdict, the pass aborted, the
+    run's own verdict, or another phase starting after the decision), so the
+    card never says "continuing" afterwards.
     """
     found: Optional[Any] = None
     for event in events:
