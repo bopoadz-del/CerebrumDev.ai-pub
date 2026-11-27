@@ -565,6 +565,333 @@ def test_a_gate_stop_still_records_that_gates_own_rounds_and_budget(
     assert status["failure"]["title"] == "used up its fix rounds"
 
 
+@pytest.mark.parametrize("writer_fails, tester_fails, max_rework", [(3, 3, REWORK_BUDGET), (2, 4, 4)])
+def test_the_ceiling_met_before_any_grader_round_stops_with_no_grader_round(
+    tmp_path, monkeypatch, writer_fails, tester_fails, max_rework
+):
+    # Six gate rounds, then the grader's FIRST refusal: the build has no round
+    # left, so the grader sends nothing back. The STOP counts zero grader
+    # rounds of its three -- a zero the record keeps, never the writer gate's
+    # own count -- and the last fix round the Floor reads is the tester's.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    grades = _grade_script(monkeypatch, certified_first=tester_fails)
+    runner, out, _ = _run(
+        tmp_path, monkeypatch, script, llm=_no_model(), budget=BuildBudget(max_rework=max_rework)
+    )
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+    assert "reached after 0 grader round(s)" in out.detail
+    assert len(grades) == tester_fails + 1
+
+    status = build_status(tmp_path / "build")
+    decisions = status["decisions"]
+    assert [d["class"] for d in decisions] == [DECISION_REWORK] * REWORK_CEILING + [DECISION_STOP]
+    assert not [d for d in decisions[:-1] if d["gate_name"] == GRADER_GATE]
+    stop = decisions[-1]
+    assert (stop["gate"], stop["gate_name"]) == ("WRITER", GRADER_GATE)
+    assert (stop["round_gate"], stop["gate_budget"]) == (0, REWORK_BUDGET)
+    assert stop["round_build"] == REWORK_CEILING
+    assert status["failure"]["kind"] == fr.ROUNDS_SPENT
+    assert status["stop"]["kind"] == fr.STOP_CHECK_FAILED
+    assert _fix_rounds_numbers(decisions) == (
+        REWORK_CEILING, REWORK_CEILING, "TESTER", tester_fails, max_rework
+    )
+    assert status["stop"]["fix_rounds"] == REWORK_CEILING
+
+
+# -- the rule's own functions, each called directly -----------------------------
+
+
+def _seeded(tmp_path, sources, *, max_rework=REWORK_BUDGET):
+    """A runner that has not run, its ledger holding one REWORK round per
+    entry of ``sources`` (the gate that sent the round back)."""
+    runner = RoleRunner(
+        load_blueprint(SMOKE),
+        tmp_path / "build",
+        roles={role: (lambda ctx: RoleResult(ok=True, detail="stub")) for role in BUILD_PHASES},
+        budget=BuildBudget(max_rework=max_rework),
+        brief=BRIEF,
+    )
+    runner.workspace.mkdir(parents=True, exist_ok=True)
+    runner.ledger.start_run(product_id="seeded", inputs_hash=runner.inputs_hash)
+    for n, source in enumerate(sources):
+        runner.ledger.append(
+            EventKind.REWORK,
+            role=W,
+            detail=f"seeded round {n + 1}",
+            payload={"source": source, "failure_names": [f"seeded-{n}"]},
+        )
+    return runner
+
+
+@pytest.mark.parametrize(
+    "sources, source",
+    [
+        ((), ""),
+        (("TESTER",) * (REWORK_CEILING - 1), ""),
+        (("WRITER", "TESTER", "GRADER", "GRADER", "GRADER"), "GRADER"),
+    ],
+)
+def test_ceiling_stop_is_no_stop_while_the_build_has_a_round_left(tmp_path, sources, source):
+    runner = _seeded(tmp_path, sources)
+    before = len(runner.ledger.events())
+    verdict = _fail(T, brief_gates.SUITE_CHECK, "x")
+
+    assert runner._ceiling_stop(T, verdict, source=source, gate_round=1, gate_budget=3) is None
+    assert len(runner.ledger.events()) == before
+
+
+@pytest.mark.parametrize(
+    "sources, source, gate_round, gate_budget, want_round, want_budget, named",
+    [
+        # A gate decide() judges: its own rounds, the build's budget.
+        (("WRITER",) * 3 + ("TESTER",) * 3, "", None, None, 3, 2, "TESTER"),
+        (("WRITER",) * 5 + ("TESTER",) * 2, "", None, None, 2, 2, "TESTER"),
+        # The grader's handback: the rounds and the budget it counts itself.
+        (("WRITER",) * 3 + ("TESTER", "GRADER", "GRADER"), "GRADER", 2, REWORK_BUDGET, 2, REWORK_BUDGET, "GRADER"),
+        # Zero grader rounds is a count, not "not given".
+        (("WRITER",) * 3 + ("TESTER",) * 3, "GRADER", 0, REWORK_BUDGET, 0, REWORK_BUDGET, "GRADER"),
+    ],
+)
+def test_ceiling_stop_is_the_rules_stop_once_six_rounds_are_spent(
+    tmp_path, sources, source, gate_round, gate_budget, want_round, want_budget, named
+):
+    runner = _seeded(tmp_path, sources, max_rework=2)
+    before = len(runner.ledger.events())
+    verdict = _fail(T, brief_gates.SUITE_CHECK, "x")
+
+    got = runner._ceiling_stop(T, verdict, source=source, gate_round=gate_round, gate_budget=gate_budget)
+
+    reason = (
+        f"build rework ceiling of {REWORK_CEILING} reached; {named} gate still failing: {verdict.detail}"
+    )
+    assert got is not None
+    assert (got.kind, got.outcome) == (DECISION_STOP, Outcome.FAILED_BUDGET_SPENT)
+    assert got.record == {
+        "gate": "TESTER",
+        "check": brief_gates.SUITE_CHECK,
+        "finding": verdict.findings[0],
+        "class": DECISION_STOP,
+        "round_gate": want_round,
+        "round_build": len(sources),
+        "gate_budget": want_budget,
+        "build_ceiling": REWORK_CEILING,
+        "gate_name": "tester_gate",
+        "reason": reason,
+    }
+    assert got.detail == f"FAILED(TESTER, {brief_gates.SUITE_CHECK}, {verdict.findings[0]}): {reason}"
+    assert got.findings == tuple(verdict.findings)
+    # The stop is what the caller ends the run with; asking writes nothing.
+    assert len(runner.ledger.events()) == before
+    # It is the record the Floor reads as fix rounds spent, not as time.
+    assert fr.stop_class({"outcome": got.outcome.value, "decision": got.record}) == fr.ROUNDS_SPENT
+
+
+@pytest.mark.parametrize(
+    "gate_round, gate_budget, max_rework, want_round, want_budget",
+    [
+        (None, None, 3, 2, 3),
+        (None, None, 5, 2, 5),
+        (1, REWORK_BUDGET, 5, 1, REWORK_BUDGET),
+        (0, 0, 5, 0, 0),
+    ],
+)
+def test_stop_counts_the_round_and_budget_it_is_given_else_the_roles_own(
+    tmp_path, gate_round, gate_budget, max_rework, want_round, want_budget
+):
+    runner = _seeded(tmp_path, ("WRITER", "TESTER", "TESTER", "GRADER"), max_rework=max_rework)
+    verdict = _fail(T, brief_gates.SUITE_CHECK, "y")
+
+    got = runner._stop(
+        Outcome.FAILED_GATE, "why it stopped", verdict, T, gate_round=gate_round, gate_budget=gate_budget
+    )
+
+    assert (got.kind, got.outcome) == (DECISION_STOP, Outcome.FAILED_GATE)
+    assert got.record == {
+        "gate": "TESTER",
+        "check": brief_gates.SUITE_CHECK,
+        "finding": verdict.findings[0],
+        "class": DECISION_STOP,
+        "round_gate": want_round,
+        "round_build": 4,
+        "gate_budget": want_budget,
+        "build_ceiling": REWORK_CEILING,
+        "gate_name": "tester_gate",
+        "reason": "why it stopped",
+    }
+    assert got.detail == f"FAILED(TESTER, {brief_gates.SUITE_CHECK}, {verdict.findings[0]}): why it stopped"
+
+
+@pytest.mark.parametrize(
+    "kind, role, gate_budget, max_rework, want_budget",
+    [
+        (DECISION_REWORK, W, None, 3, 3),
+        (DECISION_REWORK, T, None, 2, 2),
+        (DECISION_REWORK, W, REWORK_BUDGET, 2, REWORK_BUDGET),
+        (DECISION_STOP, T, 0, 2, 0),
+    ],
+)
+def test_decision_record_counts_the_round_against_the_budget_it_is_given(
+    tmp_path, kind, role, gate_budget, max_rework, want_budget
+):
+    runner = _seeded(tmp_path, (), max_rework=max_rework)
+    verdict = _fail(role, brief_gates.SUITE_CHECK, "z")
+
+    rec = runner._decision_record(
+        kind, role=role, verdict=verdict, gate_round=1, build_round=5, reason="r", gate_budget=gate_budget
+    )
+
+    assert rec == {
+        "gate": role.value,
+        "check": brief_gates.SUITE_CHECK,
+        "finding": verdict.findings[0],
+        "class": kind,
+        "round_gate": 1,
+        "round_build": 5,
+        "gate_budget": want_budget,
+        "build_ceiling": REWORK_CEILING,
+        "gate_name": verdict.gate,
+        "reason": "r",
+    }
+
+
+@pytest.mark.parametrize(
+    "items, writer_items, detail",
+    [
+        (("one failing item",), ("one failing item",), "one failing item"),
+        # Only what the writer can repair is in the round's record.
+        (("a: first", "b: the Factory's", "c: third"), ("a: first", "c: third"), "a: first; c: third"),
+        (("x" * 500,), ("x" * 500,), "x" * 400),
+        (("nothing for the writer",), (), "-"),
+    ],
+)
+def test_grader_gate_verdict_is_the_graders_refusal_in_the_rules_shape(
+    tmp_path, items, writer_items, detail
+):
+    from app.factory.build import grader as grader_mod
+
+    runner = _seeded(tmp_path, ())
+    graded = grader_mod.GraderVerdict(
+        tier=grader_mod.NOT_CERTIFIED, items=items, reasons=(), writer_items=writer_items
+    )
+
+    got = runner._grader_gate_verdict(graded)
+
+    assert isinstance(got, GateResult)
+    assert (got.ok, got.gate, got.reason) == (False, GRADER_GATE, grader_mod.NOT_CERTIFIED)
+    assert got.findings == list(writer_items)
+    assert got.detail == detail
+    # A view only: the grader's own verdict is as it was.
+    assert (graded.items, graded.writer_items) == (items, writer_items)
+    # The round's record names the grader's gate and the first item handed over.
+    rec = runner._decision_record(DECISION_REWORK, role=W, verdict=got, gate_round=1, build_round=1)
+    assert (rec["gate_name"], rec["check"]) == (GRADER_GATE, GRADER_GATE)
+    assert rec["finding"] == (writer_items[0][:300] if writer_items else "-")
+
+
+@pytest.mark.parametrize("spent", [0, REWORK_CEILING - 2, REWORK_CEILING - 1])
+def test_decide_grants_a_round_while_the_build_has_one_left(tmp_path, monkeypatch, spent):
+    # decide(), called directly on a gate with rounds of its own left: up to
+    # the sixth round of the build it sends the work back.
+    monkeypatch.setattr(architect, "_default_llm", lambda: _no_model())
+    runner = _seeded(tmp_path, ("TESTER",) * spent, max_rework=REWORK_CEILING + 5)
+    verdict = _fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, "direct")
+
+    decision = runner.decide(W, verdict, rework_used=spent)
+
+    assert decision.kind == DECISION_REWORK
+    assert (decision.record["round_gate"], decision.record["round_build"]) == (1, spent + 1)
+    reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
+    assert len(reworks) == spent + 1
+    assert reworks[-1].payload["decision"] == decision.record
+
+
+@pytest.mark.parametrize("spent", [REWORK_CEILING, REWORK_CEILING + 1])
+def test_decide_refuses_a_seventh_round_through_the_one_ceiling_check(tmp_path, monkeypatch, spent):
+    # The same gate with the build's six rounds spent: only the ceiling can
+    # stop it (its own budget is far off), and the stop is _ceiling_stop's.
+    monkeypatch.setattr(architect, "_default_llm", lambda: _no_model())
+    runner = _seeded(tmp_path, ("TESTER",) * spent, max_rework=REWORK_CEILING + 5)
+    verdict = _fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, "direct")
+
+    decision = runner.decide(W, verdict, rework_used=spent)
+
+    assert (decision.kind, decision.outcome) == (DECISION_STOP, Outcome.FAILED_BUDGET_SPENT)
+    assert decision.record == runner._ceiling_stop(W, verdict).record
+    assert decision.record["round_build"] == spent
+    assert decision.record["reason"].startswith(f"build rework ceiling of {REWORK_CEILING} reached; WRITER gate")
+    assert len([e for e in runner.ledger.events() if e.kind is EventKind.REWORK]) == spent
+
+
+@pytest.mark.parametrize(
+    "check, kind, rounds",
+    [
+        ("zorblat_check", "ADVISORY", 0),
+        ("plinket_check", "ADVISORY", 0),
+        (brief_gates.WRITER_BEHAVIOUR_CHECK, DECISION_REWORK, 1),
+    ],
+)
+def test_decide_spends_no_round_on_a_check_the_brief_never_defined(
+    tmp_path, monkeypatch, check, kind, rounds
+):
+    monkeypatch.setattr(architect, "_default_llm", lambda: _no_model())
+    runner = _seeded(tmp_path, ())
+
+    decision = runner.decide(W, _fail(W, check, "direct"), rework_used=0)
+
+    assert decision.kind == kind
+    assert decision.record["check"] == check and decision.record["class"] == kind
+    assert len([e for e in runner.ledger.events() if e.kind is EventKind.REWORK]) == rounds
+
+
+def _send_back(gate, decision):
+    payload = {"gate": gate, "source": "GRADER" if gate == GRADER_GATE else "TESTER"}
+    if decision is not None:
+        payload["decision"] = decision
+    return payload
+
+
+_REC = {"class": DECISION_REWORK, "gate": "WRITER", "round_build": 1}
+
+
+@pytest.mark.parametrize(
+    "payloads, want, once",
+    [
+        ((), 0, 0),
+        # A ledger written before the grader's handback carried a record.
+        ((_send_back(GRADER_GATE, None),), 1, 1),
+        ((_send_back(GRADER_GATE, None), _send_back(GRADER_GATE, None)), 2, 2),
+        # Today's ledger: the record counts the round, so it is not counted here.
+        ((_send_back(GRADER_GATE, _REC),), 0, 1),
+        # A build resumed across the change: one round of each kind.
+        ((_send_back(GRADER_GATE, None), _send_back(GRADER_GATE, _REC)), 1, 2),
+        # Another gate's round is never the grader's, with or without a record.
+        ((_send_back("tester_gate", None), _send_back("tester_gate", _REC)), 0, 1),
+        # A value under the key that is no record counts no round for it.
+        ((_send_back(GRADER_GATE, "hard_stop"),), 1, 1),
+    ],
+)
+def test_grader_send_backs_counts_only_the_rounds_no_decision_record_counts(
+    tmp_path, payloads, want, once
+):
+    from app.factory.build_jobs import _grader_send_backs
+
+    runner = _seeded(tmp_path, ())
+    for payload in payloads:
+        runner.ledger.append(EventKind.REWORK, role=W, detail="send-back", payload=payload)
+        # A grader event that is not a REWORK is never a round.
+        runner.ledger.append(EventKind.NOTE, role=W, detail="grader note", payload={"gate": GRADER_GATE})
+    events = runner.ledger.events()
+
+    assert _grader_send_backs(events) == want
+    # ``once``: with the records the status lists, the stop record's total
+    # (build_jobs.stop_record) counts every round one time, none twice.
+    recorded = [e.payload["decision"] for e in events if isinstance(e.payload.get("decision"), dict)]
+    assert fr.fix_rounds_used(recorded) + _grader_send_backs(events) == once
+
+
 # -- the foreman's STOP under the default --------------------------------------
 
 
