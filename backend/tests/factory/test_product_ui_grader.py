@@ -539,3 +539,80 @@ def test_bind_opens_the_front_page_itself(tmp_path, bp):
     with h.server({}, bodies={"/": page}) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("bind",))
     assert got == {"bind:tenant": "passed"}
+
+
+# --- the steps call the product with the grading boot's bearer --------------
+from app.factory.build.authority import capability_route as _route  # noqa: E402
+from app.factory.build.image_sufficiency import GATE_RUN_ENV, GATE_TOKEN_VAR  # noqa: E402
+
+_API_KINDS = ("load", "screen", "route", "honest_error")
+
+
+def _honest(bp):
+    return {f"POST {_route(bp['capabilities'][0]['id'])}": 422}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("protected", [True, False])
+def test_a_product_with_or_without_sign_in_passes_with_the_grading_bearer(tmp_path, bp, protected):
+    """One product answers 401 to any request without the boot's bearer, the
+    other needs none: under the grading bearer both pass every page, route
+    and honest-error step, and every request the steps made carried it."""
+    token = ug.grading_bearer()
+    with h.server(_honest(bp), token=token if protected else None) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer=token)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert base.auth and set(base.auth) == {f"Bearer {token}"}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("bearer", ["", "not-the-boot-token"])
+def test_a_protected_product_called_without_its_bearer_fails_naming_status_and_route(tmp_path, bp, bearer):
+    """Without the boot's bearer (none, or a wrong one) the protected product
+    answers 401, and each failed step names its route and the status seen."""
+    with h.server(_honest(bp), token=ug.grading_bearer()) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer=bearer)
+    routes = [f"route:{_route(c['id'])}" for c in bp["capabilities"]]
+    for name in routes + ["load:/"]:
+        assert got[name] == "failed: expected 200 got 401", (name, got)
+    honest = f"honest_error:{_route(bp['capabilities'][0]['id'])}"
+    assert got[honest].startswith("failed") and "401" in got[honest]
+
+
+@pytest.mark.parametrize("env,want", [
+    (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
+    ({GATE_TOKEN_VAR: " other-token "}, "other-token"),
+    ({GATE_TOKEN_VAR: None}, ""),
+    ({}, ""),
+    ({"SOME_OTHER_VAR": "x"}, ""),
+])
+def test_grading_bearer_is_the_gate_run_token(env, want):
+    assert ug.grading_bearer(env) == want
+
+
+@pytest.mark.parametrize("bearer,want", [
+    (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
+    ("given-token", "given-token"),
+    ("", None),
+])
+def test_grade_ui_hands_the_bearer_to_the_run(tmp_path, bearer, want):
+    seen = {}
+    kw = {} if bearer is None else {"bearer": bearer}
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=lambda cmd, **k: seen.update(k["env"]), **kw)
+    assert seen.get(ug.BEARER_ENV) == want
+
+
+@pytest.mark.parametrize("bearer,want", [("", None), ("abc", "abc"), ("dev-x", "dev-x")])
+def test_playwright_run_sets_the_bearer_only_when_given(tmp_path, bearer, want):
+    seen = {}
+    ug._playwright_run(lambda cmd, **k: seen.update(k["env"]), tmp_path / "s.spec.ts", base_url="http://b",
+                       out=tmp_path / "o.json", fixtures=tmp_path, timeout=120, bearer=bearer)
+    assert seen.get(ug.BEARER_ENV) == want
+    assert seen["BASE_URL"] == "http://b"
+
+
+def test_the_spec_never_carries_the_token_itself():
+    for bp in BPS:
+        spec = ug.render_spec(bp)
+        assert GATE_RUN_ENV[GATE_TOKEN_VAR] not in spec
+        assert f"process.env.{ug.BEARER_ENV}" in spec

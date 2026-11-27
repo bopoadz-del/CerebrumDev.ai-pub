@@ -10,6 +10,11 @@ attach a real PDF and XLSX; parsed status appears; a cited answer with a
 number renders; an invalid request is answered honestly with 422/503 (never
 a 200); every declared route returns 200 and renders with no console errors.
 
+Every step calls the product the way the grading boot runs it: with the
+bearer that boot sets (``image_sufficiency.GATE_RUN_ENV``, the one source),
+on the API requests and on every page request. A product that needs no
+token ignores the header and is graded the same.
+
 Which of those steps run is read from the customer brief's ``documents``
 field (``customer_brief``): whether the customer uploads documents, and
 which file types. No other text is consulted. A kind with no file type is
@@ -34,6 +39,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.factory.build.authority import capability_route
+from app.factory.build.image_sufficiency import GATE_RUN_ENV, GATE_TOKEN_VAR
 
 RUN_TIMEOUT_S = 600
 #: Playwright is told to stop its own steps this long before a run's cap, so
@@ -328,11 +334,25 @@ def write_fixtures(blueprint: Mapping[str, Any], dest: Path, brief: Any = _UNSET
 
 #: Every target is resolved against BASE_URL (the rendered product). A
 #: missing BASE_URL throws -- it never falls back to a relative URL.
+#: The run's bearer reaches the spec through this variable, never baked into
+#: the spec file. Unset or empty: the steps send no Authorization header.
+BEARER_ENV = "GRADE_BEARER"
+
 BASE_JS = (
     "const BASE = process.env.BASE_URL;\n"
     "if (!BASE) throw new Error('BASE_URL is not set: UI run cannot happen');\n"
     "const url = (t: string) => new URL(t, BASE).toString();\n"
+    f"const BEARER = process.env.{BEARER_ENV} || '';\n"
+    "const AUTH: Record<string, string> = BEARER ? { Authorization: 'Bearer ' + BEARER } : {};\n"
 )
+
+
+def grading_bearer(env: Optional[Mapping[str, str]] = None) -> str:
+    """The bearer the grading boot runs the product with: the gate run
+    environment's token (``env`` defaults to ``GATE_RUN_ENV``). Empty when
+    that environment sets none."""
+    source = GATE_RUN_ENV if env is None else env
+    return str(source.get(GATE_TOKEN_VAR) or "").strip()
 
 #: An invalid request must be answered honestly. A 200 is never honest.
 HONEST_ERROR_STATUSES = (422, 503)
@@ -346,7 +366,7 @@ _PAGE_OK = (
 KIND_JS: Dict[str, str] = {
     "load": _PAGE_OK,
     "screen": _PAGE_OK,
-    "route": "const r = await request.get(url(s.target)); expect(r.status()).toBe(200);",
+    "route": "const r = await request.get(url(s.target), { headers: AUTH }); expect(r.status()).toBe(200);",
     "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
     "attach_pdf": (
         "await page.getByRole('button', { name: '+' }).first().click();\n"
@@ -359,7 +379,7 @@ KIND_JS: Dict[str, str] = {
         "await expect(page.getByText(/\\d/).last()).toBeVisible();"
     ),
     "honest_error": (
-        "const r = await request.post(url(s.target), { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
+        "const r = await request.post(url(s.target), { data: '\"not-an-object\"', headers: { ...AUTH, 'content-type': 'application/json' } });\n"
         f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}).toContain(r.status());"
     ),
 }
@@ -387,7 +407,7 @@ def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
         + BASE_JS +
         "const errs: string[] = [];\n"
         "let page: any;\n"
-        "const open = async (browser: any) => { const p = await browser.newPage();\n"
+        "const open = async (browser: any) => { const p = await browser.newPage({ extraHTTPHeaders: AUTH });\n"
         "  p.on('console', (m: any) => { if (m.type() === 'error') errs.push(m.text()); });\n"
         "  p.on('pageerror', (e: any) => errs.push(String(e))); return p; };\n"
         "const run = async (s: any, request: any) => {\n"
@@ -530,15 +550,21 @@ def _tail(text: Any) -> str:
     return " ".join(str(text or "").split())[-OUTPUT_TAIL_CHARS:]
 
 
-def _playwright_run(run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int) -> Any:
+def _playwright_run(
+    run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int, bearer: str = "",
+) -> Any:
     """The one way a UI spec is run: the grade and the toolchain check both
-    come through here, with the same command and the same environment."""
+    come through here, with the same command and the same environment. A
+    non-empty ``bearer`` is handed to the spec as ``BEARER_ENV``."""
+    env = {"PATH": RUN_PATH, "BASE_URL": base_url,
+           "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)}
+    if bearer:
+        env[BEARER_ENV] = bearer
     return run(
         ["npx", "playwright", "test", str(spec), f"--global-timeout={run_limit_ms(timeout)}",
          "--reporter=json"],
         cwd=str(spec.parent),
-        env={"PATH": RUN_PATH, "BASE_URL": base_url,
-             "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)},
+        env=env,
         timeout=timeout,
         capture_output=True,
         text=True,
@@ -612,7 +638,10 @@ def grade_ui(
     base_url: Optional[str],
     run: Any = subprocess.run,
     brief: Any = _UNSET,
+    bearer: Optional[str] = None,
 ) -> UiGrade:
+    """Run the plan's steps against ``base_url``. Every step carries the
+    grading boot's bearer (``grading_bearer``); ``bearer`` replaces it."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -630,7 +659,8 @@ def grade_ui(
     fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
-                               fixtures=fixtures, timeout=RUN_TIMEOUT_S)
+                               fixtures=fixtures, timeout=RUN_TIMEOUT_S,
+                               bearer=grading_bearer() if bearer is None else bearer)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     report_text = _report_text(out, proc)

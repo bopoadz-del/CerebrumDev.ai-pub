@@ -33,36 +33,39 @@ function expect(v: any) {
 }
 const __resp = (r: Response) => ({ status: () => r.status });
 const __request = {
-  get: async (u: string) => __resp(await fetch(u)),
+  get: async (u: string, o: any = {}) => __resp(await fetch(u, { headers: o.headers || {} })),
   post: async (u: string, o: any) => __resp(await fetch(u, { method: 'POST', body: o.data, headers: o.headers })),
 };
 // The page is the text the product served: the last page loaded plus every
 // upload / chat reply. getByText(re) is visible iff re matches that text.
 let __html = '';
 let __url = 'about:blank';
+// The page's extra headers (browser.newPage({ extraHTTPHeaders })): sent on
+// every request the page makes, as Playwright does.
+let __pageHeaders: Record<string, string> = {};
 const __base = () => process.env.BASE_URL || '';
 const __loc = (find: (t: string) => boolean, act: any = {}) => {
   const l: any = { first: () => l, last: () => l, __visible: () => find(__html), ...act };
   return l;
 };
 const __page = {
-  goto: async (u: string) => { const r = await fetch(u); __html = await r.text(); __url = u; return __resp(r); },
+  goto: async (u: string) => { const r = await fetch(u, { headers: __pageHeaders }); __html = await r.text(); __url = u; return __resp(r); },
   url: () => __url,
   waitForLoadState: async () => {}, on: () => {},
   getByText: (re: RegExp) => __loc((t) => re.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
-    click: async () => { const r = await fetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || '') }); __html += '\n' + await r.text(); },
+    click: async () => { const r = await fetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || ''), headers: __pageHeaders }); __html += '\n' + await r.text(); },
     fill: async (v: string) => { (__page as any).__typed = v; },
     press: async (k: string) => {
       if (k !== 'Enter') return;
-      const r = await fetch(__base() + '/__ask', { method: 'POST', body: (__page as any).__typed || '' });
+      const r = await fetch(__base() + '/__ask', { method: 'POST', body: (__page as any).__typed || '', headers: __pageHeaders });
       __html += '\n' + await r.text();
     },
   }),
   locator: (sel: string) => __loc(() => true, {
     setInputFiles: async (p: string) => {
       const fs = await import('node:fs');
-      const r = await fetch(__base() + '/__upload?name=' + encodeURIComponent(p.split('/').pop() || ''), { method: 'POST', body: fs.readFileSync(p) });
+      const r = await fetch(__base() + '/__upload?name=' + encodeURIComponent(p.split('/').pop() || ''), { method: 'POST', body: fs.readFileSync(p), headers: __pageHeaders });
       __html += '\n' + await r.text();
     },
   }),
@@ -78,7 +81,7 @@ test.beforeAll = (fn: any) => { __before.push(fn); };
 """
 
 RUNNER = r"""
-for (const b of __before) await b({ browser: { newPage: async () => __page } });
+for (const b of __before) await b({ browser: { newPage: async (o: any = {}) => { __pageHeaders = o.extraHTTPHeaders || {}; return __page; } } });
 const __only = (process.env.ONLY_KINDS || '').split(',').filter(Boolean);
 const __out: Record<string, string> = {};
 for (const [name, fn, group] of __tests) {
@@ -104,7 +107,8 @@ def require_node() -> str:
     return node
 
 
-def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None) -> Dict[str, str]:
+def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None,
+             bearer: Optional[str] = None) -> Dict[str, str]:
     body = "\n".join(line for line in spec.splitlines() if not line.startswith("import "))
     f = tmp / "spec_run.mts"
     f.write_text(PRELUDE + body + RUNNER, encoding="utf-8")
@@ -113,6 +117,8 @@ def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtu
         env["GRADE_FIXTURES"] = str(fixtures)
     if base_url is not None:
         env["BASE_URL"] = base_url
+    if bearer is not None:
+        env["GRADE_BEARER"] = bearer
     p = subprocess.run([require_node(), str(f)], capture_output=True, text=True, timeout=60, env=env)
     for line in p.stdout.splitlines():
         if line.startswith("@@UI@@"):
@@ -121,22 +127,32 @@ def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtu
 
 
 class Server(str):
-    """The base URL, carrying what the product received (``seen``)."""
+    """The base URL, carrying what the product received (``seen``) and the
+    Authorization header of every request (``auth``)."""
 
     seen: List[Tuple[str, bytes]]
+    auth: List[str]
 
 
 @contextmanager
-def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None) -> Iterator[Server]:
+def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None,
+           token: Optional[str] = None) -> Iterator[Server]:
     """An HTTP server answering each path with its status and body
     (``POST <path>`` keys a POST; the query string is ignored for keys).
-    Every POST body is recorded in ``.seen`` as ``(key, bytes)``."""
+    Every POST body is recorded in ``.seen`` as ``(key, bytes)``. With a
+    ``token``, the server protects every path: a request without
+    ``Authorization: Bearer <token>`` is answered 401."""
     bodies = bodies or {}
     seen: List[Tuple[str, bytes]] = []
+    auth: List[str] = []
 
     class H(BaseHTTPRequestHandler):
         def _answer(self, key):
+            given = self.headers.get("authorization") or ""
+            auth.append(given)
             code = statuses.get(key, default)
+            if token is not None and given != f"Bearer {token}":
+                code = 401
             body = bodies.get(key, "ok").encode()
             self.send_response(code)
             self.send_header("content-length", str(len(body)))
@@ -161,6 +177,7 @@ def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Map
     try:
         base = Server(f"http://127.0.0.1:{srv.server_port}")
         base.seen = seen
+        base.auth = auth
         yield base
     finally:
         srv.shutdown()
