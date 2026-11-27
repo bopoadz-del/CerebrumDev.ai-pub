@@ -483,3 +483,132 @@ def test_the_re_entrys_own_failure_stands_at_its_verdict(client, tmp_path, old_r
 
     assert build["state"] == "failed"
     assert build["failure"]["code"] == new_reason
+
+
+# ---------------------------------------------------------------------------
+# The live thread must be the one the resume started. The failed run's own
+# thread can still be alive after its verdict (narrating it); a Try again
+# refused at the door after its NOTE started nothing, so the run stays failed
+# and the next Try again starts a runner.
+# ---------------------------------------------------------------------------
+
+
+def _failed_while_its_thread_lives(out: Path, reason: str, live_thread, inputs_hash: str = "h") -> BuildLedger:
+    """A WRITER failure whose runner thread was started before the verdict
+    and is still alive after it."""
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash=inputs_hash)
+    for role in (BuildRole.COLLECTOR, BuildRole.CLONER):
+        ledger.append(EventKind.PHASE_STARTED, role=role)
+        ledger.append(EventKind.GATE_PASSED, role=role, payload={"gate": role.value})
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    live_thread(out)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"{reason}: the writer did not finish",
+        payload={"reason": reason, "location": "WRITER"},
+    )
+    ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"WRITER failed: {reason}",
+        payload={"outcome": "FAILED_GATE", "reason": reason},
+    )
+    return ledger
+
+
+@pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
+def test_the_failed_runs_own_thread_is_not_the_re_entry(client, tmp_path, live_thread, reason):
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_while_its_thread_lives(out, reason, live_thread)
+    sid = _session(f"sess_oldthread_{reason}", out)
+    _resume(ledger, "WRITER")
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+    assert (build["state"], build["failure"]["code"]) == ("failed", reason)
+    assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is False
+
+    # Must fire: a thread started after the NOTE is the re-entry.
+    live_thread(out)
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+    assert (build["state"], build["failure"]) == ("building", None)
+
+
+@pytest.mark.parametrize("door", ["cli_unready", "builds_unavailable"])
+def test_a_try_again_refused_at_the_door_stays_failed_and_the_next_one_starts(
+    tmp_path, monkeypatch, live_thread, door
+):
+    """Public path: start_runner_build over a real ledger while the failed
+    run's own thread is still alive."""
+    from app.factory.blueprint import CapabilitySpec, ProductBlueprint
+    from app.factory.build import coder_session, store_override
+    from app.factory.build.runner import blueprint_hash
+    from app.factory.build_jobs import start_runner_build
+
+    monkeypatch.setenv("FACTORY_BUILD_ENGINE", "runner")
+    monkeypatch.setenv("ENV", "test")
+    bp = ProductBlueprint(
+        schema_version="product_blueprint.v1",
+        product_id=f"p-{door}",
+        product_name="P",
+        vertical="v",
+        summary="s",
+        capabilities=[
+            CapabilitySpec(id="vault", description="vault", block_ids=["storage"], strategy_hint="REUSE")
+        ],
+    )
+    out = tmp_path / door / "ws"
+    _failed_while_its_thread_lives(out, "writer_contract", live_thread, blueprint_hash(bp))
+
+    def refuse():
+        raise coder_session.CodeCliUnavailable("no coding CLI session")
+
+    if door == "cli_unready":
+        monkeypatch.setattr(coder_session, "raise_if_cli_session_unready", refuse)
+    else:
+        monkeypatch.setattr(coder_session, "raise_if_cli_session_unready", lambda: None)
+        monkeypatch.setattr(store_override, "builds_unavailable_reason", lambda _root: "proofs cannot be kept")
+    with pytest.raises(coder_session.CodeCliUnavailable):
+        start_runner_build(bp, out)
+
+    st = build_status(out)
+    assert (st["state"], st["failure"]["code"]) == ("failed", "writer_contract")
+
+    monkeypatch.setattr(coder_session, "raise_if_cli_session_unready", lambda: None)
+    monkeypatch.setattr(store_override, "builds_unavailable_reason", lambda _root: None)
+    held = threading.Event()
+    started: list = []
+
+    def hold(*_a, **_k):
+        started.append(1)
+        held.wait(timeout=5)
+
+    monkeypatch.setattr("app.factory.build_jobs._run", hold)
+    try:
+        result = start_runner_build(bp, out)
+        assert result["already_running"] is False
+        assert result["build"]["state"] == "building"
+        for _ in range(100):
+            if started:
+                break
+            threading.Event().wait(0.02)
+        assert started == [1]
+    finally:
+        held.set()
+
+
+@pytest.mark.parametrize(
+    "kind, expected",
+    [(EventKind.GATE_PASSED, False), (EventKind.PHASE_STARTED, False), (EventKind.NOTE, True)],
+)
+def test_only_a_resume_note_re_enters(tmp_path, live_thread, kind, expected):
+    """An event that is not a NOTE carrying ``resumed`` is not a resume,
+    even with a thread started after it."""
+    out = tmp_path / f"ws_{kind.value}"
+    ledger = _failed_at_writer(out, "writer_contract", "", "x")
+    ledger.append(kind, role=BuildRole.WRITER, payload={"resumed": True, "phase": "WRITER"})
+    live_thread(out)
+
+    assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is expected

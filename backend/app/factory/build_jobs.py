@@ -376,6 +376,10 @@ def _write_crash_marker(output_dir: Path | str, detail: str) -> None:
 #: tenant's approve read "already running" and start nothing (live
 #: 2026-10-06, 879ed1e1). The workspace path is unique per build.
 _RUNNER_THREADS: Dict[str, threading.Thread] = {}
+#: The newest ledger seq of the workspace when its runner thread was
+#: registered: the events that thread was started after. A thread is the
+#: runner of a resume only when it was started after that resume's NOTE.
+_RUNNER_STARTED_AFTER: Dict[str, int] = {}
 _RUNNER_THREADS_GUARD = threading.Lock()
 
 
@@ -393,9 +397,21 @@ def runner_thread_name(output_dir: Path | str) -> str:
 
 
 def register_runner_thread(output_dir: Path | str, thread: threading.Thread) -> None:
-    """Record ``thread`` as the runner of the build at ``output_dir``."""
+    """Record ``thread`` as the runner of the build at ``output_dir``, with
+    the newest ledger seq it was started after."""
+    started_after = _newest_ledger_seq(output_dir)
     with _RUNNER_THREADS_GUARD:
         _RUNNER_THREADS[runner_key(output_dir)] = thread
+        _RUNNER_STARTED_AFTER[runner_key(output_dir)] = started_after
+
+
+def _newest_ledger_seq(output_dir: Path | str) -> int:
+    from app.factory.build.ledger import BuildLedger
+
+    ledger = BuildLedger(_ledger_path(output_dir))
+    if not ledger.exists():
+        return 0
+    return max((event.seq for event in ledger.events()), default=0)
 
 
 def live_runner_thread(output_dir: Path | str) -> Optional[threading.Thread]:
@@ -404,8 +420,17 @@ def live_runner_thread(output_dir: Path | str) -> Optional[threading.Thread]:
         thread = _RUNNER_THREADS.get(runner_key(output_dir))
         if thread is not None and not thread.is_alive():
             _RUNNER_THREADS.pop(runner_key(output_dir), None)
+            _RUNNER_STARTED_AFTER.pop(runner_key(output_dir), None)
             thread = None
     return thread
+
+
+def _runner_started_after(output_dir: Path | str) -> Optional[int]:
+    """The ledger seq the live runner of this workspace was started after."""
+    if live_runner_thread(output_dir) is None:
+        return None
+    with _RUNNER_THREADS_GUARD:
+        return _RUNNER_STARTED_AFTER.get(runner_key(output_dir))
 
 
 def _live_runner_thread(output_dir: Path | str) -> bool:
@@ -416,21 +441,27 @@ def _reentered_live(events: Sequence[Any], terminal: Any, output_dir: Path | str
     """True when a failed run has been re-entered and is being worked on.
 
     Read from typed facts only: the verdict is RUN_FAILED, a resume NOTE
-    (``resumed``) was appended after it, and a runner thread is live for this
-    workspace. A resume whose thread never started (refused at the door)
-    stays the failure it was; a run the re-entry itself ends writes a newer
-    verdict, which this does not reach."""
+    (``resumed``) was appended after it, and the live runner thread of this
+    workspace was started after that NOTE. A resume whose thread never
+    started (refused at the door) stays the failure it was, even while an
+    older thread -- the failed run's own, still narrating its verdict -- is
+    alive; a run the re-entry itself ends writes a newer verdict, which this
+    does not reach."""
     from app.factory.build.ledger import EventKind
 
     if terminal is None or terminal.kind is not EventKind.RUN_FAILED:
         return False
-    resumed = any(
-        event.seq > terminal.seq
+    resumes = [
+        event.seq
+        for event in events
+        if event.seq > terminal.seq
         and event.kind is EventKind.NOTE
         and (event.payload or {}).get("resumed")
-        for event in events
-    )
-    return resumed and _live_runner_thread(output_dir)
+    ]
+    if not resumes:
+        return False
+    started_after = _runner_started_after(output_dir)
+    return started_after is not None and started_after >= max(resumes)
 
 
 def _product_id_of(events: Any, output_dir: Path | str) -> str:
