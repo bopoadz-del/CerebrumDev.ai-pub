@@ -1397,6 +1397,7 @@ def test_a_refusal_the_pass_allowance_decided_does_not_blame_the_ceiling(tmp_pat
         (7200.0, 7200.0, 3600.0, wc.NO_ROOM_CEILING),
         (9000.0, 0.0, 300.0, wc.NO_ROOM_ALLOWANCE),  # no ceiling set: it cannot be the reason
         (-5.0, 500.0, 3600.0, wc.NO_ROOM_CEILING),
+        (-200.0, 500.0, 3600.0, wc.NO_ROOM_CEILING),  # a negative elapsed is no extra room under the ceiling
     ],
 )
 def test_no_room_reason_names_the_bound_that_decided(monkeypatch, elapsed, ceiling, allowance, reason):
@@ -1422,3 +1423,14 @@ def test_extend_wall_counts_the_phase_budget_from_the_pass_start(tmp_path, monke
     runner._plan_wall_passes = 2
     assert runner._extend_wall(9999.0, progress_evidenced=evidenced, pass_started_s=started) == applied
     assert runner._deadline == applied
+
+
+@pytest.mark.parametrize("started", [-50.0, -1000.0])
+def test_extend_wall_reads_a_pass_start_before_the_run_as_the_run_start(tmp_path, monkeypatch, started):
+    """First pass (the plan bound, 1800, is below the phase budget): a pass
+    start before the run began never shortens the phase budget."""
+    runner, _calls, _clock = _ramped_runner(tmp_path, monkeypatch, wall=1800.0, phase=3600.0, ceiling=7200.0)
+    runner._run_started = 0.0
+    runner._plan_wall_passes = 1
+    assert runner._extend_wall(9999.0, progress_evidenced=True, pass_started_s=started) == 3600.0
+    assert runner._deadline == 3600.0
