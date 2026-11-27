@@ -1353,7 +1353,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     // Watch snapshot paints one tick after takeover chrome; wait for it
     // the same way the WRITER takeover test waits for its running line.
-    expect(await screen.findByText('Step 1 of 5 — Collector (planning the parts)')).toBeInTheDocument()
+    expect(await screen.findByText('Step 1 of 5 — Collector (finding the parts)')).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('floor-pilot-ready-pill')).not.toBeInTheDocument()

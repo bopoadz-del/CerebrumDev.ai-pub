@@ -1170,9 +1170,11 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
 }
 .stepper-step:first-child .stepper-name { right: auto; left: 0; transform: none; text-align: left; }
 .stepper-step:last-child .stepper-name { right: 0; transform: none; text-align: right; }
+/* Two lines of names fit under the dots and the row stays at most 56px
+   tall: a 28px dot row plus 27px for two 13.2px lines. */
 @media (max-width: 520px) {
-  .stepper-row { padding-bottom: 32px; }
-  .stepper-name { white-space: normal; width: max-content; max-width: 64px; }
+  .stepper-row { min-height: 28px; padding-bottom: 27px; }
+  .stepper-name { white-space: normal; width: max-content; max-width: 64px; line-height: 1.1; }
 }
 .step-current .stepper-name,
 .step-fixing .stepper-name,

@@ -1,5 +1,5 @@
 {
-  "COLLECTOR": { "label": "Collector", "running": "Collector (planning the parts)" },
+  "COLLECTOR": { "label": "Collector", "running": "Collector (finding the parts)" },
   "CLONER": { "label": "Researcher", "running": "Researcher (gathering building blocks)" },
   "WRITER": { "label": "Workers", "running": "Workers (writing the code)" },
   "TESTER": { "label": "Tester", "running": "Tester (testing)" },

@@ -41,7 +41,7 @@ describe('the step name table', () => {
       'running form',
       (id: string) => stepRunning(id),
       [
-        'Collector (planning the parts)',
+        'Collector (finding the parts)',
         'Researcher (gathering building blocks)',
         'Workers (writing the code)',
         'Tester (testing)',

@@ -157,7 +157,7 @@ describe('Your Platforms — coding-agent build', () => {
       })
     })
     render(<Platforms sessionId="sess_ui" />)
-    expect(await screen.findByText(/Coding agent at work — Step 1 of 5 — Collector \(planning the parts\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/Coding agent at work — Step 1 of 5 — Collector \(finding the parts\)/)).toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('platforms-pilot-ready-pill')).not.toBeInTheDocument()

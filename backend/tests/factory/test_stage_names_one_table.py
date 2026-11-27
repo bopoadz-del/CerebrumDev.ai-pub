@@ -4,12 +4,14 @@ build code all agree with.
 The table is ``frontend/src/stepNames.json`` (the build screen reads it through
 ``stepNames.ts``). The stored role ids stay as they are; the table only says
 what each one is called. A role added to ``BuildRole`` without a display name,
-a README whose stage list drifts from the table, or a README path that no
-longer exists fails here.
+a README whose stage list drifts from the table, a README path that no
+longer exists, or a README that names a function in a file that does not
+define it fails here.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -18,6 +20,7 @@ from typing import Dict, List, Mapping, Sequence
 import pytest
 
 from app.factory.build.authority import BUILD_PHASES, BuildRole
+from app.factory.build.roles_handlers import ROLE_IMPLEMENTATIONS
 
 REPO = Path(__file__).resolve().parents[3]
 TABLE = REPO / "frontend" / "src" / "stepNames.json"
@@ -36,6 +39,37 @@ def roles_without_a_name(roles: Sequence[str], table: Mapping[str, Mapping[str, 
         if not str(entry.get("label") or "").strip() or not str(entry.get("running") or "").strip():
             missing.append(role)
     return missing
+
+
+_NAME_IN_FILE = re.compile(r"`([A-Za-z_]\w*)`\s+in\s+`([^`]+\.py)`")
+
+
+def names_not_defined_where_said(text: str, root: Path) -> List[str]:
+    """Each ``"`name` in `path.py`"`` whose file does not define ``name``.
+
+    Also every backticked ``.py`` path the text names without saying which
+    function or class in it does the work, so a path cannot point at the
+    wrong file unchecked.
+    """
+    problems: List[str] = []
+    paired = set()
+    for name, rel in _NAME_IN_FILE.findall(text):
+        paired.add(rel)
+        path = root / rel
+        if not path.is_file():
+            problems.append(f"{rel}: no such file")
+            continue
+        defined = {
+            node.name
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        if name not in defined:
+            problems.append(f"{name} is not defined in {rel}")
+    for rel in re.findall(r"`([^`]+\.py)`", text):
+        if rel not in paired:
+            problems.append(f"{rel}: named without the function that does the work")
+    return problems
 
 
 def _first_section(text: str) -> str:
@@ -107,7 +141,7 @@ def test_the_table_covers_the_roles_in_build_order(roles):
         (
             "running",
             [
-                "Collector (planning the parts)",
+                "Collector (finding the parts)",
                 "Researcher (gathering building blocks)",
                 "Workers (writing the code)",
                 "Tester (testing)",
@@ -136,3 +170,43 @@ def test_the_readme_lists_each_stage_in_order_under_its_table_name(index):
     assert paths, line
     for rel in paths:
         assert (REPO / rel).is_file(), rel
+    # The stage's own handler, as the build code maps it, is named in its item.
+    handler = ROLE_IMPLEMENTATIONS[BUILD_PHASES[index]].__name__
+    assert re.search(rf"`{handler}`\s+in\s+`", line), (handler, line)
+
+
+@pytest.mark.parametrize("part", [0, 1], ids=["before the stages", "the stages"])
+def test_every_function_the_readme_names_is_defined_in_the_file_it_names(part):
+    section = _first_section(README.read_text(encoding="utf-8"))
+    # The text before the numbered list, and the list itself.
+    text = re.split(r"^1\. ", section, maxsplit=1, flags=re.M)[part]
+    assert re.findall(r"`[^`]+\.py`", text), "this part names no file"
+    assert names_not_defined_where_said(text, REPO) == []
+
+
+_HANDLERS = "backend/app/factory/build/roles_handlers.py"
+_GATES = "backend/app/factory/build/gates.py"
+
+
+@pytest.mark.parametrize(
+    "text, problems",
+    [
+        (f"`run_cloner` in `{_HANDLERS}`; `gate_tester_contract` in `{_GATES}`.", []),
+        (
+            f"`run_clonerXX` in `{_HANDLERS}`; `gate_tester_contract` in `{_GATES}`.",
+            [f"run_clonerXX is not defined in {_HANDLERS}"],
+        ),
+        (
+            f"`gate_tester_contract` in `{_HANDLERS}`.",
+            [f"gate_tester_contract is not defined in {_HANDLERS}"],
+        ),
+        (
+            f"the gate (`{_GATES}`) and `run_tester` in `{_HANDLERS}`.",
+            [f"{_GATES}: named without the function that does the work"],
+        ),
+        ("`run_tester` in `backend/no_such_file.py`.", ["backend/no_such_file.py: no such file"]),
+        ("", []),
+    ],
+)
+def test_a_name_in_the_wrong_file_is_reported(text, problems):
+    assert names_not_defined_where_said(text, REPO) == problems

@@ -283,8 +283,12 @@ const RECORDED_RUNS = [
   },
 ]
 
-for (const run of RECORDED_RUNS) {
-  test(`the build screen names the five stages in order for ${run.title}`, async ({ page }) => {
+// The desktop default and the narrowest phone the phone specs target.
+const STAGE_VIEWPORTS = [null, { width: 360, height: 780 }]
+
+for (const run of RECORDED_RUNS) for (const viewport of STAGE_VIEWPORTS) {
+  test(`the build screen names the five stages in order for ${run.title}${viewport ? ` at ${viewport.width}px` : ''}`, async ({ page }) => {
+    if (viewport) await page.setViewportSize(viewport)
     await mockVerifiedFactory(page)
     await page.unroute('**/v1/sessions/sess_e2e_floor/product')
     await page.route('**/v1/sessions/sess_e2e_floor/product', async (route) => {
@@ -316,9 +320,27 @@ for (const run of RECORDED_RUNS) {
     await expect(page.getByTestId('floor-stepper-row').locator('[data-step]')).toHaveCount(5)
     await expect(page.getByTestId('floor-stepper-row').locator('[data-step="STORE_MANAGER"]')).toHaveCount(1)
     await expect(page.getByTestId('floor-stepper')).not.toContainText(/COLLECTOR|CLONER|WRITER|TESTER|STORE_MANAGER/)
+    if (viewport) {
+      // On the phone each name starts at or after the previous one's right
+      // edge, stays inside the screen, and the row stays at most 56px tall.
+      const boxes = await names.evaluateAll((els) =>
+        els.map((el) => {
+          const r = el.getBoundingClientRect()
+          return { left: r.left, right: r.right }
+        }),
+      )
+      expect(boxes.length).toBe(STAGE_NAMES.length)
+      for (let i = 0; i < boxes.length; i += 1) {
+        expect(boxes[i].left, `${STAGE_NAMES[i]} inside the screen`).toBeGreaterThanOrEqual(0)
+        expect(boxes[i].right, `${STAGE_NAMES[i]} inside the screen`).toBeLessThanOrEqual(viewport.width)
+        if (i > 0) expect(boxes[i].left, `${STAGE_NAMES[i]} clear of ${STAGE_NAMES[i - 1]}`).toBeGreaterThanOrEqual(boxes[i - 1].right)
+      }
+      const row = await page.getByTestId('floor-stepper-row').boundingBox()
+      expect(row!.height).toBeLessThanOrEqual(56)
+    }
     if (process.env.STAGE_NAMES_SHOT_DIR) {
       await page.getByTestId('floor-stepper').screenshot({
-        path: `${process.env.STAGE_NAMES_SHOT_DIR}/stepper-${run.caption.toLowerCase()}.png`,
+        path: `${process.env.STAGE_NAMES_SHOT_DIR}/stepper-${run.caption.toLowerCase()}${viewport ? `-${viewport.width}` : ''}.png`,
       })
     }
   })
