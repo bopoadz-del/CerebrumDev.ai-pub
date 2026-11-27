@@ -1425,6 +1425,7 @@ export default function {component}() {{
             out,
             self.plan.dual_registered_blocks,
             blocks_root=self.blocks_root,
+            blueprint=self.blueprint,
         )
 
     def _write_blueprint_copy(self, out: Path) -> None:
