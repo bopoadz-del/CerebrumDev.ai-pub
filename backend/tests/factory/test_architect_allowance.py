@@ -67,10 +67,11 @@ def _run(replies: List[MagicMock]):
             return exc, sent
 
 
-def test_default_allowance_fits_a_reasoning_model(monkeypatch):
-    _env(monkeypatch, None)
-    out, sent = _run([_reply('{"product_name": "x"}', "stop")])
-    assert out == {"product_name": "x"}
+@pytest.mark.parametrize("unset_or_bad, answer", [(None, '{"product_name": "x"}'), ("0", '{"vertical": "y"}')])
+def test_default_allowance_fits_a_reasoning_model(monkeypatch, unset_or_bad, answer):
+    _env(monkeypatch, unset_or_bad)
+    out, sent = _run([_reply(answer, "stop")])
+    assert out == json.loads(answer)
     assert sent[0]["max_tokens"] == 8192
     assert product_architect.llm_max_tokens() == 8192
 
