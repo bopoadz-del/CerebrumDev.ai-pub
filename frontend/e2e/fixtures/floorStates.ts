@@ -31,6 +31,8 @@ export const FLOOR_STATES = [
   'not-found',
   'finished-prototype',
   'finished-pilot',
+  'grader-sent-back',
+  'grader-refused',
 ] as const
 export type FloorState = (typeof FLOOR_STATES)[number]
 
@@ -44,6 +46,8 @@ export const BUILD_STATES: FloorState[] = [
   'not-found',
   'finished-prototype',
   'finished-pilot',
+  'grader-sent-back',
+  'grader-refused',
 ]
 
 export const SID: Record<FloorState, string> = {
@@ -58,6 +62,8 @@ export const SID: Record<FloorState, string> = {
   'not-found': 'sess_state_notfound',
   'finished-prototype': 'sess_state_okproto',
   'finished-pilot': 'sess_state_okpilot',
+  'grader-sent-back': 'sess_state_gradeback',
+  'grader-refused': 'sess_state_graderefused',
 }
 
 const EMAIL = 'e2e.phone@factory.dev'
@@ -295,6 +301,122 @@ const BUILD_NOT_FOUND: BuildStatus = {
   actions: ['check_again', 'start_over'],
 }
 
+/** The grader's rows as the server writes them (grader_findings.finding_row). */
+const GRADER_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
+  {
+    rule: 'function_check',
+    what: 'This feature did not give a correct answer when the quality check called it.',
+    where: 'variation_orders',
+    place: 'variation orders',
+    owner: 'writer',
+    quote: 'function grade FAIL: variation_orders',
+  },
+  {
+    rule: 'screen_walk',
+    what: 'This screen step did not work when the quality check walked through the app.',
+    where: 'route:/v1/variation_orders_register',
+    place: 'the variation orders register feature',
+    owner: 'writer',
+    quote: 'UI step FAIL: route:/v1/variation_orders_register',
+  },
+  {
+    rule: 'no_typed_in_values',
+    what: 'A file the writer wrote holds values typed in for one case instead of reading them from the data.',
+    where: 'app/actions/contract_settings.py',
+    place: '',
+    owner: 'writer',
+    quote: "remove baked literals from app/actions/contract_settings.py: ['0.05']",
+  },
+]
+
+/** UI steps as the UI grader names them; the server puts them in words. */
+const GRADER_UI_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
+  {
+    rule: 'screen_walk',
+    what: 'This screen step did not work when the quality check walked through the app.',
+    where: 'screen:payment_certificate_command_center',
+    place: 'the payment certificate command center screen',
+    owner: 'writer',
+    quote: 'UI step FAIL: screen:payment_certificate_command_center',
+  },
+  {
+    rule: 'screen_walk',
+    what: 'This screen step did not work when the quality check walked through the app.',
+    where: 'honest_error:/v1/retention_management',
+    place: 'the error message of the retention management feature',
+    owner: 'writer',
+    quote: 'UI step FAIL: honest_error:/v1/retention_management',
+  },
+]
+
+/** A review question and a function-grade error row in the shapes the grader
+ * writes them (layer2 questions, function_grader errors). */
+const GRADER_REVIEW_ROWS: NonNullable<BuildStatus['grader']>['findings'] = [
+  {
+    rule: 'review_question',
+    what: 'A review question about this part is still open.',
+    where: "Does the product deliver capability 'retention_management' as the brief asked: hold back a share of each payment?",
+    place: 'Does the product deliver capability retention management as the brief asked, hold back a share of each payment?',
+    owner: 'writer',
+    quote: "re-run writer on: Does the product deliver capability 'retention_management' as the brief asked: hold back a share of each payment?",
+  },
+  {
+    rule: 'function_check',
+    what: 'The features did not pass the quality check as a whole.',
+    where: 'too few gradeable functions: 1 < 3',
+    place: 'too few gradeable functions, 1 < 3',
+    owner: 'writer',
+    quote: 'function grade FAIL: too few gradeable functions: 1 < 3',
+  },
+]
+
+const BUILD_GRADER_SENT_BACK: BuildStatus = {
+  ...BUILD_WRITER,
+  last_event: 'rework round 1: fixing what the quality check found',
+  activity: 'rework round 1: fixing what the quality check found',
+  grader: {
+    state: 'sent_back',
+    tier: 'NOT_CERTIFIED',
+    round: 1,
+    budget: 1,
+    findings: GRADER_ROWS,
+    sent_to_writer: 3,
+    headline: 'The quality check found 3 problems and sent them back to the writer to fix:',
+  },
+}
+
+const BUILD_GRADER_REFUSED: BuildStatus = {
+  ...BUILD_STOPPED,
+  detail: 'GRADER: NOT_CERTIFIED after 1 round(s) -- grader rework budget of 1 rounds spent',
+  failure: {
+    phase: 'WRITER',
+    location: 'WRITER',
+    outcome: 'failed',
+    reason: 'grader_not_certified',
+    code: 'grader_not_certified',
+    kind: 'rounds_spent',
+    title: 'used up its fix rounds',
+    summary: 'A check still did not pass the work (6 items), and this build has no fix rounds left.',
+    next:
+      'Continuing does not grant new fix rounds: the step runs again and stops again if the same check fails.',
+    ref: '5c0de1a2b3',
+  },
+  failed: { gate: 'grader', check: 'grader_not_certified', finding: 'function grade FAIL: variation_orders' },
+  failed_label: 'FAILED(grader, grader_not_certified, function grade FAIL: variation_orders)',
+  failure_narrative: undefined,
+  next_continue:
+    'Continuing does not grant new fix rounds: the step runs again and stops again if the same check fails.',
+  grader: {
+    state: 'stopped',
+    tier: 'NOT_CERTIFIED',
+    round: 1,
+    budget: 1,
+    findings: [...GRADER_ROWS.slice(0, 2), ...GRADER_UI_ROWS, ...GRADER_REVIEW_ROWS],
+    sent_to_writer: 3,
+    headline: 'The quality check did not pass the build. It found 6 problems:',
+  },
+}
+
 /** The server still says building, but the last event is 42 minutes old: the client calls it stalled. */
 const BUILD_STALLED: BuildStatus = { ...BUILD_WRITER, last_event_age_s: 2520, stale: true }
 
@@ -418,6 +540,8 @@ function makeSessions(): Record<string, SessionWorld> {
     [SID['not-found']]: builtSession(SID['not-found'], BUILD_NOT_FOUND),
     [SID['finished-prototype']]: builtSession(SID['finished-prototype'], BUILD_OK_PROTO),
     [SID['finished-pilot']]: pilot,
+    [SID['grader-sent-back']]: builtSession(SID['grader-sent-back'], BUILD_GRADER_SENT_BACK),
+    [SID['grader-refused']]: builtSession(SID['grader-refused'], BUILD_GRADER_REFUSED),
   }
 }
 
