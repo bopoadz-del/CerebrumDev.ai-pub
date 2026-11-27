@@ -692,7 +692,7 @@ def grade_ui(
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     scrub_files(wd, token)
-    report_text = redact(_report_text(out, proc), token)
+    report_text = _report_text(out, proc)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
     return parse_report(json.loads(report_text), blueprint, brief)
