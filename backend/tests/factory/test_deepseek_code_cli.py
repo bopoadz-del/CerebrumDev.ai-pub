@@ -685,6 +685,7 @@ def test_dispatch_deepseek_billing_does_not_openrouter_fallthrough(
 
 
 def test_leftover_47s_wall_remaps_when_deepseek_ready(tmp_path, monkeypatch):
+    from app.factory.build.budget_inspect import writer_first_pass_wall
     from app.factory.build_jobs import _DEFAULT_WALL_CLOCK_S, _wall_clock_s
 
     _arm_deepseek_cli(tmp_path, monkeypatch)
@@ -692,7 +693,7 @@ def test_leftover_47s_wall_remaps_when_deepseek_ready(tmp_path, monkeypatch):
     assert deepseek_cli_ready() is True
     # the leftover value is replaced by the writer's default budget, whatever
     # that default is set to, and never survives as 47 seconds
-    assert _wall_clock_s() == _DEFAULT_WALL_CLOCK_S
+    assert _wall_clock_s() == writer_first_pass_wall(_DEFAULT_WALL_CLOCK_S)
     assert _wall_clock_s() > 47.0
 
 

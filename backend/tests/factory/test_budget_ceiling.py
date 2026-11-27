@@ -47,8 +47,10 @@ def _armed(blueprint, tmp_path, *, wall, ceiling):
 
 
 def test_the_budget_declares_a_hard_ceiling():
+    from app.factory.build.budget_inspect import CEILING_ROOM_S, WRITER_FIRST_PASS_MIN_S
+
     b = BuildBudget()
-    assert b.hard_ceiling_s == 7200.0
+    assert b.hard_ceiling_s == WRITER_FIRST_PASS_MIN_S + CEILING_ROOM_S
     assert b.wall_clock_s <= b.hard_ceiling_s
 
 

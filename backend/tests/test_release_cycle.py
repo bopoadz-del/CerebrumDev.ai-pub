@@ -465,6 +465,83 @@ def test_build_jobs_outlast_the_builds_own_declared_deadline():
         assert int(jobs[name]["timeout-minutes"]) >= need_min, name
 
 
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+
+#: Every job that polls a live build to the build's own declared end
+#: (``wait_for_export`` / ``BuildDeadline``): workflow file, job name.
+BUILD_WAITING_JOBS = [
+    ("pilot-live.yml", "pilot"),
+    ("post-deploy-smoke.yml", "live-smoke"),
+    ("post-deploy-smoke.yml", "release-repros"),
+    ("post-deploy-smoke.yml", "smoke-b"),
+]
+
+
+def _ready_wait_s(job):
+    """The longest SMOKE_READY_WAIT_S the job or any of its steps sets."""
+    envs = [job.get("env") or {}] + [step.get("env") or {} for step in job["steps"]]
+    return max(float(env.get("SMOKE_READY_WAIT_S") or 0) for env in envs)
+
+
+def _spare_s(job):
+    """Seconds the job's own time limit has left after the longest wait a
+    build can declare: ready wait, then the run ceiling, then the Store-gate
+    wall. Negative means GitHub cancels the job before the build's end."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "backend"))
+    from app.factory.build.n3_store_gate import n3_wall_s
+    from app.factory.build.runner import BuildBudget
+
+    need_s = _ready_wait_s(job) + BuildBudget().hard_ceiling_s + n3_wall_s()
+    return int(job["timeout-minutes"]) * 60 - need_s
+
+
+@pytest.mark.parametrize("workflow, name", BUILD_WAITING_JOBS)
+def test_every_job_that_waits_on_a_build_outlasts_its_declared_deadline(
+    monkeypatch, workflow, name
+):
+    """The live pilot job waits the same way the smoke jobs do, so it is held
+    to the same rule: a build that uses its whole ceiling and then reaches the
+    Store gate must end before the job's own time limit, or the run goes red
+    on the checker's limit and not on the product."""
+    monkeypatch.delenv("FACTORY_N3_WALL_S", raising=False)
+    wf = yaml.safe_load((WORKFLOWS_DIR / workflow).read_text(encoding="utf-8"))
+    job = wf["jobs"][name]
+    assert _ready_wait_s(job) > 0, "the job states its ready wait"
+    assert _spare_s(job) >= 0, (workflow, name, _spare_s(job))
+
+
+@pytest.mark.parametrize(
+    "timeout_min, ceiling_s, spare_s",
+    [
+        (210, None, 600.0),  # the ceiling as shipped (9000 s), in the pilot job as it is now
+        (200, None, 0.0),  # the ceiling as shipped, in a job the smoke's size: exact
+        (180, None, -1200.0),  # the ceiling as shipped against the pilot job's OLD limit: refused
+        (210, 9601.0, -1.0),  # one second more ceiling than the pilot job holds
+        (180, 7801.0, -1.0),
+    ],
+)
+def test_the_deadline_guard_counts_ready_wait_ceiling_and_gate_wall(
+    monkeypatch, timeout_min, ceiling_s, spare_s
+):
+    """Must fire: one second of ceiling more than the job holds reads short.
+    ``None`` leaves the shipped ceiling in place."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "backend"))
+    from app.factory.build import budget_inspect
+
+    monkeypatch.delenv("FACTORY_N3_WALL_S", raising=False)
+    if ceiling_s is not None:
+        monkeypatch.setattr(budget_inspect, "CEILING_S", ceiling_s)
+    job = {
+        "timeout-minutes": timeout_min,
+        "steps": [{"uses": "actions/checkout@v4"}, {"env": {"SMOKE_READY_WAIT_S": "1200"}}],
+    }
+    assert _spare_s(job) == spare_s
+
+
 def test_two_cycles_never_overlap_and_a_running_one_is_never_cancelled():
     concurrency = _workflow()["concurrency"]
     assert concurrency["group"]
