@@ -330,7 +330,11 @@ def read_narrative(output_dir: Path | str) -> Optional[Dict[str, Any]]:
             got = (event.payload or {}).get(NARRATIVE_KEY)
             if isinstance(got, Mapping) and got.get("text"):
                 return dict(got)
-        if event.kind is EventKind.RUN_STARTED:
+        # A narrative explains the verdict it follows. Past the newest
+        # verdict, a narrative belongs to an earlier attempt: a re-entered
+        # run the owner stopped writes none, and used to be explained by the
+        # failure it had resumed from.
+        if event.kind in (EventKind.RUN_STARTED, EventKind.RUN_FAILED, EventKind.RUN_SUCCEEDED):
             break
     facts = ledger_facts(events)
     if not facts:

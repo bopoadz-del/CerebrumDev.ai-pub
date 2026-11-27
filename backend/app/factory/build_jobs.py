@@ -410,6 +410,27 @@ def _live_runner_thread(output_dir: Path | str) -> bool:
     return live_runner_thread(output_dir) is not None
 
 
+def _reentered_live(events: Sequence[Any], terminal: Any, output_dir: Path | str) -> bool:
+    """True when a failed run has been re-entered and is being worked on.
+
+    Read from typed facts only: the verdict is RUN_FAILED, a resume NOTE
+    (``resumed``) was appended after it, and a runner thread is live for this
+    workspace. A resume whose thread never started (refused at the door)
+    stays the failure it was; a run the re-entry itself ends writes a newer
+    verdict, which this does not reach."""
+    from app.factory.build.ledger import EventKind
+
+    if terminal is None or terminal.kind is not EventKind.RUN_FAILED:
+        return False
+    resumed = any(
+        event.seq > terminal.seq
+        and event.kind is EventKind.NOTE
+        and (event.payload or {}).get("resumed")
+        for event in events
+    )
+    return resumed and _live_runner_thread(output_dir)
+
+
 def _product_id_of(events: Any, output_dir: Path | str) -> str:
     from app.factory.build.ledger import EventKind
 
@@ -1457,6 +1478,15 @@ def build_status(
             output_dir,
         )
 
+    # Try again writes the resume NOTE, starts the runner thread and answers
+    # with this status at once -- before the thread has written a phase
+    # event. Until it does (a whole slot wait, if the slot is taken) the old
+    # RUN_FAILED is still the newest verdict, and the reply, the card and the
+    # chat read a live run as the failure it resumed from.
+    reentered = _reentered_live(events, terminal, output_dir)
+    if reentered:
+        terminal = None
+
     phases = [p.value for p in BUILD_PHASES]
     current_role = interrupted or resume
     # A crash marker is a record of a DEAD run. A live runner thread for
@@ -1600,6 +1630,9 @@ def build_status(
     # ledger saw; a stopped run reads the row its NEWEST verdict stopped on,
     # so the label, the red chip, the Continue line and the ref agree.
     phase_trail, history, failure = _trail(events)
+    if reentered:
+        # The stop it resumed from is history now, not this run's failure.
+        failure = None
     stop_payload: Dict[str, Any] = {}
     from app.factory.build.n3_store_gate import handoff_awaiting_n3
 

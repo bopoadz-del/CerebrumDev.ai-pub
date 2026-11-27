@@ -1,0 +1,277 @@
+"""A re-entered run reads as running, and its own stop as its own.
+
+Try again appends the typed resume NOTE, starts the runner thread and answers
+with the build status at once -- before the thread has written a phase event.
+The old RUN_FAILED was still the newest verdict then, so the reply, the build
+card and the chat read a live run as the failure it resumed from. And when the
+owner stopped that run, which writes no narrative of its own, the status
+explained the stop with the earlier attempt's narrative.
+
+Every test drives the build-status route (or the status read it calls) over a
+real ledger; the live thread is a real thread registered for the workspace.
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+import app.factory.build.failure_record as fr
+from app.core.auth import DEV_LOCAL_TENANT
+from app.core.session_store import create_session, get_session, update_session
+from app.factory.build import failure_narrative as fn
+from app.factory.build.authority import BuildRole
+from app.factory.build.ledger import BuildLedger, EventKind
+from app.factory.build_jobs import (
+    _RUNNER_THREADS,
+    _RUNNER_THREADS_GUARD,
+    _reentered_live,
+    build_status,
+    register_runner_thread,
+    runner_key,
+)
+from app.main import app
+
+
+@pytest.fixture()
+def client(monkeypatch):
+    monkeypatch.setenv("ENV", "test")
+    monkeypatch.delenv("CEREBRUM_DEV_API_KEY", raising=False)
+    monkeypatch.setenv("ALLOW_ANONYMOUS_DEV", "1")
+    return TestClient(app)
+
+
+@pytest.fixture()
+def live_thread():
+    """A real runner thread for a workspace, released and unregistered after."""
+    release = threading.Event()
+    keys: list = []
+
+    def start(out: Path) -> threading.Thread:
+        thread = threading.Thread(target=release.wait, daemon=True)
+        register_runner_thread(out, thread)
+        thread.start()
+        keys.append(runner_key(out))
+        return thread
+
+    yield start
+    release.set()
+    with _RUNNER_THREADS_GUARD:
+        for key in keys:
+            _RUNNER_THREADS.pop(key, None)
+
+
+def _failed_at_writer(out: Path, reason: str, failure_kind: str, narrative: str) -> BuildLedger:
+    """A run that passed COLLECTOR and CLONER, then failed at the WRITER."""
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    for role in (BuildRole.COLLECTOR, BuildRole.CLONER):
+        ledger.append(EventKind.PHASE_STARTED, role=role)
+        ledger.append(EventKind.GATE_PASSED, role=role, payload={"gate": role.value})
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    ledger.append(
+        EventKind.GATE_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"{reason}: the writer did not finish",
+        payload={"reason": reason, "location": "WRITER", "failure_kind": failure_kind},
+    )
+    ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.WRITER,
+        detail=f"WRITER failed: {reason}",
+        payload={"outcome": "FAILED_GATE", "reason": reason},
+    )
+    fn.attach(ledger, fn.Narrative(text=narrative, source=fn.SOURCE_LEDGER, cites=[]))
+    return ledger
+
+
+def _resume(ledger: BuildLedger, phase: "str | None") -> None:
+    """The NOTE generate_product appends before it starts the runner thread."""
+    ledger.append(
+        EventKind.NOTE,
+        detail=f"RESUMED workspace=p phase={phase}",
+        payload={"resumed": True, "workspace": "p", "phase": phase},
+    )
+
+
+def _owner_stop(ledger: BuildLedger) -> None:
+    """What the runner writes when the owner stops the re-entered WRITER."""
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER)
+    ledger.append(
+        EventKind.PHASE_ABORTED,
+        role=BuildRole.WRITER,
+        detail="stopped by the owner: stop",
+        payload={"reason": "stopped_by_owner"},
+    )
+    ledger.append(
+        EventKind.RUN_FAILED,
+        role=BuildRole.WRITER,
+        detail="stopped by the owner during WRITER",
+        payload={"outcome": "STOPPED_BY_OWNER", "decision": {"reason": "stopped_by_owner"}},
+    )
+
+
+def _session(sid: str, out: Path) -> str:
+    create_session(sid, DEV_LOCAL_TENANT)
+    session = get_session(sid)
+    session.product_design.generation = {"product_id": "p", "output_dir": str(out), "engine": "runner"}
+    update_session(sid, session)
+    return sid
+
+
+# ---------------------------------------------------------------------------
+# After Try again: running at step 3 on the first poll.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reason, failure_kind, phase",
+    [
+        ("codewhale_worker_failed", "out_of_time", "WRITER"),
+        ("writer_contract", "", None),
+    ],
+)
+def test_first_poll_after_try_again_says_running_at_step_three(
+    client, tmp_path, live_thread, reason, failure_kind, phase
+):
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_at_writer(out, reason, failure_kind, f"the writer failed ({reason})")
+    sid = _session(f"sess_reenter_{reason}", out)
+    assert client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]["state"] == "failed"
+
+    _resume(ledger, phase)
+    live_thread(out)
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "building"
+    assert build["current_phase"]["id"] == "WRITER"
+    assert build["phase_index"] == 3
+    assert build["failure"] is None
+    assert "failed" not in build and "stop" not in build
+
+
+@pytest.mark.parametrize(
+    "reason, resumed, thread",
+    [
+        # The resume was refused at the door: the NOTE is there, no thread.
+        ("codewhale_worker_failed", True, False),
+        # A thread is still finishing after its OWN verdict (narrating it):
+        # no resume came after that verdict.
+        ("writer_contract", False, True),
+    ],
+)
+def test_a_failed_run_without_a_live_re_entry_stays_failed(
+    client, tmp_path, live_thread, reason, resumed, thread
+):
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_at_writer(out, reason, "", f"the writer failed ({reason})")
+    sid = _session(f"sess_noreenter_{reason}", out)
+    if resumed:
+        _resume(ledger, "WRITER")
+    if thread:
+        live_thread(out)
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "failed"
+    assert build["failure"]["code"] == reason
+
+
+@pytest.mark.parametrize(
+    "terminal_kind",
+    [None, EventKind.RUN_SUCCEEDED],
+)
+def test_only_a_failed_verdict_is_re_entered(tmp_path, live_thread, terminal_kind):
+    out = tmp_path / "ws"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    if terminal_kind is not None:
+        ledger.append(terminal_kind, payload={"outcome": "SUCCESS"})
+    _resume(ledger, "WRITER")
+    live_thread(out)
+
+    assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is False
+
+
+# ---------------------------------------------------------------------------
+# After an owner stop of the re-entered run: stopped by you, its own story.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reason, failure_kind",
+    [
+        ("codewhale_worker_failed", "out_of_time"),
+        ("writer_contract", ""),
+    ],
+)
+def test_owner_stop_after_try_again_reads_stopped_by_you(client, tmp_path, reason, failure_kind):
+    out = tmp_path / f"ws_{reason}"
+    old_story = f"the writer failed ({reason}) and the run came back marked FAILED"
+    ledger = _failed_at_writer(out, reason, failure_kind, old_story)
+    sid = _session(f"sess_ownerstop_{reason}", out)
+    _resume(ledger, "WRITER")
+    _owner_stop(ledger)
+
+    build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
+
+    assert build["state"] == "failed"
+    assert build["stop"]["kind"] == fr.STOP_USER_STOPPED
+    narrative = build["failure_narrative"] or {}
+    assert narrative.get("text") != old_story
+    assert reason not in narrative.get("text", "")
+    assert "stopped_by_owner" in narrative.get("text", "")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["codewhale_worker_failed", "writer_contract"],
+)
+def test_a_narrative_written_after_the_newest_verdict_is_still_read(tmp_path, reason):
+    """The rule must not fire on the run's own narrative: no re-entry, or a
+    re-entry that failed again and narrated its new verdict."""
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_at_writer(out, reason, "", f"first story ({reason})")
+    assert fn.read_narrative(out)["text"] == f"first story ({reason})"
+
+    _resume(ledger, "WRITER")
+    _owner_stop(ledger)
+    fn.attach(ledger, fn.Narrative(text=f"second story ({reason})", source=fn.SOURCE_LEDGER, cites=[]))
+
+    assert fn.read_narrative(out)["text"] == f"second story ({reason})"
+
+
+@pytest.mark.parametrize(
+    "extra_notes",
+    [0, 2],
+)
+def test_a_ledger_with_no_verdict_facts_has_no_narrative(tmp_path, extra_notes):
+    out = tmp_path / f"ws_{extra_notes}"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    for i in range(extra_notes):
+        ledger.append(EventKind.NOTE, detail=f"note {i}")
+
+    assert fn.read_narrative(out) is None
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["codewhale_worker_failed", "writer_contract"],
+)
+def test_build_status_read_matches_the_route_after_re_entry(tmp_path, live_thread, reason):
+    """The status the Try-again reply carries is the same read: running."""
+    out = tmp_path / f"ws_{reason}"
+    ledger = _failed_at_writer(out, reason, "", "x")
+    _resume(ledger, "WRITER")
+    live_thread(out)
+
+    st = build_status(out)
+
+    assert (st["state"], st["phase_index"], st["failure"]) == ("building", 3, None)
