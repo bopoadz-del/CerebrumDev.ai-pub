@@ -650,7 +650,7 @@ def test_the_runner_must_follow_the_newest_resume(
 
 @pytest.mark.parametrize("reason", ["codewhale_worker_failed", "writer_contract"])
 def test_a_re_entry_whose_thread_has_exited_reads_failed(client, tmp_path, reason):
-    from app.factory.build_jobs import live_runner_thread
+    from app.factory.build_jobs import _RUNNER_STARTED_AFTER, live_runner_thread
 
     out = tmp_path / f"ws_{reason}"
     ledger = _failed_at_writer(out, reason, "", f"the writer failed ({reason})")
@@ -661,9 +661,12 @@ def test_a_re_entry_whose_thread_has_exited_reads_failed(client, tmp_path, reaso
     finished.start()
     finished.join(timeout=5)
     assert not finished.is_alive()
+    assert runner_key(out) in _RUNNER_STARTED_AFTER
 
     assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is False
     assert live_runner_thread(out) is None
+    # A runner that has exited leaves no start mark behind.
+    assert runner_key(out) not in _RUNNER_STARTED_AFTER
     build = client.get(f"/v1/sessions/{sid}/product/build-status").json()["build"]
     assert (build["state"], build["failure"]["code"]) == ("failed", reason)
 
