@@ -864,7 +864,7 @@ async function call(path, init) {
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch (e) { body = text; }
-  return { status: res.status, body };
+  return { status: res.status, body, text };
 }
 
 // Every label an answer may carry its authority under.
@@ -886,55 +886,404 @@ async function boot() {
     $("who").innerHTML = '<span class="err">' + caps.status + " — check the token</span>";
     return;
   }
-  const items = (caps.body && (caps.body.items || caps.body.capabilities)) || [];
-  const ids = items.map((c) => (typeof c === "string" ? c : c.id || c.capability_id)).filter(Boolean);
-  $("who").textContent = ids.length + " capability(ies)";
+  let listed = caps.body;
+  try { listed = parseExact(caps.text); } catch (e) { /* keep the plain parse */ }
+  const items = ((listed && (listed.items || listed.capabilities)) || []).filter(capIdOf);
+  $("who").textContent = items.length + " capability(ies)";
   try {
-    const doc = await (await fetch("/openapi.json")).json();
+    const doc = parseExact(await (await fetch("/openapi.json")).text());
     SCHEMA = doc || {};
   } catch (e) { SCHEMA = {}; }
-  ids.forEach(renderCapability);
+  items.forEach(renderCapability);
   // Only offer what this product actually declares.
   const paths = (SCHEMA && SCHEMA.paths) || {};
   RAG = Object.keys(paths).find((p) => p.indexOf("/rag/") !== -1 && p.indexOf("query") !== -1) || "";
   $("ask").hidden = !RAG;
 }
 
-function fieldsFor(cap) {
-  const paths = (SCHEMA && SCHEMA.paths) || {};
-  const post = paths["/v1/" + cap] && paths["/v1/" + cap].post;
-  const schema = post && post.requestBody && post.requestBody.content
-    && post.requestBody.content["application/json"]
-    && post.requestBody.content["application/json"].schema;
-  const props = (schema && schema.properties) || {};
-  const names = Object.keys(props);
-  return names.length ? names.slice(0, 8) : ["reference", "status"];
+// <<declared-inputs>>
+
+// The product's JSON parsed so that every value keeps the exact text it was
+// written as. JSON numbers are doubles here, so 12345678901234567890 parses
+// to a rounded number; where the browser gives a value's source text (the
+// third reviver argument) that text is kept, and a list's or object's text is
+// built from its members' kept texts, so a big integer nested inside a
+// default keeps its digits too. The kept texts live only in KEPT, beside the
+// parsed objects: nothing is added to the product's own objects, so a property
+// named default, min or max never brings a second, invented field. A value
+// whose digits the browser did not give has no kept text (null), and neither
+// has anything that holds it.
+const KEPT = new WeakMap();
+function keptText(holder, key) {
+  const texts = holder && typeof holder === "object" ? KEPT.get(holder) : undefined;
+  return texts && Object.prototype.hasOwnProperty.call(texts, key) ? texts[key] : undefined;
+}
+// Object.assign that also carries each source's kept texts to the target, so
+// a schema merged from several nodes keeps the exact text of every value.
+function assignKept(target, ...sources) {
+  let texts = KEPT.get(target);
+  for (const src of sources) {
+    if (!src || typeof src !== "object") continue;
+    Object.assign(target, src);
+    const from = KEPT.get(src);
+    for (const k of Object.keys(src)) {
+      if (!texts) { texts = Object.create(null); KEPT.set(target, texts); }
+      if (from && Object.prototype.hasOwnProperty.call(from, k)) texts[k] = from[k];
+      else delete texts[k];
+    }
+  }
+  return target;
+}
+function textFrom(value, ctx) {
+  if (value !== null && typeof value === "object") {
+    // An object's own keys as written (not a *_text key added beside them).
+    const kept = KEPT.get(value);
+    const keys = Array.isArray(value) ? value.map((v, i) => String(i)) : Object.keys(kept || value);
+    const parts = [];
+    for (const k of keys) {
+      const t = keptText(value, k);
+      if (typeof t !== "string") return null;
+      parts.push(Array.isArray(value) ? t : JSON.stringify(k) + ":" + t);
+    }
+    return Array.isArray(value) ? "[" + parts.join(",") + "]" : "{" + parts.join(",") + "}";
+  }
+  if (ctx && typeof ctx.source === "string") return ctx.source;
+  return Number.isInteger(value) && !Number.isSafeInteger(value) ? null : JSON.stringify(value);
+}
+function parseExact(text) {
+  return JSON.parse(text, function (key, value, ctx) {
+    const exact = textFrom(value, ctx);
+    let texts = KEPT.get(this);
+    if (!texts) { texts = Object.create(null); KEPT.set(this, texts); }
+    texts[key] = exact;
+    return value;
+  });
+}
+// A capability's form comes from what the product itself declares: first its
+// own entry in GET /v1/capabilities (fields, or an input_schema), then the
+// request body of the matching POST in openapi.json, where a templated path
+// such as /v1/{id} matches and $ref is followed. Nothing is invented: a
+// capability that declares no inputs gets a raw JSON body, not guessed fields.
+function capIdOf(item) {
+  if (typeof item === "string") return item;
+  return (item && typeof item === "object" && (item.id || item.capability_id)) || "";
 }
 
-function renderCapability(cap) {
+// A $ref node stands for its target, with the node's own other keys (a
+// default, a description) laid over it: pydantic writes an enum or a nested
+// model's default beside the $ref, never inside the target.
+function resolveRef(doc, node, depth) {
+  depth = depth || 0;
+  if (!node || typeof node !== "object") return null;
+  const ref = node["$ref"];
+  if (typeof ref !== "string") return node;
+  if (ref.indexOf("#/") !== 0 || depth > 8) return null;
+  let cur = doc;
+  for (const part of ref.slice(2).split("/")) {
+    if (!cur || typeof cur !== "object") return null;
+    cur = cur[part.replace(/~1/g, "/").replace(/~0/g, "~")];
+  }
+  const target = resolveRef(doc, cur, depth + 1);
+  const siblings = Object.keys(node).filter((k) => k !== "$ref");
+  if (!target || typeof target !== "object" || !siblings.length) return target;
+  const over = assignKept({}, node);
+  delete over["$ref"];
+  return assignKept({}, target, over);
+}
+
+function pathMatches(template, path) {
+  const a = template.split("/");
+  const b = path.split("/");
+  if (a.length !== b.length) return false;
+  return a.every((seg, i) => seg === b[i]
+    || (seg.length > 2 && seg.charAt(0) === "{" && seg.charAt(seg.length - 1) === "}" && b[i] !== ""));
+}
+
+// The one schema a node stands for: $ref followed, an Optional's null branch
+// (anyOf / oneOf beside {type: "null"}, or a type list holding "null")
+// dropped, and allOf members merged. Two real alternatives stay unresolved.
+function unwrap(doc, node, depth) {
+  depth = depth || 0;
+  node = resolveRef(doc, node);
+  if (!node || typeof node !== "object" || depth > 8) return node;
+  for (const key of ["anyOf", "oneOf"]) {
+    if (!Array.isArray(node[key])) continue;
+    const real = node[key].map((n) => resolveRef(doc, n)).filter((n) => n && n.type !== "null");
+    if (real.length !== 1) continue;
+    const rest = assignKept({}, node);
+    delete rest[key];
+    return unwrap(doc, assignKept(rest, real[0]), depth + 1);
+  }
+  if (Array.isArray(node.allOf)) {
+    const merged = assignKept({}, node, { properties: Object.assign({}, node.properties || {}) });
+    merged.required = Array.isArray(node.required) ? node.required.slice() : [];
+    delete merged.allOf;
+    node.allOf.forEach((part) => {
+      const p = unwrap(doc, part, depth + 1) || {};
+      Object.keys(p).forEach((k) => {
+        if (k !== "properties" && k !== "required" && merged[k] === undefined) {
+          merged[k] = p[k];
+          if (keptText(p, k) !== undefined) KEPT.get(merged)[k] = keptText(p, k);
+        }
+      });
+      Object.assign(merged.properties, p.properties || {});
+      if (Array.isArray(p.required)) merged.required = merged.required.concat(p.required);
+    });
+    return merged;
+  }
+  if (Array.isArray(node.type)) {
+    const types = node.type.filter((t) => t !== "null");
+    return assignKept({}, node, { type: types.length === 1 ? types[0] : undefined });
+  }
+  return node;
+}
+
+// A property with no single declared type keeps no type: it is not a string.
+function fieldsFromSchema(doc, schema) {
+  schema = unwrap(doc, schema);
+  const props = (schema && schema.properties && typeof schema.properties === "object") ? schema.properties : {};
+  const required = Array.isArray(schema && schema.required) ? schema.required : [];
+  return Object.keys(props).map((name) => {
+    const p = unwrap(doc, props[name]) || {};
+    return { name: name, type: p.type, required: required.indexOf(name) !== -1,
+             allowed_values: p.enum, min: p.minimum, max: p.maximum, default: p.default,
+             default_text: keptText(p, "default"), min_text: keptText(p, "minimum"),
+             max_text: keptText(p, "maximum") };
+  });
+}
+
+function declaredFields(item, doc, cap) {
+  if (item && typeof item === "object") {
+    if (Array.isArray(item.fields)) {
+      return item.fields.map((f) => (typeof f === "string" ? { name: f } : f))
+        .filter((f) => f && typeof f.name === "string" && f.name !== "")
+        .map((f) => Object.assign({}, f, { default_text: keptText(f, "default"),
+                                           min_text: keptText(f, "min"), max_text: keptText(f, "max") }));
+    }
+    if (item.input_schema && typeof item.input_schema === "object") {
+      return fieldsFromSchema(doc, item.input_schema);
+    }
+  }
+  const paths = (doc && doc.paths) || {};
+  const path = "/v1/" + cap;
+  const key = (paths[path] && paths[path].post) ? path
+    : Object.keys(paths).find((t) => paths[t] && paths[t].post && pathMatches(t, path));
+  const body = key ? resolveRef(doc, paths[key].post.requestBody) : null;
+  const json = body && body.content && body.content["application/json"];
+  return json && json.schema ? fieldsFromSchema(doc, json.schema) : [];
+}
+
+// The form has exactly three kinds of control:
+//  - "text": a plain text box, for a declared string;
+//  - "choice": not set / each allowed value, for a boolean or a declared list
+//    of allowed values (enum);
+//  - "json": a box holding JSON text, for everything else -- numbers,
+//    integers, lists, objects, unions, a field with no single type.
+const STRING = ["string", "str"];
+const BOOLEAN = ["bool", "boolean"];
+
+function choicesOf(field) {
+  for (const key of ["allowed_values", "enum", "options"]) {
+    if (Array.isArray(field[key]) && field[key].length) return field[key];
+  }
+  return BOOLEAN.indexOf(String(field.type || "").toLowerCase()) !== -1 ? [true, false] : [];
+}
+
+function kindOf(field) {
+  if (choicesOf(field).length) return "choice";
+  return STRING.indexOf(String(field.type || "").toLowerCase()) !== -1 ? "text" : "json";
+}
+
+// The JSON text of each choice, as the product wrote it: an option's value is
+// that text, so picking it sends exactly the declared value.
+function choiceTexts(field) {
+  const list = choicesOf(field);
+  return list.map((v, i) => {
+    const kept = keptText(list, String(i));
+    return typeof kept === "string" ? kept : JSON.stringify(v);
+  });
+}
+
+// The schema's own text of a value: what parseExact kept, else the value
+// written as JSON, unless it holds an integer beyond 2^53 (whose digits were
+// not kept): then nothing, never a rounded number.
+function holdsUnsafe(v) {
+  if (typeof v === "number") return Number.isInteger(v) && !Number.isSafeInteger(v);
+  if (v === null || typeof v !== "object") return false;
+  return Object.keys(v).some((k) => holdsUnsafe(v[k]));
+}
+function schemaText(value, kept) {
+  if (typeof kept === "string") return kept;
+  return value === undefined || holdsUnsafe(value) ? "" : JSON.stringify(value);
+}
+
+// The hint a JSON box shows: the declared bounds in their own text, or "JSON".
+function rangeOf(field) {
+  const has = (v) => v !== undefined && v !== null && v !== "";
+  const min = has(field.min_text) ? field.min_text : field.min;
+  const max = has(field.max_text) ? field.max_text : field.max;
+  if (has(min) && has(max)) return min + " to " + max;
+  if (has(min)) return "at least " + min;
+  if (has(max)) return "at most " + max;
+  return "JSON";
+}
+
+// What a control shows before anyone touches it. A text box shows a string
+// default (another declared default in its own text; null shows empty). A
+// choice starts at "not set". A JSON box shows the declared default in the
+// schema's own text (null included), or is empty when there is none.
+function shownOf(field) {
+  const kind = kindOf(field);
+  const d = field.default;
+  if (kind === "choice") return "";
+  if (kind === "text") {
+    if (d === undefined || d === null) return "";
+    return typeof d === "string" ? d : schemaText(d, field.default_text);
+  }
+  return schemaText(d, field.default_text);
+}
+
+// The label of a choice's "not set" option: the declared default, if any.
+function notSetLabel(field) {
+  const d = schemaText(field.default, field.default_text);
+  return d === "" ? "not set" : "not set (default " + d + ")";
+}
+
+// The JSON text one control sends, or undefined for no key. Nothing is
+// parsed into a JavaScript value and written again, so nothing is rounded or
+// turned into a string:
+//  - untouched (still showing what it started with) or empty sends nothing,
+//    so the product applies its own default; a text box the user cleared
+//    from a shown default sends "";
+//  - a text box sends what was typed, as a JSON string;
+//  - a choice sends the picked value's own JSON text;
+//  - a JSON box sends the typed text itself, spliced into the body, once it
+//    is valid JSON; text that is not valid JSON is refused (an Error naming
+//    the field and the reason), and nothing is sent.
+function valueOf(field, raw) {
+  if (raw === undefined || raw === null) return undefined;
+  const kind = kindOf(field);
+  const typed = String(raw);
+  const shown = shownOf(field);
+  if (kind === "choice") {
+    if (typed === "") return undefined;
+    if (choiceTexts(field).indexOf(typed) === -1) throw new Error(field.name + ": not one of the allowed values");
+    return typed;
+  }
+  if (kind === "text") {
+    if (typed === shown) return undefined;
+    return JSON.stringify(typed);
+  }
+  const text = typed.trim();
+  if (text === "" || text === shown.trim()) return undefined;
+  try { JSON.parse(text); } catch (e) {
+    throw new Error(field.name + " is not valid JSON: " + e.message);
+  }
+  return text;
+}
+
+// The body one Create sends: each declared field read from its control by
+// read(field) and passed through valueOf, joined as the JSON text of one
+// object; a field valued undefined is left out. A refused field throws.
+function bodyFrom(fields, read) {
+  const parts = [];
+  fields.forEach((f) => {
+    const value = valueOf(f, read(f));
+    if (value !== undefined) parts.push(JSON.stringify(f.name) + ":" + value);
+  });
+  return "{" + parts.join(",") + "}";
+}
+// <</declared-inputs>>
+
+function controlFor(field) {
+  const kind = kindOf(field);
+  let el;
+  if (kind === "choice") {
+    el = document.createElement("select");
+    // Always "not set" first, required or not: an untouched choice sends
+    // nothing, so no record gets a value nobody picked.
+    el.appendChild(new Option(notSetLabel(field), ""));
+    const texts = choiceTexts(field);
+    choicesOf(field).forEach((v, i) => {
+      el.appendChild(new Option(typeof v === "string" ? v : texts[i], texts[i]));
+    });
+  } else if (kind === "json") {
+    el = document.createElement("textarea");
+    el.rows = 1;
+    el.cols = 30;
+    el.placeholder = rangeOf(field);
+  } else {
+    el = document.createElement("input");
+    el.type = "text";
+  }
+  el.dataset.f = field.name;
+  el.value = shownOf(field);
+  if (field.required) el.required = true;
+  return el;
+}
+
+function renderCapability(item) {
+  const cap = capIdOf(item);
+  const fields = declaredFields(typeof item === "string" ? null : item, SCHEMA, cap);
   const card = document.createElement("div");
   card.className = "card";
-  const fields = fieldsFor(cap);
-  card.innerHTML =
-    "<strong>" + cap + "</strong>" +
-    '<div class="row" style="margin:8px 0">' +
-    fields.map((f) => '<input data-f="' + f + '" placeholder="' + f + '" size="14">').join("") +
-    ' <button data-act="create">Create</button> <button data-act="list">List</button></div>' +
-    '<pre data-out>—</pre>';
+  const title = document.createElement("strong");
+  title.textContent = cap;
+  card.appendChild(title);
+  const form = document.createElement("div");
+  form.className = "row";
+  form.style.margin = "8px 0";
+  fields.forEach((f) => {
+    const label = document.createElement("label");
+    label.className = "row";
+    label.appendChild(document.createTextNode(f.name + (f.required ? " *" : "")));
+    label.appendChild(controlFor(f));
+    form.appendChild(label);
+  });
+  let raw = null;
+  if (!fields.length) {
+    const note = document.createElement("span");
+    note.className = "dim";
+    note.textContent = "No inputs declared for this capability; send a JSON body.";
+    raw = document.createElement("textarea");
+    raw.rows = 3;
+    raw.cols = 40;
+    raw.placeholder = "{}";
+    form.appendChild(note);
+    form.appendChild(raw);
+  }
+  form.insertAdjacentHTML("beforeend",
+    ' <button data-act="create">Create</button> <button data-act="list">List</button>');
+  card.appendChild(form);
+  card.insertAdjacentHTML("beforeend", "<pre data-out>—</pre>");
   const out = card.querySelector("[data-out]");
   card.querySelector('[data-act="create"]').onclick = async () => {
-    const record = {};
-    card.querySelectorAll("[data-f]").forEach((i) => { if (i.value) record[i.dataset.f] = i.value; });
-    const res = await call("/v1/" + cap, { method: "POST", body: JSON.stringify(record) });
+    let body = "{}";
+    if (raw) {
+      // The raw box is sent as typed once it parses, so its numbers stay exact.
+      try { if (raw.value.trim()) { JSON.parse(raw.value); body = raw.value; } }
+      catch (e) { out.textContent = "The body is not valid JSON: " + e.message; return; }
+    } else {
+      // A box whose text is not valid JSON is refused here, with the reason.
+      try {
+        body = bodyFrom(fields, (f) => {
+          const input = form.querySelector('[data-f="' + CSS.escape(f.name) + '"]');
+          return input ? input.value : undefined;
+        });
+      } catch (e) { out.textContent = "Not sent. " + e.message; return; }
+    }
+    const res = await call("/v1/" + encodeURIComponent(cap), { method: "POST", body: body });
     show(out, res);
   };
-  card.querySelector('[data-act="list"]').onclick = async () => show(out, await call("/v1/" + cap));
+  card.querySelector('[data-act="list"]').onclick = async () => show(out, await call("/v1/" + encodeURIComponent(cap)));
   $("caps").appendChild(card);
 }
 
+// A record answer is shown as the product sent it: re-serialising the parsed
+// body would round any integer above 2^53 on screen.
 function show(node, res) {
   const labels = labelsIn(res.body);
-  node.textContent = res.status + "  " + JSON.stringify(res.body, null, 2);
+  node.textContent = res.status + "  " + res.text;
   if (labels.length) {
     const tag = document.createElement("span");
     tag.className = "label";
