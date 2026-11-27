@@ -439,7 +439,7 @@ def test_every_passed_phase_is_pushed_to_the_platform_branch(tmp_path, monkeypat
     monkeypatch.setattr(
         platform_branch,
         "push_to_branch_of_record",
-        lambda ws, platform_id, message, env=None: pushes.append((platform_id, message)) or "b" * 40,
+        lambda ws, platform_id, message, env=None, stop=False: pushes.append((platform_id, message)) or "b" * 40,
     )
     roles = {r: (lambda ctx, r=r: RoleResult(ok=True, detail=f"{r.value} ok")) for r in BuildRole}
     RoleRunner(bp, out, roles=roles,
