@@ -63,10 +63,22 @@ def test_empty_closure_stays_pure_generate_and_says_why(monkeypatch, payload: di
 
 @pytest.mark.parametrize("bid", ["k1", "k2"])
 def test_a_closure_block_the_model_named_as_a_capability_binds_there(monkeypatch, bid: str) -> None:
-    payload = {"capabilities": [{"id": bid, "description": "x", "block_ids": []}]}
+    # Bound onto the capability of its id only when its declared contract
+    # covers what that capability declares (the same check as any pick).
+    payload = {"capabilities": [{"id": bid, "description": "x", "block_ids": [], "inputs": ["q"]}]}
     monkeypatch.setattr(store_kits, "kit_closure", lambda vertical, *a, **k: frozenset({bid}))
+    monkeypatch.setattr(store_kits, "block_manifests", lambda store_root=None: {bid: {"inputs": [{"name": "q"}]}})
     bp = _blueprint_from_llm_payload(payload, "b", "v", [bid])
     assert [(c.id, list(c.block_ids)) for c in bp.capabilities] == [(bid, [bid])]
+
+
+@pytest.mark.parametrize("bid", ["k1", "k2"])
+def test_a_closure_block_on_a_capability_that_declares_nothing_gets_its_own(monkeypatch, bid: str) -> None:
+    payload = {"capabilities": [{"id": bid, "description": "x", "block_ids": []}]}
+    monkeypatch.setattr(store_kits, "kit_closure", lambda vertical, *a, **k: frozenset({bid}))
+    monkeypatch.setattr(store_kits, "block_manifests", lambda store_root=None: {bid: {"inputs": [{"name": "q"}]}})
+    bp = _blueprint_from_llm_payload(payload, "b", "v", [bid])
+    assert [(c.id, list(c.block_ids)) for c in bp.capabilities] == [(bid, []), (f"{bid}_2", [bid])]
 
 
 @pytest.mark.parametrize(
