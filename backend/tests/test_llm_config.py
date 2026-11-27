@@ -523,7 +523,7 @@ def test_deepseek_provider_resolves_scoped_triple_without_moonshot_names(monkeyp
     assert cfg['provider'] == 'deepseek'
     assert cfg['api_key'] == 'sk-ds-test'
     assert 'deepseek.com' in cfg['base_url']
-    assert cfg['fallback_model'] == 'deepseek-chat'
+    assert cfg['fallback_model'] == 'deepseek-flash'
     assert not cfg.get('error')
 
 

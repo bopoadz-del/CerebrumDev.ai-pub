@@ -50,8 +50,8 @@ def _retired_in(value) -> list:
 
 def test_the_named_defaults_are_deepseek_and_the_fallback_host_is_openrouter():
     assert llm_config.DEEPSEEK_BASE_URL == "https://api.deepseek.com/v1"
-    assert llm_config.DEFAULT_PRIMARY_MODEL == "deepseek-chat"
-    assert llm_config.DEFAULT_FALLBACK_MODEL == "deepseek-chat"
+    assert llm_config.DEFAULT_PRIMARY_MODEL == "deepseek-flash"
+    assert llm_config.DEFAULT_FALLBACK_MODEL == "deepseek-flash"
     assert "openrouter.ai" in llm_config.OPENROUTER_BASE_URL
     for name in ("DEEPSEEK_BASE_URL", "DEFAULT_PRIMARY_MODEL", "DEFAULT_FALLBACK_MODEL"):
         assert not _retired_in(getattr(llm_config, name)), f"{name} names a retired provider"
@@ -102,11 +102,11 @@ def test_the_default_follows_an_explicit_naming_of_the_provider(monkeypatch):
     """WK-2: the retired vendor's key no longer moves the default host. It is
     not read at all, so it is neither a credential nor a default-chooser."""
     assert llm_config._default_base_url() == llm_config.DEEPSEEK_BASE_URL
-    assert llm_config._default_model() == "deepseek-chat"
+    assert llm_config._default_model() == "deepseek-flash"
 
     monkeypatch.setenv("KIMI_API_KEY", "sk-a-retired-key")
     assert llm_config._default_base_url() == llm_config.DEEPSEEK_BASE_URL
-    assert llm_config._default_model() == "deepseek-chat"
+    assert llm_config._default_model() == "deepseek-flash"
     cfg = llm_config.get_factory_llm_config()
     assert cfg["provider"] == "" and cfg["api_key"] == ""
     assert "no provider credentials are present" in cfg["error"]

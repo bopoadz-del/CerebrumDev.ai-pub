@@ -78,8 +78,8 @@ CURSOR_KEY_ENVS = (
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 #: Both default to the same id, matching the explicit DeepSeek branch further down
 #: rather than inventing a sibling model name that might 404.
-DEFAULT_PRIMARY_MODEL = "deepseek-chat"
-DEFAULT_FALLBACK_MODEL = "deepseek-chat"
+DEFAULT_PRIMARY_MODEL = "deepseek-flash"
+DEFAULT_FALLBACK_MODEL = "deepseek-flash"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 #: Cursor's Cloud Agents API. It is not an OpenAI-compatible chat host: a
