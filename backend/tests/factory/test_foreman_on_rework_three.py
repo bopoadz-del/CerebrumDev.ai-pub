@@ -323,3 +323,193 @@ def test_below_the_ceiling_the_store_gate_still_gets_its_round(tmp_path, monkeyp
 
     assert decision.kind == DECISION_REWORK
     assert decision.record["round_build"] == REWORK_CEILING
+
+
+# -- the grader's rounds count toward the ceiling of six ------------------------
+
+
+def _no_model():
+    from app.core.model_ladder import NOT_CONFIGURED, ModelUnavailable
+
+    def call(messages):
+        raise ModelUnavailable(NOT_CONFIGURED, "no model in this test")
+
+    return call
+
+
+def _grade_script(monkeypatch, certified_first):
+    """The in-build grader: CERTIFIED (None) for its first ``certified_first``
+    calls, NOT_CERTIFIED on every call after."""
+    from app.factory.build import grader as grader_mod
+
+    calls = []
+
+    def writer_grader(self):
+        calls.append(1)
+        if len(calls) <= certified_first:
+            return None
+        item = f"function grade FAIL: {_caps()[0]} (call {len(calls)})"
+        return grader_mod.GraderVerdict(
+            tier=grader_mod.NOT_CERTIFIED, items=(item,), reasons=(), writer_items=(item,)
+        )
+
+    monkeypatch.setattr(RoleRunner, "_writer_grader", writer_grader)
+    monkeypatch.setattr(RoleRunner, "_grader_factory_fault", lambda self, v, used: None)
+    return calls
+
+
+@pytest.mark.parametrize("writer_fails, tester_fails", [(3, 1), (2, 2)])
+def test_the_ceiling_of_six_ends_the_build_at_a_grader_round(
+    tmp_path, monkeypatch, writer_fails, tester_fails
+):
+    # Four gate rounds, then the grader refuses every tree: it gets build
+    # rounds five and six, and its third refusal meets the ceiling, though
+    # its own budget of three is not spent.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    grades = _grade_script(monkeypatch, certified_first=tester_fails)
+    runner, out, _ = _run(tmp_path, monkeypatch, script, llm=_no_model())
+
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+    assert out.detail.startswith(
+        f"GRADER: NOT_CERTIFIED -- build rework ceiling of {REWORK_CEILING} reached after 2 grader round(s)"
+    )
+    reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
+    assert len(reworks) == REWORK_CEILING
+    graded = [e.payload for e in reworks if e.payload.get("source") == "GRADER"]
+    assert [(p["round"], p["round_build"]) for p in graded] == [(1, 5), (2, 6)]
+    assert "round 2/3 (build 6/6)" in reworks[-1].detail
+    assert len(grades) == tester_fails + 3
+    (stop,) = [
+        e for e in runner.ledger.events()
+        if e.kind is EventKind.GATE_FAILED and (e.payload or {}).get("reason") == "grader_build_ceiling"
+    ]
+    assert stop.role is W
+
+
+@pytest.mark.parametrize("writer_fails, tester_fails", [(1, 1), (0, 2)])
+def test_below_the_ceiling_the_grader_spends_its_own_three_rounds(
+    tmp_path, monkeypatch, writer_fails, tester_fails
+):
+    # The negative case: two gate rounds, so the grader's three rounds end at
+    # build round five and its own budget stops the run, not the ceiling.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    _grade_script(monkeypatch, certified_first=tester_fails)
+    runner, out, _ = _run(tmp_path, monkeypatch, script, llm=_no_model())
+
+    assert out.outcome is Outcome.FAILED_GATE, out.detail
+    assert out.detail.startswith(f"GRADER: NOT_CERTIFIED after {REWORK_BUDGET} round(s)")
+    graded = [
+        e.payload for e in runner.ledger.events()
+        if e.kind is EventKind.REWORK and e.payload.get("source") == "GRADER"
+    ]
+    assert [(p["round"], p["round_build"]) for p in graded] == [(1, 3), (2, 4), (3, 5)]
+
+
+# -- the foreman's STOP under the default --------------------------------------
+
+
+def _stop_reply(cap, confidence, reason):
+    body = _reply(cap)
+    body.update(recommend="stop", confidence=confidence, stop_reason=reason)
+    return body
+
+
+@pytest.mark.parametrize(
+    "index, reason",
+    [(0, "the handler and its model disagree by design"), (1, "the brief asks for two answers")],
+)
+def test_the_foreman_stop_at_its_confidence_ends_the_build(tmp_path, monkeypatch, index, reason):
+    cap = _caps()[index]
+    llm = _Llm(_stop_reply(cap, fm.STOP_CONFIDENCE, reason))
+    runner, out, calls = _run(tmp_path, monkeypatch, {T: [_tester_fail(cap, "stopped")]}, llm=llm)
+
+    assert out.outcome is Outcome.FAILED_GATE, out.detail
+    assert f"foreman:{reason}" in out.detail
+    assert len(calls) == 1
+    assert not _decisions(runner, DECISION_REWORK)
+
+
+@pytest.mark.parametrize("index, confidence", [(0, 0.79), (1, 0.5)])
+def test_a_foreman_stop_below_its_confidence_is_not_honoured(tmp_path, monkeypatch, index, confidence):
+    cap = _caps()[index]
+    llm = _Llm(_stop_reply(cap, confidence, "not sure enough"))
+    runner, out, calls = _run(tmp_path, monkeypatch, {T: [_tester_fail(cap, "kept")]}, llm=llm)
+
+    assert out.outcome is Outcome.SUCCESS, out.detail
+    assert [(d["gate"], d["round_gate"]) for d in _decisions(runner, DECISION_REWORK)] == [(T.value, 1)]
+    assert len(calls) == 2
+
+
+# -- with no model reachable the default still builds --------------------------
+
+
+@pytest.mark.parametrize("index, shape", [(0, "missing_field"), (1, "wrong_status")])
+def test_with_no_model_the_writer_gets_the_raw_findings(tmp_path, monkeypatch, index, shape):
+    cap = _caps()[index]
+    runner, out, calls = _run(tmp_path, monkeypatch, {T: [_tester_fail(cap, shape)]}, llm=_no_model())
+
+    assert out.outcome is Outcome.SUCCESS, out.detail
+    (rework,) = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
+    foreman = rework.payload["foreman"]
+    assert foreman["mode"] == "on" and foreman["used"] is False and foreman["fallback"] is True
+    assert foreman["refusals"] == ["foreman call failed: ModelUnavailable"]
+    handed = calls[1]
+    assert any(isinstance(i, Finding) and i.gate == "TESTER" and shape in str(i) for i in handed)
+
+
+# -- the failure narrative follows the same setting -----------------------------
+
+
+def _narrative_calls(runner):
+    from app.factory.build import failure_narrative as fn
+
+    return [
+        e.payload["architect"] for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and ((e.payload or {}).get("architect") or {}).get("entry") == fn.ENTRY
+    ]
+
+
+def _narrative(runner):
+    from app.factory.build import failure_narrative as fn
+
+    (note,) = [
+        e.payload[fn.NARRATIVE_KEY] for e in runner.ledger.events()
+        if e.kind is EventKind.NOTE and fn.NARRATIVE_KEY in (e.payload or {})
+    ]
+    return note
+
+
+@pytest.mark.parametrize(
+    "role, check", [(W, brief_gates.WRITER_BEHAVIOUR_CHECK), (T, brief_gates.SUITE_CHECK)]
+)
+def test_a_failed_run_asks_the_model_for_its_narrative_by_default(tmp_path, monkeypatch, role, check):
+    script = {role: [_fail(role, check, f"shape{i}") for i in range(4)]}
+    runner, out, _ = _run(tmp_path, monkeypatch, script, llm=_no_model())
+
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+    calls = _narrative_calls(runner)
+    assert [c["mode"] for c in calls] == ["on", "on"]
+    assert calls[-1]["fallback"] is True
+    # no model answered, so the ledger-rendered narrative stands
+    assert _narrative(runner)["source"] == "ledger"
+
+
+@pytest.mark.parametrize(
+    "role, check", [(W, brief_gates.WRITER_BEHAVIOUR_CHECK), (T, brief_gates.SUITE_CHECK)]
+)
+def test_with_the_foreman_off_a_failed_run_makes_no_narrative_call(tmp_path, monkeypatch, role, check):
+    monkeypatch.setenv(fm.FLAG_ENV, "off")
+    llm = _Llm(_reply(_caps()[0]))
+    script = {role: [_fail(role, check, f"shape{i}") for i in range(4)]}
+    runner, out, _ = _run(tmp_path, monkeypatch, script, llm=llm)
+
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+    assert llm.calls == 0
+    assert _narrative_calls(runner) == []
+    assert _narrative(runner)["source"] == "ledger"

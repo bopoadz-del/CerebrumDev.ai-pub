@@ -3738,15 +3738,32 @@ class RoleRunner:
                                 rework=rework_used,
                                 findings=list(grade_verdict.items),
                             )
+                        # The build ceiling governs the grader too: its
+                        # rounds count toward the build total, so a grader
+                        # round with the build's REWORK_CEILING spent ends the
+                        # run, as decide() ends any other gate's.
+                        build_rounds = self._rework_rounds_this_build()
+                        if build_rounds >= REWORK_CEILING:
+                            self._grader_stop(grade_verdict, "grader_build_ceiling")
+                            return self._finish(
+                                Outcome.FAILED_BUDGET_SPENT,
+                                f"GRADER: {NOT_CERTIFIED} -- build rework ceiling of "
+                                f"{REWORK_CEILING} reached after {rounds} grader round(s): "
+                                + ("; ".join(items)[:400] or "-"),
+                                phase=role,
+                                rework=rework_used,
+                                findings=list(grade_verdict.items),
+                            )
                         self._grant_rework_wall(
-                            BuildRole.WRITER, build_round=self._rework_rounds_this_build() + 1
+                            BuildRole.WRITER, build_round=build_rounds + 1
                         )
                         self.ledger.append(
                             EventKind.REWORK,
                             role=BuildRole.WRITER,
                             detail=(
                                 f"GRADER: {NOT_CERTIFIED} -- writer handback "
-                                f"round {rounds + 1}/{REWORK_BUDGET}: "
+                                f"round {rounds + 1}/{REWORK_BUDGET} "
+                                f"(build {build_rounds + 1}/{REWORK_CEILING}): "
                                 + ("; ".join(items)[:400] or "-")
                             ),
                             payload={
@@ -3756,6 +3773,7 @@ class RoleRunner:
                                 "work_list": list(items),
                                 "failure_names": list(items),
                                 "round": rounds + 1,
+                                "round_build": build_rounds + 1,
                                 "grader_tier": NOT_CERTIFIED,
                             },
                         )
