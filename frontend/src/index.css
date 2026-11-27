@@ -1070,6 +1070,23 @@ main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: c
   color: var(--warning-text);
   font-size: var(--text-sm); line-height: var(--lh-sm);
 }
+/* What the quality check asked for: on the card face, plain words only. */
+.grader-findings { display: grid; gap: var(--space-1); min-width: 0; }
+.grader-findings-headline {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+  overflow-wrap: break-word;
+}
+.grader-findings-list {
+  margin: 0;
+  padding-left: var(--space-4);
+  display: grid; gap: var(--space-1);
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+  overflow-wrap: break-word;
+}
+.grader-findings-where { color: var(--text-muted); }
+.grader-findings-more { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
 /* The action bar (PR-08): one list of the state's actions, each with one
    visible line under its label. Pinned above the composer on phones; inside
    the BUILD card from 768px. At most one gold button; danger is never gold. */
