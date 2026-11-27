@@ -849,12 +849,12 @@ def fixture_trials(
     :func:`combine_trials`, which no order of the sources changes."""
     trials = []
     for fx in fn.fixtures:
-        proc, data = _run_probe(fn, workspace, python, trial=fx, inputs=[dict(i) for i in inputs])
+        _proc, data = _run_probe(fn, workspace, python, trial=fx, inputs=[dict(i) for i in inputs])
         trial = (data or {}).get("trial")
-        if proc is None or proc.returncode != 0 or not isinstance(trial, dict):
-            trial = {"source": fx["capability"], "answers": [],
-                     "source_error": "the fixture trial wrote no result"}
-        trials.append(trial)
+        # A trial that timed out or ended before writing its result showed
+        # nothing: it adds no fact, and the other sources are still tried.
+        if isinstance(trial, dict):
+            trials.append(trial)
     return combine_trials(trials)
 
 
@@ -864,7 +864,8 @@ def combine_trials(trials: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     ``stored_by``: the sources whose store, read back, held input one.
     ``took_by``: the sources after which the handle accepted input one.
     Input one counts as accepted when it was accepted after ANY source, and
-    a field is depended on when its change was refused after any. The
+    a field is depended on when its change was refused after any (a trial
+    probes changed fields only once input one was accepted). The
     answers kept are those of the trials that stored or took. The same
     trials in any order give the same record."""
     trials = sorted(trials, key=lambda t: str(t.get("source")))
@@ -876,7 +877,7 @@ def combine_trials(trials: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "took_by": [str(t["source"]) for t in took],
         "answers": [str(a) for t in kept for a in t.get("answers") or []],
         "accepted": bool(took),
-        "refused_when_changed": sorted({str(n) for t in took for n in t.get("refused_when_changed") or []}),
+        "refused_when_changed": sorted({str(n) for t in trials for n in t.get("refused_when_changed") or []}),
     }
     errors = [str(t["error"]) for t in trials if t.get("stored") is True and t.get("error")]
     if errors and not took:

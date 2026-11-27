@@ -952,3 +952,11 @@ def test_a_record_in_the_store_before_the_source_ran_is_not_the_sources(tmp_path
     )
     r = {x.capability_id: x for x in (fg.run_function(f, ws) for f in fg.derive_functions(["checker", "pure"], ws))}
     assert (r["checker"].detail, r["checker"].needs_fixture) == (fg.NOT_STORED, True)
+
+
+@pytest.mark.parametrize("code", [0, 3])
+@pytest.mark.parametrize("order", [["exiter", "keeper", "checker"], ["keeper", "exiter", "checker"]])
+def test_a_source_that_ends_its_process_does_not_stop_the_next_one(tmp_path, code, order):
+    exiter = f"import os\ndef handle(payload):\n    os._exit({code})\n"
+    r = _judge(tmp_path, order, {"checker": _checker("r['owner'] == p['owner']"), "keeper": KEEPER, "exiter": exiter})
+    assert (r["checker"].ok, r["checker"].detail, r["checker"].depends_on) == (True, "", ["owner"])
