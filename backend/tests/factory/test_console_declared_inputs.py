@@ -55,7 +55,10 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
         + " return declaredFields(it, {}, capIdOf(it)).map((f) => [f.name, kindOf(f), shownOf(f)]); },"
         + " choicesFromText: (t) => { const d = parseExact(t); return choiceTexts(fieldsFromSchema(d, d)[0]); },"
         + " fieldsFromText: (t) => { const d = parseExact(t); return fieldsFromSchema(d, d); },"
-        + " docFromText: (t) => parseExact(t) };\n"
+        + " docFromText: (t) => parseExact(t),"
+        + " capsHintsFromText: (t) => { const l = parseExact(t); const it = (l.items || l.capabilities)[0];"
+        + " return declaredFields(it, {}, capIdOf(it)).map((f) => rangeOf(f)); },"
+        + " textAfterAssign: (t, plain, key) => keptText(assignKept({}, parseExact(t), plain), key) };\n"
         + "const out = CALLS.map((c) => { let r; try { r = FNS[c.fn](...c.args); }"
         + " catch (e) { r = { error: e.message }; }"
         + " return r === undefined ? '<undefined>' : r; });\n"
@@ -675,3 +678,20 @@ class TestOnlyDeclaredFieldsAndTheirDefaults:
     def test_a_refs_own_keys_lie_over_its_target(self, node, expected, tmp_path):
         doc = {"d": {"T": {"type": "integer", "default": 1}}}
         assert _run([{"fn": "resolveRef", "args": [doc, node]}], tmp_path) == [expected]
+
+    @pytest.mark.parametrize("bounds, hint", [
+        ('"min":-12345678901234567890,"max":3', "-12345678901234567890 to 3"),
+        ('"min":1,"max":98765432109876543210', "1 to 98765432109876543210"),
+    ])
+    def test_a_capability_fields_bounds_keep_their_own_text(self, bounds, hint, tmp_path):
+        text = '{"items":[{"id":"c","fields":[{"name":"n","type":"int",%s}]}]}' % bounds
+        assert _run([{"fn": "capsHintsFromText", "args": [text]}], tmp_path) == [[hint]]
+
+    @pytest.mark.parametrize("text, plain, key, expected", [
+        ('{"default":12345678901234567890}', {"default": 4}, "default", MISSING),
+        ('{"default":12345678901234567890}', {"type": "integer"}, "default", "12345678901234567890"),
+        ('{"maximum":7.0,"minimum":1}', {"maximum": 8}, "maximum", MISSING),
+        ('{"maximum":7.0,"minimum":1}', {"maximum": 8}, "minimum", "1"),
+    ])
+    def test_a_value_replaced_in_a_merge_loses_its_old_text(self, text, plain, key, expected, tmp_path):
+        assert _run([{"fn": "textAfterAssign", "args": [text, plain, key]}], tmp_path) == [expected]
