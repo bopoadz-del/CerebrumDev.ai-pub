@@ -41,7 +41,7 @@ jobs:
   pilot:
     name: Pilot build on live
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
         with:

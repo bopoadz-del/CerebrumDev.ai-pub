@@ -60,11 +60,12 @@ WRITER_FIRST_PASS_MIN_S = 7200.0
 #: round before the hard ceiling. Bounded above by the jobs that wait on a
 #: build: each waits ready + ceiling + Store-gate wall, and its job timeout
 #: must outlast that (``test_release_cycle``). The tightest is the live
-#: pilot job (180 min = 10800 s): 10800 - 1200 ready - 1800 gate = 7800 s
-#: of ceiling, which leaves 600 s above the floor. So a first pass that
-#: runs past 6000 s leaves less than one full ``FIX_ALLOWANCE_S`` round.
-#: A longer room needs a longer pilot job timeout first.
-CEILING_ROOM_S = 600.0
+#: pilot job (210 min = 12600 s): 12600 - 1200 ready - 1800 gate = 9600 s
+#: of ceiling at most. The room is 30 min, one full ``FIX_ALLOWANCE_S``
+#: round after a first pass that runs its whole floor: ceiling 9000 s,
+#: 600 s inside the pilot job. A longer room needs a longer job first;
+#: the guard in ``test_release_cycle`` refuses it before then.
+CEILING_ROOM_S = 1800.0
 #: Last-resort ceiling. Never the default; never granted silently.
 #: Computed from the first-pass floor, so raising the floor moves it too.
 #:

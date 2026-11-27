@@ -515,9 +515,10 @@ def test_every_job_that_waits_on_a_build_outlasts_its_declared_deadline(
 @pytest.mark.parametrize(
     "timeout_min, ceiling_s, spare_s",
     [
-        (180, None, 0.0),  # the ceiling as shipped, in a job the pilot's size
-        (200, None, 1200.0),  # the ceiling as shipped, in a job the smoke's size
-        (180, 9000.0, -1200.0),  # the ceiling at ca6a5b7 against the pilot job
+        (210, None, 600.0),  # the ceiling as shipped (9000 s), in the pilot job as it is now
+        (200, None, 0.0),  # the ceiling as shipped, in a job the smoke's size: exact
+        (180, None, -1200.0),  # the ceiling as shipped against the pilot job's OLD limit: refused
+        (210, 9601.0, -1.0),  # one second more ceiling than the pilot job holds
         (180, 7801.0, -1.0),
     ],
 )
