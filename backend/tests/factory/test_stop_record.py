@@ -347,7 +347,7 @@ def test_a_designed_handoff_is_not_the_last_failure(tmp_path, handed_off, reason
         ),
         ({"state": "building"}, None, ["stop"]),
         ({"state": "building", "n3_waiting": True}, None, ["try_again"]),
-        ({"state": "stalled"}, None, ["try_again", "start_over"]),
+        ({"state": "stalled"}, None, ["try_again", "download_copy", "start_over"]),
         (
             {"state": "failed", "stop": {"kind": "time_ran_out"}},
             None,

@@ -24,7 +24,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from app.factory.build.builds_push import (
     BRANCH_PREFIX,
@@ -174,6 +174,46 @@ def checkpoint_message(phase: str) -> str:
     """The commit message for a passed-phase checkpoint: a human subject plus
     the trailer checkpointed_phases reads."""
     return "factory: %s passed\n\n%s: %s" % (phase, CHECKPOINT_TRAILER, phase)
+
+
+def drop_stop_manifest(branch_tree: Path, source: Path) -> bool:
+    """Remove a stop's MANIFEST.json from the branch tree when the tree being
+    checkpointed brings no manifest of its own.
+
+    A stop commit carries a MANIFEST.json saying the work was not certified.
+    The next checkpoint after a resume is work that moved on; leaving that
+    manifest at the tip would describe a stop the branch is no longer at.
+    Read from its typed ``stopped`` record only. Returns True when removed."""
+    import json
+
+    from app.factory.build.export_manifest import MANIFEST_FILENAME
+
+    path = Path(branch_tree) / MANIFEST_FILENAME
+    if (Path(source) / MANIFEST_FILENAME).is_file() or not path.is_file():
+        return False
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict) or not isinstance(record.get("stopped"), dict):
+        return False
+    path.unlink()
+    return True
+
+
+def stop_checkpoint_message(state_word: str, step: str, check: str, passed: Sequence[str]) -> str:
+    """The commit message for the work as it stood when a run stopped.
+
+    The subject says the run stopped and is not certified. The trailer still
+    names the phases that had passed, because the stop commit is the branch
+    tip and checkpointed_phases reads only from the tip. The phase the run
+    stopped in is not among them, so a re-entry runs it again."""
+    subject = "factory: %s at %s, not certified" % (state_word, step or "no step")
+    body = "check: %s\ncertified: false" % (check or "-")
+    msg = "%s\n\n%s" % (subject, body)
+    if passed:
+        msg += "\n\n%s: %s" % (CHECKPOINT_TRAILER, ",".join(passed))
+    return msg
 
 
 def checkpointed_phases(workspace: Path) -> tuple:
@@ -393,6 +433,7 @@ def checkpoint(workspace: Path, branch: str, message: str, env: Mapping[str, str
         proc = _git(["clone", "--quiet", "--depth=1", "--branch", branch, _remote_url(env), "."], tmp)
         if proc.returncode != 0:
             raise BuildsPushError(f"checkpoint clone failed: {(proc.stderr or '')[-300:]}")
+        drop_stop_manifest(tmp, Path(workspace))
         _sync_workspace_onto_tree(Path(workspace), tmp)
         # The Store gate belongs to cerebrum-builds `main`, and a branch runs
         # the copy IN ITS OWN TREE. Carry main's current gate onto every

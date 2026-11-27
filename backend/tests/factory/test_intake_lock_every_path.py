@@ -417,7 +417,7 @@ def test_copy_and_change_answers_refuse_in_plain_words_unless_the_build_failed(
     assert copy["ok"] is (not finished) and change["ok"] is (not finished)
     assert state.product_design.intake_reopened is (not finished)
     if finished:
-        assert copy["summary"].startswith("This build did not stop with a failure")
+        assert copy["summary"].startswith("This build finished, so there is no as-is copy")
         assert change["summary"].startswith("This build did not stop with a failure")
         assert change["intake"]["reopened"] is False
     else:
