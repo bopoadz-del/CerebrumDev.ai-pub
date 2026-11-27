@@ -256,27 +256,64 @@ def test_only_a_stop_is_a_stop_outcome():
 
 
 @pytest.mark.parametrize(
-    "branch_manifest, source_has_manifest, dropped",
+    "manifest, dropped",
     [
-        ({"certified": False, "stopped": {"state": "FAILED"}}, False, True),
-        ({"certified": False, "stopped": {"state": "STOPPED"}}, False, True),
-        ({"certified": False, "stopped": {"state": "FAILED"}}, True, False),
-        ({"certified": True}, False, False),
-        ({"certified": False, "stopped": "FAILED"}, False, False),
+        ({"certified": False, "stopped": {"state": "FAILED"}}, True),
+        ({"certified": False, "stopped": {"state": "STOPPED"}}, True),
+        ({"certified": True}, False),
+        ({"certified": False, "stopped": "FAILED"}, False),
+        (None, False),
     ],
 )
-def test_a_stop_manifest_is_dropped_by_the_next_checkpoint(
-    tmp_path, branch_manifest, source_has_manifest, dropped
-):
-    tree, source = tmp_path / "branch", tmp_path / "ws"
+def test_drop_stop_manifest_removes_only_a_stop_record(tmp_path, manifest, dropped):
+    tree = tmp_path / "tree"
     tree.mkdir()
-    source.mkdir()
-    (tree / "MANIFEST.json").write_text(json.dumps(branch_manifest), encoding="utf-8")
-    if source_has_manifest:
-        (source / "MANIFEST.json").write_text("{}", encoding="utf-8")
+    if manifest is not None:
+        (tree / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-    assert branch_attach.drop_stop_manifest(tree, source) is dropped
-    assert (tree / "MANIFEST.json").exists() is not dropped
+    assert branch_attach.drop_stop_manifest(tree) is dropped
+    assert (tree / "MANIFEST.json").exists() is (manifest is not None and not dropped)
+
+
+def _stop_commit(tmp_path: Path, state_word: str) -> None:
+    """Push a stop commit (its MANIFEST.json says stopped) to the branch."""
+    stop_tree = tmp_path / "stop_tree"
+    (stop_tree / "app").mkdir(parents=True)
+    (stop_tree / "app" / "main.py").write_text("x = 1" + NL, encoding="utf-8")
+    (stop_tree / "MANIFEST.json").write_text(
+        json.dumps({"certified": False, "stopped": {"state": state_word, "step": "WRITER"}}),
+        encoding="utf-8",
+    )
+    msg = branch_attach.stop_checkpoint_message(state_word, "WRITER", "grader", ["COLLECTOR", "CLONER"])
+    branch_attach.checkpoint(stop_tree, BRANCH, msg, stop=True)
+
+
+@pytest.mark.parametrize("state_word, phase", [("FAILED", "WRITER"), ("STOPPED", "TESTER")])
+def test_a_re_entered_branch_drops_the_stop_manifest_at_the_next_checkpoint(
+    tmp_path, remote, state_word, phase
+):
+    """Try again clones the branch into the workspace (stop manifest
+    included); the next passed phase is work that moved on."""
+    _stop_commit(tmp_path, state_word)
+    assert json.loads(_on_branch(remote, "MANIFEST.json"))["stopped"]["state"] == state_word
+    ws = tmp_path / "reentered"
+    _git(tmp_path, "clone", "-q", "--branch", BRANCH, str(remote), str(ws))
+    assert (ws / "MANIFEST.json").is_file()
+    (ws / "app" / "main.py").write_text("x = 2" + NL, encoding="utf-8")
+
+    branch_attach.checkpoint(ws, BRANCH, branch_attach.checkpoint_message(phase))
+
+    assert _git(remote, "log", "-1", "--format=%s", BRANCH).strip() == f"factory: {phase} passed"
+    assert _on_branch(remote, "MANIFEST.json") == ""
+    assert _on_branch(remote, "app/main.py") == "x = 2" + NL
+
+
+@pytest.mark.parametrize("state_word", ["FAILED", "STOPPED"])
+def test_a_stop_checkpoint_keeps_its_own_manifest(tmp_path, remote, state_word):
+    _stop_commit(tmp_path, state_word)
+
+    manifest = json.loads(_on_branch(remote, "MANIFEST.json"))
+    assert manifest["stopped"]["state"] == state_word and manifest["certified"] is False
 
 
 @pytest.mark.parametrize("passed", [(), ("COLLECTOR", "CLONER")])
@@ -535,6 +572,8 @@ def test_the_stop_tree_carries_only_exported_staged_files(tmp_path, rel, text):
     (staging / "app" / "empty_dir").mkdir(parents=True)
     (staging / "app" / "__pycache__").mkdir(parents=True)
     (staging / "app" / "__pycache__" / "x.cpython-311.pyc").write_bytes(b"\x00")
+    (staging / ".git").mkdir()
+    (staging / ".git" / "config").write_text("[core]" + NL, encoding="utf-8")
     tree = tmp_path / "tree"
     tree.mkdir()
 
@@ -543,6 +582,7 @@ def test_the_stop_tree_carries_only_exported_staged_files(tmp_path, rel, text):
     assert (tree / rel).read_text(encoding="utf-8") == text
     assert (tree / "app" / "main.py").is_file()
     assert not (tree / "app" / "__pycache__").exists()
+    assert not (tree / ".git").exists()
 
 
 @pytest.mark.parametrize("design, sha", [("none", ""), ("no_output", ""), ("own", "a" * 40), ("own", "b" * 40)])
@@ -557,6 +597,7 @@ def test_stop_checkpoint_of_reads_only_the_builds_own_ledger(tmp_path, design, s
     out.mkdir()
     ledger = BuildLedger(out / "build_ledger.jsonl")
     ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.RUN_FAILED, detail="stop", payload={"outcome": "FAILED_GATE"})
     ledger.append(EventKind.NOTE, detail="stop", payload={"stop_checkpoint": sha or "c" * 40, "branch": BRANCH})
     if design == "none":
         state = SimpleNamespace(product_design=None, session_id="s")
@@ -570,3 +611,246 @@ def test_stop_checkpoint_of_reads_only_the_builds_own_ledger(tmp_path, design, s
     got = platform_chat_flow.stop_checkpoint_of(state)
 
     assert got == ({"stop_checkpoint": sha, "branch": BRANCH} if sha else {})
+
+
+# -- the reviewers' faults on 82ffd73, each answered by a test ------------------
+
+
+@pytest.mark.parametrize("token", ["ghs_probeSECRETaaaa1111", "ghp_otherSECRETbbbb2222"])
+def test_a_timed_out_stop_push_never_writes_the_token(tmp_path, remote, monkeypatch, caplog, token):
+    """The stop push times out inside git; the timeout's own text is the
+    whole command line with the authenticated URL in it."""
+    monkeypatch.setenv("CEREBRUM_BUILDS_GITHUB_TOKEN", token)
+    real_git = branch_attach._git
+    stopping = {"now": False}
+
+    def git(args, cwd):
+        if stopping["now"] and args and args[0] == "clone":
+            url = f"https://x-access-token:{token}@github.com/o/r.git"
+            raise subprocess.TimeoutExpired(cmd=["git", *args[:-2], url, "."], timeout=600)
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(branch_attach, "_git", git)
+    roles = _roles(False, "app/x.py", "x = 1" + NL)
+    inner = roles[BuildRole.WRITER]
+
+    def writer(ctx):
+        stopping["now"] = True
+        return inner(ctx)
+
+    roles[BuildRole.WRITER] = writer
+    out = _workspace(tmp_path)
+
+    with caplog.at_level("WARNING"):
+        result = _run(out, roles)
+
+    assert result.outcome in STOP_OUTCOMES
+    events = BuildLedger(out / "build_ledger.jsonl").events()
+    failed = [e for e in events if (e.payload or {}).get("push_error")]
+    assert len(failed) == 1
+    assert failed[0].payload["push_error"].startswith("TimeoutExpired")
+    assert "<redacted>" in failed[0].payload["push_error"]
+    assert token not in (out / "build_ledger.jsonl").read_text(encoding="utf-8")
+    assert token not in caplog.text and "stop checkpoint failed" in caplog.text
+
+
+@pytest.mark.parametrize("token, verb", [("ghs_gitSECRETcccc3333", "clone"), ("ghp_gitSECRETdddd4444", "push")])
+def test_a_git_call_that_times_out_names_only_its_verb(tmp_path, monkeypatch, token, verb):
+    from app.factory.build.builds_push import BuildsPushError
+
+    url = f"https://x-access-token:{token}@github.com/o/r.git"
+
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(branch_attach.subprocess, "run", run)
+
+    with pytest.raises(BuildsPushError) as caught:
+        branch_attach._git([verb, url], tmp_path)
+
+    assert str(caught.value) == f"git {verb} timed out after 600s"
+    assert caught.value.__suppress_context__ is True
+
+
+def _url_to_bare(remote: Path):
+    def git(args, *, cwd):
+        args = [str(remote) if str(a).startswith("https://") else a for a in args]
+        return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+
+    return git
+
+
+@pytest.mark.parametrize("message", ["factory: FAILED at WRITER, not certified", "factory: TESTER passed"])
+def test_the_first_push_of_a_platform_branch_carries_its_message(tmp_path, remote, message):
+    """A platform with no branch yet cuts it from main; the commit says what
+    the push is (a stop's FAILED subject, a passed phase), not a seed."""
+    from app.factory.build.builds_push import push_workspace
+    from app.factory.build.platform_identity import branch_of_record, mint_platform_id
+
+    ws = tmp_path / "first"
+    (ws / "app").mkdir(parents=True)
+    (ws / "app" / "main.py").write_text("x = 1" + NL, encoding="utf-8")
+    branch = branch_of_record(mint_platform_id())
+
+    push_workspace(ws, env=dict(os.environ), session_id="", run_git=_url_to_bare(remote), branch=branch, message=message)
+
+    assert _git(remote, "log", "-1", "--format=%B", branch).strip() == message
+
+
+@pytest.mark.parametrize("readme", ["one", "two"])
+def test_a_platform_branch_cut_without_a_message_is_a_seed(tmp_path, remote, readme):
+    from app.factory.build.builds_push import SEED_MESSAGE, push_workspace
+    from app.factory.build.platform_identity import branch_of_record, mint_platform_id
+
+    branch = branch_of_record(mint_platform_id())
+    ws = tmp_path / "seed_ws"
+    ws.mkdir()
+    (ws / "README.md").write_text(readme + NL, encoding="utf-8")
+
+    push_workspace(ws, env=dict(os.environ), session_id="", run_git=_url_to_bare(remote), branch=branch)
+
+    assert _git(remote, "log", "-1", "--format=%s", branch).strip() == SEED_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "message, stop",
+    [("factory: FAILED at COLLECTOR, not certified", True), ("factory: CLONER passed", False)],
+)
+def test_push_to_branch_of_record_hands_its_message_to_the_first_push(monkeypatch, tmp_path, message, stop):
+    from app.factory.build import builds_push, platform_branch
+    from app.factory.build.platform_identity import mint_platform_id
+
+    seen = {}
+    monkeypatch.setattr(platform_branch, "builds_remote", lambda env: "r")
+    monkeypatch.setattr(platform_branch, "branch_head", lambda remote, pid: seen.get("pushed"))
+    monkeypatch.setattr(platform_branch, "restore_branch", lambda remote, pid: None)
+
+    def push(workspace, **kw):
+        seen.update(kw)
+        seen["pushed"] = "a" * 40
+
+    monkeypatch.setattr(builds_push, "push_workspace", push)
+
+    head = platform_branch.push_to_branch_of_record(tmp_path, mint_platform_id(), message, env={}, stop=stop)
+
+    assert head == "a" * 40 and seen["message"] == message
+
+
+@pytest.mark.parametrize("stop", [True, False])
+def test_push_to_branch_of_record_hands_stop_to_the_checkpoint(monkeypatch, tmp_path, stop):
+    from app.factory.build import branch_attach as attach
+    from app.factory.build import platform_branch
+    from app.factory.build.platform_identity import mint_platform_id
+
+    seen = {}
+    monkeypatch.setattr(platform_branch, "builds_remote", lambda env: "r")
+    monkeypatch.setattr(platform_branch, "branch_head", lambda remote, pid: "b" * 40)
+
+    def checkpoint(workspace, branch, message, env=None, *, stop=False):
+        seen["stop"] = stop
+        return "c" * 40
+
+    monkeypatch.setattr(attach, "checkpoint", checkpoint)
+
+    head = platform_branch.push_to_branch_of_record(tmp_path, mint_platform_id(), "m", env={}, stop=stop)
+
+    assert head == "c" * 40 and seen["stop"] is stop
+
+
+@pytest.mark.parametrize("sid, sha", [("sess_copy_stale_a", "a" * 40), ("sess_copy_stale_b", "2" * 40)])
+def test_take_copy_never_names_an_older_stops_head(client, tmp_path, sid, sha):
+    """Stop pushed at sha; Try again; WRITER passed and checkpointed; the
+    server restarted in TESTER. The branch has moved on: sha is not the
+    same work."""
+    from app.factory import platform_chat_flow
+    from app.factory.build_jobs import build_status
+
+    rows = _passed("COLLECTOR", "CLONER") + _grader_stop(sha) + _resumed_then_orphaned() + [
+        (EventKind.GATE_PASSED, BuildRole.WRITER, "WRITER ok", {}),
+        (EventKind.NOTE, BuildRole.WRITER, "CHECKPOINT WRITER", {"checkpoint": "9" * 40, "attached_branch": BRANCH}),
+        (EventKind.PHASE_STARTED, BuildRole.TESTER, "TESTER", {}),
+    ]
+    out = _session(tmp_path, sid, rows)
+    _age(out, 3600)
+    assert build_status(out)["state"] == "stalled"
+
+    reply = platform_chat_flow.take_copy(get_session(sid))
+
+    assert reply["ok"] is True
+    assert reply["head"] == "" and reply["branch"] == ""
+    assert sha[:12] not in reply["summary"]
+
+
+@pytest.mark.parametrize("sid, sha", [("sess_copy_restop_a", "a" * 40), ("sess_copy_restop_b", "3" * 40)])
+def test_take_copy_names_no_head_when_the_newest_stop_pushed_nothing(client, tmp_path, sid, sha):
+    """Stopped and pushed at sha, re-entered, stopped again with no push
+    recorded: the older head belongs to the older verdict."""
+    from app.factory import platform_chat_flow
+
+    rows = _passed("COLLECTOR", "CLONER") + _grader_stop(sha) + _resumed_then_orphaned() + _grader_stop("")
+    _session(tmp_path, sid, rows)
+
+    reply = platform_chat_flow.take_copy(get_session(sid))
+
+    assert reply["ok"] is True and reply["head"] == "" and sha[:12] not in reply["summary"]
+
+
+@pytest.mark.parametrize("sid", ["sess_copy_quiet_live_a", "sess_copy_quiet_live_b"])
+def test_a_quiet_build_with_a_live_runner_offers_no_copy(client, tmp_path, monkeypatch, sid):
+    """Quiet for an hour with no model call in flight reads ``stalled``,
+    but its runner thread is alive in this process: it is running."""
+    from app.factory import build_jobs, platform_chat_flow
+
+    out = _session(tmp_path, sid, _passed("COLLECTOR") + [(EventKind.PHASE_STARTED, BuildRole.CLONER, "CLONER", {})])
+    _age(out, 3600)
+    monkeypatch.setattr(build_jobs, "live_runner_thread", lambda output_dir: object())
+    assert build_jobs.build_status(out)["state"] == "stalled"
+
+    reply = platform_chat_flow.take_copy(get_session(sid))
+
+    assert reply["ok"] is False and "download" not in reply
+    assert "still running" in reply["summary"]
+
+
+@pytest.mark.parametrize("sid", ["sess_copy_quiet_dead_a", "sess_copy_quiet_dead_b"])
+def test_a_quiet_build_with_no_runner_offers_its_copy(client, tmp_path, monkeypatch, sid):
+    from app.factory import build_jobs, platform_chat_flow
+
+    out = _session(tmp_path, sid, _passed("COLLECTOR") + [(EventKind.PHASE_STARTED, BuildRole.CLONER, "CLONER", {})])
+    _age(out, 3600)
+    monkeypatch.setattr(build_jobs, "live_runner_thread", lambda output_dir: None)
+    assert build_jobs.build_status(out)["state"] == "stalled"
+
+    reply = platform_chat_flow.take_copy(get_session(sid))
+
+    assert reply["ok"] is True and reply["download"] == {"as_is": True}
+
+
+@pytest.mark.parametrize("name, secret", [("link_a.py", "TOKEN=aaa"), ("link_b.py", "TOKEN=bbb")])
+def test_the_stop_tree_never_follows_a_staged_symlink(tmp_path, name, secret):
+    """A writer-staged symlink pointing outside the tree: its target's
+    contents never reach the branch."""
+    bp = load_blueprint(BLUEPRINT)
+    out = _workspace(tmp_path, branch="")
+    (out / "app").mkdir()
+    (out / "app" / "main.py").write_text("app = None" + NL, encoding="utf-8")
+    runner = RoleRunner(bp, out, budget=BuildBudget(max_rework=0), brief=BRIEF)
+    staging = runner._staging_for(BuildRole.WRITER)
+    assert staging is not None
+    outside = tmp_path / "outside.env"
+    outside.write_text(secret + NL, encoding="utf-8")
+    (staging / "app").mkdir(parents=True, exist_ok=True)
+    (staging / "app" / "real.py").write_text("R = 1" + NL, encoding="utf-8")
+    try:
+        os.symlink(outside, staging / "app" / name)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create symlinks; Linux CI runs it")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+
+    runner._stop_tree(tree)
+
+    assert (tree / "app" / "real.py").read_text(encoding="utf-8") == "R = 1" + NL
+    assert not (tree / "app" / name).exists()
+    shipped = "".join(p.read_text(encoding="utf-8", errors="replace") for p in tree.rglob("*") if p.is_file())
+    assert secret not in shipped

@@ -1174,7 +1174,9 @@ class RoleRunner:
             return branch_of_record(pid)
         return str(self.state.get("attached_branch") or "")
 
-    def _push_branch_of_record(self, message: str, tree: Optional[Path] = None) -> str:
+    def _push_branch_of_record(
+        self, message: str, tree: Optional[Path] = None, *, stop: bool = False
+    ) -> str:
         from app.factory.build.platform_identity import branch_of_record, is_platform_id
 
         source = Path(tree) if tree is not None else self.workspace
@@ -1183,10 +1185,10 @@ class RoleRunner:
         if is_platform_id(pid) and branch == branch_of_record(pid):
             from app.factory.build.platform_branch import push_to_branch_of_record
 
-            return push_to_branch_of_record(source, pid, message)
+            return push_to_branch_of_record(source, pid, message, stop=stop)
         from app.factory.build.branch_attach import checkpoint
 
-        return checkpoint(source, branch, message)
+        return checkpoint(source, branch, message, stop=stop)
 
     def _stop_tree(self, tree: Path) -> None:
         """Lay the work as it stands into ``tree``: the product directory,
@@ -1253,7 +1255,7 @@ class RoleRunner:
             completed = self.ledger.completed_roles()
             passed = [r.value for r in BUILD_PHASES if r in completed]
             message = stop_checkpoint_message(word, step, str(manifest.get("failed_label") or ""), passed)
-            sha = self._push_branch_of_record(message, tree=tree)
+            sha = self._push_branch_of_record(message, tree=tree, stop=True)
             self.ledger.append(
                 EventKind.NOTE,
                 role=phase,
@@ -1261,7 +1263,13 @@ class RoleRunner:
                 payload={"stop_checkpoint": sha, "branch": branch, "certified": False},
             )
         except Exception as exc:  # noqa: BLE001 -- the stop's own reason stays the reason
-            logger.warning("stop checkpoint failed: %s", exc)
+            # A git call's error text can carry the authenticated remote URL
+            # (a timed-out command prints its whole argv): scrubbed before it
+            # reaches the log or the ledger.
+            from app.factory.build.builds_push import _scrub, builds_token
+
+            error = _scrub(f"{type(exc).__name__}: {exc}", builds_token(os.environ))
+            logger.warning("stop checkpoint failed: %s", error)
             self.ledger.append(
                 EventKind.NOTE,
                 role=phase,
@@ -1269,7 +1277,7 @@ class RoleRunner:
                 payload={
                     "stop_checkpoint": "",
                     "branch": branch,
-                    "push_error": f"{type(exc).__name__}: {exc}"[:300],
+                    "push_error": error[:300],
                 },
             )
         finally:
