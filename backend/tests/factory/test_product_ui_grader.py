@@ -685,3 +685,76 @@ def test_scrub_files_rewrites_only_the_files_holding_the_secret(tmp_path, secret
     assert (tmp_path / "a" / "hit.json").read_text(encoding="utf-8") == f'{{"h": "Bearer {ug.REDACTED}"}}'
     assert (tmp_path / "clean.txt").read_text(encoding="utf-8") == "no token"
     assert ug.scrub_files(tmp_path, "") == []
+
+
+# --- the scrub runs on every way out of the run ------------------------------
+import subprocess as _sp  # noqa: E402
+
+
+def _raising_run(token: str, exc: BaseException):
+    """A run that writes an error context holding the request headers, the
+    way Playwright does for a failed request, and then never returns: it
+    raises ``exc`` (its time cap, a start error, an interrupt)."""
+    def run(cmd, **kw):
+        ctx = _P(kw["cwd"]) / "test-results" / "load" / "error-context.md"
+        ctx.parent.mkdir(parents=True, exist_ok=True)
+        ctx.write_text(f"Authorization: Bearer {token}", encoding="utf-8")
+        raise exc
+    return run
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+@pytest.mark.parametrize("exc", [_sp.TimeoutExpired(cmd="npx", timeout=1), OSError("no npx")])
+def test_the_bearer_is_redacted_from_what_a_run_wrote_before_it_raised(tmp_path, token, exc):
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_raising_run(token, exc), bearer=token)
+    ctx = tmp_path / "test-results" / "load" / "error-context.md"
+    assert ctx.read_text(encoding="utf-8") == f"Authorization: Bearer {ug.REDACTED}"
+    assert not any(token.encode() in p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
+    assert g.errors == [f"UI run did not happen: {type(exc).__name__}"] and not g.ran
+    assert token not in json.dumps(dataclasses.asdict(g))
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+def test_the_bearer_is_redacted_even_when_the_run_is_interrupted(tmp_path, token):
+    """An interrupt is not a recorded FAIL -- it leaves ``grade_ui`` as it
+    came -- and what the run wrote before it is scrubbed all the same."""
+    with pytest.raises(KeyboardInterrupt):
+        ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
+                    run=_raising_run(token, KeyboardInterrupt()), bearer=token)
+    assert not any(token.encode() in p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
+
+
+# --- the bearer goes to the product's own origin and nowhere else ------------
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("bearer", ["the-boot-token", ""])
+def test_a_page_request_to_another_origin_never_carries_the_bearer(tmp_path, bp, bearer):
+    """The product's page loads one file of its own and one from another
+    origin. With a bearer, every request to the product carries it and no
+    request to the other origin does; with none, nothing carries one."""
+    with h.server({}) as other:
+        page = f'<html><script src="/own.js"></script><img src="{other}/pixel.png"></html>'
+        with h.server({}, bodies={"/": page}, token=bearer or None) as base:
+            got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=bearer)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert base.auth and set(base.auth) == {f"Bearer {bearer}" if bearer else ""}
+    assert other.auth and set(other.auth) == {""}
+
+
+# --- a screen reached inside the loaded page is still loaded and judged ------
+@pytest.mark.parametrize("bp", BPS)
+def test_every_screen_after_the_first_page_is_loaded_and_passes_on_an_honest_product(tmp_path, bp):
+    """After ``load:/`` every screen's address differs from the loaded
+    page's only by its fragment, and a browser makes no request for that
+    move. Each screen is still loaded by itself: one request for the first
+    page and one for each screen, and every step passes."""
+    with h.server({}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"))
+    assert got == {"load:/": "passed", **{f"screen:{m}": "passed" for m in bp["ui_modules"]}}
+    assert len(base.auth) == 1 + len(bp["ui_modules"])
+
+
+@pytest.mark.parametrize("status", [500, 404])
+def test_a_screen_whose_address_does_not_answer_200_fails_naming_the_status(tmp_path, status):
+    with h.server({"/": status}) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load", "screen"))
+    assert got["screen:tenant_portal"] == f"failed: expected 200 got {status}"

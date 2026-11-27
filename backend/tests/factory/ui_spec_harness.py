@@ -40,32 +40,58 @@ const __request = {
 // upload / chat reply. getByText(re) is visible iff re matches that text.
 let __html = '';
 let __url = 'about:blank';
-// The page's extra headers (browser.newPage({ extraHTTPHeaders })): sent on
-// every request the page makes, as Playwright does.
-let __pageHeaders: Record<string, string> = {};
+// The page's routes (page.route(matcher, handler)): every request the page
+// makes goes through each handler whose matcher accepts its URL, and goes
+// out with the headers that handler continues it with, as Playwright does.
+let __routes: Array<[(u: URL) => boolean, any]> = [];
+const __pageFetch = async (u: string, init: any = {}) => {
+  let headers: Record<string, string> = { ...(init.headers || {}) };
+  for (const [match, handler] of __routes) {
+    if (!match(new URL(u))) continue;
+    await handler({ request: () => ({ headers: () => ({ ...headers }) }),
+                    continue: async (o: any = {}) => { if (o.headers) headers = o.headers; } });
+  }
+  return fetch(u, { ...init, headers });
+};
+// What a loaded page asks for by itself: every src="..." in its HTML,
+// resolved against the page, the way a browser loads a subresource.
+const __subresources = async (html: string, pageUrl: string) => {
+  for (const m of html.matchAll(/\ssrc="([^"]+)"/g)) { await __pageFetch(new URL(m[1], pageUrl).toString()); }
+};
 const __base = () => process.env.BASE_URL || '';
 const __loc = (find: (t: string) => boolean, act: any = {}) => {
   const l: any = { first: () => l, last: () => l, __visible: () => find(__html), ...act };
   return l;
 };
+const __load = async (u: string) => {
+  const r = await __pageFetch(u); __html = await r.text(); __url = u; await __subresources(__html, u); return __resp(r);
+};
 const __page = {
-  goto: async (u: string) => { const r = await fetch(u, { headers: __pageHeaders }); __html = await r.text(); __url = u; return __resp(r); },
+  // As a browser does: an address that differs from the loaded page's only
+  // by its #fragment is a move inside that document -- no request is made
+  // and there is no response (null). Anything else loads the address.
+  goto: async (u: string) => {
+    if (u.includes('#') && u.split('#')[0] === __url.split('#')[0]) { __url = u; return null; }
+    return __load(u);
+  },
+  reload: async () => __load(__url),
   url: () => __url,
+  route: async (match: any, handler: any) => { __routes.push([match, handler]); },
   waitForLoadState: async () => {}, on: () => {},
   getByText: (re: RegExp) => __loc((t) => re.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
-    click: async () => { const r = await fetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || ''), headers: __pageHeaders }); __html += '\n' + await r.text(); },
+    click: async () => { const r = await __pageFetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || '') }); __html += '\n' + await r.text(); },
     fill: async (v: string) => { (__page as any).__typed = v; },
     press: async (k: string) => {
       if (k !== 'Enter') return;
-      const r = await fetch(__base() + '/__ask', { method: 'POST', body: (__page as any).__typed || '', headers: __pageHeaders });
+      const r = await __pageFetch(__base() + '/__ask', { method: 'POST', body: (__page as any).__typed || '' });
       __html += '\n' + await r.text();
     },
   }),
   locator: (sel: string) => __loc(() => true, {
     setInputFiles: async (p: string) => {
       const fs = await import('node:fs');
-      const r = await fetch(__base() + '/__upload?name=' + encodeURIComponent(p.split('/').pop() || ''), { method: 'POST', body: fs.readFileSync(p), headers: __pageHeaders });
+      const r = await __pageFetch(__base() + '/__upload?name=' + encodeURIComponent(p.split('/').pop() || ''), { method: 'POST', body: fs.readFileSync(p) });
       __html += '\n' + await r.text();
     },
   }),
@@ -81,7 +107,7 @@ test.beforeAll = (fn: any) => { __before.push(fn); };
 """
 
 RUNNER = r"""
-for (const b of __before) await b({ browser: { newPage: async (o: any = {}) => { __pageHeaders = o.extraHTTPHeaders || {}; return __page; } } });
+for (const b of __before) await b({ browser: { newPage: async () => { __routes = []; return __page; } } });
 const __only = (process.env.ONLY_KINDS || '').split(',').filter(Boolean);
 const __out: Record<string, string> = {};
 for (const [name, fn, group] of __tests) {

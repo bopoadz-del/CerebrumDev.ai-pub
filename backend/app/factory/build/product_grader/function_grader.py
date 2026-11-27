@@ -81,29 +81,6 @@ ONE_RESULT = "two inputs gave one result"
 #: stub. A stub answers a fixed result; a fail-closed handle answers its
 #: error. Neither is ok, so the bar is unchanged; only the class differs.
 BLOCK_UNAVAILABLE = "block_unavailable: two inputs gave one honest-error envelope"
-#: Fix 4 -- a capability whose right answer to made-up input is a refusal is
-#: judged on a state the grade makes itself. When both inputs answered one
-#: honest-error envelope, each OTHER plan capability whose declared input
-#: fields include all of input one's fields is tried on its own, in a fresh
-#: process with a fresh scratch store (so no source can undo another's state
-#: and the plan's order changes nothing): it is sent input one, the store
-#: is read back, and input one is sent to the handle again. A refusal is
-#: billed to the writer only when the read-back shows a new record holding
-#: every scalar value of input one -- an ok answer from the source is never
-#: taken for it. The facts:
-#: no plan capability takes those fields -> :data:`NO_FIXTURE`, ungraded;
-#: no source accepted, stored or made input one pass ->
-#: :data:`BLOCK_UNAVAILABLE`, as before; a source accepted but no read-back
-#: shows input one and the handle still refuses -> :data:`NOT_STORED`,
-#: ungraded (the Factory owes it, never the writer); stored and input one
-#: still refused after every source -> :data:`REFUSED_ALTHOUGH_STORED`;
-#: input one accepted after a source and no single changed field refused ->
-#: :data:`ACCEPTS_ANY_CHANGE`. Accepted, and refused when a field changes,
-#: is a pass whose ``depends_on`` names the fields whose change was refused.
-NO_FIXTURE = "no plan capability takes its input fields, so the grade cannot make the state it reads"
-NOT_STORED = "another capability accepted input one, but no read-back of the store shows it stored"
-REFUSED_ALTHOUGH_STORED = "refused input one after the store was read back holding it"
-ACCEPTS_ANY_CHANGE = "accepted input one after the fixture, and input one with any one field changed too"
 #: The detail of a capability with no field that can take a second value and
 #: that PASSED TESTER's one-input pilot rule. It counts as a pass and is
 #: recorded for information. One that fails the rule carries TESTER's
@@ -131,9 +108,6 @@ class GradedFunction:
     #: TESTER's completed sample, then a second valid instance of the same
     #: spec when one of its fields can vary (else the sample alone).
     inputs: List[Dict[str, Any]]
-    #: The other plan capabilities whose declared inputs include every field
-    #: of input one: ``{"capability", "module", "sample"}`` in plan order.
-    fixtures: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -154,9 +128,6 @@ class FunctionResult:
     #: FG-7c: ``{declared block id: why it cannot run}`` in the probe
     #: environment. Non-empty means the handle is not judgeable here.
     blocks_cannot_run: Dict[str, str] = field(default_factory=dict)
-    #: Fix 4: both inputs were refused and the grade could not make, and read
-    #: back, the state the handle reads, so it could not judge it.
-    needs_fixture: bool = False
 
     @property
     def ok(self) -> bool:
@@ -322,104 +293,10 @@ def derive_functions(
         ids, dict(state_specs or {}), product_root((root,)), read_under(root), dict(route_bodies or {})
     )
     firsts = completed_samples(root, {cid: _sample_payload(specs.get(cid, {})) for cid in ids})
-    fns = [
+    return [
         GradedFunction(cid, capability_module(cid), contract_inputs(specs.get(cid), firsts[cid]))
         for cid in ids
     ]
-    return [GradedFunction(f.capability_id, f.module, f.inputs, fixture_sources(f, fns)) for f in fns]
-
-
-def fixture_sources(fn: GradedFunction, fns: Sequence[GradedFunction]) -> List[Dict[str, Any]]:
-    """Fix 4: the other plan capabilities that can make the state ``fn``
-    reads -- each one whose input one has every field of ``fn``'s input one.
-    Read from the declared fields only; never a capability's name or words."""
-    wanted = set(fn.inputs[0]) if fn.inputs else set()
-    if not wanted:
-        return []
-    return [
-        {"capability": o.capability_id, "module": o.module, "sample": dict(o.inputs[0])}
-        for o in fns
-        if o.capability_id != fn.capability_id and o.inputs and wanted <= set(o.inputs[0])
-    ]
-
-
-def stored_records(root):
-    """Fix 4, run inside the probe process: the records the scratch store
-    under ``root`` holds, read back from the files themselves -- every row of
-    every table of a SQLite file, and every JSON object in a file (whole, or
-    one per line, or as the text of a SQLite cell). Each record is the list of
-    its scalar values, nested values included. Nothing is read from a
-    capability's answer."""
-    import json as _json
-    import sqlite3 as _sqlite3
-    from pathlib import Path as _Path
-
-    def scalars(obj):
-        if isinstance(obj, dict):
-            return [s for v in obj.values() for s in scalars(v)]
-        if isinstance(obj, (list, tuple)):
-            return [s for v in obj for s in scalars(v)]
-        return [obj]
-
-    def objects(text):
-        found = []
-        for chunk in [text] + text.splitlines():
-            try:
-                doc = _json.loads(chunk)
-            except ValueError:
-                continue
-            stack = [doc]
-            while stack:
-                cur = stack.pop()
-                if isinstance(cur, dict):
-                    found.append(scalars(cur))
-                    stack.extend(cur.values())
-                elif isinstance(cur, list):
-                    stack.extend(cur)
-        return found
-
-    records = []
-    for path in sorted(_Path(root).rglob("*")):
-        if not path.is_file():
-            continue
-        raw = path.read_bytes()
-        if not raw.startswith(b"SQLite format 3\x00"):
-            records += objects(raw.decode("utf-8", "replace"))
-            continue
-        try:
-            con = _sqlite3.connect(str(path))
-            try:
-                tables = [t for (t,) in con.execute("select name from sqlite_master where type = 'table'")]
-                for table in tables:
-                    for row in con.execute('select * from "' + table.replace('"', '""') + '"'):
-                        records.append(list(row))
-                        for cell in row:
-                            if isinstance(cell, str):
-                                records += objects(cell)
-            finally:
-                con.close()
-        except _sqlite3.Error:
-            continue
-    return records
-
-
-def shows_input(record, payload):
-    """Fix 4, run inside the probe process: does one read-back ``record``
-    hold every scalar value of ``payload``? Values compare as stored: a
-    boolean as 1/0, a whole number with no fraction, text as itself. False
-    when ``payload`` has no scalar value -- nothing could show it."""
-    def norm(v):
-        if isinstance(v, bool):
-            return str(int(v))
-        if isinstance(v, (int, float)) and float(v).is_integer():
-            return str(int(v))
-        if isinstance(v, float):
-            return repr(v)
-        return "null" if v is None else str(v)
-
-    wanted = [norm(v) for v in payload.values() if not isinstance(v, (dict, list, tuple))]
-    held = {norm(v) for v in record}
-    return bool(wanted) and all(w in held for w in wanted)
 
 
 def block_cannot_run(exc, offline):
@@ -625,7 +502,7 @@ def why(exc):
     kind = "exited" if isinstance(exc, SystemExit) else "raised"
     return f"handle {kind}: {type(exc).__name__}: {exc}"[:300]
 """ + "\n".join(render_payload_helpers()) + "\n" + _PILOT_RULE + _probe_source(
-    block_cannot_run, loader_refused, watch_blocks, stored_records, shows_input
+    block_cannot_run, loader_refused, watch_blocks
 ) + _HARNESS + r"""
 try:
     _handle_module = importlib.import_module(spec["module"])
@@ -666,40 +543,6 @@ def echo_sources(answer, payload):
     # Per answer leaf: the input paths whose value it copies.
     inp = leaves(payload)
     return {p: {q for q, w in inp.items() if w == v} for p, v in leaves(answer).items()}
-if spec.get("trial"):
-    # Fix 4: ONE source on a fresh store, in this fresh process, then input
-    # one again. Whether the store, read back, holds input one is recorded.
-    fx = spec["trial"]
-    first, second = spec["inputs"][0], spec["inputs"][-1]
-    varied = [n for n in first if canon(first.get(n)) != canon(second.get(n))]
-    before = {canon(r) for r in stored_records(spec["storage"])}
-    trial = {"source": fx["capability"], "answers": []}
-    try:
-        made = importlib.import_module(fx["module"]).handle({**fx["sample"], **first})
-        trial["source_accepted"] = pilot_failure("", made) is None
-    except BaseException as exc:
-        trial["source_error"] = why(exc)
-    trial["stored"] = any(shows_input(r, first) for r in stored_records(spec["storage"])
-                          if canon(r) not in before)
-    try:
-        again = original(dict(first))
-        trial["answers"].append(canon(again))
-        trial["accepted"] = pilot_failure("", again) is None
-        trial["refused_when_changed"] = []
-        for name in varied if trial["accepted"] else []:
-            changed = dict(first)
-            changed[name] = second.get(name)
-            try:
-                answer = original(changed)
-            except BaseException:
-                answer = None  # it refused this input by raising
-            trial["answers"].append(canon(answer))
-            if answer is None or pilot_failure("", answer) is not None:
-                trial["refused_when_changed"].append(name)
-    except BaseException as exc:
-        trial["error"] = why(exc)
-    emit({"trial": trial, "mutants": {}})
-    sys.exit(0)
 sent, corrections = [], []
 for given in spec["inputs"]:
     payload, fixed = corrected_input(original, given, spec["capability"])
@@ -811,12 +654,7 @@ def probe_env(
     return env
 
 
-def _run_probe(
-    fn: GradedFunction, workspace: Path, python: str, **extra: Any
-) -> tuple[Any, Optional[Dict[str, Any]]]:
-    """One probe process for ``fn`` on a fresh scratch store: ``(proc,
-    result)``, ``proc`` None when it timed out, ``result`` None when it wrote
-    none. ``extra`` goes into the probe's spec (a fixture trial)."""
+def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.executable) -> FunctionResult:
     nonce = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="f8a-") as tmp:
         out_path = Path(tmp) / "grade.json"
@@ -825,7 +663,7 @@ def _run_probe(
         spec = json.dumps({"module": fn.module, "capability": fn.capability_id,
                            "inputs": fn.inputs, "mutants": list(MUTANTS),
                            "nonce": nonce, "out": str(out_path), "storage": str(storage),
-                           "harness_env": dict(GATE_RUN_ENV), **extra}, default=str)
+                           "harness_env": dict(GATE_RUN_ENV)}, default=str)
         try:
             proc = subprocess.run(
                 [python, "-c", _RUNNER],
@@ -837,59 +675,9 @@ def _run_probe(
                 env=probe_env(workspace, storage),
             )
         except subprocess.TimeoutExpired:
-            return None, None
-        return proc, _read_result(out_path, nonce)
-
-
-def fixture_trials(
-    fn: GradedFunction, inputs: Sequence[Mapping[str, Any]], workspace: Path, python: str
-) -> Dict[str, Any]:
-    """Fix 4: each fixture source tried alone (``_run_probe`` with a trial,
-    a fresh process and store each), then combined by
-    :func:`combine_trials`, which no order of the sources changes."""
-    trials = []
-    for fx in fn.fixtures:
-        _proc, data = _run_probe(fn, workspace, python, trial=fx, inputs=[dict(i) for i in inputs])
-        trial = (data or {}).get("trial")
-        # A trial that timed out or ended before writing its result showed
-        # nothing: it adds no fact, and the other sources are still tried.
-        if isinstance(trial, dict):
-            trials.append(trial)
-    return combine_trials(trials)
-
-
-def combine_trials(trials: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Fix 4: the facts of every fixture trial as one fixture record.
-    ``accepted_by``: the sources that answered input one without refusing.
-    ``stored_by``: the sources whose store, read back, held input one.
-    ``took_by``: the sources after which the handle accepted input one.
-    Input one counts as accepted when it was accepted after ANY source, and
-    a field is depended on when its change was refused after any (a trial
-    probes changed fields only once input one was accepted). The
-    answers kept are those of the trials that stored or took. The same
-    trials in any order give the same record."""
-    trials = sorted(trials, key=lambda t: str(t.get("source")))
-    took = [t for t in trials if t.get("accepted") is True]
-    kept = [t for t in trials if t.get("stored") is True or t.get("accepted") is True]
-    fixture: Dict[str, Any] = {
-        "accepted_by": [str(t["source"]) for t in trials if t.get("source_accepted") is True],
-        "stored_by": [str(t["source"]) for t in trials if t.get("stored") is True],
-        "took_by": [str(t["source"]) for t in took],
-        "answers": [str(a) for t in kept for a in t.get("answers") or []],
-        "accepted": bool(took),
-        "refused_when_changed": sorted({str(n) for t in trials for n in t.get("refused_when_changed") or []}),
-    }
-    errors = [str(t["error"]) for t in trials if t.get("stored") is True and t.get("error")]
-    if errors and not took:
-        fixture["error"] = errors[0]
-    return fixture
-
-
-def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.executable) -> FunctionResult:
-    proc, data = _run_probe(fn, workspace, python)
-    if proc is None:
-        return FunctionResult(fn.capability_id, False, [], list(MUTANTS), "timeout",
-                              probe=_probe(fn, []))
+            return FunctionResult(fn.capability_id, False, [], list(MUTANTS), "timeout",
+                                  probe=_probe(fn, []))
+        data = _read_result(out_path, nonce)
     if data is None or proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-1:] or ["no result"]
         return FunctionResult(fn.capability_id, False, [], list(MUTANTS),
@@ -911,11 +699,6 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
         if not one.ok:
             one.probe = _probe(fn, data.get("answers") or [], data)
         return one
-    if fn.fixtures and data.get("honest_error") is True and not data.get("error"):
-        data = {**data, "fixture": fixture_trials(fn, data.get("inputs") or fn.inputs, workspace, python)}
-    judged = fixture_result(fn, data)
-    if judged is not None:
-        return judged
     detail = data.get("error") or (
         "" if data["two_input"]
         else BLOCK_UNAVAILABLE if data.get("honest_error") is True
@@ -926,42 +709,6 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
     if not result.ok:
         result.probe = _probe(fn, data.get("answers") or [], data)
     return result
-
-
-def fixture_result(fn: GradedFunction, data: Mapping[str, Any]) -> Optional[FunctionResult]:
-    """Fix 4: the result of a handle that refused both inputs with one honest
-    error, read from the facts the probe recorded (see :data:`NO_FIXTURE`).
-    A refusal is billed to the writer only when a read-back showed input
-    one stored; accepted by a source but neither stored nor taken is
-    :data:`NOT_STORED`, ungraded. None when the rule does not apply or no
-    source accepted, stored or made input one pass -- then the handle is
-    judged as before."""
-    if data.get("error") or data.get("honest_error") is not True:
-        return None
-    cid = fn.capability_id
-    if not fn.fixtures:
-        return FunctionResult(cid, False, [], [], NO_FIXTURE, needs_fixture=True,
-                              probe=_probe(fn, data.get("answers") or [], data))
-    fixture = data.get("fixture") or {}
-    if fixture.get("accepted") is not True and not fixture.get("stored_by"):
-        if not fixture.get("accepted_by"):
-            return None
-        return FunctionResult(cid, False, [], [], NOT_STORED, needs_fixture=True,
-                              probe=_probe(fn, data.get("answers") or [], data))
-    seen = list(data.get("answers") or []) + list(fixture.get("answers") or [])
-    if fixture.get("error"):
-        detail = str(fixture["error"])
-    elif fixture.get("accepted") is not True:
-        detail = REFUSED_ALTHOUGH_STORED
-    else:
-        refused = [str(n) for n in fixture.get("refused_when_changed") or []]
-        result = FunctionResult(cid, True, list(MUTANTS) if refused else [],
-                                [] if refused else list(MUTANTS),
-                                "" if refused else ACCEPTS_ANY_CHANGE, depends_on=refused)
-        if not result.ok:
-            result.probe = _probe(fn, seen, data)
-        return result
-    return FunctionResult(cid, False, [], list(MUTANTS), detail, probe=_probe(fn, seen, data))
 
 
 def not_judgeable_detail(cannot: Mapping[str, str]) -> str:
@@ -1080,11 +827,10 @@ def grade_functions(
     # FG-7c: a capability whose declared block cannot run in the probe
     # environment is not judgeable -- ungraded (the Factory owes it), never a
     # FAIL handed to the writer, never counted toward the floor.
-    # Fix 4: so is one whose state no plan capability can make.
     grade = FunctionGrade(
-        [r for r in results if not (r.blocks_cannot_run or r.needs_fixture)],
+        [r for r in results if not r.blocks_cannot_run],
         min_functions=min_functions,
-        ungraded=[r for r in results if r.blocks_cannot_run or r.needs_fixture],
+        ungraded=[r for r in results if r.blocks_cannot_run],
     )
     # F-8d: when a grader root is given, also build the writer-blind vault
     # (seeded inputs + kernel-computed expected) and record it on the grade so

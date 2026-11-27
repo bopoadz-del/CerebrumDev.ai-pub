@@ -12,8 +12,9 @@ a 200); every declared route returns 200 and renders with no console errors.
 
 Every step calls the product the way the grading boot runs it: with the
 bearer that boot sets (``image_sufficiency.GATE_RUN_ENV``, the one source),
-on the API requests and on every page request. A product that needs no
-token ignores the header and is graded the same.
+on the API requests and on every request the page makes to the product's
+own origin. A request the page makes to any other origin carries no bearer.
+A product that needs no token ignores the header and is graded the same.
 
 Which of those steps run is read from the customer brief's ``documents``
 field (``customer_brief``): whether the customer uploads documents, and
@@ -344,6 +345,13 @@ BASE_JS = (
     "const url = (t: string) => new URL(t, BASE).toString();\n"
     f"const BEARER = process.env.{BEARER_ENV} || '';\n"
     "const AUTH: Record<string, string> = BEARER ? { Authorization: 'Bearer ' + BEARER } : {};\n"
+    # The page's own requests: the bearer is added only to a request whose
+    # origin is the product's (BASE). A font, script or call the page makes
+    # to another origin goes out as the page sent it.
+    "const OWN = new URL(BASE).origin;\n"
+    "const signIn = async (p: any) => { if (!BEARER) return;\n"
+    "  await p.route((u: URL) => u.origin === OWN, (route: any) =>\n"
+    "    route.continue({ headers: { ...route.request().headers(), authorization: 'Bearer ' + BEARER } })); };\n"
 )
 
 
@@ -359,8 +367,15 @@ HONEST_ERROR_STATUSES = (422, 503)
 
 #: Per-kind Playwright body. Kept as data so every kind's assertion is
 #: inspectable (and testable) on its own.
+#: A page step asks for the address and reads the status of the answer. A
+#: move inside the document already loaded (only the ``#fragment`` differs,
+#: which is how every screen after the first page is reached) makes no
+#: request, and the browser returns no response for it: the address is then
+#: loaded again by itself, so the status read is the one that address gets.
 _PAGE_OK = (
-    "const r = await page.goto(url(s.target)); expect(r?.status()).toBe(200);\n"
+    "let r = await page.goto(url(s.target));\n"
+    "if (r === null) r = await page.reload();\n"
+    "expect(r?.status()).toBe(200);\n"
     "await page.waitForLoadState('networkidle'); expect(errs).toEqual([]);"
 )
 KIND_JS: Dict[str, str] = {
@@ -407,7 +422,7 @@ def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
         + BASE_JS +
         "const errs: string[] = [];\n"
         "let page: any;\n"
-        "const open = async (browser: any) => { const p = await browser.newPage({ extraHTTPHeaders: AUTH });\n"
+        "const open = async (browser: any) => { const p = await browser.newPage(); await signIn(p);\n"
         "  p.on('console', (m: any) => { if (m.type() === 'error') errs.push(m.text()); });\n"
         "  p.on('pageerror', (e: any) => errs.push(String(e))); return p; };\n"
         "const run = async (s: any, request: any) => {\n"
@@ -686,12 +701,18 @@ def grade_ui(
     out = wd / "report.json"
     fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
     token = grading_bearer() if bearer is None else bearer
+    not_run = ""
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
                                fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
-        return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
-    scrub_files(wd, token)
+        not_run = f"UI run did not happen: {type(exc).__name__}"
+    finally:
+        # A run that raised (its time cap, a browser that hung) has already
+        # written files: the scrub runs on every way out of the run.
+        scrub_files(wd, token)
+    if not_run:
+        return UiGrade([], [not_run])
     report_text = _report_text(out, proc)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])

@@ -7,9 +7,8 @@ One capability's handler is replaced by a block-backed one: it declares a
 block the CLONER vendored (read from the build's own ``blocks.lock.json``),
 reaches it through the product's own loader, and fails closed. Two inputs:
 
-* the block runs in the probe environment -- the handler is judged; the
-  tree's other capabilities accept its input but no read-back of the store
-  shows it, so its refusal is ungraded (fix 4), never a writer row;
+* the block runs in the probe environment -- the handler is judged, and its
+  honest error is the writer's handler_error;
 * the block cannot run there (a package it imports is not installed) -- the
   capability is not judgeable: ungraded, owed by the Factory, no writer row,
   and the tree is not certified.
@@ -83,17 +82,14 @@ def test_a_fail_closed_block_backed_handler_is_judged_only_when_its_block_runs(t
 
     assert not replay.certified, "a fail-closed handler never certifies"
     verdict = replay.verdict
+    row = f"function grade FAIL: {cid}"
     classes = {r.get("class") for r in verdict.reasons if r.get("capability") == cid and r.get("layer") == "function"}
     functions = replay.grade["layer1"]["functions"]
     if block_runs:
-        # The block runs, so the handler IS judged (never NOT_JUDGEABLE). Fix 4:
-        # the tree's other capabilities answer input one ok but store nothing a
-        # read-back shows, so its refusal is not billed to the writer: it is
-        # ungraded, owed by the Factory, and the tree is still not certified.
-        assert not any(cid in item for item in verdict.writer_items), verdict.writer_items
-        assert classes == {"ungraded"}, verdict.reasons
-        (gap,) = [f for f in functions["ungraded"] if f["capability_id"] == cid]
-        assert gap["detail"] == fg.NOT_STORED and gap["blocks_cannot_run"] == {}
+        assert row in verdict.writer_items, verdict.items
+        assert classes == {"handler_error"}, verdict.reasons
+        (judged,) = [f for f in functions["functions"] if f["capability_id"] == cid]
+        assert judged["detail"] == fg.BLOCK_UNAVAILABLE and judged["blocks_cannot_run"] == {}
     else:
         assert not any(cid in item for item in verdict.writer_items), verdict.writer_items
         ungraded = [u for u in verdict.ungraded if u.startswith(f"function ungraded: {cid}: ")]
