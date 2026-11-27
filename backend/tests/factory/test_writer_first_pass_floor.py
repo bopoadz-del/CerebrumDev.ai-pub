@@ -33,7 +33,7 @@ BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "up
 
 @pytest.mark.parametrize(
     "name, value",
-    [("WRITER_FIRST_PASS_MIN_S", 7200.0), ("CEILING_ROOM_S", 1800.0), ("CEILING_S", 9000.0)],
+    [("WRITER_FIRST_PASS_MIN_S", 7200.0), ("CEILING_ROOM_S", 600.0), ("CEILING_S", 7800.0)],
 )
 def test_the_floor_is_two_hours_and_the_ceiling_is_floor_plus_room(name, value):
     assert getattr(budget_inspect, name) == value
@@ -101,7 +101,7 @@ def test_a_default_budget_holds_the_first_pass_and_the_one_ceiling(kwargs, phase
     assert b.hard_ceiling_s == ceiling
 
 
-@pytest.mark.parametrize("class_wall, expected", [(None, 7200.0), (8400.0, 8400.0)])
+@pytest.mark.parametrize("class_wall, expected", [(None, 7200.0), (7500.0, 7500.0)])
 def test_a_runner_with_no_budget_gets_the_floored_class_wall(
     monkeypatch, tmp_path, class_wall, expected
 ):
@@ -137,7 +137,7 @@ def _floor_run(monkeypatch, tmp_path, *, auto_pilot: str):
 
 @pytest.mark.parametrize(
     "auto_pilot, class_wall, expected",
-    [("0", None, 7200.0), ("1", None, 7200.0), ("0", 8400.0, 8400.0)],
+    [("0", None, 7200.0), ("1", None, 7200.0), ("0", 7500.0, 7500.0)],
 )
 def test_the_floor_build_path_uses_the_same_floor(
     monkeypatch, tmp_path, auto_pilot, class_wall, expected

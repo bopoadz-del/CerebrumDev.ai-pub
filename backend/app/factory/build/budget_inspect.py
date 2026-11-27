@@ -56,11 +56,15 @@ NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD = 0.5
 #: table, lifts every one of them (``writer_first_pass_wall``). A bigger
 #: class wall is kept, so no class can get less than another by accident.
 WRITER_FIRST_PASS_MIN_S = 7200.0
-#: Room above the first pass for the contract gate, grader and a rework
-#: round (30 min, one granted fix) before the hard ceiling. Bounded above:
-#: the post-deploy smoke jobs wait ready + ceiling + Store-gate wall, and
-#: their job timeout must outlast that (``test_release_cycle``).
-CEILING_ROOM_S = 1800.0
+#: Room above the first pass for the contract gate, the grader and a rework
+#: round before the hard ceiling. Bounded above by the jobs that wait on a
+#: build: each waits ready + ceiling + Store-gate wall, and its job timeout
+#: must outlast that (``test_release_cycle``). The tightest is the live
+#: pilot job (180 min = 10800 s): 10800 - 1200 ready - 1800 gate = 7800 s
+#: of ceiling, which leaves 600 s above the floor. So a first pass that
+#: runs past 6000 s leaves less than one full ``FIX_ALLOWANCE_S`` round.
+#: A longer room needs a longer pilot job timeout first.
+CEILING_ROOM_S = 600.0
 #: Last-resort ceiling. Never the default; never granted silently.
 #: Computed from the first-pass floor, so raising the floor moves it too.
 #:
