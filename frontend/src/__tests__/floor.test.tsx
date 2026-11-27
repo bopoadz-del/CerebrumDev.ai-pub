@@ -149,7 +149,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(screen.getByText('chat LLM')).toBeInTheDocument()
     expect(await screen.findByRole('status')).toHaveTextContent(/Building/)
     // PR-10: one stepper, one name per step; the wire ids stay in data-step.
-    expect(await screen.findByTestId('floor-stepper-caption')).toHaveTextContent('Write the code')
+    expect(await screen.findByTestId('floor-stepper-caption')).toHaveTextContent('Workers')
     const stepper = screen.getByTestId('floor-stepper-row')
     expect(stepper.querySelectorAll('li')).toHaveLength(5)
     expect(stepper.querySelector('[data-step="WRITER"]')).toHaveAttribute('data-state', 'current')
@@ -161,7 +161,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // fraction, the "next:" chip, the "Last:" line and the heartbeat sentence
     // left the face; the agent's narration is in Technical detail.
     expect(await screen.findByTestId('floor-running-line')).toHaveTextContent(
-      'Step 3 of 5 — Writing the code — 7 of 7 features',
+      'Step 3 of 5 — Workers (writing the code) — 7 of 7 features',
     )
     expect(screen.getByTestId('floor-running-bar')).toHaveAttribute('aria-valuenow', '60')
     expect(screen.getByTestId('floor-running-timers')).toHaveTextContent('Last update just now')
@@ -1353,7 +1353,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(await screen.findByRole('heading', { name: /^Building/ })).toBeInTheDocument()
     // Watch snapshot paints one tick after takeover chrome; wait for it
     // the same way the WRITER takeover test waits for its running line.
-    expect(await screen.findByText('Step 1 of 5 — Planning the parts')).toBeInTheDocument()
+    expect(await screen.findByText('Step 1 of 5 — Collector (finding the parts)')).toBeInTheDocument()
     expect(screen.queryByText(/Founding-customer-ready/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Store-green/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('floor-pilot-ready-pill')).not.toBeInTheDocument()
@@ -1518,7 +1518,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     // filed under -- not the raw payload. Stronger than before, never weaker.
     const failureLine = screen.getByTestId('floor-failure-line')
     expect(failureLine).toHaveTextContent(
-      'The "Write the code" step failed — The coder produced no output for this step.',
+      'The "Workers" step failed — The coder produced no output for this step.',
     )
     // The ref the full detail is filed under sits on its own line in the
     // collapsed technical detail: no copy button inside the sentence, and no
@@ -1666,7 +1666,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
 
     // Wait for the build to arrive: the caption names the current step.
     const caption = await screen.findByTestId('floor-stepper-caption')
-    expect(caption).toHaveTextContent('Write the code')
+    expect(caption).toHaveTextContent('Workers')
     expect(caption).not.toHaveTextContent('Quality check')
     expect(screen.getByTestId('floor-stepper-row').querySelectorAll('li')).toHaveLength(5)
     expect(screen.queryByTestId('floor-phase-grader-rework')).not.toBeInTheDocument()
@@ -1706,7 +1706,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
     expect(count.closest('li')).toHaveAttribute('data-step', 'WRITER')
     expect(screen.getByTestId('floor-stepper-row').querySelectorAll('li')).toHaveLength(5)
     expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent(
-      'Write the code — Quality check sent work back once',
+      'Workers — Quality check sent work back once',
     )
     expect(screen.getByTestId('floor-stepper')).not.toHaveTextContent('GRADER')
   })
@@ -1776,7 +1776,7 @@ describe('Factory Floor — architect LLM then coding agent', () => {
       )
       expect(card.textContent?.split('The time allowance ended').length).toBe(2)
       expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(
-        `The "Write the code" step ran out of time — The time allowance ended before this step finished (it had run for ${minutes} minutes).`,
+        `The "Workers" step ran out of time — The time allowance ended before this step finished (it had run for ${minutes} minutes).`,
       )
       // A timeout is not a refusal: the step is amber, and the grader -- which
       // never saw this run -- leaves no review mark (PR-10 reverses the old

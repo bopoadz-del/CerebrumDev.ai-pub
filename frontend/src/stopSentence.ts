@@ -63,10 +63,6 @@ export function ranForWords(seconds: unknown): string | null {
   return `about ${minutesWords(seconds)}`
 }
 
-function lowerFirst(text: string): string {
-  return text.charAt(0).toLowerCase() + text.slice(1)
-}
-
 function plural(n: number, one: string): string {
   return `${n} ${one}${n === 1 ? '' : 's'}`
 }
@@ -113,7 +109,7 @@ export function stopWords(stop: StopRecord, opts: { quietS?: number | null } = {
       // The server says whether its service restarted or failed in place.
       const what = stop.restarted ? 'restarted' : 'was interrupted'
       why = running
-        ? `Our build service ${what} while ${lowerFirst(running)}.`
+        ? `Our build service ${what} during ${running}.`
         : `Our build service ${what} during the build.`
       break
     }

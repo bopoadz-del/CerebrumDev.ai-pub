@@ -305,7 +305,7 @@ export function reviewState(build: BuildStatus | null | undefined): ReviewState 
   return null
 }
 
-/** 'The "Write the code" step ran out of time': the step as the name table
+/** 'The "Workers" step ran out of time': the step as the name table
  *  calls it plus the stop class's own words. One label source, so the
  *  stepper, the detail line and the pill never call one step by two names. */
 export function stopHeadline(failure: BuildFailure | null | undefined): string {
@@ -331,7 +331,7 @@ export function fixRoundsLine(build: BuildStatus | null | undefined): string | n
   return `Fix rounds used: ${last.round_build} of ${last.build_ceiling} (${step}).`
 }
 
-/** Step number plus the step's running name: "Step 3 of 5 — Writing the code". */
+/** Step number plus the step's running name: "Step 3 of 5 — Workers (writing the code)". */
 export function formatPhaseHeadline(build: BuildStatus): string {
   const id = build.current_phase?.id
   const index = build.phase_index ?? (build.phases_done ?? 0) + 1
@@ -1181,7 +1181,7 @@ function runningStep(build: BuildStatus): { at: number | null; total: number | n
 }
 
 /**
- * One line for a running build: "Step 3 of 5 — Writing the code — 2 of 4
+ * One line for a running build: "Step 3 of 5 — Workers (writing the code) — 2 of 4
  * features". Step names come from the one name table; the unit too.
  */
 export function runningLine(build: BuildStatus): string {

@@ -88,7 +88,7 @@ describe('stopWords: the worked examples of section 4.5', () => {
     const w = stopWords(TIME_RAN_OUT)
     expect(`${w.word} at ${w.where}`).toBe('Stopped at step 3 of 5')
     expect(w.sentence).toBe(
-      'Writing the code ran out of time after about 38 minutes. This is on our side, not in your brief. Steps 1 and 2 are done and kept.',
+      'Workers (writing the code) ran out of time after about 38 minutes. This is on our side, not in your brief. Steps 1 and 2 are done and kept.',
     )
     const plan = buildActions({ build: stopped(TIME_RAN_OUT) })
     expect(plan.bar[0]).toMatchObject({ label: 'Try again', sub: 'Picks up at step 3. Finished steps are kept.' })
@@ -130,7 +130,7 @@ describe('stopWords: the worked examples of section 4.5', () => {
   it('3. our build service restarted: our side, the step by its running name', () => {
     const w = stopWords(SERVICE)
     expect(w.sentence).toBe(
-      `Our build service restarted while writing the code. ${OUR_SIDE} Steps 1 and 2 are done and kept.`,
+      `Our build service restarted during Workers (writing the code). ${OUR_SIDE} Steps 1 and 2 are done and kept.`,
     )
     expect(buildActions({ build: stopped(SERVICE) }).bar[0].sub).toBe('Picks up at step 3. Finished steps are kept.')
   })
@@ -140,7 +140,7 @@ describe('stopWords: the worked examples of section 4.5', () => {
     [false, 'was interrupted'],
   ])('3b. restarted=%s says the service %s', (restarted, verb) => {
     const w = stopWords({ ...SERVICE, restarted })
-    expect(w.sentence.startsWith(`Our build service ${verb} while writing the code.`)).toBe(true)
+    expect(w.sentence.startsWith(`Our build service ${verb} during Workers (writing the code).`)).toBe(true)
   })
 
   it('other states use the same pattern', () => {
@@ -241,7 +241,7 @@ const RUNNING: BuildStatus = {
 
 describe('runningLine', () => {
   it('is one line: step, the step by its running name, the share of features', () => {
-    expect(runningLine(RUNNING)).toBe('Step 3 of 5 — Writing the code — 2 of 4 features')
+    expect(runningLine(RUNNING)).toBe('Step 3 of 5 — Workers (writing the code) — 2 of 4 features')
   })
   it('names no wire id, even for a unit or a step the table does not know', () => {
     const odd = { ...RUNNING, current_phase: { id: 'NEW_STEP' }, phase_progress: { done: 1, total: 3, stage: 'widgets' } } as BuildStatus
@@ -350,10 +350,10 @@ describe('the expected end stays put between reads', () => {
 /* Fault 6: a stage marker's own done/total is not a count of parts. */
 describe('the running line counts only named things', () => {
   it.each([
-    [{ done: 0, total: 1, stage: 'dispatch' }, 'Step 3 of 5 — Writing the code'],
-    [{ done: 3, total: 1, stage: 'dispatch' }, 'Step 3 of 5 — Writing the code'],
-    [{ done: 2, total: 4, stage: 'handlers' }, 'Step 3 of 5 — Writing the code — 2 of 4 features'],
-    [{ done: 1, total: 6, stage: 'blocks' }, 'Step 3 of 5 — Writing the code — 1 of 6 building blocks'],
+    [{ done: 0, total: 1, stage: 'dispatch' }, 'Step 3 of 5 — Workers (writing the code)'],
+    [{ done: 3, total: 1, stage: 'dispatch' }, 'Step 3 of 5 — Workers (writing the code)'],
+    [{ done: 2, total: 4, stage: 'handlers' }, 'Step 3 of 5 — Workers (writing the code) — 2 of 4 features'],
+    [{ done: 1, total: 6, stage: 'blocks' }, 'Step 3 of 5 — Workers (writing the code) — 1 of 6 building blocks'],
   ])('%j reads %j', (progress, line) => {
     expect(runningLine({ ...RUNNING, phase_progress: progress })).toBe(line)
   })
@@ -455,9 +455,9 @@ describe('OPUSGRADE F295 ffbfc04: the guards the grader found untested', () => {
   })
 
   it.each([
-    [45, 'Writing the code ran out of time after less than a minute.'],
-    [75, 'Writing the code ran out of time after about 1 minute.'],
-    [0, 'Writing the code ran out of time.'],
+    [45, 'Workers (writing the code) ran out of time after less than a minute.'],
+    [75, 'Workers (writing the code) ran out of time after about 1 minute.'],
+    [0, 'Workers (writing the code) ran out of time.'],
   ])('time_ran_out after %i s', (elapsed, lead) => {
     expect(stopWords(record('time_ran_out', { elapsed_s: elapsed })).sentence.startsWith(`${lead} ${OUR_SIDE}`)).toBe(true)
   })
