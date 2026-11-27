@@ -44,6 +44,7 @@ from app.main import app
 ROOT = Path(__file__).resolve().parents[3]
 BLUEPRINT = ROOT / "blueprints" / "examples" / "runner_smoke.yaml"
 BRANCH = "build/plt_stoptest"
+NL = chr(10)
 BRIEF = '{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}'
 
 
@@ -168,6 +169,33 @@ def test_the_stop_commit_names_only_the_phases_that_passed(tmp_path, remote, wri
     passed = branch_attach.checkpointed_phases(clone)
     assert "WRITER" not in passed
     assert set(passed) == {"COLLECTOR", "CLONER"}
+
+
+@pytest.mark.parametrize(
+    "rel, text",
+    [("app/actions/owner_a.py", "A = 1" + NL), ("app/actions/owner_b.py", "B = 2" + NL)],
+)
+def test_the_owners_stop_pushes_a_stopped_commit(tmp_path, remote, rel, text):
+    from app.factory.build.coder_session_status import OwnerStopped
+
+    roles = _roles(False, rel, text)
+    inner = roles[BuildRole.WRITER]
+
+    def writer(ctx):
+        inner(ctx)
+        raise OwnerStopped("owner pressed Stop")
+
+    roles[BuildRole.WRITER] = writer
+    out = _workspace(tmp_path)
+
+    result = _run(out, roles)
+
+    assert result.outcome is Outcome.STOPPED_BY_OWNER
+    assert _on_branch(remote, rel) == text
+    manifest = json.loads(_on_branch(remote, "MANIFEST.json"))
+    assert manifest["stopped"]["state"] == "STOPPED" and manifest["certified"] is False
+    subject = _git(remote, "log", "-1", "--format=%s", BRANCH).strip()
+    assert subject == "factory: STOPPED at WRITER, not certified"
 
 
 @pytest.mark.parametrize("writer_ok", [False, True])
