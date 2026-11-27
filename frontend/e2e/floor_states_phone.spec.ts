@@ -909,7 +909,7 @@ test.describe('stop words and the running line at 360x780', () => {
     await openState(page, 'building')
     const card = page.getByTestId('floor-coder-takeover')
     await expect(card.getByTestId('floor-running-line')).toHaveCount(1)
-    await expect(card.getByTestId('floor-running-line')).toHaveText('Step 3 of 5 — Writing the code — 2 of 5 features')
+    await expect(card.getByTestId('floor-running-line')).toHaveText('Step 3 of 5 — Workers (writing the code) — 2 of 5 features')
     await expect(card.getByRole('progressbar')).toHaveCount(1)
     const timers = card.getByTestId('floor-running-timers')
     await expect(timers.locator('[data-timer]')).toHaveCount(3)
@@ -928,7 +928,7 @@ test.describe('stop words and the running line at 360x780', () => {
     await openState(page, 'stopped')
     await expect(page.getByTestId('floor-build-state')).toContainText('Stopped at step 3 of 5')
     await expect(page.getByTestId('floor-build-sentence')).toHaveText(
-      'Writing the code ran out of time after about 38 minutes. This is on our side, not in your brief. Steps 1 and 2 are done and kept.',
+      'Workers (writing the code) ran out of time after about 38 minutes. This is on our side, not in your brief. Steps 1 and 2 are done and kept.',
     )
     await expect(page.getByTestId('floor-try-again')).toContainText('Try again')
   })
