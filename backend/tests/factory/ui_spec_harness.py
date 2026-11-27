@@ -44,6 +44,7 @@ let __url = 'about:blank';
 // every request the page makes, as Playwright does.
 let __pageHeaders: Record<string, string> = {};
 const __base = () => process.env.BASE_URL || '';
+const __text = (h: string) => h.replace(/<(script|style|title)[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 const __loc = (find: (t: string) => boolean, act: any = {}) => {
   const l: any = { first: () => l, last: () => l, __visible: () => find(__html), ...act };
   return l;
@@ -52,7 +53,11 @@ const __page = {
   goto: async (u: string) => { const r = await fetch(u, { headers: __pageHeaders }); __html = await r.text(); __url = u; return __resp(r); },
   url: () => __url,
   waitForLoadState: async () => {}, on: () => {},
-  getByText: (re: RegExp) => __loc((t) => re.test(t)),
+  // Playwright's getByText(string) matches the page's TEXT, case-insensitive,
+  // substring, whitespace collapsed; markup is not text.
+  getByText: (q: RegExp | string) => __loc((t) => typeof q === 'string'
+    ? __text(t).toLowerCase().includes(q.replace(/\s+/g, ' ').trim().toLowerCase())
+    : q.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
     click: async () => { const r = await fetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || ''), headers: __pageHeaders }); __html += '\n' + await r.text(); },
     fill: async (v: string) => { (__page as any).__typed = v; },

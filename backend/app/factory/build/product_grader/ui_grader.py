@@ -192,12 +192,21 @@ def _unreadable_block() -> UiGrade:
     return UiGrade([], [BRIEF_UNREADABLE], brief_note=BRIEF_UNREADABLE)
 
 
+def console_title(blueprint: Mapping[str, Any]) -> str:
+    """The product's name as the Factory console shows it: the console is
+    rendered under ``factory_refresh.product_display_name``, so the bind step
+    looks for exactly that text."""
+    from app.factory.build.factory_refresh import product_display_name
+
+    return product_display_name(blueprint)
+
+
 def _candidate_steps(blueprint: Mapping[str, Any]) -> List[UiStep]:
     caps = [str(c.get("id")) for c in blueprint.get("capabilities") or [] if c.get("id")]
     first = caps[0] if caps else ""
     steps = [
         UiStep("load:/", "load", "/"),
-        UiStep("bind:tenant", "bind", str(blueprint.get("product_id") or "")),
+        UiStep("bind:tenant", "bind", console_title(blueprint)),
         UiStep("attach:pdf", "attach_pdf", "fixture.pdf"),
         UiStep("attach:xlsx", "attach_xlsx", "fixture.xlsx"),
         UiStep("parsed:status", "parsed", "fixture.pdf"),
@@ -367,7 +376,7 @@ KIND_JS: Dict[str, str] = {
     "load": _PAGE_OK,
     "screen": _PAGE_OK,
     "route": "const r = await request.get(url(s.target), { headers: AUTH }); expect(r.status()).toBe(200);",
-    "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
+    "bind": "await expect(page.getByText(s.target).first()).toBeVisible();",
     "attach_pdf": (
         "await page.getByRole('button', { name: '+' }).first().click();\n"
         "await page.locator('input[type=file]').first().setInputFiles(process.env.GRADE_FIXTURES + '/' + s.target);"

@@ -279,12 +279,46 @@ def test_nested_report_suites_are_read(depth):  # U5
     assert g.ok and [s["passed"] for s in g.steps] == [True] * len(names)
 
 
-@pytest.mark.parametrize("i,served,ok", [(0, 0, True), (1, 1, True), (0, 1, False), (1, 0, False)])
-def test_bind_needs_the_products_own_id_on_the_page(tmp_path, i, served, ok):  # U12
-    bp = BPS[i]
-    with h.server({}, bodies={"/": f"<h1>tenant {BPS[served]['product_id']}</h1>"}) as base:
-        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "bind"))
+# The product id is the vertical slug and the name is the architect's choice:
+# a name that does not contain the id is the ordinary case.
+NAMED = [
+    {"product_id": "property", "product_name": "Harbor Lettings", "capabilities": [{"id": "rent_roll"}]},
+    {"product_id": "logistics", "product_name": "Dock Ledger", "capabilities": [{"id": "berth_log"}]},
+    {"product_id": "logistics", "capabilities": [{"id": "berth_log"}]},  # no name: the console shows the id
+]
+
+
+@pytest.mark.parametrize("i,served,ok", [(0, 0, True), (1, 1, True), (2, 2, True), (0, 1, False), (1, 0, False), (1, 2, False)])
+def test_bind_needs_the_name_the_factory_console_shows(tmp_path, i, served, ok):  # U12
+    from app.factory.build.factory_refresh import product_display_name
+    from app.factory.build.store_acceptance import render_ui_index
+
+    # The page is the Factory's own console, rendered as the build renders it.
+    page = render_ui_index(product_display_name(NAMED[served]))
+    with h.server({}, bodies={"/": page}) as base:
+        got = h.run_spec(ug.render_spec(NAMED[i]), tmp_path, base, only_kinds=("load", "bind"))
     assert got["load:/"] == "passed" and (got["bind:tenant"] == "passed") is ok
+
+
+@pytest.mark.parametrize("bp, shown", [(NAMED[0], "Harbor Lettings"), (NAMED[2], "logistics")])
+def test_console_title_is_what_the_console_renders(bp, shown):
+    from app.factory.build.store_acceptance import render_ui_index
+
+    assert ug.console_title(bp) == shown
+    assert f"<h1>{shown}</h1>" in render_ui_index(ug.console_title(bp))
+    assert [s.target for s in ug.ui_plan(bp) if s.kind == "bind"] == [shown]
+
+
+@pytest.mark.parametrize("page, ok", [
+    ("<h1>Harbor   Lettings</h1>", True),                       # whitespace collapsed, as Playwright does
+    ("<h1>HARBOR LETTINGS</h1>", True),                         # case-insensitive
+    ('<h1 class="Harbor Lettings">other</h1>', False),          # markup is not text
+    ("<title>Harbor Lettings</title><h1>other</h1>", False),    # the tab title is not on the page
+])
+def test_bind_reads_the_pages_text_not_its_markup(tmp_path, page, ok):
+    with h.server({}, bodies={"/": page}) as base:
+        got = h.run_spec(ug.render_spec(NAMED[0]), tmp_path, base, only_kinds=("load", "bind"))
+    assert (got["bind:tenant"] == "passed") is ok
 
 
 @pytest.mark.parametrize("i", [0, 1])
@@ -373,7 +407,7 @@ def _flow(tmp_path, bp, *, page="", upload="parsed ok", answer="total 1,240 [1]"
 
 @pytest.mark.parametrize("bp", BPS)
 def test_full_flow_passes_on_a_product_that_answers(tmp_path, bp):
-    got, seen, fx = _flow(tmp_path, bp, page=f"tenant {bp['product_id']}")
+    got, seen, fx = _flow(tmp_path, bp, page=f"<h1>{bp['product_name']}</h1>")
     assert set(got.values()) == {"passed"}, got
     uploads = [(k, b) for k, b in seen if k.startswith("/__upload")]
     assert [k for k, _ in uploads] == ["/__upload?name=fixture.pdf", "/__upload?name=fixture.xlsx"]  # N6
@@ -385,7 +419,7 @@ def test_full_flow_passes_on_a_product_that_answers(tmp_path, bp):
 
 
 @pytest.mark.parametrize("bp", BPS)
-def test_bind_fails_without_the_product_id(tmp_path, bp):  # N4
+def test_bind_fails_without_the_product_name(tmp_path, bp):  # N4
     got, _, _ = _flow(tmp_path, bp, page="tenant somebody-else")
     assert got["bind:tenant"].startswith("failed")
 
@@ -535,7 +569,7 @@ def test_a_whole_file_serial_spec_would_hide_screens_and_routes(tmp_path, bp):
 @pytest.mark.parametrize("bp", BPS)
 def test_bind_opens_the_front_page_itself(tmp_path, bp):
     """bind does not rely on the load step having run before it."""
-    page = f"<h1>{bp['product_id']}</h1>"
+    page = f"<h1>{ug.console_title(bp)}</h1>"
     with h.server({}, bodies={"/": page}) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("bind",))
     assert got == {"bind:tenant": "passed"}
