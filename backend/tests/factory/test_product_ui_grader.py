@@ -616,3 +616,14 @@ def test_the_spec_never_carries_the_token_itself():
         spec = ug.render_spec(bp)
         assert GATE_RUN_ENV[GATE_TOKEN_VAR] not in spec
         assert f"process.env.{ug.BEARER_ENV}" in spec
+
+
+@pytest.mark.parametrize("brief", [12345, ["not", "a", "brief"]])
+def test_grade_ui_with_an_unreadable_brief_runs_nothing(tmp_path, brief):
+    """A value that is not a customer brief stops the UI grade before any
+    run: the bearer is never handed to a run that should not happen."""
+    calls = []
+    got = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
+                      run=lambda cmd, **k: calls.append(k), brief=brief)
+    assert calls == []
+    assert got.errors == [ug.BRIEF_UNREADABLE] and not got.ran
