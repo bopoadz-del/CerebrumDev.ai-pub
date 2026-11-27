@@ -1062,6 +1062,16 @@ def test_stored_is_judged_on_input_one_not_on_the_sources_own_sample(tmp_path, e
     assert any(error in a for a in r.probe["answers"])
 
 
+@pytest.mark.parametrize("error", ["entry is locked", "not yours"])
+def test_a_source_that_refused_but_logged_input_one_where_the_handle_reads_is_not_a_fixture(tmp_path, error):
+    # The record holds input one and sits in the file the handle reads, but
+    # the source that wrote it refused input one: no state was made.
+    logger = AUDIT.replace("'audit.jsonl'", "'rows.jsonl'")
+    r = _judge(tmp_path, ["checker", "logger"], {"checker": _checker("False", error), "logger": logger})["checker"]
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.NOT_STORED, True)
+    assert any(error in a for a in r.probe["answers"])
+
+
 GARBLER = (
     "import os\n"
     "from pathlib import Path\n"
@@ -1106,9 +1116,11 @@ exec(src)
 seen, calls, denied = set(), [], []
 (store / "sub").mkdir(parents=True, exist_ok=True)
 (store / "sub" / "a.json").write_text("{}")
+(store / "sub" / "b.json").write_text("{}")
 phase = watch_reads(store, seen)
 late = sqlite3.connect(str(store / "t.db"))
 late.execute("create table three (x)")
+late.execute("create table six (x)")
 own = sqlite3.connect(str(store / "o.db"))
 own.execute("create table four (x)")
 own.set_authorizer(lambda *a: (calls.append(a[0]), sqlite3.SQLITE_OK)[1])
@@ -1117,7 +1129,8 @@ deny.execute("create table five (x)")
 deny.set_authorizer(lambda a, t, *r: sqlite3.SQLITE_DENY if t == "five" else sqlite3.SQLITE_OK)
 outside = store.parent / "outside.json"
 outside.write_text("{}")
-(store / "sub" / "a.json").read_text()
+(store / "sub" / "b.json").read_text()
+late.execute("select * from six").fetchall()
 late.execute("select * from three").fetchall()
 gone = sqlite3.connect(str(store / "g.db"))
 gone.close()
@@ -1140,8 +1153,8 @@ for name in sys.argv[4].split(","):
         u = sqlite3.connect("file:" + str(store / "t.db") + "?mode=ro", uri=True)
         u.execute("select * from three").fetchall()
 phase(False)
-late.execute("select * from three").fetchall()
-(store / "sub" / "a.json").read_text()
+late.execute("select * from six").fetchall()
+(store / "sub" / "b.json").read_text()
 Path(out).write_text(json.dumps({"seen": sorted([list(w) for w in seen], key=str),
                                  "own_called": bool(calls), "denied": bool(denied)}))
 """
