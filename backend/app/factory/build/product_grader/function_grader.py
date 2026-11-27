@@ -81,6 +81,22 @@ ONE_RESULT = "two inputs gave one result"
 #: stub. A stub answers a fixed result; a fail-closed handle answers its
 #: error. Neither is ok, so the bar is unchanged; only the class differs.
 BLOCK_UNAVAILABLE = "block_unavailable: two inputs gave one honest-error envelope"
+#: Fix 4 -- a capability whose right answer to made-up input is a refusal is
+#: judged on a state the grade makes itself. When both inputs answered one
+#: honest-error envelope, input one is first sent to every OTHER plan
+#: capability whose declared input fields include all of input one's fields
+#: (the same scratch store, the same process). Then input one is sent again,
+#: and input one with one varied field set to input two's value. The facts:
+#: no plan capability takes those fields -> the grade cannot make the state,
+#: the capability is ungraded (the Factory owes it, never the writer);
+#: none of them accepted it -> :data:`BLOCK_UNAVAILABLE`, as before;
+#: one accepted and input one is still refused -> :data:`REFUSED_ALTHOUGH_STORED`;
+#: input one is accepted and no single changed field is refused ->
+#: :data:`ACCEPTS_ANY_CHANGE`. Accepted, and refused when a field changes, is
+#: a pass whose ``depends_on`` names the fields whose change was refused.
+NO_FIXTURE = "no plan capability takes its input fields, so the grade cannot make the state it reads"
+REFUSED_ALTHOUGH_STORED = "refused input one after another capability accepted it"
+ACCEPTS_ANY_CHANGE = "accepted input one after the fixture, and input one with any one field changed too"
 #: The detail of a capability with no field that can take a second value and
 #: that PASSED TESTER's one-input pilot rule. It counts as a pass and is
 #: recorded for information. One that fails the rule carries TESTER's
@@ -108,6 +124,9 @@ class GradedFunction:
     #: TESTER's completed sample, then a second valid instance of the same
     #: spec when one of its fields can vary (else the sample alone).
     inputs: List[Dict[str, Any]]
+    #: The other plan capabilities whose declared inputs include every field
+    #: of input one: ``{"capability", "module", "sample"}`` in plan order.
+    fixtures: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -128,6 +147,9 @@ class FunctionResult:
     #: FG-7c: ``{declared block id: why it cannot run}`` in the probe
     #: environment. Non-empty means the handle is not judgeable here.
     blocks_cannot_run: Dict[str, str] = field(default_factory=dict)
+    #: Fix 4: both inputs were refused and no plan capability can make the
+    #: state the handle reads, so the grade could not judge it.
+    needs_fixture: bool = False
 
     @property
     def ok(self) -> bool:
@@ -293,9 +315,24 @@ def derive_functions(
         ids, dict(state_specs or {}), product_root((root,)), read_under(root), dict(route_bodies or {})
     )
     firsts = completed_samples(root, {cid: _sample_payload(specs.get(cid, {})) for cid in ids})
-    return [
+    fns = [
         GradedFunction(cid, capability_module(cid), contract_inputs(specs.get(cid), firsts[cid]))
         for cid in ids
+    ]
+    return [GradedFunction(f.capability_id, f.module, f.inputs, fixture_sources(f, fns)) for f in fns]
+
+
+def fixture_sources(fn: GradedFunction, fns: Sequence[GradedFunction]) -> List[Dict[str, Any]]:
+    """Fix 4: the other plan capabilities that can make the state ``fn``
+    reads -- each one whose input one has every field of ``fn``'s input one.
+    Read from the declared fields only; never a capability's name or words."""
+    wanted = set(fn.inputs[0]) if fn.inputs else set()
+    if not wanted:
+        return []
+    return [
+        {"capability": o.capability_id, "module": o.module, "sample": dict(o.inputs[0])}
+        for o in fns
+        if o.capability_id != fn.capability_id and o.inputs and wanted <= set(o.inputs[0])
     ]
 
 
@@ -605,6 +642,37 @@ if not out.get("error"):
     base = signal(a2)
     out["depends_on"] = [n for n in varied
                          if variants[n] is None or signal(variants[n]) != base]
+if out.get("honest_error") is True and spec.get("fixtures"):
+    # Fix 4: make the state with the plan's other capabilities, then judge.
+    def accepted(answer):
+        return pilot_failure("", answer) is None
+    fixture = {"stored_by": [], "answers": []}
+    for fx in spec["fixtures"]:
+        try:
+            made = importlib.import_module(fx["module"]).handle({**fx["sample"], **first})
+        except BaseException:
+            continue
+        if accepted(made):
+            fixture["stored_by"].append(fx["capability"])
+    if fixture["stored_by"]:
+        try:
+            again = original(dict(first))
+            fixture["answers"].append(canon(again))
+            fixture["accepted"] = accepted(again)
+            fixture["refused_when_changed"] = []
+            for name in varied if fixture["accepted"] else []:
+                changed = dict(first)
+                changed[name] = second.get(name)
+                try:
+                    answer = original(changed)
+                except BaseException:
+                    answer = None  # it refused this input by raising
+                fixture["answers"].append(canon(answer))
+                if answer is None or not accepted(answer):
+                    fixture["refused_when_changed"].append(name)
+        except BaseException as exc:
+            fixture["error"] = why(exc)
+    out["fixture"] = fixture
 for name in spec["mutants"]:
     if out.get("error"):
         out["mutants"][name] = "not_run"
@@ -662,6 +730,7 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
         storage.mkdir()
         spec = json.dumps({"module": fn.module, "capability": fn.capability_id,
                            "inputs": fn.inputs, "mutants": list(MUTANTS),
+                           "fixtures": fn.fixtures,
                            "nonce": nonce, "out": str(out_path), "storage": str(storage),
                            "harness_env": dict(GATE_RUN_ENV)}, default=str)
         try:
@@ -699,6 +768,9 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
         if not one.ok:
             one.probe = _probe(fn, data.get("answers") or [], data)
         return one
+    judged = fixture_result(fn, data)
+    if judged is not None:
+        return judged
     detail = data.get("error") or (
         "" if data["two_input"]
         else BLOCK_UNAVAILABLE if data.get("honest_error") is True
@@ -709,6 +781,36 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
     if not result.ok:
         result.probe = _probe(fn, data.get("answers") or [], data)
     return result
+
+
+def fixture_result(fn: GradedFunction, data: Mapping[str, Any]) -> Optional[FunctionResult]:
+    """Fix 4: the result of a handle that refused both inputs with one honest
+    error, read from the facts the probe recorded (see :data:`NO_FIXTURE`).
+    None when the rule does not apply or no other capability accepted input
+    one -- then the handle is judged as before."""
+    if data.get("error") or data.get("honest_error") is not True:
+        return None
+    cid = fn.capability_id
+    if not fn.fixtures:
+        return FunctionResult(cid, False, [], [], NO_FIXTURE, needs_fixture=True,
+                              probe=_probe(fn, data.get("answers") or [], data))
+    fixture = data.get("fixture") or {}
+    if not fixture.get("stored_by"):
+        return None
+    seen = list(data.get("answers") or []) + list(fixture.get("answers") or [])
+    if fixture.get("error"):
+        detail = str(fixture["error"])
+    elif fixture.get("accepted") is not True:
+        detail = REFUSED_ALTHOUGH_STORED
+    else:
+        refused = [str(n) for n in fixture.get("refused_when_changed") or []]
+        result = FunctionResult(cid, True, list(MUTANTS) if refused else [],
+                                [] if refused else list(MUTANTS),
+                                "" if refused else ACCEPTS_ANY_CHANGE, depends_on=refused)
+        if not result.ok:
+            result.probe = _probe(fn, seen, data)
+        return result
+    return FunctionResult(cid, False, [], list(MUTANTS), detail, probe=_probe(fn, seen, data))
 
 
 def not_judgeable_detail(cannot: Mapping[str, str]) -> str:
@@ -827,10 +929,11 @@ def grade_functions(
     # FG-7c: a capability whose declared block cannot run in the probe
     # environment is not judgeable -- ungraded (the Factory owes it), never a
     # FAIL handed to the writer, never counted toward the floor.
+    # Fix 4: so is one whose state no plan capability can make.
     grade = FunctionGrade(
-        [r for r in results if not r.blocks_cannot_run],
+        [r for r in results if not (r.blocks_cannot_run or r.needs_fixture)],
         min_functions=min_functions,
-        ungraded=[r for r in results if r.blocks_cannot_run],
+        ungraded=[r for r in results if r.blocks_cannot_run or r.needs_fixture],
     )
     # F-8d: when a grader root is given, also build the writer-blind vault
     # (seeded inputs + kernel-computed expected) and record it on the grade so

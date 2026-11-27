@@ -523,3 +523,157 @@ def test_non_function_handle_is_graded_and_fails(tmp_path, cid, body):
     ws = _workspace(tmp_path, {cid: body, "real_one": READS_INPUT})
     rs = {r.capability_id: r.ok for r in (fg.run_function(f, ws) for f in fg.derive_functions([cid, "real_one"], ws))}
     assert rs == {cid: False, "real_one": True}
+
+
+# --- Fix 4: a handle whose right answer to made-up input is a refusal is
+# judged on a state the grade makes with the plan's other capabilities ---
+KEEPER = (
+    "import json, os\n"
+    "from pathlib import Path\n"
+    "def handle(payload):\n"
+    "    rows = Path(os.environ['STORAGE_PATH']) / 'rows.jsonl'\n"
+    "    with rows.open('a') as fh:\n"
+    "        fh.write(json.dumps(payload) + '\\n')\n"
+    "    return {'ok': True, 'kept': payload['amount'] * 7 + len(payload['owner'])}\n"
+)
+
+
+def _checker(match: str, error: str = "no such entry") -> str:
+    """A handle that answers only for a stored row; ``match`` is the Python
+    test a stored row ``r`` must pass against the input ``p``."""
+    return (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "def handle(p):\n"
+        "    rows = Path(os.environ['STORAGE_PATH']) / 'rows.jsonl'\n"
+        "    seen = [json.loads(x) for x in rows.read_text().splitlines()] if rows.exists() else []\n"
+        f"    if any({match} for r in seen):\n"
+        "        return {'ok': True, 'checked': p['amount'] * 2}\n"
+        f"    return {{'ok': False, 'error': {error!r}}}\n"
+    )
+
+
+def _judge(tmp_path, ids, bodies):
+    ws = _workspace(tmp_path, bodies)
+    return {r.capability_id: r for r in (fg.run_function(f, ws) for f in fg.derive_functions(ids, ws))}
+
+
+@pytest.mark.parametrize("match,depends", [
+    ("r['owner'] == p['owner']", ["owner"]),
+    ("r['amount'] == p['amount'] and r['approved'] == p['approved']", ["amount", "approved"]),
+])
+def test_refusing_handle_passes_on_a_state_the_grade_made(tmp_path, match, depends):
+    rs = _judge(tmp_path, ["checker", "keeper"], {"checker": _checker(match), "keeper": KEEPER})
+    r = rs["checker"]
+    assert r.ok and r.two_input_passed and r.detail == ""
+    assert sorted(r.depends_on) == depends and r.mutants_killed == list(fg.MUTANTS)
+    assert rs["keeper"].ok
+
+
+@pytest.mark.parametrize("error", ["entry is locked", "not yours"])
+def test_refused_although_stored_is_a_fail_quoting_what_the_run_saw(tmp_path, error):
+    rs = _judge(tmp_path, ["checker", "keeper"], {"checker": _checker("False", error), "keeper": KEEPER})
+    r = rs["checker"]
+    assert not r.ok and r.detail == fg.REFUSED_ALTHOUGH_STORED and not r.needs_fixture
+    assert any(error in a for a in r.probe["answers"])
+    grade = fg.FunctionGrade([r, rs["keeper"]])
+    assert _classes(grade, ["checker", "keeper"])["checker"] == "handler_error"
+
+
+@pytest.mark.parametrize("match", ["True", "len(r) > 0"])
+def test_accepting_every_change_after_the_fixture_is_a_stub(tmp_path, match):
+    rs = _judge(tmp_path, ["checker", "keeper"], {"checker": _checker(match), "keeper": KEEPER})
+    r = rs["checker"]
+    assert not r.ok and r.detail == fg.ACCEPTS_ANY_CHANGE and r.mutants_survived == list(fg.MUTANTS)
+    assert _classes(fg.FunctionGrade([r, rs["keeper"]]), ["checker", "keeper"])["checker"] == "stub_handler"
+
+
+@pytest.mark.parametrize("error", ["no such entry", "unknown owner"])
+def test_no_capability_makes_the_state_is_ungraded_not_billed(tmp_path, error):
+    ws = _workspace(tmp_path, {"checker": _checker("True", error)})
+    grade = _grade(["checker"], ws)
+    assert [f.capability_id for f in grade.ungraded] == ["checker"] and grade.functions == []
+    assert grade.ungraded[0].detail == fg.NO_FIXTURE and not grade.ok
+    assert any(error in a for a in grade.ungraded[0].probe["answers"])
+    assert "checker" not in grade.failing
+    assert _classes(grade, ["checker"])["checker"] == "ungraded"
+
+
+@pytest.mark.parametrize("other", [
+    "def handle(p):\n    return {'ok': False, 'error': 'store offline'}\n",
+    "def handle(p):\n    raise RuntimeError('down')\n",
+])
+def test_no_other_capability_accepted_stays_block_unavailable(tmp_path, other):
+    r = _judge(tmp_path, ["checker", "other"], {"checker": _checker("True"), "other": other})["checker"]
+    assert not r.ok and r.detail == fg.BLOCK_UNAVAILABLE and not r.needs_fixture
+
+
+@pytest.mark.parametrize("cid,body", [("computes", READS_INPUT), ("constant", CONSTANT)])
+def test_fixture_never_runs_for_a_handle_that_does_not_refuse(tmp_path, cid, body):
+    # The keeper would make a state; a handle that answers anyway is judged as before.
+    r = _judge(tmp_path, [cid, "keeper"], {cid: body, "keeper": KEEPER})[cid]
+    assert r.detail == ("" if cid == "computes" else fg.ONE_RESULT)
+    assert r.ok is (cid == "computes")
+
+
+def _fn(cid, *firsts):
+    return fg.GradedFunction(cid, f"app.actions.{cid}", [dict(f) for f in firsts])
+
+
+@pytest.mark.parametrize("mine,theirs,covered", [
+    ({"a": 1}, {"a": 2, "b": 3}, True),
+    ({"a": 1, "b": 2}, {"a": 2, "b": 3}, True),
+    ({"a": 1, "c": 2}, {"a": 2, "b": 3}, False),
+    ({}, {"a": 2}, False),
+])
+def test_fixture_sources_are_the_capabilities_that_take_every_field(mine, theirs, covered):
+    fn, other = _fn("mine", mine), _fn("theirs", theirs)
+    got = fg.fixture_sources(fn, [fn, other])
+    assert got == ([{"capability": "theirs", "module": "app.actions.theirs", "sample": theirs}] if covered else [])
+
+
+@pytest.mark.parametrize("first", [{"a": 1}, {"a": 1, "b": 2}])
+def test_fixture_sources_never_list_the_capability_itself_or_an_empty_one(first):
+    fn = _fn("mine", first)
+    assert fg.fixture_sources(fn, [fn, fg.GradedFunction("empty", "m", [])]) == []
+    assert fg.fixture_sources(fg.GradedFunction("none", "m", []), [fn]) == []
+
+
+_FIX = [{"capability": "theirs", "module": "m", "sample": {}}]
+
+
+@pytest.mark.parametrize("data", [
+    {"honest_error": False, "fixture": {"stored_by": ["theirs"], "accepted": False}},
+    {"honest_error": True, "error": "handle raised", "fixture": {"stored_by": ["theirs"]}},
+    {"honest_error": "yes", "fixture": {"stored_by": ["theirs"], "accepted": False}},
+    {"honest_error": True, "fixture": {"stored_by": []}},
+    {"honest_error": True},
+])
+def test_fixture_result_does_not_fire(data):
+    fn = fg.GradedFunction("mine", "m", [{"a": 1}], list(_FIX))
+    assert fg.fixture_result(fn, data) is None
+
+
+@pytest.mark.parametrize("fixture,ok,detail,depends", [
+    ({"stored_by": ["theirs"], "accepted": True, "refused_when_changed": ["a"]}, True, "", ["a"]),
+    ({"stored_by": ["theirs"], "accepted": True, "refused_when_changed": ["a", "b"]}, True, "", ["a", "b"]),
+    ({"stored_by": ["theirs"], "accepted": True, "refused_when_changed": []}, False, fg.ACCEPTS_ANY_CHANGE, []),
+    ({"stored_by": ["theirs"], "accepted": False}, False, fg.REFUSED_ALTHOUGH_STORED, []),
+    ({"stored_by": ["theirs"], "accepted": "yes"}, False, fg.REFUSED_ALTHOUGH_STORED, []),
+    ({"stored_by": ["theirs"], "accepted": True, "error": "handle raised: X"}, False, "handle raised: X", []),
+])
+def test_fixture_result_reads_the_facts(fixture, ok, detail, depends):
+    fn = fg.GradedFunction("mine", "m", [{"a": 1}], list(_FIX))
+    r = fg.fixture_result(fn, {"honest_error": True, "answers": ["A1", "A2"],
+                               "fixture": dict(fixture, answers=["F1"])})
+    assert (r.ok, r.detail, r.depends_on, r.needs_fixture) == (ok, detail, depends, False)
+    assert r.two_input_passed is (detail in ("", fg.ACCEPTS_ANY_CHANGE))
+    assert r.mutants_killed == (list(fg.MUTANTS) if ok else [])
+    assert r.probe == ({} if ok else {"inputs": [{"a": 1}], "corrections": [], "answers": ["A1", "A2", "F1"]})
+
+
+@pytest.mark.parametrize("answers", [["A1", "A2"], ["B1", "B2"]])
+def test_fixture_result_without_a_source_needs_a_fixture(answers):
+    fn = fg.GradedFunction("mine", "m", [{"a": 1}])
+    r = fg.fixture_result(fn, {"honest_error": True, "answers": answers})
+    assert (r.ok, r.needs_fixture, r.detail, r.probe["answers"]) == (False, True, fg.NO_FIXTURE, answers)
