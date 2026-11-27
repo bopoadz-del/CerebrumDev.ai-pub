@@ -677,3 +677,27 @@ def test_fixture_result_without_a_source_needs_a_fixture(answers):
     fn = fg.GradedFunction("mine", "m", [{"a": 1}])
     r = fg.fixture_result(fn, {"honest_error": True, "answers": answers})
     assert (r.ok, r.needs_fixture, r.detail, r.probe["answers"]) == (False, True, fg.NO_FIXTURE, answers)
+
+
+def _wide_models(root: Path) -> None:
+    """``checker`` declares ``Entry``; ``keeper`` declares the same fields
+    under other bounds, so its own sample differs from the checker's input."""
+    from tests.factory.grader_contract import MODEL_CLASS
+
+    wide = (MODEL_CLASS.replace("class Entry", "class Wide").replace("'entry'", "'wide'")
+            .replace("'min': 0, 'max': 1000", "'min': 500, 'max': 900"))
+    (root / "app" / "models.py").write_text(
+        MODEL_CLASS + "\n" + wide + "\nMODELS = {'checker': Entry, 'keeper': Wide}\n")
+
+
+@pytest.mark.parametrize("match", [
+    "r['amount'] == p['amount']",
+    "r['amount'] == p['amount'] and r['owner'] == p['owner']",
+])
+def test_the_fixture_stores_input_one_not_its_own_sample(tmp_path, match):
+    ws = _workspace(tmp_path, {"checker": _checker(match), "keeper": KEEPER})
+    _wide_models(ws)
+    fns = {f.capability_id: f for f in fg.derive_functions(["checker", "keeper"], ws)}
+    assert fns["keeper"].inputs[0]["amount"] != fns["checker"].inputs[0]["amount"]
+    r = fg.run_function(fns["checker"], ws)
+    assert r.ok and r.detail == "" and "amount" in r.depends_on
