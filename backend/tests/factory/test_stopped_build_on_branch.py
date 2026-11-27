@@ -456,3 +456,112 @@ def test_a_certified_build_is_not_labelled_failed(client, tmp_path, sid):
 
     assert reply["ok"] is False and "download" not in reply
     assert "FAILED" not in reply["summary"]
+
+
+@pytest.mark.parametrize("sid, noted", [("sess_copy_handoff_a", True), ("sess_copy_handoff_b", False)])
+def test_a_build_waiting_for_its_store_gate_offers_no_copy(client, tmp_path, sid, noted):
+    """A designed hand-off ends the run with RUN_FAILED(HANDOFF_TO_N3); the
+    status reads it as building, so it is not a stopped build."""
+    from app.factory import platform_chat_flow
+    from app.factory.build_jobs import build_status
+
+    store = BuildRole("STORE_MANAGER")
+    rows = _passed("COLLECTOR", "CLONER", "WRITER", "TESTER") + [
+        (EventKind.PHASE_STARTED, store, "STORE_MANAGER", {}),
+        (EventKind.GATE_FAILED, store, "docker", {"reason": "docker_unavailable"}),
+    ]
+    if noted:
+        rows.append((EventKind.NOTE, store, "handed off", {"handoff": "HANDOFF_TO_N3"}))
+    rows.append((EventKind.RUN_FAILED, store, "handed off", {"outcome": "HANDOFF_TO_N3"}))
+    out = _session(tmp_path, sid, rows)
+    assert build_status(out)["state"] == "building"
+
+    reply = platform_chat_flow.take_copy(get_session(sid))
+
+    assert reply["ok"] is False and "download" not in reply
+    assert "FAILED" not in reply["summary"]
+
+
+# -- the pieces, each on its own -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env, refused",
+    [
+        ({}, True),
+        ({"CEREBRUM_BUILDS_GITHUB_TOKEN": "   "}, True),
+        ({"CEREBRUM_BUILDS_GITHUB_TOKEN": "t"}, False),
+    ],
+)
+def test_checkpoint_refuses_without_a_builds_token(tmp_path, remote, env, refused):
+    from app.factory.build.builds_push import BuildsPushError
+
+    src = tmp_path / "src"
+    (src / "app").mkdir(parents=True)
+    (src / "app" / "main.py").write_text("x = 2\n", encoding="utf-8")
+    before = _git(remote, "rev-parse", BRANCH).strip()
+
+    if refused:
+        with pytest.raises(BuildsPushError, match="CEREBRUM_BUILDS_GITHUB_TOKEN"):
+            branch_attach.checkpoint(src, BRANCH, "m", env=env)
+        assert _git(remote, "rev-parse", BRANCH).strip() == before
+        assert _on_branch(remote, "app/main.py") == ""
+    else:
+        sha = branch_attach.checkpoint(src, BRANCH, "m", env=env)
+        assert sha != before and _git(remote, "rev-parse", BRANCH).strip() == sha
+        assert _on_branch(remote, "app/main.py") == "x = 2\n"
+
+
+@pytest.mark.parametrize(
+    "rel, text",
+    [("app/actions/count_items.py", "N = 1\n"), ("app/actions/list_hires.py", "N = 2\n")],
+)
+def test_the_stop_tree_carries_only_exported_staged_files(tmp_path, rel, text):
+    """A staged file ships; a staged directory, bytecode and a cache do not."""
+    bp = load_blueprint(BLUEPRINT)
+    out = _workspace(tmp_path, branch="")
+    (out / "app").mkdir()
+    (out / "app" / "main.py").write_text("app = None\n", encoding="utf-8")
+    runner = RoleRunner(bp, out, budget=BuildBudget(max_rework=0), brief=BRIEF)
+    staging = runner._staging_for(BuildRole.WRITER)
+    assert staging is not None
+    (staging / rel).parent.mkdir(parents=True, exist_ok=True)
+    (staging / rel).write_text(text, encoding="utf-8")
+    (staging / "app" / "empty_dir").mkdir(parents=True)
+    (staging / "app" / "__pycache__").mkdir(parents=True)
+    (staging / "app" / "__pycache__" / "x.cpython-311.pyc").write_bytes(b"\x00")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+
+    runner._stop_tree(tree)
+
+    assert (tree / rel).read_text(encoding="utf-8") == text
+    assert (tree / "app" / "main.py").is_file()
+    assert not (tree / "app" / "__pycache__").exists()
+
+
+@pytest.mark.parametrize("design, sha", [("none", ""), ("no_output", ""), ("own", "a" * 40), ("own", "b" * 40)])
+def test_stop_checkpoint_of_reads_only_the_builds_own_ledger(tmp_path, design, sha):
+    """No build (no output directory) names no branch; a build names the
+    head its own stop NOTE recorded."""
+    from types import SimpleNamespace
+
+    from app.factory import platform_chat_flow
+
+    out = tmp_path / "ws"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="h")
+    ledger.append(EventKind.NOTE, detail="stop", payload={"stop_checkpoint": sha or "c" * 40, "branch": BRANCH})
+    if design == "none":
+        state = SimpleNamespace(product_design=None, session_id="s")
+    elif design == "no_output":
+        state = SimpleNamespace(product_design=SimpleNamespace(generation={}, blueprint={}), session_id=None)
+    else:
+        state = SimpleNamespace(
+            product_design=SimpleNamespace(generation={"output_dir": str(out)}, blueprint={}), session_id="s",
+        )
+
+    got = platform_chat_flow.stop_checkpoint_of(state)
+
+    assert got == ({"stop_checkpoint": sha, "branch": BRANCH} if sha else {})

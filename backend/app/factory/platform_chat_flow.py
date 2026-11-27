@@ -1751,9 +1751,8 @@ def stopped_build_status(state: Any, output_root: Optional[Path] = None) -> Opti
     """The build's status when it is stopped and nothing is running it, else
     None. Stopped is the status the card reads as stopped: ``failed`` or
     ``stalled`` (a run the server restarted under, or one gone quiet). A
-    build waiting for its Store-gate hand-off is not stopped."""
-    if is_handoff_awaiting_n3(state, output_root):
-        return None
+    build waiting for its Store-gate hand-off is not stopped: the status
+    itself reads it as ``building`` (one source with the card)."""
     st = _generation_status(state, output_root)
     return st if st.get("state") in ("failed", "stalled") else None
 
@@ -1764,8 +1763,9 @@ def stop_checkpoint_of(state: Any, output_root: Optional[Path] = None) -> Dict[s
     out = _generation_output_dir(state, output_root)
     if not out:
         return {}
+    ledger = _ledger_for(out)
     try:
-        events = _ledger_for(out).events()
+        events = ledger.events()
     except Exception:  # noqa: BLE001 -- a torn ledger names no branch
         return {}
     for event in reversed(events):

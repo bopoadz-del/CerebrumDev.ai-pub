@@ -1197,9 +1197,8 @@ class RoleRunner:
 
         _sync_workspace_onto_tree(self.workspace, tree)
         staging = self._staging_for(BuildRole.WRITER)
-        if staging is None or not staging.is_dir():
-            return
-        for src in sorted(staging.rglob("*")):
+        staged = sorted(staging.rglob("*")) if staging is not None else []
+        for src in staged:
             rel = src.relative_to(staging)
             if src.is_symlink() or not src.is_file() or not is_exported(rel):
                 continue
