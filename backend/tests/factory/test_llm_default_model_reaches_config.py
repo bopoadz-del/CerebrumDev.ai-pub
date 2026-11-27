@@ -61,3 +61,28 @@ def test_an_explicit_fallback_setting_still_wins_over_the_default(monkeypatch, n
     cfg = llm_config.get_llm_config()
     assert cfg["model"] == "deepseek-flash"
     assert cfg["fallback_model"] == named
+
+
+@pytest.mark.parametrize("default", ["deepseek-flash", "deepseek-v4-pro"])
+def test_a_scoped_key_with_no_fallback_setting_takes_the_fallback_constant(
+    monkeypatch, default
+):
+    monkeypatch.setattr(llm_config, "DEFAULT_FALLBACK_MODEL", default)
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-scoped")
+    triple = llm_config._scoped_path_endpoint("CEREBRUM_CHAT")
+    assert triple["fallback_model"] == default
+
+
+@pytest.mark.parametrize("shared", ["deepseek-chat", "deepseek-reasoner"])
+def test_a_scoped_key_takes_the_shared_fallback_setting_over_the_constant(
+    monkeypatch, shared
+):
+    monkeypatch.setenv("CEREBRUM_CHAT_LLM_API_KEY", "sk-scoped")
+    monkeypatch.setenv("CEREBRUM_LLM_FALLBACK_MODEL", shared)
+    triple = llm_config._scoped_path_endpoint("CEREBRUM_CHAT")
+    assert triple["fallback_model"] == shared
+
+
+def test_no_scoped_key_gives_no_scoped_triple(monkeypatch):
+    monkeypatch.setenv("CEREBRUM_LLM_FALLBACK_MODEL", "deepseek-chat")
+    assert llm_config._scoped_path_endpoint("CEREBRUM_CHAT", "CEREBRUM_FACTORY") is None

@@ -76,8 +76,10 @@ CURSOR_KEY_ENVS = (
 #: environment was valid. The retired provider is now out of the provider table
 #: entirely (owner rule, item F-K1): no member, alias, default, fallback or host.
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-#: Both default to the same id, matching the explicit DeepSeek branch further down
-#: rather than inventing a sibling model name that might 404.
+#: The id DeepSeek's own pricing page names for its current Flash model ("Use
+#: deepseek-flash as the model name"; changelog 2026-09-10 and 2026-10-17). The
+#: earlier ``deepseek-chat`` alias was announced to stop on 2026-07-24. A live
+#: call is the only proof the host accepts an id; an operator's model setting wins.
 DEFAULT_PRIMARY_MODEL = "deepseek-flash"
 DEFAULT_FALLBACK_MODEL = "deepseek-flash"
 
