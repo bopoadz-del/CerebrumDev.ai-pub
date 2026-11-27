@@ -76,6 +76,21 @@ def min_pass_s() -> float:
     return _env_float("FACTORY_WRITER_MIN_PASS_S", DEFAULT_MIN_PASS_S, floor=60.0)
 
 
+#: The two bounds that can leave a continued pass too little time.
+NO_ROOM_CEILING = "the build's time ceiling leaves no room for another writer pass"
+NO_ROOM_ALLOWANCE = "one writer pass's time allowance is shorter than the shortest pass worth starting"
+
+
+def no_room_reason(*, elapsed_s: float, ceiling_s: float, allowance_s: float) -> str:
+    """Why a continued pass has too little time, naming the bound that
+    decided: the build's ceiling when what is left under it is below
+    ``min_pass_s``; otherwise one pass's own allowance."""
+    ceiling = float(ceiling_s or 0.0)
+    if ceiling > 0 and ceiling - max(0.0, float(elapsed_s or 0.0)) < min_pass_s():
+        return NO_ROOM_CEILING
+    return NO_ROOM_ALLOWANCE
+
+
 def is_wall_cut(exc: Optional[BaseException]) -> bool:
     """The writer's own wall fired: the exception, or anything it was raised
     from, is a ``WorkerWallTimeout`` by type."""

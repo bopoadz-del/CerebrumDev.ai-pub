@@ -1185,13 +1185,17 @@ class RoleRunner:
             # per-pass plan wall re-arms and the wall grows by one phase
             # allowance -- never past the hard ceiling (_extend_wall).
             self._plan_wall_passes += 1
-            self._extend_wall(elapsed + allowance, progress_evidenced=True)
+            self._extend_wall(
+                elapsed + allowance, progress_evidenced=True, pass_started_s=elapsed
+            )
             if self._deadline is not None:
                 left = float(self._deadline) - float(self.clock())
             if left is not None and left < wc.min_pass_s():
                 self._plan_wall_passes -= 1
                 go = False
-                reason = "the build's time ceiling leaves no room for another writer pass"
+                reason = wc.no_room_reason(
+                    elapsed_s=elapsed, ceiling_s=ceiling, allowance_s=allowance
+                )
         minutes_used = record["seconds"] / 60.0
         ceiling_text = f" of the {ceiling / 60.0:.0f} min ceiling" if ceiling > 0 else ""
         payload = {
@@ -3026,7 +3030,11 @@ class RoleRunner:
         return float(self._run_started) + bound - float(self.clock())
 
     def _extend_wall(
-        self, new_wall: float, *, progress_evidenced: bool = False
+        self,
+        new_wall: float,
+        *,
+        progress_evidenced: bool = False,
+        pass_started_s: Optional[float] = None,
     ) -> float:
         """Lengthen the build wall and the live role deadline. Never shrink.
 
@@ -3040,6 +3048,12 @@ class RoleRunner:
         hard ceiling only, not by the per-pass plan wall. A grant WITHOUT
         progress evidence stays clamped to the plan wall: a plan must not
         keep a dead CLI alive.
+
+        ``pass_started_s``: the run time at which the pass this grant is for
+        began, when that is not the start of the run (a writer pass continued
+        after a wall cut). The phase budget is one pass's allowance, so for
+        such a pass it is counted from there, not from the start of the run;
+        the hard ceiling still bounds the total.
 
         Clamped to ``budget.hard_ceiling_s`` HERE rather than at each caller:
         this is the only writer of the deadline, and two of its callers pass
@@ -3072,7 +3086,8 @@ class RoleRunner:
                 # (never below the plan bound); ``capped`` above already
                 # applied the ceiling. An unbounded phase leaves the ceiling.
                 phase_cap = float(self.budget.phase_wall_clock_s or 0.0)
-                bound = max(bound, phase_cap) if phase_cap > 0 else new_wall
+                phase_from = max(0.0, float(pass_started_s or 0.0))
+                bound = max(bound, phase_from + phase_cap) if phase_cap > 0 else new_wall
             new_wall = min(new_wall, bound)
         target = None
         if self._run_started is not None and new_wall > 0:

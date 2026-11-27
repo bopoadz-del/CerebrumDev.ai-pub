@@ -1297,3 +1297,128 @@ def test_only_this_pass_resuming_gets_the_done_list(tmp_path, monkeypatch, pass_
     _run_writer_via_codewhale_worker(ctx)
     assert ("ALREADY DONE" in prompts[0]) is done
     assert ("  STEP 1: models" in prompts[0]) is done
+
+
+# -- a continued pass has its own phase allowance (verdict 883cd12, fault 1) --
+
+
+def _ramped_runner(tmp_path, monkeypatch, *, wall, phase, ceiling, min_pass="600"):
+    """The budget as build_jobs builds it. The WRITER is given the stage
+    inspector's progress grant (``_extend_wall(phase, progress_evidenced=True)``),
+    works, and is cut at the deadline that grant left it; the next pass ends."""
+    monkeypatch.setenv("FACTORY_CODEWHALE_WRITER", "1")
+    monkeypatch.setenv("FACTORY_CODER_ENABLED", "0")
+    monkeypatch.setenv("FACTORY_WRITER_MIN_PASS_S", min_pass)
+    clock = _Clock()
+    runner = RoleRunner(
+        load_blueprint(SMOKE),
+        tmp_path / "build",
+        budget=BuildBudget(max_rework=2, wall_clock_s=wall, phase_wall_clock_s=phase, hard_ceiling_s=ceiling),
+        clock=clock,
+        brief=BRIEF,
+    )
+    calls = {"writer": 0}
+    staging = role_staging_dir(tmp_path / "build", BuildRole.WRITER)
+
+    def phase_run(role, work_list):
+        if role is BuildRole.WRITER:
+            calls["writer"] += 1
+            if calls["writer"] == 1:
+                runner._extend_wall(phase, progress_evidenced=True)
+                clock.t = float(runner._deadline)
+                (staging / "docs").mkdir(parents=True, exist_ok=True)
+                (staging / "docs" / "writer_progress.log").write_text("STEP 1: did a thing\n", encoding="utf-8")
+                _working(runner.ledger, 3)
+                raise _cut()
+            clock.t += 60.0
+            return GateResult(ok=True, gate="writer_gate", detail="ok")
+        clock.t += 1.0
+        return GateResult(ok=True, gate=f"{role.value.lower()}_gate", detail="ok")
+
+    runner._run_phase = phase_run  # type: ignore[assignment]
+    runner._maybe_stage_inspect = lambda *a, **k: None  # type: ignore[assignment]
+    return runner, calls, clock
+
+
+@pytest.mark.parametrize(
+    "wall, phase, ceiling, left",
+    [
+        (1800.0, 3600.0, 7200.0, 3600.0),  # the small plan: cut at 60 of 120 min
+        (2400.0, 3600.0, 7200.0, 3600.0),
+        (1800.0, 3600.0, 9000.0, 3600.0),  # the ceiling is further off: one allowance, no more
+        (1800.0, 3600.0, 5000.0, 1400.0),  # the ceiling is nearer than one allowance
+    ],
+)
+def test_a_writer_cut_at_the_inspectors_wall_while_working_is_given_a_whole_pass(
+    tmp_path, monkeypatch, wall, phase, ceiling, left
+):
+    runner, calls, _clock = _ramped_runner(tmp_path, monkeypatch, wall=wall, phase=phase, ceiling=ceiling)
+    runner.run()
+
+    assert calls["writer"] == 2, "the working writer was continued"
+    (detail, payload), *_ = _decisions(runner)
+    assert (payload["go"], payload["time_left_s"]) == (True, left)
+    assert "continuing, pass 2" in detail
+
+
+@pytest.mark.parametrize("ceiling, left", [(3900.0, 300.0), (4199.0, 599.0)])
+def test_a_refusal_the_ceiling_decided_says_the_ceiling(tmp_path, monkeypatch, ceiling, left):
+    runner, calls, _clock = _ramped_runner(tmp_path, monkeypatch, wall=1800.0, phase=3600.0, ceiling=ceiling)
+    outcome = runner.run()
+
+    assert calls["writer"] == 1 and outcome.outcome is Outcome.FAILED_ROLE_ERROR
+    (detail, payload), = _decisions(runner)
+    assert (payload["go"], payload["time_left_s"], payload["reason"]) == (False, left, wc.NO_ROOM_CEILING)
+    assert wc.NO_ROOM_CEILING in detail
+    assert runner._plan_wall_passes == 1
+
+
+@pytest.mark.parametrize("min_pass", ["4000", "5000"])
+def test_a_refusal_the_pass_allowance_decided_does_not_blame_the_ceiling(tmp_path, monkeypatch, min_pass):
+    """60 of 120 minutes used: the ceiling has room. What is short is one
+    pass's allowance against the shortest pass worth starting."""
+    runner, calls, _clock = _ramped_runner(
+        tmp_path, monkeypatch, wall=1800.0, phase=3600.0, ceiling=20000.0, min_pass=min_pass
+    )
+    outcome = runner.run()
+
+    assert calls["writer"] == 1 and outcome.outcome is Outcome.FAILED_ROLE_ERROR
+    (detail, payload), = _decisions(runner)
+    assert (payload["go"], payload["time_left_s"], payload["reason"]) == (False, 3600.0, wc.NO_ROOM_ALLOWANCE)
+    assert "ceiling leaves no room" not in detail
+
+
+@pytest.mark.parametrize(
+    "elapsed, ceiling, allowance, reason",
+    [
+        (3600.0, 7200.0, 3600.0, wc.NO_ROOM_ALLOWANCE),
+        (6601.0, 7200.0, 3600.0, wc.NO_ROOM_CEILING),
+        (6600.0, 7200.0, 3600.0, wc.NO_ROOM_ALLOWANCE),  # exactly the minimum pass left under the ceiling
+        (7200.0, 7200.0, 3600.0, wc.NO_ROOM_CEILING),
+        (9000.0, 0.0, 300.0, wc.NO_ROOM_ALLOWANCE),  # no ceiling set: it cannot be the reason
+        (-5.0, 500.0, 3600.0, wc.NO_ROOM_CEILING),
+    ],
+)
+def test_no_room_reason_names_the_bound_that_decided(monkeypatch, elapsed, ceiling, allowance, reason):
+    monkeypatch.setenv("FACTORY_WRITER_MIN_PASS_S", "600")
+    assert wc.no_room_reason(elapsed_s=elapsed, ceiling_s=ceiling, allowance_s=allowance) == reason
+
+
+@pytest.mark.parametrize(
+    "started, evidenced, applied",
+    [
+        (None, True, 3600.0),  # the first pass: the phase budget from the start of the run
+        (0.0, True, 3600.0),
+        (3600.0, True, 7200.0),  # a continued pass: the phase budget from where it began
+        (1000.0, True, 4600.0),
+        (5000.0, True, 7200.0),  # never past the ceiling
+        (3600.0, False, 3600.0),  # no progress evidence: the plan bound, wherever the pass began
+        (-50.0, True, 3600.0),
+    ],
+)
+def test_extend_wall_counts_the_phase_budget_from_the_pass_start(tmp_path, monkeypatch, started, evidenced, applied):
+    runner, _calls, _clock = _ramped_runner(tmp_path, monkeypatch, wall=1800.0, phase=3600.0, ceiling=7200.0)
+    runner._run_started = 0.0
+    runner._plan_wall_passes = 2
+    assert runner._extend_wall(9999.0, progress_evidenced=evidenced, pass_started_s=started) == applied
+    assert runner._deadline == applied
