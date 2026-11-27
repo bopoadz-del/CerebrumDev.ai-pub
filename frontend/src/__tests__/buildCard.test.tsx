@@ -171,6 +171,18 @@ describe('buildFace', () => {
     expect(face.sentence).toBe(sentence)
   })
 
+  // TEST DEBT (OPUSGRADE F295 4befa69): the stalled sentence says one minute
+  // in the singular and two in the plural, from the build's own silence.
+  it.each([
+    [60, 'No update from the build for 1 minute.'],
+    [75, 'No update from the build for 1 minute.'],
+    [90, 'No update from the build for 2 minutes.'],
+    [150, 'No update from the build for 3 minutes.'],
+  ])('a stalled build silent for %i s reads %j', (age, lead) => {
+    const face = buildFace({ ...OWNER_STOP, state: 'stalled', stop: undefined, last_event_age_s: age })
+    expect(face.sentence.startsWith(`${lead} `)).toBe(true)
+  })
+
   // The stop classes the server types (failure_record.STOP_TEXT): the face
   // names the class, and a stop no check judged is amber, never red.
   it.each([
@@ -189,7 +201,7 @@ describe('buildFace', () => {
     // Said once: the longer summary lives only in the closed Technical detail.
     expect(text).not.toContain(summary)
     expect(screen.getByTestId('floor-coder-takeover').textContent?.split(summary).length).toBe(2)
-    expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(`The "Write the code" step ${title} — ${summary}`)
+    expect(screen.getByTestId('floor-failure-line')).toHaveTextContent(`The "Workers" step ${title} — ${summary}`)
     expect(screen.getByTestId('floor-failure-line').closest('details')).not.toHaveAttribute('open')
   })
 

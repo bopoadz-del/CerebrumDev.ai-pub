@@ -138,15 +138,34 @@ describe('the stepper', () => {
     const atNow = steps.filter((li) => ['current', 'fixing', 'stopped'].includes(li.dataset.state ?? ''))
     expect(atNow).toHaveLength(1)
     expect(atNow[0]).toHaveAttribute('data-step', 'WRITER')
-    expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent('Write the code')
+    expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent('Workers')
+  })
+
+  it.each([
+    ['a running build with its phases list', BUILDING_FIX_ROUND],
+    ['a stopped build', TIMEOUT_STOP],
+    ['a record with only a phase trail', { state: 'failed', phase_trail: PHASES.map((phase) => ({ phase })) } as BuildStatus],
+    ['no record at all', null],
+  ])('shows the five stage names under the dots, in build order, for %s', (_title, build) => {
+    render(<Stepper build={build} />)
+    const names = screen.getAllByTestId('floor-stepper-name').map((el) => el.textContent)
+    expect(names).toEqual(['Collector', 'Researcher', 'Workers', 'Tester', 'Store Manager'])
+  })
+
+  it.each([
+    [['COLLECTOR', 'SOME_NEW_ROLE'], ['Collector', 'Step 2']],
+    [['WRITER', 'TESTER'], ['Workers', 'Tester']],
+  ])('a run with its own phase list %j names those steps, and an unknown one by position', (phases, expected) => {
+    render(<Stepper build={{ state: 'building', phases } as BuildStatus} />)
+    expect(screen.getAllByTestId('floor-stepper-name').map((el) => el.textContent)).toEqual(expected)
   })
 
   it('says each state in words, not colour alone', () => {
     render(<Stepper build={TIMEOUT_STOP} />)
     const text = screen.getByTestId('floor-stepper-row').textContent ?? ''
-    expect(text).toContain('Step 1, Plan the parts: done')
-    expect(text).toContain('Step 3, Write the code: stopped')
-    expect(text).toContain('Step 4, Test: not reached')
+    expect(text).toContain('Step 1, Collector: done')
+    expect(text).toContain('Step 3, Workers: stopped')
+    expect(text).toContain('Step 4, Tester: not reached')
   })
 
   it('a timeout that carries a contract send-back does not produce a "rejected" review', () => {
@@ -170,7 +189,7 @@ describe('the stepper', () => {
     const mark = screen.getByTestId('floor-phase-grader-failed')
     expect(mark.closest('li')).toHaveAttribute('data-step', 'WRITER')
     expect(screen.getByTestId('floor-stepper-caption')).toHaveTextContent(
-      'Write the code — Quality check did not pass',
+      'Workers — Quality check did not pass',
     )
   })
 

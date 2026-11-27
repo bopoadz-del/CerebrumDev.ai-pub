@@ -5,7 +5,8 @@ import { REVIEW_NAME, STEP_ORDER, stepLabel } from './stepNames'
 /**
  * The stepper: the run's steps as numbered dots on one row (spec 4.6).
  *
- * - a label only on the current or stopped step;
+ * - every step's stage name under its dot (from the one name table), and the
+ *   current or stopped step's name again as the caption;
  * - an icon for done, current, stopped and not reached, and a state word for
  *   screen readers -- state is never colour alone;
  * - the review inside step 3 ("Quality check") is a count on its step, and
@@ -122,6 +123,9 @@ export function Stepper({ build }: { build: BuildStatus | null }) {
               {i > 0 ? <span className="stepper-line" aria-hidden="true" /> : null}
               <span className="stepper-dot" aria-hidden="true">
                 {STATE_ICON[s.state] || s.position}
+              </span>
+              <span className="stepper-name" aria-hidden="true" data-testid="floor-stepper-name">
+                {s.label}
               </span>
               <span className="visually-hidden">
                 Step {s.position}, {s.label}: {STATE_WORD[s.state]}

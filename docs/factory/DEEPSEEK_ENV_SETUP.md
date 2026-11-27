@@ -143,3 +143,17 @@ image. `backend/.env.example` lists the same names as comments.
 | **DeepSeek V4 Pro via Kimi Code** | Factory Engineer C-BRIEF (one gated ≥2h-capable CLI session) |
 | **Kimi / Moonshot** | Alternate FACTORY_CODE_CLI when `FACTORY_CODE_PROVIDER=kimi` + `KIMI_CODE_API_KEY` |
 | **CerebrumDev.ai** | Governance, dual registry, certify, regenerate |
+
+## Chat and Factory HTTP model id (not the coding CLI)
+
+`backend/app/core/llm_config.py` sends `DEFAULT_PRIMARY_MODEL` and
+`DEFAULT_FALLBACK_MODEL` (both `deepseek-flash`) when a chat or Factory key is
+set but no model setting is. `CEREBRUM_CHAT_LLM_MODEL`,
+`CEREBRUM_FACTORY_LLM_MODEL`, `CEREBRUM_LLM_MODEL` and the matching
+`*_FALLBACK_MODEL` settings override it.
+
+Source: DeepSeek's pricing page, footnote 1: "Use `deepseek-flash` as the
+model name." The changelog entries of 2026-09-10 and 2026-10-17 say the same.
+The 2026-04-24 entry announced that `deepseek-chat` and `deepseek-reasoner`
+stop on 2026-07-24. The coding CLI keeps its own ids (above, and
+`backend/app/factory/code_cli.py`).

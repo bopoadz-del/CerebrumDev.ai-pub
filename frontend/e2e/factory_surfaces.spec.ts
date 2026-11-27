@@ -236,9 +236,129 @@ test('Floor drafts a feature list and Approve & build starts the coding agent', 
   // PR-07 (L5-09): the card names the state, not the actor; PR-10: the
   // stepper names the step from the name table, never an old kernel label.
   await expect(page.getByRole('status')).toContainText(/Building at step 3 of 5/)
-  await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Write the code')
+  await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Workers')
   await expect(page.getByPlaceholder(/coding agent has taken over/i)).toBeDisabled()
 })
+
+// The five stage names, in build order, from the one name table
+// (stepNames.json). The record keeps its role ids; only the screen names them.
+const STAGE_NAMES = ['Collector', 'Researcher', 'Workers', 'Tester', 'Store Manager']
+
+const RECORDED_RUNS = [
+  {
+    title: 'a running build',
+    heading: /^Building/,
+    caption: 'Workers',
+    build: {
+      state: 'building',
+      phases: ['COLLECTOR', 'CLONER', 'WRITER', 'TESTER', 'STORE_MANAGER'],
+      completed: ['COLLECTOR', 'CLONER'],
+      current_phase: { id: 'WRITER', label: 'Platform manufacturer' },
+      phase_index: 3,
+      phase_total: 5,
+      last_event_age_s: 5,
+      stale: false,
+    },
+  },
+  {
+    // A record written before the stage names: no phases list, only the
+    // per-phase trail and the stored role ids, stopped at the test step.
+    title: 'a stopped build recorded before the stage names',
+    heading: /^Stopped/,
+    caption: 'Tester',
+    build: {
+      state: 'failed',
+      cycle: 'code',
+      outcome: 'FAILED_GATE',
+      pilot_ready: false,
+      phase_trail: [
+        { phase: 'COLLECTOR' },
+        { phase: 'CLONER' },
+        { phase: 'WRITER' },
+        { phase: 'TESTER' },
+        { phase: 'STORE_MANAGER' },
+      ],
+      completed: ['COLLECTOR', 'CLONER', 'WRITER'],
+      failure: { phase: 'TESTER', location: 'TESTER', reason: 'suite_red', title: 'did not pass' },
+    },
+  },
+]
+
+// The desktop default and the narrowest phone the phone specs target.
+const STAGE_VIEWPORTS = [null, { width: 360, height: 780 }]
+
+for (const run of RECORDED_RUNS) for (const viewport of STAGE_VIEWPORTS) {
+  test(`the build screen names the five stages in order for ${run.title}${viewport ? ` at ${viewport.width}px` : ''}`, async ({ page }) => {
+    if (viewport) await page.setViewportSize(viewport)
+    await mockVerifiedFactory(page)
+    await page.unroute('**/v1/sessions/sess_e2e_floor/product')
+    await page.route('**/v1/sessions/sess_e2e_floor/product', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          blueprint: BLUEPRINT,
+          blueprint_approved: true,
+          generation: { product_id: 'vineyard', engine: 'runner', triggered_by: 'chat_llm' },
+        }),
+      })
+    })
+    await page.route('**/v1/sessions/sess_e2e_floor/product/build-status', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, product_id: 'vineyard', build: run.build }),
+      })
+    })
+
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: run.heading })).toBeVisible({ timeout: 20_000 })
+    const names = page.getByTestId('floor-stepper-name')
+    await expect(names).toHaveText(STAGE_NAMES)
+    for (let i = 0; i < STAGE_NAMES.length; i += 1) await expect(names.nth(i)).toBeVisible()
+    await expect(page.getByTestId('floor-stepper-caption')).toHaveText(run.caption)
+    // The stored ids stay in the record and the markup, never in the names.
+    await expect(page.getByTestId('floor-stepper-row').locator('[data-step]')).toHaveCount(5)
+    await expect(page.getByTestId('floor-stepper-row').locator('[data-step="STORE_MANAGER"]')).toHaveCount(1)
+    await expect(page.getByTestId('floor-stepper')).not.toContainText(/COLLECTOR|CLONER|WRITER|TESTER|STORE_MANAGER/)
+    if (viewport) {
+      // On the phone no two names overlap, each name stays inside the screen
+      // and inside the stepper row on all four sides, and the row stays at most 56px tall.
+      const boxes = await names.evaluateAll((els) =>
+        els.map((el) => {
+          const r = el.getBoundingClientRect()
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
+        }),
+      )
+      const row = await page.getByTestId('floor-stepper-row').boundingBox()
+      expect(boxes.length).toBe(STAGE_NAMES.length)
+      for (let i = 0; i < boxes.length; i += 1) {
+        expect(boxes[i].left, `${STAGE_NAMES[i]} inside the screen`).toBeGreaterThanOrEqual(0)
+        expect(boxes[i].right, `${STAGE_NAMES[i]} inside the screen`).toBeLessThanOrEqual(viewport.width)
+        // The row, not only the screen: the card's padding would hide a name
+        // that runs past the row's end. Half a pixel absorbs sub-pixel rounding.
+        expect(boxes[i].left, `${STAGE_NAMES[i]} inside the row`).toBeGreaterThanOrEqual(row!.x - 0.5)
+        expect(boxes[i].right, `${STAGE_NAMES[i]} inside the row`).toBeLessThanOrEqual(row!.x + row!.width + 0.5)
+        expect(boxes[i].top, `${STAGE_NAMES[i]} inside the row`).toBeGreaterThanOrEqual(row!.y)
+        expect(boxes[i].bottom, `${STAGE_NAMES[i]} inside the row`).toBeLessThanOrEqual(row!.y + row!.height)
+        for (let j = 0; j < i; j += 1) {
+          const apart =
+            boxes[i].left >= boxes[j].right ||
+            boxes[j].left >= boxes[i].right ||
+            boxes[i].top >= boxes[j].bottom ||
+            boxes[j].top >= boxes[i].bottom
+          expect(apart, `${STAGE_NAMES[i]} clear of ${STAGE_NAMES[j]}`).toBe(true)
+        }
+      }
+      expect(row!.height).toBeLessThanOrEqual(56)
+    }
+    if (process.env.STAGE_NAMES_SHOT_DIR) {
+      await page.getByTestId('floor-stepper').screenshot({
+        path: `${process.env.STAGE_NAMES_SHOT_DIR}/stepper-${run.caption.toLowerCase()}${viewport ? `-${viewport.width}` : ''}.png`,
+      })
+    }
+  })
+}
 
 test('Floor New session starts a clean workspace after a failed run', async ({ page }) => {
   await mockVerifiedFactory(page)
@@ -784,7 +904,7 @@ test('WRITER session A bound → /floor/{B} hydrates finished B, not A', async (
   await page.goto(`/floor/${writerA}`)
   await expect(page.getByRole('heading', { name: 'Factory Floor' })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('session sess_d10dfc2…')).toBeVisible()
-  await expect(page.getByText(/Step 3 of 5 — Writing the code/)).toBeVisible()
+  await expect(page.getByText(/Step 3 of 5 — Workers \(writing the code\)/)).toBeVisible()
   await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
 
   await page.evaluate((id) => {
@@ -795,7 +915,7 @@ test('WRITER session A bound → /floor/{B} hydrates finished B, not A', async (
   await expect(page.getByText('session sess_d10dfc2…')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: /^Ready/ })).toBeVisible()
   await expect(page.getByTestId('floor-pilot-ready-pill')).toContainText('Store-green')
-  await expect(page.getByText(/Step 3 of 5 — Writing the code/)).toHaveCount(0)
+  await expect(page.getByText(/Step 3 of 5 — Workers \(writing the code\)/)).toHaveCount(0)
   await expect(page.getByRole('heading', { name: /^Building/ })).toHaveCount(0)
 })
 
@@ -1771,7 +1891,7 @@ test('Floor keeps coding chrome after golden lettings Approve before the first s
   await expect(page.getByTestId('floor-coder-takeover')).toBeVisible()
   await expectNoGoldFinished(page)
   releaseStatus?.()
-  await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Write the code')
+  await expect(page.getByTestId('floor-stepper-caption')).toHaveText('Workers')
   await expect(page.getByRole('heading', { name: /^Building/ })).toBeVisible()
   await expectNoGoldFinished(page)
 })
