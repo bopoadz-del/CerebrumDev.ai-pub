@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
 
 import pytest
 
@@ -666,6 +667,38 @@ def test_the_bearer_is_redacted_from_the_quoted_stderr_when_no_report_came(tmp_p
     assert "no playwright report" in err and token not in err and ug.REDACTED in err
 
 
+def _run_then(exc: BaseException, token: str):
+    """A run that writes the bearer the way Playwright's call log does, then
+    ends with ``exc`` (a subprocess timeout, a crash) instead of returning."""
+    leak = _leaky_run(token, report=True)
+
+    def run(cmd, **kw):
+        leak(cmd, **kw)
+        raise exc
+    return run
+
+
+@pytest.mark.parametrize("token", ["dev-local-token", "tok-XYZ-123"])
+@pytest.mark.parametrize("exc", [subprocess.TimeoutExpired(["npx"], 5), OSError("node died")])
+def test_the_bearer_is_scrubbed_when_the_run_times_out_or_crashes(tmp_path, token, exc):
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_run_then(exc, token), bearer=token)
+    assert g.errors == [f"UI run did not happen: {type(exc).__name__}"] and not g.ran
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert (tmp_path / "report.json") in written
+    assert not any(token.encode() in p.read_bytes() for p in written)
+    assert ug.REDACTED in (tmp_path / "test-results" / "load" / "error-context.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_an_empty_bearer_sends_no_authorization_header(tmp_path, bp):
+    """With no bearer the steps send no Authorization at all (not an empty
+    ``Bearer``), and an open product passes every step."""
+    with h.server(_honest(bp)) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer="")
+    assert got and all(v == "passed" for v in got.values()), got
+    assert base.auth and set(base.auth) == {""}
+
+
 @pytest.mark.parametrize("text,secret,want", [
     ("Bearer abc and abc", "abc", f"Bearer {ug.REDACTED} and {ug.REDACTED}"),
     ("nothing here", "abc", "nothing here"),
@@ -688,40 +721,16 @@ def test_scrub_files_rewrites_only_the_files_holding_the_secret(tmp_path, secret
 
 
 # --- the scrub runs on every way out of the run ------------------------------
-import subprocess as _sp  # noqa: E402
-
-
-def _raising_run(token: str, exc: BaseException):
-    """A run that writes an error context holding the request headers, the
-    way Playwright does for a failed request, and then never returns: it
-    raises ``exc`` (its time cap, a start error, an interrupt)."""
-    def run(cmd, **kw):
-        ctx = _P(kw["cwd"]) / "test-results" / "load" / "error-context.md"
-        ctx.parent.mkdir(parents=True, exist_ok=True)
-        ctx.write_text(f"Authorization: Bearer {token}", encoding="utf-8")
-        raise exc
-    return run
-
-
 @pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
-@pytest.mark.parametrize("exc", [_sp.TimeoutExpired(cmd="npx", timeout=1), OSError("no npx")])
-def test_the_bearer_is_redacted_from_what_a_run_wrote_before_it_raised(tmp_path, token, exc):
-    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_raising_run(token, exc), bearer=token)
-    ctx = tmp_path / "test-results" / "load" / "error-context.md"
-    assert ctx.read_text(encoding="utf-8") == f"Authorization: Bearer {ug.REDACTED}"
-    assert not any(token.encode() in p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
-    assert g.errors == [f"UI run did not happen: {type(exc).__name__}"] and not g.ran
-    assert token not in json.dumps(dataclasses.asdict(g))
-
-
-@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
-def test_the_bearer_is_redacted_even_when_the_run_is_interrupted(tmp_path, token):
+def test_the_bearer_is_scrubbed_even_when_the_run_is_interrupted(tmp_path, token):
     """An interrupt is not a recorded FAIL -- it leaves ``grade_ui`` as it
     came -- and what the run wrote before it is scrubbed all the same."""
     with pytest.raises(KeyboardInterrupt):
         ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
-                    run=_raising_run(token, KeyboardInterrupt()), bearer=token)
-    assert not any(token.encode() in p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
+                    run=_run_then(KeyboardInterrupt(), token), bearer=token)
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert (tmp_path / "report.json") in written
+    assert not any(token.encode() in p.read_bytes() for p in written)
 
 
 # --- the bearer goes to the product's own origin and nowhere else ------------

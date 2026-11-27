@@ -684,7 +684,8 @@ def grade_ui(
     bearer: Optional[str] = None,
 ) -> UiGrade:
     """Run the plan's steps against ``base_url``. Every step carries the
-    grading boot's bearer (``grading_bearer``); ``bearer`` replaces it."""
+    grading boot's bearer (``grading_bearer``); ``bearer`` replaces it. The
+    files the run wrote are scrubbed of it however the run ended."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -701,18 +702,16 @@ def grade_ui(
     out = wd / "report.json"
     fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
     token = grading_bearer() if bearer is None else bearer
-    not_run = ""
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
                                fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
-        not_run = f"UI run did not happen: {type(exc).__name__}"
+        return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     finally:
-        # A run that raised (its time cap, a browser that hung) has already
-        # written files: the scrub runs on every way out of the run.
+        # Whatever ended the run (a report, a timeout, a crash, an
+        # interrupt), the files it wrote are scrubbed before anything else
+        # reads the work dir.
         scrub_files(wd, token)
-    if not_run:
-        return UiGrade([], [not_run])
     report_text = _report_text(out, proc)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
