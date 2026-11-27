@@ -605,10 +605,29 @@ def test_a_try_again_refused_at_the_door_stays_failed_and_the_next_one_starts(
 )
 def test_only_a_resume_note_re_enters(tmp_path, live_thread, kind, expected):
     """An event that is not a NOTE carrying ``resumed`` is not a resume,
-    even with a thread started after it."""
+    even with a thread started after it. Read against the RUN_FAILED verdict
+    itself: through the ledger such an event also reopens the run."""
     out = tmp_path / f"ws_{kind.value}"
     ledger = _failed_at_writer(out, "writer_contract", "", "x")
+    verdict = [e for e in ledger.events() if e.kind is EventKind.RUN_FAILED][-1]
     ledger.append(kind, role=BuildRole.WRITER, payload={"resumed": True, "phase": "WRITER"})
     live_thread(out)
+
+    assert _reentered_live(ledger.events(), verdict, out) is expected
+
+
+@pytest.mark.parametrize(
+    "thread_after_resumes, expected",
+    [(1, False), (2, True)],
+)
+def test_the_runner_must_follow_the_newest_resume(tmp_path, live_thread, thread_after_resumes, expected):
+    """Two resumes after the verdict: only a thread started after the newer
+    one is that resume's runner."""
+    out = tmp_path / f"ws_{thread_after_resumes}"
+    ledger = _failed_at_writer(out, "writer_contract", "", "x")
+    for n in (1, 2):
+        _resume(ledger, "WRITER")
+        if n == thread_after_resumes:
+            live_thread(out)
 
     assert _reentered_live(ledger.events(), ledger.terminal_event(), out) is expected
