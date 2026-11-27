@@ -921,7 +921,8 @@ function keptText(holder, key) {
 function textFrom(value, ctx) {
   if (value !== null && typeof value === "object") {
     // An object's own keys as written (not a *_text key added beside them).
-    const keys = Array.isArray(value) ? value.map((v, i) => String(i)) : Object.keys(KEPT.get(value) || {});
+    const kept = KEPT.get(value);
+    const keys = Array.isArray(value) ? value.map((v, i) => String(i)) : Object.keys(kept || value);
     const parts = [];
     for (const k of keys) {
       const t = keptText(value, k);

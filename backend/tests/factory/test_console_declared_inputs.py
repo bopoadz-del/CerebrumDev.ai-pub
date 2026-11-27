@@ -47,7 +47,7 @@ def _run(calls: List[Dict[str, Any]], tmp_path: Path) -> List[Any]:
         _block()
         + "\nconst CALLS = " + json.dumps(calls) + ";\n"
         + "const FNS = { capIdOf, resolveRef, pathMatches, fieldsFromSchema, declaredFields,"
-        + " choicesOf, kindOf, valueOf, unwrap, rangeOf, shownOf, choiceTexts, notSetLabel,"
+        + " choicesOf, kindOf, valueOf, unwrap, rangeOf, shownOf, choiceTexts, notSetLabel, textFrom,"
         + " bodyFrom: (fields, values) => bodyFrom(fields, (f) => values[f.name]),"
         + " formFromText: (t) => { const d = parseExact(t); return fieldsFromSchema(d, d)"
         + ".map((f) => [f.name, kindOf(f), shownOf(f), rangeOf(f)]); },"
@@ -612,3 +612,18 @@ class TestTheSchemasOwnTextIsKept:
         text = json.dumps({"type": "object", "properties": {"f": prop}})
         [got] = _run([{"fn": "choicesFromText", "args": [text]}], tmp_path)
         assert got == [str(v) for v in prop["enum"]]
+
+    @pytest.mark.parametrize("value, text", [
+        ([1, 2], None),
+        ([1, BIG], None),
+        ({"a": 1}, None),
+        ({}, "{}"),
+        (5, "5"),
+        ("x", '"x"'),
+        (BIG, None),
+    ])
+    def test_a_value_whose_member_texts_were_not_kept_has_no_text(self, value, text, tmp_path):
+        # Outside parseExact no member text is kept and no source text is
+        # given: a list then has no text at all (never one missing a member),
+        # and an integer beyond 2^53 has none (never a rounded one).
+        assert _run([{"fn": "textFrom", "args": [value]}], tmp_path) == [text]
