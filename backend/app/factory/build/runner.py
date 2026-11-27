@@ -1979,9 +1979,12 @@ class RoleRunner:
         gate_round: int,
         build_round: int,
         reason: str = "",
+        gate_budget: Optional[int] = None,
     ) -> Dict[str, Any]:
         """One decision as the ledger and the Floor carry it: gate, class,
-        round (this gate's n/2 and the build's n/6), check, finding."""
+        round (this gate's n of its budget and the build's n/6), check,
+        finding. ``gate_budget``: the budget the round is counted against when
+        it is not the build's ``max_rework`` (the grader's own REWORK_BUDGET)."""
         from app.factory.build import brief_gates
         from app.factory.build import rule_decision as rd
 
@@ -1994,20 +1997,33 @@ class RoleRunner:
             rd.CLASS: kind,
             rd.ROUND_GATE: gate_round,
             rd.ROUND_BUILD: build_round,
-            "gate_budget": int(self.budget.max_rework),
+            "gate_budget": int(self.budget.max_rework if gate_budget is None else gate_budget),
             "build_ceiling": REWORK_CEILING,
             "gate_name": str(getattr(verdict, "gate", "") or ""),
             "reason": reason,
         }
 
-    def _stop(self, outcome: "Outcome", reason: str, verdict: Any, role: BuildRole) -> GateDecision:
+    def _stop(
+        self,
+        outcome: "Outcome",
+        reason: str,
+        verdict: Any,
+        role: BuildRole,
+        *,
+        gate_round: Optional[int] = None,
+        gate_budget: Optional[int] = None,
+    ) -> GateDecision:
+        """The rule's STOP: the decision record the run's terminal event
+        carries. ``gate_round`` / ``gate_budget``: the rounds and the budget
+        of a gate that counts its own (the grader); else this role's."""
         rec = self._decision_record(
             DECISION_STOP,
             role=role,
             verdict=verdict,
-            gate_round=self._rework_rounds_at(role),
+            gate_round=self._rework_rounds_at(role) if gate_round is None else gate_round,
             build_round=self._rework_rounds_this_build(),
             reason=reason,
+            gate_budget=gate_budget,
         )
         from app.factory.build.rule_decision import stop_status
 
@@ -2018,6 +2034,48 @@ class RoleRunner:
             detail=detail,
             findings=tuple(getattr(verdict, "findings", None) or ()),
             record=rec,
+        )
+
+    def _ceiling_stop(
+        self,
+        role: BuildRole,
+        verdict: Any,
+        *,
+        source: str = "",
+        gate_round: Optional[int] = None,
+        gate_budget: Optional[int] = None,
+    ) -> Optional[GateDecision]:
+        """The build ceiling, ONE check for every gate that sends work back
+        (the gates ``decide`` judges and the grader's handback): with
+        REWORK_CEILING rounds spent, one more failure is the rule's STOP --
+        FAILED_BUDGET_SPENT with its decision record -- never a round. None
+        while the build has a round left."""
+        if self._rework_rounds_this_build() < REWORK_CEILING:
+            return None
+        return self._stop(
+            Outcome.FAILED_BUDGET_SPENT,
+            f"build rework ceiling of {REWORK_CEILING} reached; "
+            f"{source or role.value} gate still failing: {verdict.detail}",
+            verdict,
+            role,
+            gate_round=gate_round,
+            gate_budget=gate_budget,
+        )
+
+    def _grader_gate_verdict(self, grade_verdict: Any) -> GateResult:
+        """The grader's NOT_CERTIFIED verdict in the shape the runner rule
+        records: the gate is the grader's own, the findings are the items the
+        writer is handed. A view for the decision record only -- the grader's
+        verdict itself is not changed."""
+        from app.factory.build.grader import GRADER_GATE
+
+        items = [str(item) for item in grade_verdict.writer_items]
+        return GateResult(
+            ok=False,
+            gate=GRADER_GATE,
+            reason=str(grade_verdict.tier),
+            detail="; ".join(items)[:400] or "-",
+            findings=items,
         )
 
     def decide(
@@ -2193,14 +2251,9 @@ class RoleRunner:
                 verdict,
                 role,
             )
-        if build_rounds >= REWORK_CEILING:
-            return self._stop(
-                Outcome.FAILED_BUDGET_SPENT,
-                f"build rework ceiling of {REWORK_CEILING} reached; "
-                f"{role.value} gate still failing: {verdict.detail}",
-                verdict,
-                role,
-            )
+        ceiling = self._ceiling_stop(role, verdict)
+        if ceiling is not None:
+            return ceiling
 
         if role is BuildRole.WRITER:
             work = tuple(_writer_gate_items(verdict))
@@ -3741,19 +3794,43 @@ class RoleRunner:
                         # The build ceiling governs the grader too: its
                         # rounds count toward the build total, so a grader
                         # round with the build's REWORK_CEILING spent ends the
-                        # run, as decide() ends any other gate's.
-                        build_rounds = self._rework_rounds_this_build()
-                        if build_rounds >= REWORK_CEILING:
+                        # run through the SAME check decide() runs for any
+                        # other gate (_ceiling_stop). The terminal event
+                        # carries the rule's STOP record, so the stop reads as
+                        # fix rounds spent, never as a time budget.
+                        gate_verdict = self._grader_gate_verdict(grade_verdict)
+                        ceiling = self._ceiling_stop(
+                            BuildRole.WRITER,
+                            gate_verdict,
+                            source="GRADER",
+                            gate_round=rounds,
+                            gate_budget=REWORK_BUDGET,
+                        )
+                        if ceiling is not None:
                             self._grader_stop(grade_verdict, "grader_build_ceiling")
                             return self._finish(
-                                Outcome.FAILED_BUDGET_SPENT,
+                                ceiling.outcome or Outcome.FAILED_BUDGET_SPENT,
                                 f"GRADER: {NOT_CERTIFIED} -- build rework ceiling of "
                                 f"{REWORK_CEILING} reached after {rounds} grader round(s): "
                                 + ("; ".join(items)[:400] or "-"),
                                 phase=role,
                                 rework=rework_used,
                                 findings=list(grade_verdict.items),
+                                decision=ceiling.record,
                             )
+                        build_rounds = self._rework_rounds_this_build()
+                        # Every round the rule sends back is a decision record
+                        # (the Floor counts fix rounds from them). The
+                        # grader's round is one too, counted against its own
+                        # budget and the build's ceiling.
+                        rec = self._decision_record(
+                            DECISION_REWORK,
+                            role=BuildRole.WRITER,
+                            verdict=gate_verdict,
+                            gate_round=rounds + 1,
+                            build_round=build_rounds + 1,
+                            gate_budget=REWORK_BUDGET,
+                        )
                         self._grant_rework_wall(
                             BuildRole.WRITER, build_round=build_rounds + 1
                         )
@@ -3775,6 +3852,7 @@ class RoleRunner:
                                 "round": rounds + 1,
                                 "round_build": build_rounds + 1,
                                 "grader_tier": NOT_CERTIFIED,
+                                "decision": rec,
                             },
                         )
                         work_list = items

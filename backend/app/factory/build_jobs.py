@@ -569,11 +569,12 @@ def _elapsed_s(events: Sequence[Any]) -> Optional[int]:
 
 
 def _grader_send_backs(events: Sequence[Any]) -> int:
-    """Fix rounds the grader spent: its writer handbacks.
+    """Fix rounds the grader spent that no decision record counts.
 
-    The runner's rule records a decision for every gate round it sends back;
-    the grader's handback is a REWORK event of its own with no decision, so
-    the rule's count alone misses it."""
+    The runner records a decision for every round it sends back, the grader's
+    handback included, and ``fix_rounds_used`` counts those. A ledger written
+    before the grader's handback carried one holds a REWORK event with no
+    decision: only those are counted here, so no round is counted twice."""
     from app.factory.build.grader import GRADER_GATE
 
     return sum(

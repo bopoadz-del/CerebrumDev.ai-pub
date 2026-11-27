@@ -16,12 +16,14 @@ import pytest
 from app.factory.blueprint import load_blueprint
 from app.factory.build import architect
 from app.factory.build import brief_gates
+from app.factory.build import failure_record as fr
 from app.factory.build import foreman as fm
 from app.factory.build import runner as runner_mod
 from app.factory.build.acceptance_floor import PRODUCT, enforced_ids, owner_of
 from app.factory.build.authority import BUILD_PHASES, BuildRole
 from app.factory.build.findings import Finding
 from app.factory.build.gates import GateResult
+from app.factory.build.grader import GRADER_GATE
 from app.factory.build.ledger import EventKind
 from app.factory.build.n3_store_gate import store_gate_verdict
 from app.factory.build.roles_models import RoleResult
@@ -34,7 +36,7 @@ from app.factory.build.runner import (
     Outcome,
     RoleRunner,
 )
-from app.factory.build_jobs import _max_rework
+from app.factory.build_jobs import _max_rework, build_status
 
 ROOT = Path(__file__).resolve().parents[3]
 SMOKE = ROOT / "blueprints/examples/runner_smoke.yaml"
@@ -409,6 +411,158 @@ def test_below_the_ceiling_the_grader_spends_its_own_three_rounds(
         if e.kind is EventKind.REWORK and e.payload.get("source") == "GRADER"
     ]
     assert [(p["round"], p["round_build"]) for p in graded] == [(1, 3), (2, 4), (3, 5)]
+
+
+# -- what the owner is told about a grader round and a grader ceiling stop ------
+
+
+def _fix_rounds_numbers(decisions):
+    """The numbers the Floor's "Fix rounds used: b of c (step: g of n)" line is
+    written from (frontend buildProgress.fixRoundsLine): the LAST decision of
+    class REWORK -- its build round, the ceiling, its step, its gate round and
+    that gate's budget."""
+    last = [d for d in decisions if d["class"] == DECISION_REWORK][-1]
+    return last["round_build"], last["build_ceiling"], last["gate"], last["round_gate"], last["gate_budget"]
+
+
+def _grade_item(call):
+    return f"function grade FAIL: {_caps()[0]} (call {call})"
+
+
+@pytest.mark.parametrize(
+    "writer_fails, tester_fails, max_rework",
+    [(3, 1, REWORK_BUDGET), (2, 2, REWORK_BUDGET), (2, 2, 2)],
+)
+def test_a_grader_ceiling_stop_tells_the_owner_the_fix_rounds_are_spent(
+    tmp_path, monkeypatch, writer_fails, tester_fails, max_rework
+):
+    # Four gate rounds, then the grader refuses every tree. The build status
+    # the Floor reads must say what happened: a check refused the work and the
+    # six fix rounds are spent -- never "ran out of time" -- and must hold a
+    # decision for every round, the grader's two included, and the STOP.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    _grade_script(monkeypatch, certified_first=tester_fails)
+    runner, out, _ = _run(
+        tmp_path, monkeypatch, script, llm=_no_model(), budget=BuildBudget(max_rework=max_rework)
+    )
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+
+    status = build_status(tmp_path / "build")
+    failure = status["failure"]
+    assert status["state"] == "failed"
+    assert failure["kind"] == fr.ROUNDS_SPENT == "rounds_spent"
+    assert failure["title"] == "used up its fix rounds"
+    assert failure["summary"] == (
+        "A check still did not pass the work (1 finding), and this build has no fix rounds left."
+    )
+    assert failure["next"] == (
+        "Continuing does not grant new fix rounds: the step runs again and stops again if "
+        "the same check fails."
+    )
+    for said in (failure["title"], failure["summary"], failure["next"]):
+        assert "time" not in said and "No check refused" not in said
+
+    decisions = status["decisions"]
+    assert [d["class"] for d in decisions] == [DECISION_REWORK] * REWORK_CEILING + [DECISION_STOP]
+    assert [d["round_build"] for d in decisions] == [1, 2, 3, 4, 5, 6, REWORK_CEILING]
+    # The four gate rounds are counted against the build's own budget ...
+    assert {(d["gate_name"], d["gate_budget"]) for d in decisions[:4]} == {
+        ("writer_gate", max_rework),
+        ("tester_gate", max_rework),
+    }
+    # ... the grader's two against the grader's, as rounds five and six.
+    graded = [d for d in decisions if d["class"] == DECISION_REWORK and d["gate_name"] == GRADER_GATE]
+    assert [
+        (d["gate"], d["check"], d["round_gate"], d["gate_budget"], d["round_build"], d["build_ceiling"])
+        for d in graded
+    ] == [
+        ("WRITER", GRADER_GATE, 1, REWORK_BUDGET, 5, REWORK_CEILING),
+        ("WRITER", GRADER_GATE, 2, REWORK_BUDGET, 6, REWORK_CEILING),
+    ]
+    assert [d["finding"] for d in graded] == [_grade_item(tester_fails + 1), _grade_item(tester_fails + 2)]
+
+    stop = decisions[-1]
+    assert (stop["gate"], stop["gate_name"], stop["check"]) == ("WRITER", GRADER_GATE, GRADER_GATE)
+    assert (stop["round_gate"], stop["gate_budget"]) == (2, REWORK_BUDGET)
+    assert stop["round_build"] == REWORK_CEILING == stop["build_ceiling"]
+    assert stop["finding"] == _grade_item(tester_fails + 3)
+    assert stop["reason"].startswith(
+        f"build rework ceiling of {REWORK_CEILING} reached; GRADER gate still failing: "
+    )
+    # The STOP is the run's ONE terminal event, as decide()'s own stop is.
+    terminal = runner.ledger.terminal_event()
+    assert terminal.kind is EventKind.RUN_FAILED
+    assert terminal.payload["decision"]["class"] == DECISION_STOP
+    assert status["stopped"] == stop
+    assert status["failed"] == {"gate": "WRITER", "check": GRADER_GATE, "finding": stop["finding"]}
+
+    # "Fix rounds used: 6 of 6", and the stop record counts six, not eight.
+    assert _fix_rounds_numbers(decisions) == (REWORK_CEILING, REWORK_CEILING, "WRITER", 2, REWORK_BUDGET)
+    assert status["stop"]["fix_rounds"] == REWORK_CEILING
+
+
+@pytest.mark.parametrize("writer_fails, tester_fails", [(1, 1), (0, 2)])
+def test_every_grader_round_is_a_decision_the_floor_counts(
+    tmp_path, monkeypatch, writer_fails, tester_fails
+):
+    # Below the ceiling: the grader's own three rounds each write a REWORK
+    # decision, so the Floor counts five fix rounds, not two. Its own-budget
+    # stop is not the ceiling's: no STOP record, the outcome stays FAILED_GATE.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(tester_fails)],
+    }
+    _grade_script(monkeypatch, certified_first=tester_fails)
+    runner, out, _ = _run(tmp_path, monkeypatch, script, llm=_no_model())
+    assert out.outcome is Outcome.FAILED_GATE, out.detail
+
+    status = build_status(tmp_path / "build")
+    decisions = status["decisions"]
+    assert [d["class"] for d in decisions] == [DECISION_REWORK] * 5
+    assert [d["round_build"] for d in decisions] == [1, 2, 3, 4, 5]
+    graded = [d for d in decisions if d["gate_name"] == GRADER_GATE]
+    assert [(d["gate"], d["round_gate"], d["gate_budget"], d["round_build"]) for d in graded] == [
+        ("WRITER", 1, REWORK_BUDGET, 3),
+        ("WRITER", 2, REWORK_BUDGET, 4),
+        ("WRITER", 3, REWORK_BUDGET, 5),
+    ]
+    assert [d["finding"] for d in graded] == [_grade_item(tester_fails + n) for n in (1, 2, 3)]
+    # The record on the status is the one the REWORK event itself carries.
+    events = [
+        e.payload["decision"] for e in runner.ledger.events()
+        if e.kind is EventKind.REWORK and e.payload.get("source") == "GRADER"
+    ]
+    assert events == graded
+    assert status["stopped"] is None
+    assert _fix_rounds_numbers(decisions) == (5, REWORK_CEILING, "WRITER", REWORK_BUDGET, REWORK_BUDGET)
+    assert status["stop"]["fix_rounds"] == 5
+
+
+@pytest.mark.parametrize("writer_fails, max_rework", [(0, REWORK_BUDGET), (2, 2)])
+def test_a_gate_stop_still_records_that_gates_own_rounds_and_budget(
+    tmp_path, monkeypatch, writer_fails, max_rework
+):
+    # The control: a gate decide() judges. Its STOP record counts the gate's
+    # own rounds against the build's budget, and reads as fix rounds spent.
+    script = {
+        W: [_fail(W, brief_gates.WRITER_BEHAVIOUR_CHECK, f"w{i}") for i in range(writer_fails)],
+        T: [_fail(T, brief_gates.SUITE_CHECK, f"t{i}") for i in range(max_rework + 1)],
+    }
+    runner, out, _ = _run(
+        tmp_path, monkeypatch, script, llm=_no_model(), budget=BuildBudget(max_rework=max_rework)
+    )
+    assert out.outcome is Outcome.FAILED_BUDGET_SPENT, out.detail
+
+    status = build_status(tmp_path / "build")
+    stop = status["decisions"][-1]
+    assert (stop["class"], stop["gate"], stop["gate_name"]) == (DECISION_STOP, "TESTER", "tester_gate")
+    assert (stop["round_gate"], stop["gate_budget"]) == (max_rework, max_rework)
+    assert stop["round_build"] == writer_fails + max_rework
+    assert status["failure"]["kind"] == fr.ROUNDS_SPENT
+    assert status["failure"]["title"] == "used up its fix rounds"
 
 
 # -- the foreman's STOP under the default --------------------------------------
