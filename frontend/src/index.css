@@ -1140,9 +1140,10 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   .action-bar-in-card .action-more-toggle { width: auto; justify-self: start; }
 }
 .build-steps-slot { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
-/* The stepper (PR-10): the run's steps as numbered dots on one row. A label
-   only on the current or stopped step (the caption); an icon per state and a
-   screen-reader state word, so state is never colour alone. */
+/* The stepper (PR-10): the run's steps as numbered dots on one row, each with
+   its stage name under it; the current or stopped step's name again as the
+   caption; an icon per state and a screen-reader state word, so state is
+   never colour alone. */
 .stepper { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .stepper-row {
   display: flex;
@@ -1151,7 +1152,35 @@ button.action-secondary:disabled, button.action-danger:disabled, button.action-q
   margin: 0;
   padding: 0;
   min-height: 32px;
+  padding-bottom: 18px;
 }
+/* The first name aligns left, the last right, the rest centre on their
+   dot. */
+.stepper-name {
+  position: absolute;
+  top: 100%;
+  right: 14px;
+  transform: translateX(50%);
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  line-height: 1.2;
+  text-align: center;
+  color: var(--text-muted);
+}
+.stepper-step:first-child .stepper-name { right: auto; left: 0; transform: none; text-align: left; }
+.stepper-step:last-child .stepper-name { right: 0; transform: none; text-align: right; }
+/* On a phone the names take turns below and above the dots, so two
+   neighbours never share a line and no word has to break, whatever the
+   font's width. Each name is one 13.2px line inside a 14px band, so the row
+   is 14 + 28 + 14 = 56px. */
+@media (max-width: 520px) {
+  .stepper-row { min-height: 28px; padding-top: 14px; padding-bottom: 14px; }
+  .stepper-name { line-height: 1.1; }
+  .stepper-step:nth-child(even) .stepper-name { top: auto; bottom: 100%; }
+}
+.step-current .stepper-name,
+.step-fixing .stepper-name,
+.step-stopped .stepper-name { color: var(--text); font-weight: var(--weight-strong); }
 .stepper-step { position: relative; display: flex; align-items: center; flex: 1 1 0; min-width: 0; }
 .stepper-step:first-child { flex: 0 0 auto; }
 .stepper-line { flex: 1 1 auto; height: 2px; margin: 0 4px; background: var(--control-border); min-width: 8px; }

@@ -63,7 +63,7 @@ const cloner: BuildStatus = {
 
 describe('build progress copy', () => {
   it('names the current phase instead of a bare 2/5', () => {
-    expect(formatPhaseHeadline(cloner)).toBe('Step 2 of 5 — Gathering building blocks')
+    expect(formatPhaseHeadline(cloner)).toBe('Step 2 of 5 — Researcher (gathering building blocks)')
     expect(formatPhaseCounts(cloner)).toBe('3/7 blocks')
     expect(phaseBarFraction(cloner)).toBeCloseTo(0.429)
     expect(formatHeartbeat(cloner)).toBe('still working · 12s ago')
@@ -1385,9 +1385,9 @@ describe("reviewState reads the grader's own record first", () => {
 
 describe('the stop, said once: one step name, one tone, fix rounds as history', () => {
   it.each([
-    [{ phase: 'WRITER', location: 'WRITER', title: 'ran out of time' }, 'The "Write the code" step ran out of time'],
-    [{ phase: 'CLONER', title: 'could not finish' }, 'The "Gather building blocks" step could not finish'],
-    [{ phase: 'TESTER', location: 'TESTER' }, 'The "Test" step failed'],
+    [{ phase: 'WRITER', location: 'WRITER', title: 'ran out of time' }, 'The "Workers" step ran out of time'],
+    [{ phase: 'CLONER', title: 'could not finish' }, 'The "Researcher" step could not finish'],
+    [{ phase: 'TESTER', location: 'TESTER' }, 'The "Tester" step failed'],
     [{ phase: '', location: '', title: 'was stopped by you' }, 'Build was stopped by you'],
     [null, 'Build failed'],
   ])('stopHeadline(%j) is %s', (failure, expected) => {
@@ -1418,10 +1418,10 @@ describe('the stop, said once: one step name, one tone, fix rounds as history', 
   }
 
   it.each([
-    [[rework], 'Fix rounds used: 1 of 6 (Write the code: 1 of 1).'],
+    [[rework], 'Fix rounds used: 1 of 6 (Workers: 1 of 1).'],
     [
       [rework, { ...rework, gate: 'TESTER', round_gate: 2, gate_budget: 2, round_build: 3 }],
-      'Fix rounds used: 3 of 6 (Test: 2 of 2).',
+      'Fix rounds used: 3 of 6 (Tester: 2 of 2).',
     ],
   ])('fixRoundsLine says the rounds in typed numbers, never the finding (%#)', (decisions, line) => {
     expect(fixRoundsLine({ state: 'failed', decisions })).toBe(line)

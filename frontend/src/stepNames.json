@@ -1,0 +1,7 @@
+{
+  "COLLECTOR": { "label": "Collector", "running": "Collector (finding the parts)" },
+  "CLONER": { "label": "Researcher", "running": "Researcher (gathering building blocks)" },
+  "WRITER": { "label": "Workers", "running": "Workers (writing the code)" },
+  "TESTER": { "label": "Tester", "running": "Tester (testing)" },
+  "STORE_MANAGER": { "label": "Store Manager", "running": "Store Manager (packaging)" }
+}
