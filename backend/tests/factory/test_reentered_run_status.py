@@ -493,7 +493,9 @@ def test_the_re_entrys_own_failure_stands_at_its_verdict(client, tmp_path, old_r
 # ---------------------------------------------------------------------------
 
 
-def _failed_while_its_thread_lives(out: Path, reason: str, live_thread, inputs_hash: str = "h") -> BuildLedger:
+def _failed_while_its_thread_lives(
+    out: Path, reason: str, live_thread, inputs_hash: str = "h"
+) -> BuildLedger:
     """A WRITER failure whose runner thread was started before the verdict
     and is still alive after it."""
     out.mkdir(parents=True, exist_ok=True)
@@ -556,7 +558,9 @@ def test_a_try_again_refused_at_the_door_stays_failed_and_the_next_one_starts(
         vertical="v",
         summary="s",
         capabilities=[
-            CapabilitySpec(id="vault", description="vault", block_ids=["storage"], strategy_hint="REUSE")
+            CapabilitySpec(
+                id="vault", description="vault", block_ids=["storage"], strategy_hint="REUSE"
+            )
         ],
     )
     out = tmp_path / door / "ws"
@@ -569,7 +573,9 @@ def test_a_try_again_refused_at_the_door_stays_failed_and_the_next_one_starts(
         monkeypatch.setattr(coder_session, "raise_if_cli_session_unready", refuse)
     else:
         monkeypatch.setattr(coder_session, "raise_if_cli_session_unready", lambda: None)
-        monkeypatch.setattr(store_override, "builds_unavailable_reason", lambda _root: "proofs cannot be kept")
+        monkeypatch.setattr(
+            store_override, "builds_unavailable_reason", lambda _root: "proofs cannot be kept"
+        )
     with pytest.raises(coder_session.CodeCliUnavailable):
         start_runner_build(bp, out)
 
@@ -620,7 +626,9 @@ def test_only_a_resume_note_re_enters(tmp_path, live_thread, kind, expected):
     "thread_after_resumes, expected",
     [(1, False), (2, True)],
 )
-def test_the_runner_must_follow_the_newest_resume(tmp_path, live_thread, thread_after_resumes, expected):
+def test_the_runner_must_follow_the_newest_resume(
+    tmp_path, live_thread, thread_after_resumes, expected
+):
     """Two resumes after the verdict: only a thread started after the newer
     one is that resume's runner."""
     out = tmp_path / f"ws_{thread_after_resumes}"
