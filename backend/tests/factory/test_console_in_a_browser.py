@@ -468,3 +468,40 @@ def test_create_sends_to_the_encoded_capability_id(cap, path, tmp_path):
     caps = [{"id": cap, "fields": [{"name": "n", "type": "int"}]}]
     _, posts = _drive(caps, {}, [{"cap": cap, "type": {"n": "4"}}], tmp_path)
     assert posts == [(path, {"n": 4})]
+
+
+def _pydantic_doc(status_default: str, sub_default: Dict[str, Any]) -> Dict[str, Any]:
+    """openapi.json as pydantic writes it for a body with fields named max, min
+    and default, an Enum field and a nested-model field with defaults (the
+    default sits beside the $ref, not inside the target)."""
+    return {
+        "paths": {"/v1/{capability_id}": {"post": {"requestBody": {"content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/Body"}}}}}}},
+        "components": {"schemas": {
+            "Status": {"type": "string", "enum": ["open", "closed"]},
+            "Sub": {"type": "object", "properties": {"k": {"type": "integer", "default": 1}}},
+            "Body": {"type": "object", "required": ["ref"], "properties": {
+                "ref": {"type": "integer"},
+                "max": {"type": "integer", "default": 10},
+                "min": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
+                "default": {"type": "string", "default": "d"},
+                "status": {"$ref": "#/components/schemas/Status", "default": status_default},
+                "sub": {"$ref": "#/components/schemas/Sub", "default": sub_default},
+            }},
+        }},
+    }
+
+
+@pytest.mark.parametrize("cap, status_default, sub_default", [
+    ("orders", "open", {"k": 1}),
+    ("visits", "closed", {"k": BIG}),
+])
+def test_keyword_named_fields_and_defaults_beside_a_ref(cap, status_default, sub_default, tmp_path):
+    doc = _pydantic_doc(status_default, sub_default)
+    [step], posts = _drive([cap], doc, [{"cap": cap, "fill": [["ref", "5"]]}], tmp_path)
+    by = {c["name"]: c for c in step["controls"]}
+    assert list(by) == ["ref", "max", "min", "default", "status", "sub"]
+    assert by["status"]["labels"][0] == 'not set (default "%s")' % status_default
+    assert by["sub"]["value"] == json.dumps(sub_default, separators=(",", ":"))
+    assert (by["max"]["value"], by["min"]["value"], by["default"]["value"]) == ("10", "null", "d")
+    assert posts == [("/v1/" + cap, {"ref": 5})]
