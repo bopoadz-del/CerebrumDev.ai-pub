@@ -27,7 +27,7 @@ from app.factory.build.auto_pilot import (
     factory_auto_pilot_enabled,
     factory_llm_ready,
 )
-from app.factory.build.budget_inspect import STAGE_1_S, STAGE_2_S
+from app.factory.build.budget_inspect import STAGE_1_S, STAGE_2_S, writer_first_pass_wall
 from app.factory.build.authority import BuildRole
 from app.factory.build.ledger import BuildLedger, EventKind
 from app.factory.build.runner import BuildBudget, RoleRunner
@@ -103,7 +103,7 @@ def test_floor_budget_stays_a_code_phase_without_auto_pilot(monkeypatch):
     assert _wall_clock_s() == 3600.0
     # Owner rule (1330Z): 1 rework round per gate, at every cycle.
     assert _max_rework() == REWORK_BUDGET == 1
-    assert _phase_wall_clock_s() == 3600.0
+    assert _phase_wall_clock_s() == writer_first_pass_wall()
 
 
 def test_floor_budget_starts_stage_1_not_a_silent_2h(monkeypatch):
@@ -116,10 +116,10 @@ def test_floor_budget_starts_stage_1_not_a_silent_2h(monkeypatch):
     assert _wall_clock_s(auto_pilot=True) == AUTO_PILOT_WALL_CLOCK_S
     assert _wall_clock_s(auto_pilot=True) != AUTO_PILOT_CEILING_S
     assert _max_rework(auto_pilot=True) == REWORK_BUDGET
-    assert _phase_wall_clock_s(auto_pilot=True) == 5400.0
+    assert _phase_wall_clock_s(auto_pilot=True) == writer_first_pass_wall()
     assert _wall_clock_s(cycle="pilot") == AUTO_PILOT_WALL_CLOCK_S
     assert _max_rework(cycle="pilot") == REWORK_BUDGET
-    assert _phase_wall_clock_s(cycle="pilot") == 5400.0
+    assert _phase_wall_clock_s(cycle="pilot") == writer_first_pass_wall()
 
 
 def test_leftover_2h_build_wall_is_honoured_not_slashed(monkeypatch):
@@ -130,12 +130,12 @@ def test_leftover_2h_build_wall_is_honoured_not_slashed(monkeypatch):
 
 def test_legacy_25min_phase_wall_does_not_cap_a_pilot_writer(monkeypatch):
     """Dashboard leftover FACTORY_PHASE_WALL_CLOCK_S=1500 is the code-only
-    cap. A Store-green WRITER must keep the 90-minute coding window.
+    cap. A Store-green WRITER keeps at least the first-pass floor.
     """
     monkeypatch.setenv("FACTORY_PHASE_WALL_CLOCK_S", "1500")
     assert _phase_wall_clock_s() == 1500.0
-    assert _phase_wall_clock_s(auto_pilot=True) == 5400.0
-    assert _phase_wall_clock_s(cycle="pilot") == 5400.0
+    assert _phase_wall_clock_s(auto_pilot=True) == writer_first_pass_wall()
+    assert _phase_wall_clock_s(cycle="pilot") == writer_first_pass_wall()
     monkeypatch.setenv("FACTORY_PHASE_WALL_CLOCK_S", "0")
     assert _phase_wall_clock_s(cycle="pilot") == 0.0
     monkeypatch.setenv("FACTORY_PHASE_WALL_CLOCK_S", "6600")
@@ -258,9 +258,9 @@ def test_floor_run_stays_code_only_without_auto_pilot(monkeypatch, tmp_path):
     out.mkdir()
     _run(load_blueprint(SMOKE), out, None, "code")
     assert captured["auto_pilot"] is False
-    assert captured["budget"].wall_clock_s == 3600.0
+    assert captured["budget"].wall_clock_s == writer_first_pass_wall()
     assert captured["budget"].max_rework == REWORK_BUDGET == 1
-    assert captured["budget"].phase_wall_clock_s == 3600.0
+    assert captured["budget"].phase_wall_clock_s == writer_first_pass_wall()
 
 
 def test_floor_run_opts_into_auto_pilot_when_enabled(monkeypatch, tmp_path):
@@ -290,9 +290,9 @@ def test_floor_run_opts_into_auto_pilot_when_enabled(monkeypatch, tmp_path):
     _run(load_blueprint(SMOKE), out, None, "code")
     assert captured["auto_pilot"] is True
     assert captured["cycle"] == "code"
-    assert captured["budget"].wall_clock_s == AUTO_PILOT_WALL_CLOCK_S
+    assert captured["budget"].wall_clock_s == writer_first_pass_wall()
     assert captured["budget"].max_rework == REWORK_BUDGET
-    assert captured["budget"].phase_wall_clock_s == 5400.0
+    assert captured["budget"].phase_wall_clock_s == writer_first_pass_wall()
 
 
 def test_code_only_success_still_exists_without_auto_pilot(tmp_path, stub_coder):
