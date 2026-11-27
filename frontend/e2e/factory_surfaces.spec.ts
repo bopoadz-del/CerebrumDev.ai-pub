@@ -322,7 +322,7 @@ for (const run of RECORDED_RUNS) for (const viewport of STAGE_VIEWPORTS) {
     await expect(page.getByTestId('floor-stepper')).not.toContainText(/COLLECTOR|CLONER|WRITER|TESTER|STORE_MANAGER/)
     if (viewport) {
       // On the phone no two names overlap, each name stays inside the screen
-      // and inside the stepper row, and the row stays at most 56px tall.
+      // and inside the stepper row on all four sides, and the row stays at most 56px tall.
       const boxes = await names.evaluateAll((els) =>
         els.map((el) => {
           const r = el.getBoundingClientRect()
@@ -334,6 +334,10 @@ for (const run of RECORDED_RUNS) for (const viewport of STAGE_VIEWPORTS) {
       for (let i = 0; i < boxes.length; i += 1) {
         expect(boxes[i].left, `${STAGE_NAMES[i]} inside the screen`).toBeGreaterThanOrEqual(0)
         expect(boxes[i].right, `${STAGE_NAMES[i]} inside the screen`).toBeLessThanOrEqual(viewport.width)
+        // The row, not only the screen: the card's padding would hide a name
+        // that runs past the row's end. Half a pixel absorbs sub-pixel rounding.
+        expect(boxes[i].left, `${STAGE_NAMES[i]} inside the row`).toBeGreaterThanOrEqual(row!.x - 0.5)
+        expect(boxes[i].right, `${STAGE_NAMES[i]} inside the row`).toBeLessThanOrEqual(row!.x + row!.width + 0.5)
         expect(boxes[i].top, `${STAGE_NAMES[i]} inside the row`).toBeGreaterThanOrEqual(row!.y)
         expect(boxes[i].bottom, `${STAGE_NAMES[i]} inside the row`).toBeLessThanOrEqual(row!.y + row!.height)
         for (let j = 0; j < i; j += 1) {

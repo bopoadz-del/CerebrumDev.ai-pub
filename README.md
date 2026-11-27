@@ -18,13 +18,17 @@ these stages in this order:
    blocks that back it and names every capability no block backs. It writes
    nothing. `run_collector` in `backend/app/factory/build/roles_handlers.py`.
 2. **Researcher** (`CLONER`): copies each reused block's source into the
-   workspace and writes the coder brief (docs/coder_brief.md in the
-   workspace) from the blueprint and the planner's plan (`run_cloner` in
+   workspace and then writes the coder brief (docs/coder_brief.md in the
+   workspace) from the blueprint and the planner's plan. It writes the brief
+   only when the plan reuses at least one block: a plan that reuses none ends
+   the stage at "no blocks to vendor", with no brief (`run_cloner` in
    `backend/app/factory/build/roles_handlers.py`; the brief is
    `ensure_coder_brief` in `backend/app/factory/build/domain_handoff.py`).
 3. **Workers** (`WRITER`): the coding session that writes what the Store does
    not have (`run_writer` in `backend/app/factory/build/roles_handlers.py`).
-   The headless worker reads the coder brief (`run_worker_job` in
+   The headless worker reads the coder brief when the Researcher wrote one;
+   on a build that reuses no block it gets the user's brief and the
+   capability list without a compiled brief (`run_worker_job` in
    `backend/app/factory/build/codewhale_worker.py`). When that worker is off,
    the writer compiles the brief itself (`compile_brief_from_ctx` in
    `backend/app/factory/build/brief_compiler.py`) and the architect writes
