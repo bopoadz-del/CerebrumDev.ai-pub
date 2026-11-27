@@ -603,9 +603,11 @@ def test_no_capability_makes_the_state_is_ungraded_not_billed(tmp_path, error):
     "def handle(p):\n    return {'ok': False, 'error': 'store offline'}\n",
     "def handle(p):\n    raise RuntimeError('down')\n",
 ])
-def test_no_other_capability_accepted_stays_block_unavailable(tmp_path, other):
+def test_no_other_capability_accepted_is_ungraded_not_billed(tmp_path, other):
+    # Every source refused input one: the grade could not make the state the
+    # handle reads, so its refusal is not the writer's (third FAIL, fault 1).
     r = _judge(tmp_path, ["checker", "other"], {"checker": _checker("True"), "other": other})["checker"]
-    assert not r.ok and r.detail == fg.BLOCK_UNAVAILABLE and not r.needs_fixture
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.NOT_STORED, True)
 
 
 @pytest.mark.parametrize("cid,body", [("computes", READS_INPUT), ("constant", CONSTANT)])
@@ -646,8 +648,7 @@ _FIX = [{"capability": "theirs", "module": "m", "sample": {}}]
     {"honest_error": False, "fixture": {"stored_by": ["theirs"], "accepted": False}},
     {"honest_error": True, "error": "handle raised", "fixture": {"stored_by": ["theirs"]}},
     {"honest_error": "yes", "fixture": {"stored_by": ["theirs"], "accepted": False}},
-    {"honest_error": True, "fixture": {"stored_by": []}},
-    {"honest_error": True},
+    {"honest_error": None, "fixture": {"stored_by": []}},
 ])
 def test_fixture_result_does_not_fire(data):
     fn = fg.GradedFunction("mine", "m", [{"a": 1}], list(_FIX))
@@ -848,9 +849,11 @@ def test_stored_records_reads_back_sqlite_rows_json_lines_and_json_cells(tmp_pat
     (tmp_path / "sub" / "rows.jsonl").write_text(json.dumps({"o": owner, "n": {"a": amount}}) + "\nnot json\n")
     (tmp_path / "plain.txt").write_text(f"{owner} {amount}")
     got = fg.stored_records(tmp_path)
-    assert [owner, amount, json.dumps({"inner": owner + "!"})] in got
-    assert [owner + "!"] in got and [owner, amount] in got and [amount] in got
-    assert not any(f"{owner} {amount}" in r for r in got)
+    assert [["a.db", "t"], [owner, amount, json.dumps({"inner": owner + "!"})]] in got
+    assert [["a.db", "t"], [owner + "!"]] in got
+    assert [["sub/rows.jsonl", None], [owner, amount]] in got and [["sub/rows.jsonl", None], [amount]] in got
+    assert not any(f"{owner} {amount}" in r[1] for r in got)
+    assert {tuple(r[0]) for r in got} == {("a.db", "t"), ("sub/rows.jsonl", None)}
 
 
 @pytest.mark.parametrize("name,body", [
@@ -899,6 +902,8 @@ def test_combine_trials_is_the_same_in_any_order(trials, want):
 @pytest.mark.parametrize("fixture", [
     {"stored_by": [], "accepted_by": ["pure"], "accepted": False},
     {"stored_by": [], "accepted_by": ["pure", "eraser"]},
+    {"stored_by": [], "accepted_by": []},
+    {},
 ])
 def test_fixture_result_accepted_but_not_stored_is_ungraded(fixture):
     fn = fg.GradedFunction("mine", "m", [{"a": 1}], list(_FIX))
@@ -965,3 +970,200 @@ def test_a_source_that_ends_its_process_does_not_stop_the_next_one(tmp_path, cod
     exiter = f"import os\ndef handle(payload):\n    os._exit({code})\n"
     r = _judge(tmp_path, order, {"checker": _checker("r['owner'] == p['owner']"), "keeper": KEEPER, "exiter": exiter})
     assert (r["checker"].ok, r["checker"].detail, r["checker"].depends_on) == (True, "", ["owner"])
+
+
+# --- Fix 4, third round: stored counts only where the handle READ, and only
+# when the source that wrote it accepted input one ------------------------
+AUDIT = (
+    "import json, os\n"
+    "from pathlib import Path\n"
+    "def handle(p):\n"
+    "    log = Path(os.environ['STORAGE_PATH']) / 'audit.jsonl'\n"
+    "    with log.open('a') as fh:\n"
+    "        fh.write(json.dumps({'attempt': p}) + '\\n')\n"
+    "    return {'ok': False, 'error': 'not allowed'}\n"
+)
+INVOICE = KEEPER.replace("'rows.jsonl'", "'invoices.jsonl'")
+SQL_AUDIT = SQL_KEEPER.replace("entry", "audit")
+
+
+@pytest.mark.parametrize("match", ["r['owner'] == p['owner']", "r['amount'] == p['amount']"])
+@pytest.mark.parametrize("source", [AUDIT, INVOICE])
+def test_input_one_stored_where_the_handle_never_reads_is_ungraded(tmp_path, match, source):
+    # A source that logs the refused attempt, or accepts and keeps input one
+    # in a file the reader never opens: the reader's state was never made.
+    ws = _workspace(tmp_path, {"checker": _checker(match), "other": source})
+    grade = _grade(["checker", "other"], ws)
+    (u,) = [f for f in grade.ungraded if f.capability_id == "checker"]
+    assert (u.detail, u.needs_fixture) == (fg.NOT_STORED, True)
+    assert "checker" not in grade.failing
+    assert _classes(grade, ["checker", "other"])["checker"] == "ungraded"
+
+
+@pytest.mark.parametrize("match", ["r['owner'] == p['owner']", "r['amount'] == p['amount']"])
+def test_input_one_stored_in_a_sqlite_table_the_handle_never_reads_is_ungraded(tmp_path, match):
+    r = _judge(tmp_path, ["checker", "keeper"], {"checker": _sql_checker(match), "keeper": SQL_AUDIT})["checker"]
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.NOT_STORED, True)
+
+
+def _doc_keeper(table: str) -> str:
+    """Accepts input one and keeps it whole, as JSON text in ``table``."""
+    return (
+        "import json, os, sqlite3\n"
+        "from pathlib import Path\n"
+        "def handle(p):\n"
+        "    con = sqlite3.connect(str(Path(os.environ['STORAGE_PATH']) / 'platform.db'))\n"
+        f"    con.execute('create table if not exists {table} (doc text)')\n"
+        f"    con.execute('insert into {table} values (?)', (json.dumps(p),))\n"
+        "    con.commit(); con.close()\n"
+        "    return {'ok': True, 'kept': p['amount'] + 3}\n"
+    )
+
+
+def _doc_refuser(error: str) -> str:
+    """Reads every doc of table ``entry`` and refuses whatever it finds."""
+    return (
+        "import os, sqlite3\n"
+        "from pathlib import Path\n"
+        "def handle(p):\n"
+        "    db = Path(os.environ['STORAGE_PATH']) / 'platform.db'\n"
+        "    n = 0\n"
+        "    if db.exists():\n"
+        "        con = sqlite3.connect(str(db))\n"
+        "        try:\n"
+        "            n = len(con.execute('select doc from entry').fetchall())\n"
+        "        except sqlite3.Error:\n"
+        "            n = 0\n"
+        "        con.close()\n"
+        f"    return {{'ok': False, 'error': {error!r} + ' ' + str(n)}}\n"
+    )
+
+
+@pytest.mark.parametrize("error", ["entry is locked", "not yours"])
+@pytest.mark.parametrize("table,detail,owed", [
+    ("entry", fg.REFUSED_ALTHOUGH_STORED, False),
+    ("audit", fg.NOT_STORED, True),
+])
+def test_a_refusal_is_billed_only_when_input_one_sits_in_the_table_it_read(tmp_path, error, table, detail, owed):
+    r = _judge(tmp_path, ["checker", "keeper"], {"checker": _doc_refuser(error), "keeper": _doc_keeper(table)})["checker"]
+    assert (r.ok, r.detail, r.needs_fixture) == (False, detail, owed)
+    assert any(error in a for a in r.probe["answers"])
+
+
+@pytest.mark.parametrize("error", ["entry is locked", "not yours"])
+def test_stored_is_judged_on_input_one_not_on_the_sources_own_sample(tmp_path, error):
+    # The keeper's own sample has another amount; what it stores is input one.
+    ws = _workspace(tmp_path, {"checker": _checker("False", error), "keeper": KEEPER})
+    _wide_models(ws)
+    fns = {f.capability_id: f for f in fg.derive_functions(["checker", "keeper"], ws)}
+    assert fns["keeper"].inputs[0]["amount"] != fns["checker"].inputs[0]["amount"]
+    r = fg.run_function(fns["checker"], ws)
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.REFUSED_ALTHOUGH_STORED, False)
+    assert any(error in a for a in r.probe["answers"])
+
+
+GARBLER = (
+    "import os\n"
+    "from pathlib import Path\n"
+    "def handle(p):\n"
+    "    (Path(os.environ['STORAGE_PATH']) / 'rows.jsonl').write_text('{not json\\n')\n"
+    "    return {'ok': True, 'garbled': p['amount'] + 5}\n"
+)
+
+
+@pytest.mark.parametrize("error", ["entry is locked", "not yours"])
+@pytest.mark.parametrize("order", [["checker", "garbler", "keeper"], ["keeper", "garbler", "checker"]])
+def test_a_raise_after_a_source_that_stored_nothing_is_not_the_verdict(tmp_path, error, order):
+    # After the garbler the handle raises on the unreadable file; after the
+    # keeper it reads input one and refuses. The refusal is what is billed.
+    r = _judge(tmp_path, order, {"checker": _checker("False", error), "garbler": GARBLER, "keeper": KEEPER})["checker"]
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.REFUSED_ALTHOUGH_STORED, False)
+
+
+@pytest.mark.parametrize("field", ["owner", "amount"])
+def test_a_raise_on_a_changed_field_after_the_fixture_is_a_refusal(tmp_path, field):
+    # Empty store: an honest refusal. Stored, but not this key: KeyError.
+    checker = (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "def handle(p):\n"
+        "    rows = Path(os.environ['STORAGE_PATH']) / 'rows.jsonl'\n"
+        "    seen = [json.loads(x) for x in rows.read_text().splitlines()] if rows.exists() else []\n"
+        "    if not seen:\n"
+        "        return {'ok': False, 'error': 'no entries yet'}\n"
+        f"    row = {{r[{field!r}]: r for r in seen}}[p[{field!r}]]\n"
+        "    return {'ok': True, 'checked': row['amount'] * 2}\n"
+    )
+    r = _judge(tmp_path, ["checker", "keeper"], {"checker": checker, "keeper": KEEPER})["checker"]
+    assert (r.ok, r.detail, r.depends_on) == (True, "", [field])
+
+
+_WATCH = r"""
+import json, os, sqlite3, sys
+from pathlib import Path
+src, store, out = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+exec(src)
+seen, calls, denied = set(), [], []
+(store / "sub").mkdir(parents=True, exist_ok=True)
+(store / "sub" / "a.json").write_text("{}")
+phase = watch_reads(store, seen)
+late = sqlite3.connect(str(store / "t.db"))
+late.execute("create table three (x)")
+own = sqlite3.connect(str(store / "o.db"))
+own.execute("create table four (x)")
+own.set_authorizer(lambda *a: (calls.append(a[0]), sqlite3.SQLITE_OK)[1])
+deny = sqlite3.connect(str(store / "d.db"))
+deny.execute("create table five (x)")
+deny.set_authorizer(lambda a, t, *r: sqlite3.SQLITE_DENY if t == "five" else sqlite3.SQLITE_OK)
+outside = store.parent / "outside.json"
+outside.write_text("{}")
+(store / "sub" / "a.json").read_text()
+late.execute("select * from three").fetchall()
+gone = sqlite3.connect(str(store / "g.db"))
+gone.close()
+phase(True)
+for name in sys.argv[4].split(","):
+    if name == "file":
+        (store / "sub" / "a.json").read_text()
+    elif name == "outside":
+        outside.read_text()
+    elif name == "late":
+        late.execute("select * from three").fetchall()
+    elif name == "own":
+        own.execute("select * from four").fetchall()
+    elif name == "deny":
+        try:
+            deny.execute("select * from five").fetchall()
+        except sqlite3.DatabaseError:
+            denied.append(True)
+    elif name == "uri":
+        u = sqlite3.connect("file:" + str(store / "t.db") + "?mode=ro", uri=True)
+        u.execute("select * from three").fetchall()
+phase(False)
+late.execute("select * from three").fetchall()
+(store / "sub" / "a.json").read_text()
+Path(out).write_text(json.dumps({"seen": sorted([list(w) for w in seen], key=str),
+                                 "own_called": bool(calls), "denied": bool(denied)}))
+"""
+
+
+@pytest.mark.parametrize("reads,want", [
+    ("file,late", [["sub/a.json", None], ["t.db", "three"]]),
+    ("outside,deny", []),
+    ("uri", [["t.db", "three"]]),
+    ("file", [["sub/a.json", None]]),
+    ("own", [["o.db", "four"]]),
+])
+def test_watch_reads_sees_only_the_store_reads_made_while_reading(tmp_path, reads, want):
+    import inspect
+    import subprocess
+    import sys
+
+    out = tmp_path / "seen.json"
+    subprocess.run([sys.executable, "-c", _WATCH, inspect.getsource(fg.watch_reads), str(tmp_path / "store"),
+                    str(out), reads], check=True, timeout=60)
+    got = json.loads(out.read_text())
+    assert got["seen"] == want
+    # The product's own authorizer is still the one that decides.
+    assert got["own_called"] is ("own" in reads)
+    assert got["denied"] is ("deny" in reads)

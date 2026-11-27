@@ -669,7 +669,8 @@ def grade_ui(
     bearer: Optional[str] = None,
 ) -> UiGrade:
     """Run the plan's steps against ``base_url``. Every step carries the
-    grading boot's bearer (``grading_bearer``); ``bearer`` replaces it."""
+    grading boot's bearer (``grading_bearer``); ``bearer`` replaces it. The
+    files the run wrote are scrubbed of it however the run ended."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -691,7 +692,10 @@ def grade_ui(
                                fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
-    scrub_files(wd, token)
+    finally:
+        # Whatever ended the run (a report, a timeout, a crash), the files it
+        # wrote are scrubbed before anything else reads the work dir.
+        scrub_files(wd, token)
     report_text = _report_text(out, proc)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])

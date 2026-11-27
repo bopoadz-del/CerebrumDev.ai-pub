@@ -87,22 +87,24 @@ BLOCK_UNAVAILABLE = "block_unavailable: two inputs gave one honest-error envelop
 #: fields include all of input one's fields is tried on its own, in a fresh
 #: process with a fresh scratch store (so no source can undo another's state
 #: and the plan's order changes nothing): it is sent input one, the store
-#: is read back, and input one is sent to the handle again. A refusal is
-#: billed to the writer only when the read-back shows a new record holding
-#: every scalar value of input one -- an ok answer from the source is never
-#: taken for it. The facts:
+#: is read back, and input one is sent to the handle again while the files
+#: and SQLite tables it reads are watched. A refusal is billed to the writer
+#: only when a source that accepted input one added a record holding every
+#: scalar value of it IN A FILE / TABLE THE HANDLE READ on that call -- an
+#: ok answer is never taken for it, and neither is a record the handle never
+#: reads. The facts:
 #: no plan capability takes those fields -> :data:`NO_FIXTURE`, ungraded;
-#: no source accepted, stored or made input one pass ->
-#: :data:`BLOCK_UNAVAILABLE`, as before; a source accepted but no read-back
-#: shows input one and the handle still refuses -> :data:`NOT_STORED`,
-#: ungraded (the Factory owes it, never the writer); stored and input one
-#: still refused after every source -> :data:`REFUSED_ALTHOUGH_STORED`;
+#: no source stored input one where the handle reads and input one is still
+#: refused (no source accepted, or one accepted and stored it elsewhere or
+#: not at all) -> :data:`NOT_STORED`, ungraded (the Factory owes it, never
+#: the writer); stored where it reads and input one still refused after
+#: every source -> :data:`REFUSED_ALTHOUGH_STORED`;
 #: input one accepted after a source and no single changed field refused ->
 #: :data:`ACCEPTS_ANY_CHANGE`. Accepted, and refused when a field changes,
 #: is a pass whose ``depends_on`` names the fields whose change was refused.
 NO_FIXTURE = "no plan capability takes its input fields, so the grade cannot make the state it reads"
-NOT_STORED = "another capability accepted input one, but no read-back of the store shows it stored"
-REFUSED_ALTHOUGH_STORED = "refused input one after the store was read back holding it"
+NOT_STORED = "no capability that accepted input one stored it where this handle reads, so the grade could not make its state"
+REFUSED_ALTHOUGH_STORED = "refused input one after another capability stored it in a file or table this handle read"
 ACCEPTS_ANY_CHANGE = "accepted input one after the fixture, and input one with any one field changed too"
 #: The detail of a capability with no field that can take a second value and
 #: that PASSED TESTER's one-input pilot rule. It counts as a pass and is
@@ -347,9 +349,11 @@ def stored_records(root):
     """Fix 4, run inside the probe process: the records the scratch store
     under ``root`` holds, read back from the files themselves -- every row of
     every table of a SQLite file, and every JSON object in a file (whole, or
-    one per line, or as the text of a SQLite cell). Each record is the list of
-    its scalar values, nested values included. Nothing is read from a
-    capability's answer."""
+    one per line, or as the text of a SQLite cell). Each record is
+    ``[where, values]``: ``where`` is ``[file, table]`` (the file relative to
+    ``root`` with ``/`` separators, the table None outside SQLite) and
+    ``values`` the list of its scalar values, nested values included.
+    Nothing is read from a capability's answer."""
     import json as _json
     import sqlite3 as _sqlite3
     from pathlib import Path as _Path
@@ -361,7 +365,7 @@ def stored_records(root):
             return [s for v in obj for s in scalars(v)]
         return [obj]
 
-    def objects(text):
+    def objects(text, where):
         found = []
         for chunk in [text] + text.splitlines():
             try:
@@ -372,7 +376,7 @@ def stored_records(root):
             while stack:
                 cur = stack.pop()
                 if isinstance(cur, dict):
-                    found.append(scalars(cur))
+                    found.append([where, scalars(cur)])
                     stack.extend(cur.values())
                 elif isinstance(cur, list):
                     stack.extend(cur)
@@ -383,8 +387,9 @@ def stored_records(root):
         if not path.is_file():
             continue
         raw = path.read_bytes()
+        rel = path.relative_to(root).as_posix()
         if not raw.startswith(b"SQLite format 3\x00"):
-            records += objects(raw.decode("utf-8", "replace"))
+            records += objects(raw.decode("utf-8", "replace"), [rel, None])
             continue
         try:
             con = _sqlite3.connect(str(path))
@@ -392,15 +397,109 @@ def stored_records(root):
                 tables = [t for (t,) in con.execute("select name from sqlite_master where type = 'table'")]
                 for table in tables:
                     for row in con.execute('select * from "' + table.replace('"', '""') + '"'):
-                        records.append(list(row))
+                        records.append([[rel, table], list(row)])
                         for cell in row:
                             if isinstance(cell, str):
-                                records += objects(cell)
+                                records += objects(cell, [rel, table])
             finally:
                 con.close()
         except _sqlite3.Error:
             continue
     return records
+
+
+def watch_reads(storage, seen):
+    """Fix 4, run inside the probe process before any product code; returns
+    ``phase(on)``. While the phase is on, every file under ``storage`` the
+    process opens goes into ``seen`` as ``(file, None)`` and every SQLite
+    table it reads as ``(file, table)`` -- files relative to ``storage``
+    with ``/`` separators, the same places :func:`stored_records` names.
+    Files are observed through the interpreter's ``open`` audit event;
+    tables through an authorizer on every connection ``sqlite3.connect``
+    opens on the store from here on, so a connection opened before the read
+    is watched too. A product's own authorizer still decides: it is called
+    first and its answer returned, and a read it denies is not seen.
+    Turning the phase on installs each live connection's authorizer again,
+    which makes SQLite prepare its cached statements anew, so a query the
+    product ran before is seen too."""
+    import os as _os
+    import sqlite3 as _sqlite3
+    import sys as _sys
+
+    root = _os.path.realpath(str(storage))
+    busy = [False]
+    reading = [False]
+    watched = []
+    classes = {}
+    real_connect = _sqlite3.connect
+
+    def inside(name):
+        try:
+            text = _os.fsdecode(name)
+        except TypeError:
+            return None
+        if text.startswith("file:"):
+            text = text[len("file:"):].split("?")[0]
+        full = _os.path.realpath(text)
+        if not full.startswith(root + _os.sep):
+            return None
+        return _os.path.relpath(full, root).replace(_os.sep, "/")
+
+    def check_for(con, base):
+        def check(action, table, *rest):
+            own = con.__dict__.get("grader_own")
+            verdict = _sqlite3.SQLITE_OK if own is None else own(action, table, *rest)
+            if reading[0] and action == _sqlite3.SQLITE_READ and table and verdict == _sqlite3.SQLITE_OK:
+                seen.add((con.__dict__["grader_rel"], table))
+            return verdict
+        base.set_authorizer(con, check)
+
+    def watching(base):
+        if base not in classes:
+            def set_authorizer(self, callback):
+                self.__dict__["grader_own"] = callback
+                check_for(self, base)
+            classes[base] = type("Watched" + base.__name__, (base,), {"set_authorizer": set_authorizer})
+        return classes[base]
+
+    def connect(database, *args, **kwargs):
+        rel = inside(database)
+        if not rel:
+            return real_connect(database, *args, **kwargs)
+        args = list(args)
+        if len(args) >= 5:
+            args[4] = watching(args[4])
+        else:
+            kwargs["factory"] = watching(kwargs.get("factory") or _sqlite3.Connection)
+        con = real_connect(database, *args, **kwargs)
+        con.__dict__["grader_rel"] = rel
+        con.set_authorizer(None)
+        watched.append(con)
+        return con
+
+    def phase(on):
+        reading[0] = bool(on)
+        for con in list(watched) if reading[0] else []:
+            try:
+                con.set_authorizer(con.__dict__.get("grader_own"))
+            except _sqlite3.ProgrammingError:
+                watched.remove(con)  # closed since
+
+    def hook(event, args):
+        if event != "open" or busy[0] or not reading[0]:
+            return
+        busy[0] = True
+        try:
+            rel = inside(args[0])
+            if rel:
+                seen.add((rel, None))
+        finally:
+            busy[0] = False
+
+    _sqlite3.connect = connect
+    _sqlite3.dbapi2.connect = connect
+    _sys.addaudithook(hook)
+    return phase
 
 
 def shows_input(record, payload):
@@ -625,8 +724,11 @@ def why(exc):
     kind = "exited" if isinstance(exc, SystemExit) else "raised"
     return f"handle {kind}: {type(exc).__name__}: {exc}"[:300]
 """ + "\n".join(render_payload_helpers()) + "\n" + _PILOT_RULE + _probe_source(
-    block_cannot_run, loader_refused, watch_blocks, stored_records, shows_input
-) + _HARNESS + r"""
+    block_cannot_run, loader_refused, watch_blocks, stored_records, shows_input, watch_reads
+) + r"""
+_READ = set()
+_READ_PHASE = watch_reads(spec["storage"], _READ) if spec.get("trial") else None
+""" + _HARNESS + r"""
 try:
     _handle_module = importlib.import_module(spec["module"])
     original = _handle_module.handle
@@ -679,10 +781,14 @@ if spec.get("trial"):
         trial["source_accepted"] = pilot_failure("", made) is None
     except BaseException as exc:
         trial["source_error"] = why(exc)
-    trial["stored"] = any(shows_input(r, first) for r in stored_records(spec["storage"])
-                          if canon(r) not in before)
+    shown = [r[0] for r in stored_records(spec["storage"])
+             if canon(r) not in before and shows_input(r[1], first)]
     try:
-        again = original(dict(first))
+        _READ_PHASE(True)
+        try:
+            again = original(dict(first))
+        finally:
+            _READ_PHASE(False)
         trial["answers"].append(canon(again))
         trial["accepted"] = pilot_failure("", again) is None
         trial["refused_when_changed"] = []
@@ -698,6 +804,9 @@ if spec.get("trial"):
                 trial["refused_when_changed"].append(name)
     except BaseException as exc:
         trial["error"] = why(exc)
+    # Stored counts only when a source that ACCEPTED input one added a record
+    # holding it in a file / table the handle itself read on its call.
+    trial["stored"] = trial.get("source_accepted") is True and any(tuple(w) in _READ for w in shown)
     emit({"trial": trial, "mutants": {}})
     sys.exit(0)
 sent, corrections = [], []
@@ -861,7 +970,8 @@ def fixture_trials(
 def combine_trials(trials: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     """Fix 4: the facts of every fixture trial as one fixture record.
     ``accepted_by``: the sources that answered input one without refusing.
-    ``stored_by``: the sources whose store, read back, held input one.
+    ``stored_by``: the sources that accepted input one and stored it in a
+    file or table the handle read on its call (``stored``).
     ``took_by``: the sources after which the handle accepted input one.
     Input one counts as accepted when it was accepted after ANY source, and
     a field is depended on when its change was refused after any (a trial
@@ -931,11 +1041,10 @@ def run_function(fn: GradedFunction, workspace: Path, *, python: str = sys.execu
 def fixture_result(fn: GradedFunction, data: Mapping[str, Any]) -> Optional[FunctionResult]:
     """Fix 4: the result of a handle that refused both inputs with one honest
     error, read from the facts the probe recorded (see :data:`NO_FIXTURE`).
-    A refusal is billed to the writer only when a read-back showed input
-    one stored; accepted by a source but neither stored nor taken is
-    :data:`NOT_STORED`, ungraded. None when the rule does not apply or no
-    source accepted, stored or made input one pass -- then the handle is
-    judged as before."""
+    A refusal is billed to the writer only when input one was stored where
+    the handle reads; neither stored there nor taken (by any source, or
+    none accepted at all) is :data:`NOT_STORED`, ungraded. None when the
+    rule does not apply -- then the handle is judged as before."""
     if data.get("error") or data.get("honest_error") is not True:
         return None
     cid = fn.capability_id
@@ -944,8 +1053,6 @@ def fixture_result(fn: GradedFunction, data: Mapping[str, Any]) -> Optional[Func
                               probe=_probe(fn, data.get("answers") or [], data))
     fixture = data.get("fixture") or {}
     if fixture.get("accepted") is not True and not fixture.get("stored_by"):
-        if not fixture.get("accepted_by"):
-            return None
         return FunctionResult(cid, False, [], [], NOT_STORED, needs_fixture=True,
                               probe=_probe(fn, data.get("answers") or [], data))
     seen = list(data.get("answers") or []) + list(fixture.get("answers") or [])
