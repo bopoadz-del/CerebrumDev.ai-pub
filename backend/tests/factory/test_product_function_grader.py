@@ -701,3 +701,235 @@ def test_the_fixture_stores_input_one_not_its_own_sample(tmp_path, match):
     assert fns["keeper"].inputs[0]["amount"] != fns["checker"].inputs[0]["amount"]
     r = fg.run_function(fns["checker"], ws)
     assert r.ok and r.detail == "" and "amount" in r.depends_on
+
+
+# --- Fix 4, second round: the state counts as made only when the store,
+# read back, holds input one; each source is tried alone on a fresh store ---
+ERASER = (
+    "import os\n"
+    "from pathlib import Path\n"
+    "def handle(payload):\n"
+    "    rows = Path(os.environ['STORAGE_PATH']) / 'rows.jsonl'\n"
+    "    rows.write_text('')\n"
+    "    return {'ok': True, 'removed': payload['amount'] * 3 + 1}\n"
+)
+RAISER = "def handle(payload):\n    raise RuntimeError('source down')\n"
+SQL_KEEPER = (
+    "import os, sqlite3\n"
+    "from pathlib import Path\n"
+    "def handle(p):\n"
+    "    con = sqlite3.connect(str(Path(os.environ['STORAGE_PATH']) / 'platform.db'))\n"
+    "    con.execute('create table if not exists entry (owner text, amount integer, approved integer)')\n"
+    "    con.execute('insert into entry values (?, ?, ?)', (p['owner'], p['amount'], p['approved']))\n"
+    "    con.commit(); con.close()\n"
+    "    return {'ok': True, 'kept': p['amount'] + 11}\n"
+)
+
+
+def _pure(k: int) -> str:
+    """A source that accepts input one and stores nothing."""
+    return f"def handle(p):\n    return {{'ok': True, 'sum': p['amount'] * {k} + 2}}\n"
+
+
+def _sql_checker(match: str) -> str:
+    return (
+        "import os, sqlite3\n"
+        "from pathlib import Path\n"
+        "def handle(p):\n"
+        "    db = Path(os.environ['STORAGE_PATH']) / 'platform.db'\n"
+        "    rows = []\n"
+        "    if db.exists():\n"
+        "        con = sqlite3.connect(str(db))\n"
+        "        try:\n"
+        "            rows = [dict(zip(('owner', 'amount', 'approved'), r)) for r in con.execute('select * from entry')]\n"
+        "        except sqlite3.Error:\n"
+        "            rows = []\n"
+        "        con.close()\n"
+        f"    if any({match} for r in rows):\n"
+        "        return {'ok': True, 'checked': p['amount'] * 2}\n"
+        "    return {'ok': False, 'error': 'no such entry'}\n"
+    )
+
+
+@pytest.mark.parametrize("match,depends", [
+    ("r['owner'] == p['owner']", ["owner"]),
+    ("r['amount'] == p['amount']", ["amount"]),
+])
+@pytest.mark.parametrize("order", [
+    ["checker", "keeper", "eraser"],
+    ["checker", "eraser", "keeper"],
+    ["eraser", "keeper", "checker"],
+])
+def test_a_source_that_removes_the_state_changes_nothing_in_any_plan_order(tmp_path, match, depends, order):
+    rs = _judge(tmp_path, order, {"checker": _checker(match), "keeper": KEEPER, "eraser": ERASER})
+    r = rs["checker"]
+    assert (r.ok, r.detail, sorted(r.depends_on), r.needs_fixture) == (True, "", depends, False)
+
+
+@pytest.mark.parametrize("k", [5, 9])
+def test_an_ok_answer_that_stores_nothing_is_ungraded_not_billed(tmp_path, k):
+    ws = _workspace(tmp_path, {"checker": _checker("r['owner'] == p['owner']"), "pure": _pure(k)})
+    grade = _grade(["checker", "pure"], ws)
+    (u,) = [f for f in grade.ungraded if f.capability_id == "checker"]
+    assert (u.detail, u.needs_fixture) == (fg.NOT_STORED, True)
+    assert "checker" not in grade.failing and not grade.ok
+    assert _classes(grade, ["checker", "pure"])["checker"] == "ungraded"
+
+
+@pytest.mark.parametrize("order", [["checker", "eraser"], ["eraser", "checker"]])
+def test_a_source_that_only_removes_is_ungraded(tmp_path, order):
+    r = _judge(tmp_path, order, {"checker": _checker("True"), "eraser": ERASER})["checker"]
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.NOT_STORED, True)
+
+
+@pytest.mark.parametrize("match,depends", [
+    ("r['owner'] == p['owner']", ["owner"]),
+    ("r['amount'] == p['amount']", ["amount"]),
+])
+@pytest.mark.parametrize("order", [["raiser", "keeper", "checker"], ["keeper", "raiser", "checker"]])
+def test_a_raising_source_does_not_stop_the_next_one(tmp_path, match, depends, order):
+    r = _judge(tmp_path, order, {"checker": _checker(match), "keeper": KEEPER, "raiser": RAISER})["checker"]
+    assert (r.ok, r.detail, sorted(r.depends_on)) == (True, "", depends)
+
+
+@pytest.mark.parametrize("match,depends", [
+    ("r['owner'] == p['owner']", ["owner"]),
+    ("r['amount'] == p['amount'] and r['owner'] == p['owner']", ["amount", "owner"]),
+])
+def test_a_state_read_back_from_a_sqlite_store_is_judged(tmp_path, match, depends):
+    r = _judge(tmp_path, ["checker", "keeper"], {"checker": _sql_checker(match), "keeper": SQL_KEEPER})["checker"]
+    assert (r.ok, r.detail, sorted(r.depends_on)) == (True, "", depends)
+
+
+@pytest.mark.parametrize("n", [1, 3])
+def test_refused_although_stored_quotes_the_answer_seen_after_the_fixture(tmp_path, n):
+    # The refusal names the rows it saw, so the answer after the fixture
+    # differs from the two before it; only the probe can quote it.
+    body = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "def handle(p):\n"
+        "    rows = Path(os.environ['STORAGE_PATH']) / 'rows.jsonl'\n"
+        "    seen = rows.read_text().splitlines() if rows.exists() else []\n"
+        f"    return {{'ok': False, 'error': 'locked after ' + str(len(seen) * {n}) + ' rows'}}\n"
+    )
+    r = _judge(tmp_path, ["checker", "keeper"], {"checker": body, "keeper": KEEPER})["checker"]
+    assert r.detail == fg.REFUSED_ALTHOUGH_STORED
+    assert any(f"locked after {n} rows" in a for a in r.probe["answers"])
+    # Input one was refused on the store, so no changed field was sent:
+    # the two answers before the fixture, then the one after it.
+    assert len(r.probe["answers"]) == 3
+
+
+@pytest.mark.parametrize("record,payload,shown", [
+    ([1, "ann", 1], {"approved": True, "owner": "ann", "amount": 1.0}, True),
+    (["bob", 7, 0], {"owner": "bob", "amount": 7, "approved": False}, True),
+    (["bob", 7], {"owner": "bob", "amount": 8}, False),
+    (["bob", 7], {"owner": "bob", "tags": ["x"]}, True),
+    (["bob", 7], {"tags": ["x"], "meta": {}}, False),
+    (["bob", 7], {}, False),
+    ([None, 2.5], {"note": None, "rate": 2.5}, True),
+    ([None, 2.5], {"note": None, "rate": 2.25}, False),
+])
+def test_shows_input_compares_values_as_stored(record, payload, shown):
+    assert fg.shows_input(record, payload) is shown
+
+
+@pytest.mark.parametrize("owner,amount", [("ann", 3), ("bob", 41)])
+def test_stored_records_reads_back_sqlite_rows_json_lines_and_json_cells(tmp_path, owner, amount):
+    import sqlite3
+
+    con = sqlite3.connect(str(tmp_path / "a.db"))
+    con.execute("create table t (owner text, amount integer, doc text)")
+    con.execute("insert into t values (?, ?, ?)", (owner, amount, json.dumps({"inner": owner + "!"})))
+    con.commit()
+    con.close()
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "rows.jsonl").write_text(json.dumps({"o": owner, "n": {"a": amount}}) + "\nnot json\n")
+    (tmp_path / "plain.txt").write_text(f"{owner} {amount}")
+    got = fg.stored_records(tmp_path)
+    assert [owner, amount, json.dumps({"inner": owner + "!"})] in got
+    assert [owner + "!"] in got and [owner, amount] in got and [amount] in got
+    assert not any(f"{owner} {amount}" in r for r in got)
+
+
+def test_stored_records_of_an_empty_or_unreadable_store_is_empty(tmp_path):
+    assert fg.stored_records(tmp_path) == []
+    (tmp_path / "broken.db").write_bytes(b"SQLite format 3\x00" + b"\x00" * 50)
+    assert fg.stored_records(tmp_path) == []
+
+
+_T_KEEP = {"source": "keep", "stored": True, "source_accepted": True, "accepted": True,
+           "refused_when_changed": ["owner"], "answers": ["K1", "K2"]}
+_T_PURE = {"source": "pure", "stored": False, "source_accepted": True, "accepted": False, "answers": ["P1"]}
+_T_DENY = {"source": "deny", "stored": True, "source_accepted": True, "accepted": False, "answers": ["D1"]}
+_T_ERR = {"source": "err", "stored": True, "source_accepted": False, "error": "handle raised: X", "answers": []}
+_T_MEM = {"source": "mem", "stored": False, "source_accepted": True, "accepted": True,
+          "refused_when_changed": ["amount"], "answers": ["M1"]}
+
+
+@pytest.mark.parametrize("trials,want", [
+    ([_T_KEEP, _T_PURE], {"accepted_by": ["keep", "pure"], "stored_by": ["keep"], "took_by": ["keep"],
+                          "answers": ["K1", "K2"], "accepted": True, "refused_when_changed": ["owner"]}),
+    ([_T_DENY, _T_PURE], {"accepted_by": ["deny", "pure"], "stored_by": ["deny"], "took_by": [],
+                          "answers": ["D1"], "accepted": False, "refused_when_changed": []}),
+    ([_T_DENY, _T_KEEP], {"accepted_by": ["deny", "keep"], "stored_by": ["deny", "keep"], "took_by": ["keep"],
+                          "answers": ["D1", "K1", "K2"], "accepted": True, "refused_when_changed": ["owner"]}),
+    ([_T_ERR, _T_DENY], {"accepted_by": ["deny"], "stored_by": ["deny", "err"], "took_by": [], "answers": ["D1"],
+                         "accepted": False, "refused_when_changed": [], "error": "handle raised: X"}),
+    ([_T_ERR, _T_KEEP], {"accepted_by": ["keep"], "stored_by": ["err", "keep"], "took_by": ["keep"],
+                         "answers": ["K1", "K2"], "accepted": True, "refused_when_changed": ["owner"]}),
+    ([_T_MEM, _T_KEEP], {"accepted_by": ["keep", "mem"], "stored_by": ["keep"], "took_by": ["keep", "mem"],
+                         "answers": ["K1", "K2", "M1"], "accepted": True, "refused_when_changed": ["amount", "owner"]}),
+    ([_T_PURE], {"accepted_by": ["pure"], "stored_by": [], "took_by": [], "answers": [],
+                 "accepted": False, "refused_when_changed": []}),
+    ([], {"accepted_by": [], "stored_by": [], "took_by": [], "answers": [], "accepted": False,
+          "refused_when_changed": []}),
+])
+def test_combine_trials_is_the_same_in_any_order(trials, want):
+    assert fg.combine_trials(trials) == want
+    assert fg.combine_trials(list(reversed(trials))) == want
+
+
+@pytest.mark.parametrize("fixture", [
+    {"stored_by": [], "accepted_by": ["pure"], "accepted": False},
+    {"stored_by": [], "accepted_by": ["pure", "eraser"]},
+])
+def test_fixture_result_accepted_but_not_stored_is_ungraded(fixture):
+    fn = fg.GradedFunction("mine", "m", [{"a": 1}], list(_FIX))
+    r = fg.fixture_result(fn, {"honest_error": True, "answers": ["A1", "A2"], "fixture": fixture})
+    assert (r.ok, r.detail, r.needs_fixture, r.probe["answers"]) == (False, fg.NOT_STORED, True, ["A1", "A2"])
+
+
+@pytest.mark.parametrize("error", ["entry is locked", "not yours"])
+def test_a_store_holding_part_of_input_one_never_bills_a_refusal(tmp_path, error):
+    # SQL_KEEPER stores three of input one's fields, not the envelope's:
+    # the read-back cannot show input one, so the refusal is not the writer's.
+    checker = _sql_checker("False").replace("'no such entry'", repr(error))
+    r = _judge(tmp_path, ["checker", "keeper"], {"checker": checker, "keeper": SQL_KEEPER})["checker"]
+    assert (r.ok, r.detail, r.needs_fixture) == (False, fg.NOT_STORED, True)
+    assert any(error in a for a in r.probe["answers"])
+
+
+@pytest.mark.parametrize("field,depends", [("owner", ["owner"]), ("amount", ["amount"])])
+def test_a_state_kept_in_memory_is_judged_when_the_handle_takes_it(tmp_path, field, depends):
+    # The source keeps the state in its own module; no store shows it, but
+    # the handle's own answer changes from a refusal to an answer.
+    memory = "SEEN = []\ndef handle(p):\n    SEEN.append(dict(p))\n    return {'ok': True, 'n': len(SEEN) * 7}\n"
+    checker = (
+        "from app.actions import memory\n"
+        "def handle(p):\n"
+        f"    if any(r[{field!r}] == p[{field!r}] for r in memory.SEEN):\n"
+        "        return {'ok': True, 'checked': p['amount'] * 2}\n"
+        "    return {'ok': False, 'error': 'no such entry'}\n"
+    )
+    r = _judge(tmp_path, ["checker", "memory"], {"checker": checker, "memory": memory})["checker"]
+    assert (r.ok, r.detail, sorted(r.depends_on)) == (True, "", depends)
+
+
+@pytest.mark.parametrize("refused", [["a"], ["a", "b"]])
+def test_fixture_result_judges_a_taken_input_even_with_no_read_back(refused):
+    fn = fg.GradedFunction("mine", "m", [{"a": 1}], list(_FIX))
+    fixture = {"stored_by": [], "accepted_by": ["mem"], "accepted": True, "refused_when_changed": refused}
+    r = fg.fixture_result(fn, {"honest_error": True, "answers": ["A1"], "fixture": fixture})
+    assert (r.ok, r.detail, r.depends_on) == (True, "", refused)

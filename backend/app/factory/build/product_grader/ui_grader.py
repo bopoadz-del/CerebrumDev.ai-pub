@@ -580,8 +580,36 @@ def _report_text(out: Path, proc: Any) -> str:
     return getattr(proc, "stdout", "") or ""
 
 
-def _exit_detail(proc: Any) -> str:
-    return f"exit {getattr(proc, 'returncode', None)}; stderr: {_tail(getattr(proc, 'stderr', ''))}"
+def _exit_detail(proc: Any, secret: str = "") -> str:
+    return f"exit {getattr(proc, 'returncode', None)}; stderr: {_tail(redact(getattr(proc, 'stderr', ''), secret))}"
+
+
+#: What stands in for the run's bearer wherever the run wrote it down.
+REDACTED = "[grading bearer]"
+
+
+def redact(text: Any, secret: str) -> str:
+    """``text`` with every copy of ``secret`` replaced by :data:`REDACTED`;
+    unchanged when ``secret`` is empty."""
+    text = str(text or "")
+    return text.replace(secret, REDACTED) if secret else text
+
+
+def scrub_files(root: Path, secret: str) -> List[str]:
+    """Playwright's call log lists a failed request's headers, so the run's
+    bearer can land in anything the run writes (the JSON report, an error
+    context). Rewrite every file under ``root`` that holds ``secret`` with
+    it redacted; the paths rewritten, relative to ``root``. Nothing is
+    rewritten for an empty ``secret``."""
+    if not secret:
+        return []
+    needle = secret.encode("utf-8")
+    done = []
+    for path in sorted(Path(root).rglob("*")):
+        if path.is_file() and needle in path.read_bytes():
+            path.write_bytes(path.read_bytes().replace(needle, REDACTED.encode("utf-8")))
+            done.append(path.relative_to(root).as_posix())
+    return done
 
 
 #: The toolchain probe: one test that needs node, Playwright and a browser
@@ -657,13 +685,14 @@ def grade_ui(
     (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
     out = wd / "report.json"
     fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
+    token = grading_bearer() if bearer is None else bearer
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
-                               fixtures=fixtures, timeout=RUN_TIMEOUT_S,
-                               bearer=grading_bearer() if bearer is None else bearer)
+                               fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
-    report_text = _report_text(out, proc)
+    scrub_files(wd, token)
+    report_text = redact(_report_text(out, proc), token)
     if not report_text.strip():
-        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc)}"])
+        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
     return parse_report(json.loads(report_text), blueprint, brief)

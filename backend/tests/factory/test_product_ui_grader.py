@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -627,3 +628,60 @@ def test_grade_ui_with_an_unreadable_brief_runs_nothing(tmp_path, brief):
                       run=lambda cmd, **k: calls.append(k), brief=brief)
     assert calls == []
     assert got.errors == [ug.BRIEF_UNREADABLE] and not got.ran
+
+
+# --- the run's bearer never stays in what the run wrote down ----------------
+def _leaky_run(token: str, *, report: bool):
+    """A run whose call log names the request headers, the way Playwright's
+    does when a request cannot connect: into the JSON report (or, with no
+    report, only stderr) and an error-context file next to it."""
+    def run(cmd, **kw):
+        wd = _P(kw["cwd"])
+        log = f"Authorization: Bearer {token}"
+        if report:
+            body = {"suites": [{"title": "grade_ui.spec.ts", "specs": [{"title": "load:/", "ok": False, "tests": [
+                {"results": [{"status": "failed", "error": {"message": log}}]}]}]}]}
+            _P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(body), encoding="utf-8")
+        ctx = wd / "test-results" / "load" / "error-context.md"
+        ctx.parent.mkdir(parents=True, exist_ok=True)
+        ctx.write_text(log, encoding="utf-8")
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": log})()
+    return run
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+def test_the_bearer_is_redacted_from_the_report_and_every_file_the_run_wrote(tmp_path, token):
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True), bearer=token)
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert written and not any(token.encode() in p.read_bytes() for p in written)
+    assert ug.REDACTED in (tmp_path / "report.json").read_text(encoding="utf-8")
+    assert ug.REDACTED in (tmp_path / "test-results" / "load" / "error-context.md").read_text(encoding="utf-8")
+    assert token not in json.dumps(dataclasses.asdict(g))
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+def test_the_bearer_is_redacted_from_the_quoted_stderr_when_no_report_came(tmp_path, token):
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=False), bearer=token)
+    (err,) = g.errors
+    assert "no playwright report" in err and token not in err and ug.REDACTED in err
+
+
+@pytest.mark.parametrize("text,secret,want", [
+    ("Bearer abc and abc", "abc", f"Bearer {ug.REDACTED} and {ug.REDACTED}"),
+    ("nothing here", "abc", "nothing here"),
+    ("Bearer abc", "", "Bearer abc"),
+    (None, "abc", ""),
+])
+def test_redact(text, secret, want):
+    assert ug.redact(text, secret) == want
+
+
+@pytest.mark.parametrize("secret", ["s3cret", "other-9"])
+def test_scrub_files_rewrites_only_the_files_holding_the_secret(tmp_path, secret):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "hit.json").write_text(f'{{"h": "Bearer {secret}"}}', encoding="utf-8")
+    (tmp_path / "clean.txt").write_text("no token", encoding="utf-8")
+    assert ug.scrub_files(tmp_path, secret) == ["a/hit.json"]
+    assert (tmp_path / "a" / "hit.json").read_text(encoding="utf-8") == f'{{"h": "Bearer {ug.REDACTED}"}}'
+    assert (tmp_path / "clean.txt").read_text(encoding="utf-8") == "no token"
+    assert ug.scrub_files(tmp_path, "") == []
