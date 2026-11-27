@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 import { postedAction, typedAction } from './floorActionClient'
+import { SID as FLOOR_SID, mockFloorStates } from './fixtures/floorStates'
 
 /**
  * Factory Floor / Your Platforms / Subscription / Account — beyond verify-email.
@@ -2459,4 +2460,33 @@ test('Floor and Platforms name FACTORY_CODE_CLI_NO_MODEL from /health', async ({
   await expect(platformsBanner).toBeVisible()
   await expect(platformsBanner).toContainText('FACTORY_CODE_CLI_NO_MODEL')
   await expect(page.getByTestId('platforms-lead')).not.toContainText(/Download the export/)
+})
+
+/*
+ * Grader findings on the card face at phone width, in the spec CI runs. The
+ * rows come from the phone fixtures, which a backend drift test holds to what
+ * grader_findings.finding_row writes for each quote (review questions and
+ * function-grade error rows in the grader's real shapes included).
+ */
+test.describe('grader findings on the card face at 360x780', () => {
+  test.use({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+
+  for (const [state, count] of [
+    ['grader-sent-back', 3],
+    ['grader-refused', 6],
+  ] as const) {
+    test(`${state}: plain words, no machine text, inside the screen`, async ({ page }) => {
+      await mockFloorStates(page)
+      await page.goto(`/floor/${FLOOR_SID[state]}`)
+      const box = page.getByTestId('floor-grader-findings')
+      await expect(box).toBeVisible()
+      await expect(box.getByTestId('floor-grader-finding')).toHaveCount(count)
+      const text = (await box.textContent()) ?? ''
+      for (const machine of ['FAIL', 'function_check', '.py', 'NOT_CERTIFIED', 'route:', 'screen:', '/v1/', '_', 'KeyError', "'"]) {
+        expect(text).not.toContain(machine)
+      }
+      const rights = await box.locator('li').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().right))
+      for (const r of rights) expect(r).toBeLessThanOrEqual(360)
+    })
+  }
 })

@@ -203,3 +203,143 @@ def render_for_chat(catalog: Dict[str, Any]) -> str:
             + ".",
         ]
     )
+
+
+# --- The architect's catalogue: one entry per block, read from its manifest ---
+
+#: What a block may declare about when it is (not) the right part. The
+#: Factory never writes these; a block that declares none shows a gap.
+_WHEN_FIELDS = ("when_to_use", "when_not")
+#: Field names shown on one index line, so the line stays one line.
+_INDEX_FIELDS = 12
+
+
+def _field_names(fields: Any) -> List[str]:
+    """The declared names of a manifest's input or output fields, in order.
+
+    The one reader of a block's contract, used by the catalogue entry and the
+    fact check alike. It reads both shapes a manifest may declare: a list of
+    ``{name: ...}`` field objects, or an object keyed by field name."""
+    if isinstance(fields, dict):
+        named: Any = [str(key) for key in fields]
+    elif isinstance(fields, list):
+        named = [field.get("name") if isinstance(field, dict) else None for field in fields]
+    else:
+        named = ()
+    out: List[str] = []
+    for raw in named:
+        name = str(raw or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def catalogue_entry(block_id: str, manifest: Any) -> Dict[str, Any]:
+    """One catalogue entry for a Store block, in the fleet's one entry format
+    (id, kind, name, for, inputs, outputs, when_to_use, when_not, code,
+    stamps, gaps). Every value is what the block's own manifest declares; a
+    field it does not declare is left blank and listed in ``gaps``."""
+    m = manifest if isinstance(manifest, dict) else {}
+    base = _entry(block_id, m)
+    purpose = base["description"]
+    if not purpose and m.get("name"):
+        purpose = base["name"] + (f" ({', '.join(base['tags'])})" if base["tags"] else "")
+    entry: Dict[str, Any] = {
+        "id": f"tool:{block_id}",
+        "kind": "tool",
+        "name": base["name"],
+        "for": purpose,
+        "inputs": [{"name": n} for n in _field_names(m.get("inputs"))],
+        "outputs": [{"name": n} for n in _field_names(m.get("outputs"))],
+        **{f: " ".join(str(m.get(f) or "").split()) for f in _WHEN_FIELDS},
+        "code": {"block": block_id},
+        "stamps": {"verified": None, "tested": None, "approved": None},
+    }
+    entry["gaps"] = [f for f in ("for", "inputs", "outputs", *_WHEN_FIELDS) if not entry[f]]
+    return entry
+
+
+def _names_line(fields: List[Dict[str, Any]]) -> str:
+    names = [f["name"] for f in fields]
+    if not names:
+        return "(none declared)"
+    more = len(names) - _INDEX_FIELDS
+    return ", ".join(names[:_INDEX_FIELDS]) + (f" (+{more} more)" if more > 0 else "")
+
+
+def index_line(entry: Dict[str, Any]) -> str:
+    """The entry as the one line the architect reads: what the block is for,
+    when to use it and when not, and the input and output names its contract
+    declares. A blank field reads "(not declared)", never a guess."""
+    block_id = entry["code"]["block"]
+    return (
+        f"- {block_id}: for: {entry['for'] or '(not declared)'}"
+        f" | use when: {entry['when_to_use'] or '(not declared)'}"
+        f" | not when: {entry['when_not'] or '(not declared)'}"
+        f" | inputs: {_names_line(entry['inputs'])}"
+        f" | outputs: {_names_line(entry['outputs'])}"
+    )
+
+
+def kit_index_line(kit_id: str, manifest: Any) -> str:
+    """One Store kit as the line the architect reads: what the kit is for,
+    when to use it and when not, and the blocks its manifest lists. Every
+    value is the kit's own declaration; a blank one reads "(not declared)"."""
+    m = manifest if isinstance(manifest, dict) else {}
+    purpose = " ".join(str(m.get("description") or "").split())
+    when = {f: " ".join(str(m.get(f) or "").split()) for f in _WHEN_FIELDS}
+    listed = [str(b) for b in (m.get("blocks") or []) if isinstance(b, str) and b.strip()]
+    return (
+        f"- {kit_id}: for: {purpose or '(not declared)'}"
+        f" | use when: {when['when_to_use'] or '(not declared)'}"
+        f" | not when: {when['when_not'] or '(not declared)'}"
+        f" | blocks: {', '.join(listed) or '(none listed)'}"
+    )
+
+
+def kept_kit_picks(picks: Any, block_ids: List[str], kits: Dict[str, Any]) -> List[str]:
+    """The kit ids a capability picked that pass the fact check: the kit is
+    one the Store marks available (a key of ``kits``) and its manifest lists
+    at least one block the capability binds. Anything else is dropped."""
+    if not isinstance(picks, list):
+        return []
+    bound = set(block_ids)
+    out: List[str] = []
+    for kit_id in picks:
+        data = kits.get(kit_id) if isinstance(kit_id, str) else None
+        if not isinstance(data, dict) or kit_id in out:
+            continue
+        if bound & {str(b) for b in data.get("blocks") or [] if b}:
+            out.append(kit_id)
+    return out
+
+
+def _wanted(value: Any) -> Optional[set]:
+    """The field names a capability declares (strings, or objects with a
+    ``name``), or None when the value is not a list of them."""
+    if value is None:
+        return set()
+    if not isinstance(value, list):
+        return None
+    out = set()
+    for item in value:
+        name = item.get("name") if isinstance(item, dict) else item
+        if not isinstance(name, str) or not name.strip():
+            return None
+        out.add(name.strip().casefold())
+    return out
+
+
+def contract_covers(manifest: Any, inputs: Any, outputs: Any) -> bool:
+    """Whether a block's declared contract covers a capability's declared
+    inputs and outputs: every input the capability names is an input field
+    the block declares, and every output it names is a declared output
+    field. A capability that declares nothing, or a malformed declaration,
+    is not covered (the capability is GENERATEd, never bound on a guess)."""
+    m = manifest if isinstance(manifest, dict) else {}
+    want_in, want_out = _wanted(inputs), _wanted(outputs)
+    if want_in is None or want_out is None or not (want_in or want_out):
+        return False
+    have_in = {n.casefold() for n in _field_names(m.get("inputs"))}
+    have_out = {n.casefold() for n in _field_names(m.get("outputs"))}
+    return want_in <= have_in and want_out <= have_out
