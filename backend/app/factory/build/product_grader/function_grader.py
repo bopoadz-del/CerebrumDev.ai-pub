@@ -844,11 +844,11 @@ def _run_probe(
 def fixture_trials(
     fn: GradedFunction, inputs: Sequence[Mapping[str, Any]], workspace: Path, python: str
 ) -> Dict[str, Any]:
-    """Fix 4: each fixture source tried alone (``_run_probe`` with a trial),
-    in capability-id order so the plan's order changes nothing, then
-    combined by :func:`combine_trials`."""
+    """Fix 4: each fixture source tried alone (``_run_probe`` with a trial,
+    a fresh process and store each), then combined by
+    :func:`combine_trials`, which no order of the sources changes."""
     trials = []
-    for fx in sorted(fn.fixtures, key=lambda f: str(f["capability"])):
+    for fx in fn.fixtures:
         proc, data = _run_probe(fn, workspace, python, trial=fx, inputs=[dict(i) for i in inputs])
         trial = (data or {}).get("trial")
         if proc is None or proc.returncode != 0 or not isinstance(trial, dict):

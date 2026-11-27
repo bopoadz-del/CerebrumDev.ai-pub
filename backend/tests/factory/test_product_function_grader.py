@@ -933,3 +933,22 @@ def test_fixture_result_judges_a_taken_input_even_with_no_read_back(refused):
     fixture = {"stored_by": [], "accepted_by": ["mem"], "accepted": True, "refused_when_changed": refused}
     r = fg.fixture_result(fn, {"honest_error": True, "answers": ["A1"], "fixture": fixture})
     assert (r.ok, r.detail, r.depends_on) == (True, "", refused)
+
+
+@pytest.mark.parametrize("seed_file", ["rows.jsonl", "seed/rows.json"])
+def test_a_record_in_the_store_before_the_source_ran_is_not_the_sources(tmp_path, seed_file):
+    # The product's own migration seeds a record holding input one; the
+    # source stores nothing. Only a record the SOURCE added counts, so the
+    # refusal stays ungraded instead of billed to the writer.
+    ws = _workspace(tmp_path, {"checker": _checker("False"), "pure": _pure(4)})
+    first = {f.capability_id: f for f in fg.derive_functions(["checker", "pure"], ws)}["checker"].inputs[0]
+    (ws / "app" / "migrations.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "def upgrade_head():\n"
+        f"    path = Path(os.environ['STORAGE_PATH']) / {seed_file!r}\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+        f"    path.write_text(json.dumps({first!r}) + '\\n')\n"
+    )
+    r = {x.capability_id: x for x in (fg.run_function(f, ws) for f in fg.derive_functions(["checker", "pure"], ws))}
+    assert (r["checker"].detail, r["checker"].needs_fixture) == (fg.NOT_STORED, True)
