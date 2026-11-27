@@ -463,25 +463,6 @@ def _reentered_live(events: Sequence[Any], terminal: Any, output_dir: Path | str
     return started_after is not None and started_after >= max(resumes)
 
 
-def _phase_awaited_by_resume(events: Sequence[Any]) -> Any:
-    """The phase the newest resume NOTE names, until the re-entry starts a
-    phase of its own (None: it names none, or a phase has started since).
-
-    The ledger's last started phase is the EARLIER attempt's until then: a
-    run that failed at the grader and is re-entered at the writer would read
-    as grading for the whole slot wait."""
-    from app.factory.build.authority import BuildRole
-    from app.factory.build.ledger import EventKind
-
-    named: Any = None
-    for event in events:
-        if event.kind is EventKind.NOTE and (event.payload or {}).get("resumed"):
-            named = (event.payload or {}).get("phase")
-        elif event.kind is EventKind.PHASE_STARTED:
-            named = None
-    return BuildRole(named) if named in {role.value for role in BuildRole} else None
-
-
 def _product_id_of(events: Any, output_dir: Path | str) -> str:
     from app.factory.build.ledger import EventKind
 
@@ -1592,10 +1573,6 @@ def build_status(
 
     phases = [p.value for p in BUILD_PHASES]
     current_role = interrupted or resume
-    if reentered:
-        # Waiting for its first phase event, the re-entry is at the phase its
-        # resume NOTE names -- not the one the earlier attempt stopped in.
-        current_role = _phase_awaited_by_resume(events) or current_role
     # A crash marker is a record of a DEAD run. A live runner thread for
     # this workspace outranks it: a deploy writes the marker, the owner's
     # Continue resumes the build, and the stale marker used to make
@@ -1792,9 +1769,13 @@ def build_status(
             if isinstance((e.payload or {}).get("decision"), dict)
             and (e.payload or {})["decision"].get("class")
         ],
-        # The grader's state, from the events the grader itself wrote.
-        "grader": _grader_view(events),
-        "stopped": stopped_by_rule(output_dir),
+        # The grader's state, from the events the grader itself wrote. Like
+        # the failure above, the verdict and the rule stop a re-entered run
+        # resumed from are the earlier attempt's: the re-entry's first phase
+        # event clears both, and the wait before it must not show them on a
+        # run that reads as building.
+        "grader": None if reentered else _grader_view(events),
+        "stopped": None if reentered else stopped_by_rule(output_dir),
         # The build's own declared end (server clock); a poller waits on
         # this, never on a number of its own.
         "deadline": declared_deadline(events),
