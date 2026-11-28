@@ -68,17 +68,50 @@ let __url = 'about:blank';
 // routes again. A redirect met by a request that was let go on is followed
 // inside that same request: no handler sees the hops, and the headers the
 // handler overrode are carried on to wherever they lead.
+// One limit of route.fetch, seen in real Chromium (headless_shell-1187): it
+// re-sends the request from outside the page, and a file the page uploads
+// is not in the body it re-sends. Here: a body that is not text is not sent.
 let __routes: Array<[(u: URL) => boolean, any]> = [];
+// The page's CDP session with the Fetch domain enabled
+// (page.context().newCDPSession(page), 'Fetch.enable'), as Chromium runs it:
+// EVERY request the page makes is paused, each hop of a redirect too, and
+// goes on with the headers 'Fetch.continueRequest' gives it (the list
+// replaces the request's headers; with none it goes on unchanged). Only
+// headers can be set: the body stays the browser's own. A hop the browser
+// reaches by following a redirect starts from the headers the hop before
+// went out with.
+let __cdpPaused: any = null; let __cdpOn = false; let __cdpSeq = 0;
+const __cdpWaiting = new Map<string, (h: Record<string, string> | null) => void>();
+const __cdp = {
+  on: (name: string, fn: any) => { if (name === 'Fetch.requestPaused') __cdpPaused = fn; },
+  send: async (method: string, params: any = {}) => {
+    if (method === 'Fetch.enable') __cdpOn = true;
+    if (method === 'Fetch.continueRequest') {
+      const go = __cdpWaiting.get(params.requestId); __cdpWaiting.delete(params.requestId);
+      if (go) go(params.headers ? Object.fromEntries(params.headers.map((h: any) => [h.name, h.value])) : null);
+    }
+    return {};
+  },
+};
 const __pageFetch = async (u: string, init: any = {}): Promise<Response> => {
   let method = init.method || 'GET'; let body = init.body;
+  let carried: Record<string, string> = { ...(init.headers || {}) };
   for (let hop = 0; hop <= 20; hop++) {
-    let headers: Record<string, string> = { ...(init.headers || {}) };
+    let headers: Record<string, string> = { ...carried };
+    if (__cdpOn && __cdpPaused) {
+      const id = 'req' + (++__cdpSeq);
+      const given = await new Promise<Record<string, string> | null>((resolve) => {
+        __cdpWaiting.set(id, resolve);
+        __cdpPaused({ requestId: id, request: { url: u, method, headers: { ...headers } } });
+      });
+      if (given) headers = given;
+    }
     let answer: Response | null = null; let wentOn = false;
     const taken = __routes.find(([match]) => match(new URL(u)));
     if (taken) {
       await taken[1]({
         request: () => ({ url: () => u, headers: () => ({ ...headers }) }),
-        fetch: async (o: any = {}) => ({ __raw: await __send(u, { method, data: body, headers: o.headers || headers, maxRedirects: o.maxRedirects }) }),
+        fetch: async (o: any = {}) => ({ __raw: await __send(u, { method, data: typeof body === 'string' ? body : undefined, headers: o.headers || headers, maxRedirects: o.maxRedirects }) }),
         fulfill: async (o: any) => { answer = o.response.__raw; },
         continue: async (o: any = {}) => { wentOn = true; if (o.headers) headers = o.headers; },
       });
@@ -88,6 +121,9 @@ const __pageFetch = async (u: string, init: any = {}): Promise<Response> => {
     const to = __redirect(r);
     if (!to) return r;
     u = new URL(to, u).toString();
+    // A redirect the handler fulfilled is a new request by the page; one the
+    // browser followed carries the headers of the hop before.
+    carried = answer ? { ...(init.headers || {}) } : headers;
     if (r.status !== 307 && r.status !== 308) { method = 'GET'; body = undefined; }
   }
   throw new Error('net::ERR_TOO_MANY_REDIRECTS');
@@ -116,6 +152,7 @@ const __page = {
   reload: async () => __load(__url),
   url: () => __url,
   route: async (match: any, handler: any) => { __routes.push([match, handler]); },
+  context: () => ({ newCDPSession: async () => __cdp }),
   waitForLoadState: async () => {}, on: () => {},
   getByText: (re: RegExp) => __loc((t) => re.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
@@ -146,7 +183,7 @@ test.beforeAll = (fn: any) => { __before.push(fn); };
 """
 
 RUNNER = r"""
-for (const b of __before) await b({ browser: { newPage: async () => { __routes = []; return __page; } } });
+for (const b of __before) await b({ browser: { newPage: async () => { __routes = []; __cdpPaused = null; __cdpOn = false; return __page; } } });
 const __only = (process.env.ONLY_KINDS || '').split(',').filter(Boolean);
 const __out: Record<string, string> = {};
 for (const [name, fn, group] of __tests) {

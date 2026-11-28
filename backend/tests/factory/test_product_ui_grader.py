@@ -1033,3 +1033,62 @@ def test_the_grade_and_the_toolchain_check_run_through_run_tree(fn):
     import inspect
 
     assert inspect.signature(getattr(ug, fn)).parameters["run"].default is ug.run_tree
+
+
+# --- the page is signed in by headers alone: an upload arrives whole ----------
+@pytest.mark.parametrize("bp", BPS)
+def test_an_upload_reaches_a_protected_product_whole_and_signed(tmp_path, bp):
+    """The document steps on a product that needs the bearer: each file the
+    page uploads arrives byte for byte, carrying the bearer, and so does the
+    question. (Re-sending the page's request from outside the page, as
+    route.fetch does, loses the file: see the harness.)"""
+    token = "the-boot-token"
+    fx = ug.write_fixtures(bp, tmp_path / "fx")
+    with h.server({}, bodies={"/": f"tenant {bp['product_id']}", "POST /__upload": "parsed ok", "POST /__ask": "total 1,240 [1]"},
+                  token=token) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, fixtures=fx["pdf"].parent, bearer=token,
+                         only_kinds=("load", "bind", "attach_pdf", "attach_xlsx", "parsed", "cited_answer"))
+    assert set(got.values()) == {"passed"}, got
+    uploads = [b for k, b in base.seen if k.startswith("/__upload")]
+    assert uploads == [fx["pdf"].read_bytes(), fx["xlsx"].read_bytes()]
+    posts = [(k, a) for k, a in base.asked if k in ("POST /__upload", "POST /__ask")]
+    assert posts == [("POST /__upload", f"Bearer {token}")] * 2 + [("POST /__ask", f"Bearer {token}")]
+    assert {a for _k, a in base.asked} == {f"Bearer {token}"}
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_the_page_is_signed_in_by_setting_headers_never_by_resending_the_request(bp):
+    spec = ug.render_spec(bp)
+    assert "Fetch.continueRequest" in spec and "Fetch.enable" in spec
+    for resend in ("route.fetch", "route.fulfill", ".route("):
+        assert resend not in spec
+
+
+# --- test debt of the 7dfccb5 grade: redirects with no or a relative Location --
+@pytest.mark.parametrize("location", [None, ""])
+def test_a_redirect_status_with_no_location_is_the_answer(tmp_path, location):
+    """A 302 that names no address is not followed: the step fails on the
+    302, and only the product was asked, signed in."""
+    token = "the-boot-token"
+    first = _first(BP)
+    locations = {} if location is None else {first: location}
+    with h.server({first: 302}, token=token, locations=locations) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got[f"route:{first}"] == "failed: expected 200 got 302"
+    assert [a for k, a in base.asked if k == first] == [f"Bearer {token}"]
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("leaf", ["b", "./c"])
+def test_a_relative_location_is_resolved_against_the_hop_that_gave_it(tmp_path, bp, leaf):
+    """<route> -> <route>/a/ -> a relative address: it is read against
+    <route>/a/, the hop that gave it, not against the first address."""
+    token = "the-boot-token"
+    first = _first(bp)
+    last = f"{first}/a/{leaf.lstrip('./')}"
+    with h.server({first: 302, first + "/a/": 302}, token=token,
+                  locations={first: first + "/a/", first + "/a/": leaf}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got[f"route:{first}"] == "passed"
+    assert [(k, a) for k, a in base.asked if k.startswith(first)][:3] == [
+        (first, f"Bearer {token}"), (first + "/a/", f"Bearer {token}"), (last, f"Bearer {token}")]

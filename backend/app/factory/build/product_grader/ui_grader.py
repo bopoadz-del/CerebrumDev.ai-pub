@@ -352,17 +352,28 @@ BASE_JS = (
     # follows a redirect by itself, because a followed redirect carries the
     # header on to wherever it leads.
     "const OWN = new URL(BASE).origin;\n"
-    "const signed = (u: string, h: Record<string, string> = {}) => (new URL(u).origin === OWN ? { ...h, ...AUTH } : h);\n"
-    # The page's own requests. A request to the product is made with the
-    # bearer and its answer handed to the page as it came; when that answer
-    # is a redirect the browser asks the new address itself, and that
-    # request comes through here again only if it is the product's. A font,
-    # script or call to another origin goes out as the page sent it.
+    # The headers one request goes out with: the bearer when its address is
+    # the product's, and never the bearer when it is not (a hop the browser
+    # reached by following a redirect arrives carrying the headers of the
+    # hop before). A page's own Authorization for another origin is kept.
+    "const signed = (u: string, h: Record<string, string> = {}) => {\n"
+    "  const own = new URL(u).origin === OWN; const out: Record<string, string> = {};\n"
+    "  for (const [n, v] of Object.entries(h)) { if (!(n.toLowerCase() === 'authorization' && (own || v === AUTH.Authorization))) out[n] = v; }\n"
+    "  return own ? { ...out, ...AUTH } : out;\n"
+    "};\n"
+    # The page's own requests. The browser pauses every request the page
+    # makes, each hop of a redirect included, and it goes on with the
+    # headers `signed` gives that hop. Only headers are set: the request's
+    # body stays the browser's own, so a file upload arrives whole (a body
+    # re-sent from outside the page loses the file).
     "const signIn = async (p: any) => { if (!BEARER) return;\n"
-    "  await p.route((u: URL) => u.origin === OWN, async (route: any) => {\n"
-    "    const response = await route.fetch({ maxRedirects: 0, timeout: 0, headers: signed(route.request().url(), route.request().headers()) });\n"
-    "    await route.fulfill({ response });\n"
-    "  }); };\n"
+    "  const cdp = await p.context().newCDPSession(p);\n"
+    "  cdp.on('Fetch.requestPaused', async (e: any) => {\n"
+    "    const headers = Object.entries(signed(e.request.url, e.request.headers)).map(([name, value]) => ({ name, value }));\n"
+    "    await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers });\n"
+    "  });\n"
+    "  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });\n"
+    "};\n"
     # The API steps' requests. A redirect is followed here, hop by hop, each
     # hop signed only if it is the product's: 307 and 308 repeat the request,
     # any other redirect is followed with a GET, as a browser does.
