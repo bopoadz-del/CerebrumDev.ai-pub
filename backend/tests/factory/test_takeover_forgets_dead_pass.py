@@ -36,24 +36,33 @@ def test_runner_took_over_reads_the_runner_start_note(kind, payload, took_over):
     assert wc._runner_took_over(kind, payload) is took_over
 
 
-def test_the_runner_start_note_is_the_one_every_run_writes(tmp_path):
+@pytest.mark.parametrize("wall", [900.0, 3600.0])
+def test_the_runner_start_note_is_the_one_every_run_writes(tmp_path, wall):
     """The key the reader takes as a runner start is the one
-    ``RoleRunner._note_plan_budget`` writes (two budgets, one key)."""
+    ``RoleRunner._note_plan_budget`` writes, and that note ends an earlier
+    runner's continued pass on the card."""
     from types import SimpleNamespace
 
     from app.factory.build.runner import BuildBudget, RoleRunner
 
-    for wall in (900.0, 3600.0):
-        led = BuildLedger(tmp_path / f"l{int(wall)}.jsonl")
-        fake = SimpleNamespace(
-            budget=BuildBudget(max_rework=1, wall_clock_s=wall, phase_wall_clock_s=600),
-            plan=None,
-            ledger=led,
-        )
-        RoleRunner._note_plan_budget(fake)
-        notes = [e for e in led.events() if e.kind is EventKind.NOTE]
-        assert [bool(e.payload.get(wc.RUNNER_START_KEY)) for e in notes] == [True]
-        assert wc.floor_view(notes) is None
+    led = BuildLedger(tmp_path / "build_ledger.jsonl")
+    led.append(
+        EventKind.NOTE,
+        role=BuildRole.WRITER,
+        detail="continuing, pass 2 of 3: x",
+        payload={wc.NOTE_KEY: {"go": True, "pass_next": 2, "max_passes": 3}},
+    )
+    assert wc.floor_view(list(led.events()))["continuing"] is True
+    fake = SimpleNamespace(
+        budget=BuildBudget(max_rework=1, wall_clock_s=wall, phase_wall_clock_s=600),
+        plan=None,
+        ledger=led,
+    )
+    RoleRunner._note_plan_budget(fake)
+    events = list(led.events())
+    assert [bool((e.payload or {}).get(wc.RUNNER_START_KEY)) for e in events] == [False, True]
+    assert events[-1].payload["wall_clock_s"] == wall
+    assert wc.floor_view(events) is None
 
 
 def _continued_writer(tmp_path, sid, pass_next, max_passes, *, stalled, call_open=False):
