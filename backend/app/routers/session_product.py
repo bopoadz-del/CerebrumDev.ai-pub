@@ -511,7 +511,11 @@ def download_product_package(
 
     blueprint, plan = _session_product_inputs(state)
     status = build_status(out, blueprint=blueprint, plan=plan)
-    if status["state"] == "building":
+    # "Still being built" is also a stalled reading whose runner is alive
+    # (``runner_live``): the tree is being written, whatever the ledger's
+    # silence says. The stopped-build rule the action list shares
+    # (floor_actions.as_is_copy_offered) refuses it too.
+    if status["state"] == "building" or (status["state"] == "stalled" and status.get("runner_live")):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -520,7 +524,7 @@ def download_product_package(
                 "phases complete) — poll /product/build-status"
             ),
         )
-    if as_is and status["state"] != "building":
+    if as_is:
         # Any terminal state ships as-is on the explicit ask -- including a
         # "succeeded" whose certification blockers (thin authorship, red
         # acceptance, CLI-failed claims) would 409 the normal path below:
@@ -537,18 +541,37 @@ def download_product_package(
         from datetime import datetime, timezone
 
         product_id = gen.get("product_id") or out.name
-        note = (
-            "# EXPORTED AS-IS — THIS BUILD FAILED ITS GATES\n\n"
-            f"Product: {product_id}\n"
-            f"Build state: {status['state']}\n"
-            f"Gate verdict: {status.get('detail')}\n"
-            f"Exported: {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n\n"
-            "This zip was exported on the owner's explicit request AFTER the\n"
-            "factory's gates rejected the build. It carries NO certification\n"
-            "manifest and makes no store-green, acceptance or pilot claims.\n"
-            "Nothing here has been verified beyond what the gate verdict above\n"
-            "says. Use it as source material, not as a product.\n"
-        )
+        # A stalled build was not rejected by a gate: it stopped before it
+        # finished. Its paperwork says that, in the note and in the file's
+        # name; every other state keeps the gate-failed wording.
+        stalled = status["state"] == "stalled"
+        exported = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if stalled:
+            note = (
+                "# EXPORTED AS-IS — THIS BUILD STOPPED BEFORE IT FINISHED\n\n"
+                f"Product: {product_id}\n"
+                f"Build state: {status['state']}\n"
+                f"Why it stopped: {status.get('detail')}\n"
+                f"Exported: {exported}\n\n"
+                "This zip was exported on the owner's explicit request from a\n"
+                "build that stopped before it finished, so it was not checked to\n"
+                "the end. It carries NO certification and makes no store-green,\n"
+                "acceptance or pilot claims. Use it as source material, not as\n"
+                "a product.\n"
+            )
+        else:
+            note = (
+                "# EXPORTED AS-IS — THIS BUILD FAILED ITS GATES\n\n"
+                f"Product: {product_id}\n"
+                f"Build state: {status['state']}\n"
+                f"Gate verdict: {status.get('detail')}\n"
+                f"Exported: {exported}\n\n"
+                "This zip was exported on the owner's explicit request AFTER the\n"
+                "factory's gates rejected the build. It carries NO certification\n"
+                "manifest and makes no store-green, acceptance or pilot claims.\n"
+                "Nothing here has been verified beyond what the gate verdict above\n"
+                "says. Use it as source material, not as a product.\n"
+            )
         (out / "EXPORTED-AS-IS.md").write_text(note, encoding="utf-8")
         # Rule 1: a failed build is still a product. Its MANIFEST names the
         # failing gate/check/finding, k/N, the build level and certified:false
@@ -569,7 +592,7 @@ def download_product_package(
         archive = zip_generated_product(out, out.parent / f"{out.name}-as-is-export")
         return FileResponse(
             archive,
-            filename=f"cerebrumdev-{product_id}-FAILED-GATES-as-is.zip",
+            filename=f"cerebrumdev-{product_id}-{'STOPPED' if stalled else 'FAILED-GATES'}-as-is.zip",
             media_type="application/zip",
         )
     if status["state"] == "failed":

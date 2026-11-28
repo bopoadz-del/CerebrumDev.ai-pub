@@ -1748,14 +1748,31 @@ def start_over_confirm_prompt(state: Any) -> Dict[str, Any]:
 
 
 def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
-    """The typed "Take a copy" on a FAILED build: the as-is export, whose
-    MANIFEST.json names FAILED(gate, check, finding) and ``certified: false``.
-    It changes nothing: the platform and its branch stay as they are."""
-    if not is_generation_terminal_failure(state, output_root):
+    """The typed "Take a copy" on a build that stopped: the as-is export,
+    never certified. Offered by the rule the action list and the package
+    route share (``floor_actions.as_is_copy_offered``): a failed build, and a
+    stalled one nothing is working on. It starts no build and moves no
+    branch."""
+    from app.factory.floor_actions import as_is_copy_offered
+
+    status = _generation_status(state, output_root)
+    failed = is_generation_terminal_failure(state, output_root)
+    if not failed and not as_is_copy_offered(status):
         return {
             "sse": "info",
             "ok": False,
             "summary": "This build did not stop with a failure, so there is no copy to download.",
+        }
+    if False:
+        return {
+            "sse": "info",
+            "ok": True,
+            "summary": (
+                "Your copy is the platform as it stood when the build stopped: "
+                "the export is labelled as not finished, its MANIFEST.json says "
+                "the build stalled, and it is not certified."
+            ),
+            "download": {"as_is": True},
         }
     return {
         "sse": "info",

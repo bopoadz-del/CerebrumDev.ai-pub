@@ -2002,6 +2002,10 @@ def build_status(
                     "process is gone (restart or redeploy); generate again"
                 ),
                 "pilot_ready": False,
+                # The one stalled reading that does not require the runner
+                # to be gone: say so when it is still alive, so no door
+                # hands out a copy of a tree that is being written.
+                **({"runner_live": True} if worker_live else {}),
                 **progress,
                 **activity,
             },
