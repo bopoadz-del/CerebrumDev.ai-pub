@@ -17,7 +17,17 @@ import app.factory.build.grader_findings as gf
 import app.factory.build.product_grader.function_grader as fg
 import app.factory.build.product_grader.ui_grader as ug
 from app.factory.build import runner as runner_mod
-from tests.factory.test_a_grader import _fake_pass, _fake_pass_harness, smoke_blueprint  # noqa: F401
+from tests.factory.test_a_grader import (  # noqa: F401
+    IDS,
+    READS_INPUT,
+    WRITER_RUN,
+    _bp,
+    _fake_pass,
+    _fake_pass_harness,
+    _workspace,
+    independent_grader,
+    smoke_blueprint,
+)
 
 BPS = [
     {"product_id": "quillon-desk", "product_name": "Quillon Desk", "summary": "parcel files",
@@ -315,3 +325,49 @@ def test_a_finding_whose_observation_changed_is_not_marked(smoke_blueprint, tmp_
     assert len(reworks) >= 2
     assert not any(runner_mod.UNCHANGED_NOTE in i for h in reworks for i in h)
     assert not [e for e in r.ledger.events() if e.kind is EventKind.NOTE and (e.payload or {}).get("unchanged")]
+
+
+# --- run_grader: the public path ------------------------------------------
+
+@pytest.mark.parametrize("step, saw, cap, why", [
+    ("load:/", "Timeout 5000ms exceeded", "invoice_total", "rc=2"),
+    ("route:/v1/visit_log", "status 404", "visit_log", "two inputs gave one result"),
+])
+def test_run_grader_hands_each_failure_on_with_its_evidence(
+    tmp_path, independent_grader, monkeypatch, step, saw, cap, why  # noqa: F811
+):
+    row = {"name": step, "status": "failed", "expected": "GET answers 200", "saw": saw}
+
+    class _Ui:
+        ran = True
+        errors: list = []
+        ok = False
+        failing = [step]
+        not_run: list = []
+        steps = [row, {"name": "other:step", "status": "passed"}]
+
+        def to_dict(self):
+            return {"ok": False, "ran": True, "failing": [step], "steps": self.steps}
+
+    monkeypatch.setattr(
+        grader, "_grade_ui", lambda blueprint, root, gradroot, base_url, brief=None: (_Ui(), True, ""),
+    )
+    real = fg.grade_functions
+
+    def graded(*a, **kw):
+        grade = real(*a, **kw)
+        bad = fg.FunctionResult(cap, False, [], [], why, probe={"inputs": [{"n": 1}], "answers": [{"t": 7}]})
+        grade.functions = [f for f in grade.functions if f.capability_id != cap] + [bad]
+        return grade
+
+    monkeypatch.setattr(fg, "grade_functions", graded)
+    ws = _workspace(tmp_path, {i: READS_INPUT for i in IDS})
+    verdict = grader.run_grader(
+        plan_capabilities=IDS, blueprint=_bp(IDS), workspace=ws, product_id="invented-product",
+        writer_run=WRITER_RUN,
+    )
+    assert f"UI step FAIL: {step} -- expected: GET answers 200; saw: {saw}" in verdict.writer_items
+    fn_item = (f"function grade FAIL: {cap} -- why: {why}; "
+               'called with: [{"n": 1}]; answered: [{"t": 7}]')
+    assert fn_item in verdict.writer_items
+    assert not any(i.startswith("UI step FAIL: other:step") for i in verdict.writer_items)
