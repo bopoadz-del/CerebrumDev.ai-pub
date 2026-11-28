@@ -444,12 +444,13 @@ def test_the_smoke_scans_nested_results_for_block_errors(tmp_path):
     )
     assert run_tester(tester_ctx).ok
     # The brief the writer and grader quote is the tester's too: recorded in
-    # state (a dropped rule loses exactly these keys) and stamped into the
-    # suite the tester writes.
+    # state (a dropped rule loses exactly these keys), never stamped into the
+    # suite the tester writes (a Factory file holding it is a prompt leak).
     assert tester_ctx.state["tester_prompt"] == _BRIEF
     assert tester_ctx.state["customer_brief_quote"] == _BRIEF
 
     smoke = (tmp_path / "build" / "tests" / "test_smoke.py").read_text(encoding="utf-8")
+    assert json.loads(_BRIEF)["ask"] not in smoke
     assert "@pytest.mark.pilot" in smoke
     assert "def test_every_capability_executes_end_to_end():" in smoke
     assert "reported ok around a failed block call" in smoke
