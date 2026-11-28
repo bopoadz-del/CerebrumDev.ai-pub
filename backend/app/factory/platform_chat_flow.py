@@ -1763,7 +1763,7 @@ def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
             "ok": False,
             "summary": "This build did not stop with a failure, so there is no copy to download.",
         }
-    if False:
+    if not failed:
         return {
             "sse": "info",
             "ok": True,
