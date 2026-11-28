@@ -450,6 +450,19 @@ const TONE_ICON: Record<BuildTone, string> = {
   neutral: '■',
 }
 
+/** The card-face line for a writer pass the runner continued: which pass of
+ *  how many, and the writer time used against the allowance. Only while the
+ *  build runs; a stopped build's face already says why it stopped. */
+export function writerPassLine(build: BuildStatus | null): string | null {
+  const wp = build?.writer_pass
+  if (!build || build.state !== 'building' || !wp?.continuing || !wp.pass || !wp.max_passes) return null
+  const ceiling = wp.ceiling_minutes ? ` The whole build may run up to ${wp.ceiling_minutes} min.` : ''
+  return (
+    `Continuing in pass ${wp.pass} of ${wp.max_passes}: the last pass ran out of time while still working, ` +
+    `and its files are kept. Earlier passes wrote for ${wp.writer_minutes} min.${ceiling}`
+  )
+}
+
 export function BuildCard({
   build,
   sessionId,
@@ -477,6 +490,7 @@ export function BuildCard({
   cardRef?: Ref<HTMLDivElement>
 }) {
   const face = buildFace(build)
+  const passLine = writerPassLine(build)
   return (
     <div
       ref={cardRef}
@@ -508,6 +522,11 @@ export function BuildCard({
         <p className="build-fix-round" data-testid="floor-rework-line">
           <span aria-hidden="true">↻ </span>
           {face.fixRoundNow}
+        </p>
+      )}
+      {passLine && (
+        <p className="build-fix-round" data-testid="floor-writer-pass">
+          {passLine}
         </p>
       )}
       <GraderFindings build={build} />

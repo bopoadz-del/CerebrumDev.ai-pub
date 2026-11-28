@@ -36,10 +36,12 @@ any -- no count is invented.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -266,6 +268,12 @@ DEPLOYED_PROFILE = "1c-2g"
 
 class WorkerError(RuntimeError):
     """A named refusal/failure from the CodeWhale worker layer."""
+
+
+class WorkerWallTimeout(WorkerError):
+    """The pass's own wall fired (``worker_timed_out``): the CLI was killed
+    because its time ran out, not because it failed. Typed so the runner can
+    tell a cut pass from a broken one without reading the message."""
 
 
 class _WorkerStall(Exception):
@@ -2414,7 +2422,7 @@ def run_worker_job(
                         # Name the wall that actually fired: the ramp may
                         # have lifted it past the dispatch value (live
                         # 2026-10-08 read "exceeded 1800.0s" at ~2640s).
-                        raise WorkerError(
+                        raise WorkerWallTimeout(
                             f"{WORKER_TIMED_OUT}: headless job exceeded "
                             f"its {deadline - wait_started:.0f}s wall "
                             f"(dispatched with {timeout}s)"
@@ -2677,22 +2685,262 @@ def is_narration_line(line: str) -> bool:
     return text.startswith(_STEP_PREFIX) or text.startswith(HEARTBEAT_PREFIX)
 
 
-def count_authored_files(root: Path) -> int:
-    """Files the pass has put on disk so far, the factory's own view.
+#: Directory names that are never the agent's output at any depth: vendored
+#: blocks, VCS internals, installed packages, bytecode, the writer CLI home.
+_NOT_AUTHORED_DIRS = frozenset({"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR})
+#: The first bytes of every SQLite file: a database (a test run's store, a
+#: coverage data file) is runtime state, never source, whatever its name.
+_SQLITE_MAGIC = b"SQLite format 3\x00"
 
-    Vendored blocks, VCS internals, the writer CLI's own runtime home and
-    the progress logs themselves are not the agent's output. Best-effort:
-    an unreadable tree counts as zero.
+
+def _ignore_rules(directory: Path) -> List[Tuple[str, bool, bool, bool]]:
+    """The patterns of ``directory/.gitignore``: (pattern, anchored,
+    dir_only, negated).
+
+    The product's own declaration of what is generated. Tools mark their
+    output the same way (a cache or report directory carrying a ``*``
+    ``.gitignore``), so one reader covers both. A ``!`` line re-includes
+    what an earlier rule excluded, as git reads it: the last matching rule
+    decides. As gitignore(5): leading spaces are part of the pattern,
+    trailing spaces are dropped unless a backslash escapes them, and every
+    backslash stays in the pattern for ``_gitignore_regex`` to read (so a
+    first ``#`` or ``!`` after a backslash is literal, as is any other
+    escaped character).
     """
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
+    try:
+        text = (directory / ".gitignore").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    rules: List[Tuple[str, bool, bool, bool]] = []
+    for raw in text.splitlines():
+        line = _trim_trailing_spaces(raw)
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:]
+        dir_only = line.endswith("/")
+        line = line.rstrip("/")
+        anchored = line.startswith("/") or "/" in line
+        line = line.lstrip("/")
+        if line:
+            rules.append((line, anchored, dir_only, negated))
+    return rules
+
+
+def _trim_trailing_spaces(line: str) -> str:
+    """``line`` without its trailing spaces, keeping one a backslash escapes
+    (git's ``trim_trailing_spaces``); leading spaces are never touched."""
+    end = len(line)
+    while end and line[end - 1] == " ":
+        end -= 1
+    escapes = 0
+    while escapes < end and line[end - 1 - escapes] == "\\":
+        escapes += 1
+    if escapes % 2 and end < len(line):
+        end += 1
+    return line[:end]
+
+
+#: The POSIX classes wildmatch reads inside a bracket expression.
+_POSIX_CLASSES = {
+    "alnum": r"a-zA-Z0-9",
+    "alpha": r"a-zA-Z",
+    "blank": r" \t",
+    "cntrl": r"\x00-\x1f\x7f",
+    "digit": r"0-9",
+    "graph": r"!-~",
+    "lower": r"a-z",
+    "print": r" -~",
+    "punct": r"!-/:-@\[-`{-~",
+    "space": r" \t\n\r\f\v",
+    "upper": r"A-Z",
+    "xdigit": r"0-9a-fA-F",
+}
+#: A regex that matches nothing: wildmatch aborts on a malformed pattern.
+_NEVER = "(?!)"
+
+
+def _bracket_class(pattern: str, start: int) -> Tuple[str, int]:
+    """The ``[...]`` expression opening at ``pattern[start]`` as a regex
+    class, and the index just past its closing ``]`` -- as wildmatch reads
+    it: a ``]`` first (after an optional ``!``/``^``) is literal, a
+    backslash escapes the next character, ``[:name:]`` is a POSIX class and
+    the class never matches ``/``. An unclosed class gives ``_NEVER`` and
+    the end of the pattern: git's wildmatch matches nothing then."""
+    n = len(pattern)
+    i = start + 1
+    negated = i < n and pattern[i] in "!^"
+    if negated:
+        i += 1
+    parts: List[str] = []
+    first = True
+    while i < n and (first or pattern[i] != "]"):
+        first = False
+        char = pattern[i]
+        if char == "\\":
+            if i + 1 >= n:
+                return _NEVER, n
+            parts.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        if char == "[" and pattern.startswith("[:", i):
+            close = pattern.find(":]", i + 2)
+            name = pattern[i + 2 : close] if close >= 0 else ""
+            if name in _POSIX_CLASSES:
+                parts.append(_POSIX_CLASSES[name])
+                i = close + 2
+                continue
+            if close >= 0:
+                return _NEVER, n
+        if char == "-" and parts and i + 1 < n and pattern[i + 1] != "]":
+            parts.append("-")
+            i += 1
+            continue
+        parts.append(re.escape(char))
+        i += 1
+    if i >= n:
+        return _NEVER, n
+    body = "".join(parts)
+    return (f"[^/{body}]" if negated else f"(?!/)[{body}]"), i + 1
+
+
+@functools.lru_cache(maxsize=512)
+def _gitignore_regex(pattern: str) -> "re.Pattern[str]":
+    """One ``.gitignore`` pattern as git matches it (gitignore(5)).
+
+    ``*`` and ``?`` and a ``[...]`` class never match ``/``. A run of two or
+    more stars that starts a segment (the pattern's start or after ``/``)
+    and ends one (the pattern's end, ``/`` or an escaped ``/``) crosses
+    directories, as git's wildmatch reads it: followed by ``/`` it matches
+    zero or more directories, followed by an escaped ``/`` one or more, and
+    at the end everything inside. Any other run of stars is a plain ``*``. A backslash makes the next
+    character literal; a trailing lone backslash or an unclosed ``[`` makes
+    the pattern match nothing (git's wildmatch aborts on both)."""
+    out: List[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "*":
+            at_segment = i == 0 or pattern[i - 1] == "/"
+            run_start = i
+            while i < n and pattern[i] == "*":
+                i += 1
+            if at_segment and i - run_start >= 2:
+                if i == n:
+                    out.append(".*")
+                    continue
+                if pattern[i] == "/":
+                    out.append("(?:[^/]*/)*")
+                    i += 1
+                    continue
+                if pattern.startswith("\\/", i):
+                    out.append(".*")
+                    continue
+            out.append("[^/]*")
+            continue
+        if char == "?":
+            out.append("[^/]")
+        elif char == "\\":
+            if i + 1 >= n:
+                return re.compile(_NEVER)
+            i += 1
+            out.append(re.escape(pattern[i]))
+        elif char == "[":
+            klass, i = _bracket_class(pattern, i)
+            if klass == _NEVER:
+                return re.compile(_NEVER)
+            out.append(klass)
+            continue
+        else:
+            out.append(re.escape(char))
+        i += 1
+    try:
+        return re.compile("".join(out) + r"\Z")
+    except re.error:  # a reversed range such as [z-a]: wildmatch matches nothing
+        return re.compile(_NEVER)
+
+
+def _ignored(
+    rules: List[Tuple[str, Tuple[str, ...], bool, bool, bool]], rel: Tuple[str, ...], is_dir: bool
+) -> bool:
+    """Whether ``rel`` is ignored: the last rule that matches it decides,
+    so a negation re-includes, as git reads its ``.gitignore`` files. A rule
+    with a slash matches the path below its own ``.gitignore``; one without
+    matches the name at any depth (``_gitignore_regex``)."""
+    ignored = False
+    for pattern, base, anchored, dir_only, negated in rules:
+        if dir_only and not is_dir:
+            continue
+        if rel[: len(base)] != base:
+            continue
+        below = rel[len(base) :]
+        if not below:
+            continue
+        subject = "/".join(below) if anchored else below[-1]
+        if _gitignore_regex(pattern).match(subject):
+            ignored = not negated
+    return ignored
+
+
+def _is_database(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def iter_authored_source(root: Path) -> Iterator[str]:
+    """Relative POSIX paths of the source the pass has authored -- one rule.
+
+    Authored source is what the platform would ship (``builds_push.
+    is_exported``: no caches, bytecode, top-level runtime data or Factory
+    records) minus what the tree itself declares generated (its
+    ``.gitignore`` files, which is how test, coverage and build tools mark
+    their output) minus databases by their content. No product's file names
+    are read: test databases, caches and build output fall out by rule, so
+    the count falls only when the writer deletes source (owner, 24 Nov:
+    165 -> 55 files in one minute of a test run). Raises ``OSError`` when the
+    walk fails part-way; callers decide what a partial walk means.
+    """
+    from app.factory.build.builds_push import is_exported
+
+    base = Path(root)
+    rules_at: Dict[Tuple[str, ...], List[Tuple[str, Tuple[str, ...], bool, bool, bool]]] = {}
+
+    def _rules(rel_dir: Tuple[str, ...]) -> List[Tuple[str, Tuple[str, ...], bool, bool, bool]]:
+        # Every .gitignore from the root down to rel_dir, each anchored at
+        # its own directory; read once per directory per walk.
+        if rel_dir not in rules_at:
+            inherited = list(_rules(rel_dir[:-1])) if rel_dir else []
+            inherited.extend((p, rel_dir, a, d, n) for p, a, d, n in _ignore_rules(base.joinpath(*rel_dir)))
+            rules_at[rel_dir] = inherited
+        return rules_at[rel_dir]
+
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = tuple(path.relative_to(base).parts)
+        if set(rel) & _NOT_AUTHORED_DIRS or path.name.startswith("writer_progress"):
+            continue
+        if any(_ignored(_rules(rel[:i]), rel[: i + 1], True) for i in range(len(rel) - 1)):
+            continue
+        if _ignored(_rules(rel[:-1]), rel, False):
+            continue
+        if not is_exported(Path(*rel)) or _is_database(path):
+            continue
+        yield "/".join(rel)
+
+
+def count_authored_files(root: Path) -> int:
+    """Authored source files on disk so far (``iter_authored_source``).
+
+    Best-effort: a walk that raises part-way returns what it counted.
+    """
     total = 0
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            parts = set(path.relative_to(root).parts)
-            if parts & skip or path.name.startswith("writer_progress"):
-                continue
+        for _rel in iter_authored_source(root):
             total += 1
     except OSError:
         return total
@@ -2707,19 +2955,10 @@ def authored_files_or_none(root: Path) -> Optional[int]:
     is indistinguishable from a tree that shrank. The heartbeat and the
     stall watchdog read None as "no sample", never as an empty tree.
     """
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
-    total = 0
     try:
-        for path in Path(root).rglob("*"):
-            if not path.is_file():
-                continue
-            parts = set(path.relative_to(root).parts)
-            if parts & skip or path.name.startswith("writer_progress"):
-                continue
-            total += 1
+        return sum(1 for _rel in iter_authored_source(root))
     except OSError:
         return None
-    return total
 
 
 #: Files the WORKER itself writes at dispatch (the brief pointer target and
@@ -2728,17 +2967,22 @@ DISPATCH_AUDIT_FILES = frozenset({"docs/writer_prompt.txt", "docs/writer_argv.js
 
 
 def agent_file_paths(root: Path) -> FrozenSet[str]:
-    """Relative paths of the files ``count_authored_files`` counts, minus the
-    worker's own dispatch audit files. A pass's new files are the difference
-    of two snapshots taken around it."""
-    skip = {"vendor", ".git", "node_modules", "__pycache__", WORKER_CLI_HOME_DIR}
+    """Relative paths of every file the agent may have put on disk, minus
+    the worker's own dispatch audit files. A pass's new files are the
+    difference of two snapshots taken around it.
+
+    Wider than ``iter_authored_source`` on purpose: the specialist
+    merge-back and ``files_written`` carry every file the agent wrote,
+    whatever the product's ``.gitignore`` says; only vendored blocks, VCS
+    internals, installed packages, bytecode, the CLI home and the progress
+    logs are left out."""
     found = set()
     try:
         for path in Path(root).rglob("*"):
             if not path.is_file():
                 continue
             rel = path.relative_to(root)
-            if set(rel.parts) & skip or path.name.startswith("writer_progress"):
+            if set(rel.parts) & _NOT_AUTHORED_DIRS or path.name.startswith("writer_progress"):
                 continue
             posix = rel.as_posix()
             if posix in DISPATCH_AUDIT_FILES:

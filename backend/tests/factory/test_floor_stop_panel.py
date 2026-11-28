@@ -411,7 +411,7 @@ def test_the_runs_outcome_is_never_described_by_an_older_events_code(outcome, ki
     assert said["summary"] == STOP_TEXT[kind][1].format(ran="", items="")
 
 
-@pytest.mark.parametrize("code", ["codewhale_worker_failed", "suite_red"])
+@pytest.mark.parametrize("code", ["slot_wait_exhausted", "suite_red"])
 def test_an_unmapped_code_is_logged_once_per_failure_with_the_code_in_the_message(code, caplog, monkeypatch):
     monkeypatch.setattr(build_jobs, "_LOGGED_FAILURE_REFS", set())
     row = {"phase": "WRITER", "location": "WRITER", "outcome": "aborted", "reason": code, "timestamp": "t"}
