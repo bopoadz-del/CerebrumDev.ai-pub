@@ -1747,91 +1747,25 @@ def start_over_confirm_prompt(state: Any) -> Dict[str, Any]:
     }
 
 
-def stopped_build_status(state: Any, output_root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """The build's status when it is stopped and nothing is running it, else
-    None. Stopped is the status the card reads as stopped: ``failed`` or
-    ``stalled`` (a run the server restarted under, or one gone quiet). A
-    build waiting for its Store-gate hand-off is not stopped: the status
-    itself reads it as ``building`` (one source with the card).
-
-    ``stalled`` is also what a quiet build reads while its runner thread is
-    still alive in this process; that build is running, and a copy of it
-    would splice a pass in progress, so it is not stopped here."""
-    st = _generation_status(state, output_root)
-    now = st.get("state")
-    if now == "failed":
-        return st
-    if now != "stalled":
-        return None
-    out = _generation_output_dir(state, output_root)
-    return None if out is not None and _live_build_thread(out) is not None else st
-
-
-def stop_checkpoint_of(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
-    """The branch and head the stop checkpoint of the build's CURRENT verdict
-    pushed, read from the build's own ledger NOTE; empty when that stop was
-    not pushed.
-
-    The stop NOTE is appended right after the verdict it belongs to. Once
-    the run is re-entered the verdict no longer stands (the ledger's
-    terminal_event is None, or a newer one), and the work has moved past
-    that commit: an older stop's head is never named as the same work."""
-    out = _generation_output_dir(state, output_root)
-    if not out:
-        return {}
-    ledger = _ledger_for(out)
-    try:
-        events = ledger.events()
-        verdict = ledger.terminal_event()
-    except Exception:  # noqa: BLE001 -- a torn ledger names no branch
-        return {}
-    if verdict is None:
-        return {}
-    for event in reversed(events):
-        if event.seq <= verdict.seq:
-            break
-        payload = event.payload or {}
-        if "stop_checkpoint" in payload:
-            return dict(payload) if payload.get("stop_checkpoint") else {}
-    return {}
-
-
 def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
-    """The typed "Take a copy" on a STOPPED build: the as-is export, whose
+    """The typed "Take a copy" on a FAILED build: the as-is export, whose
     MANIFEST.json names FAILED(gate, check, finding) and ``certified: false``.
-    It changes nothing: the platform and its branch stay as they are.
-
-    Offered for every build that is stopped and not running. The why comes
-    from the build's own stop record (the record the card's sentence is
-    written from); when the stop was pushed, the branch and head are named."""
-    st = stopped_build_status(state, output_root)
-    if st is None:
-        now = _generation_status(state, output_root).get("state")
-        if now in ("building", "stalled"):
-            why = "This build is still running, so there is no copy yet. Stop it first, or wait for it to finish."
-        else:
-            why = "This build has not stopped, so there is no stopped work to copy."
-        return {"sse": "info", "ok": False, "summary": why}
-    stop = st.get("stop") if isinstance(st.get("stop"), dict) else {}
-    why = str(stop.get("plain") or "").strip()
-    parts = [why] if why else []
-    parts.append(
-        "Your copy is the platform as it stood when it stopped: the export is "
-        "labelled FAILED, its MANIFEST.json names the failing gate, check and "
-        "finding, and it is not certified. Nothing about the platform changes."
-    )
-    pushed = stop_checkpoint_of(state, output_root)
-    if pushed:
-        parts.append(
-            f"The same work is on the branch {pushed.get('branch')} at {str(pushed.get('stop_checkpoint'))[:12]}."
-        )
+    It changes nothing: the platform and its branch stay as they are."""
+    if not is_generation_terminal_failure(state, output_root):
+        return {
+            "sse": "info",
+            "ok": False,
+            "summary": "This build did not stop with a failure, so there is no copy to download.",
+        }
     return {
         "sse": "info",
         "ok": True,
-        "summary": " ".join(parts),
+        "summary": (
+            "Your copy is the platform as it stands: the export is labelled "
+            "FAILED, its MANIFEST.json names the failing gate, check and finding, "
+            "and it is not certified. Nothing about the platform changes."
+        ),
         "download": {"as_is": True},
-        "branch": pushed.get("branch") or "",
-        "head": pushed.get("stop_checkpoint") or "",
     }
 
 

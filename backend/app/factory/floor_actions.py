@@ -228,8 +228,8 @@ def allowed_build_actions(build: Any, *, reaches_pilot: Optional[bool] = None) -
 
     Read from typed fields only -- the state, the stop record's kind, the
     pilot flag and the delivery link -- and kept in step with the doors that
-    accept them: ``take_copy`` answers every stopped run (failed or
-    stalled), ``continue_with_intake`` only a failed one; a finished run offers no
+    accept them: ``take_copy`` and ``continue_with_intake`` answer only a
+    failed run, so a stalled one offers neither; a finished run offers no
     stopped-build action at all. ``reaches_pilot`` is the session's build
     level (False: the level stops at code, so no pilot checks are offered)."""
     if not isinstance(build, dict):
@@ -240,7 +240,7 @@ def allowed_build_actions(build: Any, *, reaches_pilot: Optional[bool] = None) -
     if state == "building":
         return ["try_again"] if build.get("n3_waiting") else ["stop"]
     if state == "stalled":
-        return ["try_again", "download_copy", "start_over"]
+        return ["try_again", "start_over"]
     if state == "failed":
         kind = str((build.get("stop") or {}).get("kind") or "")
         if kind == "check_failed":
