@@ -135,6 +135,50 @@ def test_derive_forbidden_takes_brief_shapes_not_prose():
     assert "lowercase" not in forbidden
 
 
+@pytest.mark.parametrize(
+    "ask, files, said",
+    [
+        ('Track repairs for the "Nimbus" portal by unit.', [], "Nimbus"),
+        ('Bill acct_7731 monthly from the "Orchard Row" rent roll.', ["roll.pdf", "rates.xlsx"], "Orchard Row"),
+    ],
+)
+def test_derive_forbidden_reads_a_record_with_no_other_field_as_its_ask(ask, files, said):
+    from app.factory.build.customer_brief import emit_brief
+
+    forbidden = grader.derive_forbidden({}, emit_brief(ask, files), "")
+    # The record's field names and the Factory-derived file types are not
+    # words the customer wrote ...
+    for key in ("ask", "documents", "uploads", "file_types", "pdf", "xlsx"):
+        assert key not in forbidden
+    # ... while what the customer did write is still caught.
+    assert said in forbidden
+    assert forbidden == grader.derive_forbidden({}, ask, "")
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "Bill acct_7731 from the uploads folder.",  # prose: read as given
+        '{"ask": "Bill acct_7731 from the uploads folder."}',  # incomplete record: read as given
+    ],
+)
+def test_derive_forbidden_reads_text_that_is_not_a_complete_record_as_given(supplied):
+    forbidden = grader.derive_forbidden({}, supplied, "")
+    assert "acct_7731" in forbidden
+    # Not a complete record, so its quoted spans are still read whole.
+    assert ("ask" in forbidden) == supplied.startswith("{")
+
+
+@pytest.mark.parametrize("files", [[], ["roll.pdf", "rates.xlsx"]])
+def test_derive_forbidden_from_a_record_finds_nothing_in_the_stamped_kernel(files):
+    from app.factory.build.customer_brief import emit_brief
+    from app.factory.build.product_grader import scan_generated
+
+    kernel = Path(grader.__file__).resolve().parents[2] / "cerebrum_product_kernel" / "ingestion"
+    forbidden = grader.derive_forbidden({}, emit_brief("Keep a log of site visits per unit.", files), "")
+    assert scan_generated.forbidden_hits(kernel, forbidden) == {}
+
+
 def test_derive_forbidden_reads_structured_blueprint_values():
     bp = {"client": "Blue Harbor Estates", "vertical": "property"}
     forbidden = grader.derive_forbidden(bp, "some brief for blue harbor estates", "")
@@ -843,14 +887,15 @@ def _fake_pass_harness(monkeypatch):
 
 
 @pytest.mark.parametrize("capability", ["zorblat_check", "plinket_check"])
-def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_blueprint, tmp_path, monkeypatch, capability):
+def test_runner_hands_back_to_the_writer_for_its_rounds_then_stops(smoke_blueprint, tmp_path, monkeypatch, capability):
     """A NOT_CERTIFIED verdict hands the quoted items back to the WRITER in
-    the build -- the grader's own two rounds; a third failure stops the run.
+    the build -- the grader's own REWORK_BUDGET rounds; one more failure
+    stops the run.
     Never the TESTER's machinery."""
     from app.factory.build import grader as grader_mod
     from app.factory.build.authority import BuildRole
     from app.factory.build.ledger import EventKind
-    from app.factory.build.runner import RoleRunner
+    from app.factory.build.runner import REWORK_BUDGET, RoleRunner
 
     monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
 
@@ -874,14 +919,15 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert not outcome.ok
-    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 1 round(s)")
+    assert outcome.detail.startswith(f"GRADER: NOT_CERTIFIED after {REWORK_BUDGET} round(s)")
     assert f"function grade FAIL: {capability}" in outcome.detail
     # the run started its ledger: the first event is RUN_STARTED (pins
     # run()'s first if for CI-M -- start_run writes exactly that event)
     events = list(runner.ledger.events())
     assert events and events[0].kind is EventKind.RUN_STARTED
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
-    assert len(reworks) == 1
+    assert len(reworks) == REWORK_BUDGET
+    assert [(r.payload or {}).get("round") for r in reworks] == list(range(1, REWORK_BUDGET + 1))
     assert all((r.payload or {}).get("gate") == grader_mod.GRADER_GATE for r in reworks)
     assert all((r.payload or {}).get("source") == "GRADER" for r in reworks)
     # the writer received the quoted items as its work list
@@ -1060,3 +1106,136 @@ def test_ui_steps_that_did_not_run_are_ungraded_not_handed_to_the_writer(
         assert gap in verdict.ungraded
         assert f"UI step FAIL: {name}" not in verdict.items
         assert not any(name in item for item in verdict.writer_items)
+
+
+# -- a record's other fields: their values are the customer's, their names are not
+
+
+def _record(ask, **extra):
+    import json
+
+    return json.dumps({"ask": ask, "documents": {"uploads": False, "file_types": []}, **extra})
+
+
+@pytest.mark.parametrize(
+    "extra, said, names",
+    [
+        ({"client": "Orchard Row Estates"}, ["Orchard Row Estates"], ["client"]),
+        (
+            {"site": {"name": "Pier Nine Depot", "codes": ["acct_5502", "Gate B North"]}},
+            ["Pier Nine Depot", "acct_5502", "Gate B North"],
+            ["site", "name", "codes"],
+        ),
+    ],
+)
+def test_derive_forbidden_reads_the_values_of_a_records_other_fields(extra, said, names):
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", **extra), "")
+    for value in said:
+        assert value in forbidden, forbidden
+    for name in names + ["ask", "documents", "uploads", "file_types"]:
+        assert name not in forbidden, forbidden
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"units": 240, "urgent": True, "notes": None, "blank": "   "},  # not text
+        {"tags": []},
+    ],
+)
+def test_a_records_values_that_are_not_text_add_no_literal(extra):
+    ask = 'Bill acct_7731 from the "Orchard Row" rent roll.'
+    assert grader.derive_forbidden({}, _record(ask, **extra), "") == grader.derive_forbidden({}, ask, "")
+
+
+@pytest.mark.parametrize("types", [["pdf", "xlsx"], ["Site Plans Folder"]])
+def test_the_file_types_the_factory_took_are_never_a_literal_and_a_documents_note_is(types):
+    import json
+
+    record = json.dumps({
+        "ask": "Keep a log of site visits per unit.",
+        "documents": {"uploads": True, "file_types": types, "note": "Harbour Scans Only"},
+    })
+    forbidden = grader.derive_forbidden({}, record, "")
+    assert "Harbour Scans Only" in forbidden
+    for value in types:
+        assert value not in forbidden and value.lower() not in forbidden, forbidden
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [
+        ("Track repairs by unit.", "Track repairs by unit."),  # not a record: as given
+        ('{"ask": "Track repairs."}', '{"ask": "Track repairs."}'),  # incomplete record: as given
+    ],
+)
+def test_supplied_text_returns_what_is_not_a_complete_record_as_given(raw, want):
+    from app.factory.build.customer_brief import supplied_text
+
+    assert supplied_text(raw) == want
+
+
+@pytest.mark.parametrize(
+    "extra, whole",
+    [
+        ({}, []),
+        ({"client": "Orchard Row Estates"}, ["Orchard Row Estates"]),
+        ({"motto": 'Say "hello" twice', "size": '6" main'}, ['Say "hello" twice', '6" main']),
+        ({"a": {"b": ["x y", {"c": "  z w  "}]}, "n": 4, "blank": "  "}, ["x y", "z w"]),
+    ],
+)
+def test_supplied_parts_are_the_ask_and_each_other_value_by_itself(extra, whole):
+    from app.factory.build.customer_brief import supplied_parts, supplied_text
+
+    record = _record("Track repairs by unit.", **extra)
+    assert supplied_parts(record) == ("Track repairs by unit.", whole)
+    assert supplied_text(record).split("\n") == ["Track repairs by unit.", *whole]
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        'Track repairs for 4" pipe by unit.',  # one unmatched quote: an inch mark
+        'Lay 4" pipe and 6" main per unit, then 2" laterals.',  # three
+        "Track repairs by unit.",  # none: the negative
+    ],
+)
+@pytest.mark.parametrize("client", ["Nimbus", "Orchard Row Estates"])
+def test_an_unmatched_quote_in_the_ask_does_not_hide_a_value_of_another_field(ask, client):
+    """An inch mark in the ask must not shift how a later value is read: the
+    value is a literal by itself, and no literal runs from one part into
+    the next."""
+    forbidden = grader.derive_forbidden({}, _record(ask, client=client), "")
+    assert client in forbidden, forbidden
+    assert not [v for v in forbidden if "\n" in v], forbidden
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [('6" main', "Nimbus"), ('Gate "B', "Orchard Row Estates")],
+)
+def test_an_unmatched_quote_in_one_value_does_not_hide_the_next_value(first, second):
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", size=first, client=second), "")
+    assert first in forbidden and second in forbidden, forbidden
+
+
+@pytest.mark.parametrize(
+    "value, literal",
+    [
+        ("ab", False),  # shorter than a quoted span may be
+        ("abc", True),
+        ("x" * 60, True),
+        ("x" * 61, False),  # longer than a quoted span may be
+    ],
+)
+def test_a_whole_value_is_a_literal_within_the_bounds_of_a_quoted_span(value, literal):
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", note=value), "")
+    assert (value in forbidden) is literal
+
+
+@pytest.mark.parametrize("note", ['Keep the "Harbour Gate" log for acct_5502 ' + "x" * 40, 'Use "Pier Nine" ' + "y" * 60])
+def test_a_long_value_is_still_read_for_its_own_quoted_spans_and_identifiers(note):
+    """A value too long to be a literal whole is read as the ask is."""
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", note=note), "")
+    assert note not in forbidden
+    assert forbidden == grader.derive_forbidden({}, note, "")

@@ -228,10 +228,17 @@ def derive_forbidden(
     (value hardwiring is the two-dataset check's), never a value the
     Factory defaulted. A literal the Factory's own part of the dispatched
     prompt (``factory_text``) also carries is platform vocabulary, and an
-    identifier the contract requires is never a brief literal."""
+    identifier the contract requires is never a brief literal.
+
+    When ``brief_text`` is a ``customer_brief.v1`` record it is read as
+    ``customer_brief.supplied_parts`` gives it: the ask and every value the
+    customer put in any other field, never the record's field names and
+    never the document types the Factory took from file suffixes."""
+    from app.factory.build.customer_brief import supplied_parts
     from app.factory.build.product_literals import is_identity_token
 
-    text = brief_text or ""
+    prose, whole = supplied_parts(brief_text or "")
+    text = "\n".join([prose, *whole])
     out: set = {v for v in _structured_literals(blueprint) if _said(v, text)}
     for token in _tokens(text):
         # A folded-upload marker carries the file name after the protocol
@@ -249,7 +256,13 @@ def derive_forbidden(
         out.add(name)
         if is_identity_token(Path(name).stem):
             out.add(Path(name).stem)
-    out.update(re.findall(r'"([^"]{3,60})"', text))
+    # Quoted spans are paired inside each part by itself, so an unmatched
+    # quote in the ask (an inch mark) never shifts the pairing in a value,
+    # nor one value's in the next. A value the customer gave whole is a
+    # literal by itself, within the same length bounds as a quoted span.
+    for part in (prose, *whole):
+        out.update(re.findall(r'"([^"]{3,60})"', part))
+    out.update(value for value in whole if 3 <= len(value) <= 60)
     contract = _contract_ids(blueprint)
     return frozenset(
         sorted(v for v in out if len(v) <= 80 and v not in contract and not _said(v, factory_text))

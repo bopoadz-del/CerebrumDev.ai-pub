@@ -90,10 +90,10 @@ REWORK_SOURCE = BuildRole.TESTER
 #: unavailable, store contract) is never product work and stays terminal.
 REWORK_SOURCES = frozenset({BuildRole.TESTER, BuildRole.WRITER})
 
-#: Owner rule (ORDERS_08NOV_1330Z): ONE rework round PER GATE (WRITER gate,
-#: TESTER, Store gate); one gate's rounds never reduce another's. A gate that
-#: has used its one and fails again stops the run.
-REWORK_BUDGET = 1
+#: Fleet manager decision (26 Nov 23:32Z): THREE rework rounds PER GATE
+#: (WRITER gate, TESTER, Store gate, grader); one gate's rounds never reduce
+#: another's. A gate that has used its three and fails again stops the run.
+REWORK_BUDGET = 3
 #: Hard ceiling on rework rounds for the whole build, every gate together.
 REWORK_CEILING = 6
 #: Factory-file reprompts and writer test-defect regenerations are NOT
@@ -630,6 +630,22 @@ class Outcome(str, Enum):
     STOPPED_BY_OWNER = "STOPPED_BY_OWNER"
 
 
+#: The outcomes that stop a build before it is done. The work as it stood is
+#: pushed to the branch of record at each of them (_checkpoint_stop). A
+#: success, a hand-off to the Store gate and a collect-all report are not
+#: stops: they push by their own path or not at all.
+STOP_OUTCOMES = frozenset(
+    {
+        Outcome.FAILED_GATE,
+        Outcome.FAILED_BUDGET_SPENT,
+        Outcome.FAILED_TIME_BUDGET,
+        Outcome.FAILED_ROLE_ERROR,
+        Outcome.FAILED_AUTHORITY,
+        Outcome.STOPPED_BY_OWNER,
+    }
+)
+
+
 #: The decision reason a stopped build's terminal event carries.
 STOPPED_BY_OWNER_REASON = "stopped_by_owner"
 
@@ -1158,18 +1174,114 @@ class RoleRunner:
             return branch_of_record(pid)
         return str(self.state.get("attached_branch") or "")
 
-    def _push_branch_of_record(self, message: str) -> str:
+    def _push_branch_of_record(
+        self, message: str, tree: Optional[Path] = None, *, stop: bool = False
+    ) -> str:
         from app.factory.build.platform_identity import branch_of_record, is_platform_id
 
+        source = Path(tree) if tree is not None else self.workspace
         pid = str(self.state.get("platform_id") or "")
         branch = self._branch_of_record()
         if is_platform_id(pid) and branch == branch_of_record(pid):
             from app.factory.build.platform_branch import push_to_branch_of_record
 
-            return push_to_branch_of_record(self.workspace, pid, message)
+            return push_to_branch_of_record(source, pid, message, stop=stop)
         from app.factory.build.branch_attach import checkpoint
 
-        return checkpoint(self.workspace, branch, message)
+        return checkpoint(source, branch, message, stop=stop)
+
+    def _stop_tree(self, tree: Path) -> None:
+        """Lay the work as it stands into ``tree``: the product directory,
+        then the files of a writer pass that was still staged when the run
+        stopped (a stop inside the writer step leaves its work there, kept
+        for the resume). Only exported files are carried."""
+        from app.factory.build.builds_push import _sync_workspace_onto_tree, is_exported
+
+        _sync_workspace_onto_tree(self.workspace, tree)
+        staging = self._staging_for(BuildRole.WRITER)
+        staged = sorted(staging.rglob("*")) if staging is not None else []
+        for src in staged:
+            rel = src.relative_to(staging)
+            if src.is_symlink() or not src.is_file() or not is_exported(rel):
+                continue
+            out = tree / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if out.exists():
+                os.chmod(out, stat.S_IWRITE | stat.S_IREAD)
+            shutil.copyfile(src, out)
+
+    def _checkpoint_stop(self, outcome: "Outcome", phase: Optional[BuildRole]) -> None:
+        """Push the work as it stood when the run stopped to the branch of
+        record, phase-forward like every checkpoint.
+
+        The commit and its MANIFEST.json say FAILED (or STOPPED, for the
+        owner's Stop), the step, the check and ``certified: false``. It is
+        never tagged or registered. A push that fails is recorded as a NOTE
+        and never replaces the stop's own reason."""
+        if outcome not in STOP_OUTCOMES:
+            return
+        branch = self._branch_of_record()
+        if not branch:
+            # No branch of record (no builds token, nothing attached): the
+            # work stays in the kept workspace, exported by "Take a copy".
+            return
+        import tempfile
+
+        from app.factory.build.branch_attach import stop_checkpoint_message
+        from app.factory.build.export_manifest import (
+            failed_export_manifest,
+            write_export_manifest,
+        )
+        from app.factory.build_jobs import build_status
+
+        word = "STOPPED" if outcome is Outcome.STOPPED_BY_OWNER else "FAILED"
+        step = phase.value if phase is not None else ""
+        tree = Path(tempfile.mkdtemp(prefix="cerebrum-stop-"))
+        try:
+            self._stop_tree(tree)
+            status = build_status(self.workspace, blueprint=self.blueprint, plan=self.plan)
+            manifest = failed_export_manifest(
+                status,
+                product_id=str(getattr(self.blueprint, "product_id", "") or self.workspace.name),
+                platform_id=str(self.state.get("platform_id") or "") or None,
+            )
+            manifest["stopped"] = {
+                "state": word,
+                "outcome": outcome.value,
+                "step": step,
+                "stop": status.get("stop"),
+            }
+            write_export_manifest(tree, manifest)
+            completed = self.ledger.completed_roles()
+            passed = [r.value for r in BUILD_PHASES if r in completed]
+            message = stop_checkpoint_message(word, step, str(manifest.get("failed_label") or ""), passed)
+            sha = self._push_branch_of_record(message, tree=tree, stop=True)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=phase,
+                detail=f"stop checkpoint: the work as it stood is on {branch} at {sha[:12]}",
+                payload={"stop_checkpoint": sha, "branch": branch, "certified": False},
+            )
+        except Exception as exc:  # noqa: BLE001 -- the stop's own reason stays the reason
+            # A git call's error text can carry the authenticated remote URL
+            # (a timed-out command prints its whole argv): scrubbed before it
+            # reaches the log or the ledger.
+            from app.factory.build.builds_push import _scrub, builds_token
+
+            error = _scrub(f"{type(exc).__name__}: {exc}", builds_token(os.environ))
+            logger.warning("stop checkpoint failed: %s", error)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=phase,
+                detail=f"stop checkpoint not pushed: {type(exc).__name__}",
+                payload={
+                    "stop_checkpoint": "",
+                    "branch": branch,
+                    "push_error": error[:300],
+                },
+            )
+        finally:
+            remove_staging(tree)
 
     def _rework_rounds_this_cycle(self) -> int:
         return sum(1 for e in self._cycle_events() if e.kind is EventKind.REWORK)
@@ -2019,9 +2131,12 @@ class RoleRunner:
         gate_round: int,
         build_round: int,
         reason: str = "",
+        gate_budget: Optional[int] = None,
     ) -> Dict[str, Any]:
         """One decision as the ledger and the Floor carry it: gate, class,
-        round (this gate's n/2 and the build's n/6), check, finding."""
+        round (this gate's n of its budget and the build's n/6), check,
+        finding. ``gate_budget``: the budget the round is counted against when
+        it is not the build's ``max_rework`` (the grader's own REWORK_BUDGET)."""
         from app.factory.build import brief_gates
         from app.factory.build import rule_decision as rd
 
@@ -2034,20 +2149,33 @@ class RoleRunner:
             rd.CLASS: kind,
             rd.ROUND_GATE: gate_round,
             rd.ROUND_BUILD: build_round,
-            "gate_budget": int(self.budget.max_rework),
+            "gate_budget": int(self.budget.max_rework if gate_budget is None else gate_budget),
             "build_ceiling": REWORK_CEILING,
             "gate_name": str(getattr(verdict, "gate", "") or ""),
             "reason": reason,
         }
 
-    def _stop(self, outcome: "Outcome", reason: str, verdict: Any, role: BuildRole) -> GateDecision:
+    def _stop(
+        self,
+        outcome: "Outcome",
+        reason: str,
+        verdict: Any,
+        role: BuildRole,
+        *,
+        gate_round: Optional[int] = None,
+        gate_budget: Optional[int] = None,
+    ) -> GateDecision:
+        """The rule's STOP: the decision record the run's terminal event
+        carries. ``gate_round`` / ``gate_budget``: the rounds and the budget
+        of a gate that counts its own (the grader); else this role's."""
         rec = self._decision_record(
             DECISION_STOP,
             role=role,
             verdict=verdict,
-            gate_round=self._rework_rounds_at(role),
+            gate_round=self._rework_rounds_at(role) if gate_round is None else gate_round,
             build_round=self._rework_rounds_this_build(),
             reason=reason,
+            gate_budget=gate_budget,
         )
         from app.factory.build.rule_decision import stop_status
 
@@ -2058,6 +2186,48 @@ class RoleRunner:
             detail=detail,
             findings=tuple(getattr(verdict, "findings", None) or ()),
             record=rec,
+        )
+
+    def _ceiling_stop(
+        self,
+        role: BuildRole,
+        verdict: Any,
+        *,
+        source: str = "",
+        gate_round: Optional[int] = None,
+        gate_budget: Optional[int] = None,
+    ) -> Optional[GateDecision]:
+        """The build ceiling, ONE check for every gate that sends work back
+        (the gates ``decide`` judges and the grader's handback): with
+        REWORK_CEILING rounds spent, one more failure is the rule's STOP --
+        FAILED_BUDGET_SPENT with its decision record -- never a round. None
+        while the build has a round left."""
+        if self._rework_rounds_this_build() < REWORK_CEILING:
+            return None
+        return self._stop(
+            Outcome.FAILED_BUDGET_SPENT,
+            f"build rework ceiling of {REWORK_CEILING} reached; "
+            f"{source or role.value} gate still failing: {verdict.detail}",
+            verdict,
+            role,
+            gate_round=gate_round,
+            gate_budget=gate_budget,
+        )
+
+    def _grader_gate_verdict(self, grade_verdict: Any) -> GateResult:
+        """The grader's NOT_CERTIFIED verdict in the shape the runner rule
+        records: the gate is the grader's own, the findings are the items the
+        writer is handed. A view for the decision record only -- the grader's
+        verdict itself is not changed."""
+        from app.factory.build.grader import GRADER_GATE
+
+        items = [str(item) for item in grade_verdict.writer_items]
+        return GateResult(
+            ok=False,
+            gate=GRADER_GATE,
+            reason=str(grade_verdict.tier),
+            detail="; ".join(items)[:400] or "-",
+            findings=items,
         )
 
     def decide(
@@ -2233,14 +2403,9 @@ class RoleRunner:
                 verdict,
                 role,
             )
-        if build_rounds >= REWORK_CEILING:
-            return self._stop(
-                Outcome.FAILED_BUDGET_SPENT,
-                f"build rework ceiling of {REWORK_CEILING} reached; "
-                f"{role.value} gate still failing: {verdict.detail}",
-                verdict,
-                role,
-            )
+        ceiling = self._ceiling_stop(role, verdict)
+        if ceiling is not None:
+            return ceiling
 
         if role is BuildRole.WRITER:
             work = tuple(_writer_gate_items(verdict))
@@ -2682,6 +2847,7 @@ class RoleRunner:
             detail=detail,
             payload=payload,
         )
+        self._checkpoint_stop(outcome, phase)
         if kind is EventKind.RUN_FAILED and outcome is not Outcome.STOPPED_BY_OWNER:
             # A stopped build makes no further model call, not even to
             # narrate itself: the owner said why it ended.
@@ -3770,6 +3936,38 @@ class RoleRunner:
                         for event in grader_events:
                             previous.update((event.payload or {}).get("failure_names") or [])
                         items = tuple(grade_verdict.writer_items)
+                        # The ceiling is asked FIRST: when the grader's last
+                        # round is also the build's last, the build has no fix
+                        # round left, and the stop must say so (rounds_spent,
+                        # with the rule's STOP record) -- not "a check refused,
+                        # with the rounds this build has left".
+                        # The build ceiling governs the grader too: its
+                        # rounds count toward the build total, so a grader
+                        # round with the build's REWORK_CEILING spent ends the
+                        # run through the SAME check decide() runs for any
+                        # other gate (_ceiling_stop). The terminal event
+                        # carries the rule's STOP record, so the stop reads as
+                        # fix rounds spent, never as a time budget.
+                        gate_verdict = self._grader_gate_verdict(grade_verdict)
+                        ceiling = self._ceiling_stop(
+                            BuildRole.WRITER,
+                            gate_verdict,
+                            source="GRADER",
+                            gate_round=rounds,
+                            gate_budget=REWORK_BUDGET,
+                        )
+                        if ceiling is not None:
+                            self._grader_stop(grade_verdict, "grader_build_ceiling")
+                            return self._finish(
+                                ceiling.outcome or Outcome.FAILED_BUDGET_SPENT,
+                                f"GRADER: {NOT_CERTIFIED} -- build rework ceiling of "
+                                f"{REWORK_CEILING} reached after {rounds} grader round(s): "
+                                + ("; ".join(items)[:400] or "-"),
+                                phase=role,
+                                rework=rework_used,
+                                findings=list(grade_verdict.items),
+                                decision=ceiling.record,
+                            )
                         if rounds >= REWORK_BUDGET:
                             repeated = sorted(set(items) & previous)
                             stop_reason = (
@@ -3786,8 +3984,21 @@ class RoleRunner:
                                 rework=rework_used,
                                 findings=list(grade_verdict.items),
                             )
+                        build_rounds = self._rework_rounds_this_build()
+                        # Every round the rule sends back is a decision record
+                        # (the Floor counts fix rounds from them). The
+                        # grader's round is one too, counted against its own
+                        # budget and the build's ceiling.
+                        rec = self._decision_record(
+                            DECISION_REWORK,
+                            role=BuildRole.WRITER,
+                            verdict=gate_verdict,
+                            gate_round=rounds + 1,
+                            build_round=build_rounds + 1,
+                            gate_budget=REWORK_BUDGET,
+                        )
                         self._grant_rework_wall(
-                            BuildRole.WRITER, build_round=self._rework_rounds_this_build() + 1
+                            BuildRole.WRITER, build_round=build_rounds + 1
                         )
                         from app.factory.build.grader_findings import log_handback
 
@@ -3799,7 +4010,8 @@ class RoleRunner:
                             role=BuildRole.WRITER,
                             detail=(
                                 f"GRADER: {NOT_CERTIFIED} -- writer handback "
-                                f"round {rounds + 1}/{REWORK_BUDGET}: "
+                                f"round {rounds + 1}/{REWORK_BUDGET} "
+                                f"(build {build_rounds + 1}/{REWORK_CEILING}): "
                                 + ("; ".join(items)[:400] or "-")
                             ),
                             payload={
@@ -3809,7 +4021,9 @@ class RoleRunner:
                                 "work_list": list(items),
                                 "failure_names": list(items),
                                 "round": rounds + 1,
+                                "round_build": build_rounds + 1,
                                 "grader_tier": NOT_CERTIFIED,
+                                "decision": rec,
                             },
                         )
                         work_list = items
