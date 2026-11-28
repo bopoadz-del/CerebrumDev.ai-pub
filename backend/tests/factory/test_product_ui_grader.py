@@ -728,14 +728,25 @@ def test_redact(text, secret, want):
 
 
 @pytest.mark.parametrize("secret", ["s3cret", "other-9"])
-def test_scrub_files_rewrites_only_the_files_holding_the_secret(tmp_path, secret):
-    (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "hit.json").write_text(f'{{"h": "Bearer {secret}"}}', encoding="utf-8")
-    (tmp_path / "clean.txt").write_text("no token", encoding="utf-8")
-    assert ug.scrub_files(tmp_path, secret) == ["a/hit.json"]
-    assert (tmp_path / "a" / "hit.json").read_text(encoding="utf-8") == f'{{"h": "Bearer {ug.REDACTED}"}}'
-    assert (tmp_path / "clean.txt").read_text(encoding="utf-8") == "no token"
-    assert ug.scrub_files(tmp_path, "") == []
+def test_keep_redacted_copies_every_file_and_redacts_the_ones_holding_the_secret(tmp_path, secret):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    (src / "a").mkdir(parents=True)
+    (src / "a" / "hit.json").write_text(f'{{"h": "Bearer {secret}"}}', encoding="utf-8")
+    (src / "clean.txt").write_text("no token", encoding="utf-8")
+    assert ug.keep_redacted(src, dest, secret) == ["a/hit.json", "clean.txt"]
+    assert (dest / "a" / "hit.json").read_text(encoding="utf-8") == f'{{"h": "Bearer {ug.REDACTED}"}}'
+    assert (dest / "clean.txt").read_text(encoding="utf-8") == "no token"
+    # What the run wrote is left as it was: only the kept copy is redacted.
+    assert secret in (src / "a" / "hit.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", ["a.json", "deep/b.txt"])
+def test_keep_redacted_with_no_secret_copies_the_files_as_they_are(tmp_path, name):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    (src / name).parent.mkdir(parents=True, exist_ok=True)
+    (src / name).write_bytes(b"Bearer  and [grading bearer] stay as written")
+    assert ug.keep_redacted(src, dest, "") == [name]
+    assert (dest / name).read_bytes() == b"Bearer  and [grading bearer] stay as written"
 
 
 # --- the scrub runs on every way out of the run ------------------------------
@@ -894,10 +905,12 @@ def test_the_grade_is_read_before_the_scrub_whatever_the_boots_token_is(tmp_path
 
 
 @pytest.mark.parametrize("copies", [2, 3])
-def test_scrub_files_leaves_no_copy_of_a_secret_a_file_holds_more_than_once(tmp_path, copies):
-    (tmp_path / "log.txt").write_text(" and ".join(["Bearer tok-9"] * copies), encoding="utf-8")
-    assert ug.scrub_files(tmp_path, "tok-9") == ["log.txt"]
-    assert (tmp_path / "log.txt").read_text(encoding="utf-8") == " and ".join([f"Bearer {ug.REDACTED}"] * copies)
+def test_keep_redacted_leaves_no_copy_of_a_secret_a_file_holds_more_than_once(tmp_path, copies):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    src.mkdir()
+    (src / "log.txt").write_text(" and ".join(["Bearer tok-9"] * copies), encoding="utf-8")
+    assert ug.keep_redacted(src, dest, "tok-9") == ["log.txt"]
+    assert (dest / "log.txt").read_text(encoding="utf-8") == " and ".join([f"Bearer {ug.REDACTED}"] * copies)
 
 
 @pytest.mark.parametrize("status", [302, 307])
@@ -913,126 +926,102 @@ def test_a_first_page_that_redirects_to_another_origin_is_opened_there_without_t
     assert base.asked == [("/", f"Bearer {token}")] and other.asked == [("/landing", "")]
 
 
-# --- every file is scrubbed by itself -----------------------------------------
-_HELD = ("a-first/trace.txt", "m/mid.json", "report.json")
-
-
-def _three_files(root, secret):
-    for rel in _HELD:
-        f = root / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(f"Authorization: Bearer {secret}", encoding="utf-8")
-
-
-def _deny(monkeypatch, *, read=(), write=(), unlink=()):
-    """Files by name that fail to be read, rewritten or removed, as a file
-    another process holds does."""
-    real_read, real_write, real_unlink = _P.read_bytes, _P.write_bytes, _P.unlink
-
-    def read_bytes(self):
-        if self.name in read:
-            raise PermissionError(13, "held", str(self))
-        return real_read(self)
-
-    def write_bytes(self, data):
-        if self.name in write:
-            raise PermissionError(13, "held", str(self))
-        return real_write(self, data)
-
-    def unlink_(self, missing_ok=False):
-        if self.name in unlink:
-            raise PermissionError(13, "held", str(self))
-        return real_unlink(self, missing_ok=missing_ok)
-
-    monkeypatch.setattr(_P, "read_bytes", read_bytes)
-    monkeypatch.setattr(_P, "write_bytes", write_bytes)
-    monkeypatch.setattr(_P, "unlink", unlink_)
-
-
-def _holding(root, secret):
-    return sorted(p.name for p in root.rglob("*") if p.is_file() and secret.encode() in p.open("rb").read())
-
-
-@pytest.mark.parametrize("held", ["trace.txt", "report.json"])
-@pytest.mark.parametrize("how", ["read", "write"])
-def test_a_file_the_scrub_cannot_read_or_rewrite_is_removed_and_the_others_are_scrubbed(tmp_path, monkeypatch, held, how):
-    _three_files(tmp_path, "tok-9")
-    _deny(monkeypatch, **{how: (held,)})
-    assert ug.scrub_files(tmp_path, "tok-9") == list(_HELD)
-    kept = sorted(p.name for p in tmp_path.rglob("*") if p.is_file())
-    assert kept == sorted({"trace.txt", "mid.json", "report.json"} - {held})
-    assert _holding(tmp_path, "tok-9") == []
-
-
-@pytest.mark.parametrize("held", ["trace.txt", "report.json"])
-def test_a_file_the_scrub_can_neither_rewrite_nor_remove_is_named_after_the_others_are_scrubbed(tmp_path, monkeypatch, held):
-    """The first file in order failing must not leave the later ones
-    unscrubbed, nor the last one the earlier ones."""
-    _three_files(tmp_path, "tok-9")
-    _deny(monkeypatch, write=(held,), unlink=(held,))
-    with pytest.raises(ug.ScrubIncomplete) as caught:
-        ug.scrub_files(tmp_path, "tok-9")
-    assert caught.value.left == [rel for rel in _HELD if rel.endswith(held)]
-    assert "tok-9" not in str(caught.value)
-    assert _holding(tmp_path, "tok-9") == [held]
-
-
-@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
-def test_grade_ui_scrubs_every_other_file_when_one_cannot_be_scrubbed(tmp_path, monkeypatch, token):
-    _boot_token(monkeypatch, token)
-    _deny(monkeypatch, write=("error-context.md",), unlink=("error-context.md",))
-    with pytest.raises(ug.ScrubIncomplete) as caught:
-        ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True))
-    assert caught.value.left == ["test-results/load/error-context.md"] and token not in str(caught.value)
-    assert _holding(tmp_path, token) == ["error-context.md"]
-    assert ug.REDACTED in (tmp_path / "report.json").read_text(encoding="utf-8")
-
-
-# --- the run's time cap ends every process the run started --------------------
-import os as _os  # noqa: E402
-import sys as _sys2  # noqa: E402
+# --- the kept folder holds only what the grade copied into it ------------------
+import threading as _threading  # noqa: E402
 import time as _time  # noqa: E402
 
 
-@pytest.mark.parametrize("code, text", [(0, "one"), (3, "two")])
-def test_run_tree_returns_what_the_run_printed_and_its_exit_code(code, text):
-    p = ug.run_tree([_sys2.executable, "-c", f"import sys; print({text!r}); sys.exit({code})"],
-                    timeout=60, capture_output=True, text=True)
-    assert (p.returncode, p.stdout.strip(), p.stderr) == (code, text, "")
+def _files_holding(root, secret):
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() and secret.encode() in p.read_bytes())
 
 
-@pytest.mark.parametrize("cap", [0.3, 0.6])
-def test_run_tree_raises_at_the_time_cap(cap):
-    with pytest.raises(subprocess.TimeoutExpired):
-        ug.run_tree([_sys2.executable, "-c", "import time; time.sleep(30)"], timeout=cap, capture_output=True, text=True)
+@pytest.mark.parametrize("held", ["trace.txt", "report.json"])
+def test_a_file_that_cannot_be_read_is_not_kept_and_the_others_are(tmp_path, monkeypatch, held):
+    """One file failing must not stop the others, first in order or last."""
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    for rel in ("a-first/trace.txt", "m/mid.json", "report.json"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("Authorization: Bearer tok-9", encoding="utf-8")
+    real_read = _P.read_bytes
+
+    def read_bytes(self):
+        if self.name == held:
+            raise PermissionError(13, "held by another process", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(_P, "read_bytes", read_bytes)
+    kept = ug.keep_redacted(src, dest, "tok-9")
+    monkeypatch.setattr(_P, "read_bytes", real_read)
+    assert kept == [rel for rel in ("a-first/trace.txt", "m/mid.json", "report.json") if not rel.endswith(held)]
+    assert sorted(p.name for p in dest.rglob("*") if p.is_file()) == sorted({"trace.txt", "mid.json", "report.json"} - {held})
+    assert _files_holding(dest, "tok-9") == []
 
 
-#: A run that starts a process of its own, which writes a file later, and
-#: then hangs: what a Playwright runner left behind by its launcher does.
-_LATE_WRITER = (
-    "import subprocess, sys, time\n"
-    "subprocess.Popen([sys.executable, '-c', "
-    "\"import sys, time, pathlib; time.sleep(float(sys.argv[2])); pathlib.Path(sys.argv[1]).write_text('late')\", "
-    "sys.argv[1], sys.argv[2]])\n"
-    "time.sleep(30)\n"
-)
+def _run_with_a_late_writer(token, delay, *, raises):
+    """A run that leaves something behind which writes the bearer into the
+    run's own folder LATER (a process that outlived the run's time cap),
+    then returns its report or raises as a time cap does."""
+    leak = _leaky_run(token, report=True)
+
+    def run(cmd, **kw):
+        leak(cmd, **kw)
+        late = _P(kw["cwd"]) / "written-late.log"
+
+        def write_later():
+            _time.sleep(delay)
+            try:
+                late.parent.mkdir(parents=True, exist_ok=True)
+                late.write_text(f"Authorization: Bearer {token}", encoding="utf-8")
+            except OSError:
+                pass  # the run's folder is gone: that is the point
+
+        _threading.Thread(target=write_later, daemon=True).start()
+        if raises:
+            raise subprocess.TimeoutExpired(["npx"], 5)
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+    return run
 
 
-@pytest.mark.skipif(_os.name != "posix", reason="a process group is POSIX; elsewhere run_tree is subprocess.run")
-@pytest.mark.parametrize("delay", ["1.0", "1.5"])
-def test_the_time_cap_ends_a_process_the_run_had_started(tmp_path, delay):
-    late = tmp_path / "late.txt"
-    with pytest.raises(subprocess.TimeoutExpired):
-        ug.run_tree([_sys2.executable, "-c", _LATE_WRITER, str(late), delay], timeout=0.4, capture_output=True, text=True)
-    _time.sleep(float(delay) + 1.5)
-    assert not late.exists(), "a process the run started outlived the cap and wrote a file"
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+@pytest.mark.parametrize("raises", [True, False])
+def test_what_a_run_writes_after_it_ended_never_reaches_the_kept_folder(tmp_path, monkeypatch, token, raises):
+    """Whether the run returned or hit its cap, a write that comes later
+    lands in the run's own folder (or nowhere), never in the folder the
+    build keeps; and what the run wrote in time is kept, redacted."""
+    _boot_token(monkeypatch, token)
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_run_with_a_late_writer(token, 0.4, raises=raises))
+    _time.sleep(1.0)
+    kept = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file())
+    assert "written-late.log" not in kept
+    assert "report.json" in kept and "test-results/load/error-context.md" in kept
+    assert _files_holding(tmp_path, token) == []
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_the_run_happens_outside_the_kept_folder(tmp_path, bp):
+    """The spec, the report and the fixtures are handed to the run in a
+    folder that is not the kept one, and that folder is gone afterwards."""
+    seen = {}
+
+    def run(cmd, **kw):
+        seen.update(cwd=_P(kw["cwd"]), spec=_P(cmd[3]), out=_P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]),
+                    fixtures=_P(kw["env"]["GRADE_FIXTURES"]))
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    ug.grade_ui(bp, tmp_path / "kept", base_url="http://127.0.0.1:9", run=run)
+    kept = (tmp_path / "kept").resolve()
+    for where in seen.values():
+        assert kept not in where.resolve().parents and where.resolve() != kept
+    assert seen["spec"].parent == seen["cwd"] == seen["out"].parent
+    assert not seen["cwd"].exists()
+    assert (tmp_path / "kept" / "grade_ui.spec.ts").read_text(encoding="utf-8") == ug.render_spec(bp)
 
 
 @pytest.mark.parametrize("fn", ["grade_ui", "toolchain_check"])
-def test_the_grade_and_the_toolchain_check_run_through_run_tree(fn):
+def test_the_grade_and_the_toolchain_check_start_the_run_as_master_does(fn):
     import inspect
 
-    assert inspect.signature(getattr(ug, fn)).parameters["run"].default is ug.run_tree
+    assert inspect.signature(getattr(ug, fn)).parameters["run"].default is subprocess.run
 
 
 # --- the page is signed in by headers alone: an upload arrives whole ----------

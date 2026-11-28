@@ -31,10 +31,8 @@ A skipped UI run is never a pass.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -647,78 +645,30 @@ def redact(text: Any, secret: str) -> str:
     return text.replace(secret, REDACTED) if secret else text
 
 
-class ScrubIncomplete(OSError):
-    """Files under the work dir that could be neither read and rewritten nor
-    removed, so they may still hold the run's bearer. ``left`` names them,
-    relative to the work dir."""
+def keep_redacted(src: Path, dest: Path, secret: str) -> List[str]:
+    """Copy what a run wrote under ``src`` into ``dest``, the folder the
+    build keeps, with every copy of ``secret`` replaced by :data:`REDACTED`
+    (Playwright's call log lists a failed request's headers, so the run's
+    bearer can be in anything the run wrote). The paths kept, relative to
+    ``dest``. An empty ``secret`` copies the files as they are.
 
-    def __init__(self, left: List[str]) -> None:
-        super().__init__("the run's bearer could not be scrubbed from: " + ", ".join(left))
-        self.left = list(left)
-
-
-def scrub_files(root: Path, secret: str) -> List[str]:
-    """Playwright's call log lists a failed request's headers, so the run's
-    bearer can land in anything the run writes (the JSON report, an error
-    context). Rewrite every file under ``root`` that holds ``secret`` with
-    it redacted; the paths dealt with, relative to ``root``. Nothing is
-    rewritten for an empty ``secret``.
-
-    Every file is dealt with by itself, so one that fails never leaves the
-    others unscrubbed. A file that cannot be read or rewritten is removed
-    (nothing the grade reads is on disk: it was read before this ran). One
-    that cannot be removed either is named in :class:`ScrubIncomplete`,
-    raised after every other file has been dealt with."""
-    if not secret:
-        return []
+    ``dest`` only ever receives what this function writes, and it writes
+    only redacted bytes. So nothing the run writes later -- a process that
+    outlived the run's time cap goes on writing into ``src`` -- can reach
+    the kept folder, and a file that cannot be read is simply not kept."""
     needle = secret.encode("utf-8")
-    done, left = [], []
-    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
-        rel = path.relative_to(root).as_posix()
+    kept = []
+    for path in sorted(p for p in Path(src).rglob("*") if p.is_file()):
+        rel = path.relative_to(src)
         try:
             data = path.read_bytes()
-            if needle not in data:
-                continue
-            path.write_bytes(data.replace(needle, REDACTED.encode("utf-8")))
         except OSError:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                left.append(rel)
-                continue
-        done.append(rel)
-    if left:
-        raise ScrubIncomplete(left)
-    return done
-
-
-#: How a run that passed its time cap is ended. Where the system has process
-#: groups (POSIX) the run is started as its own group and the whole group is
-#: killed: the launcher, the Playwright runner it started and every browser.
-#: Where it has none, the process that was started is killed.
-END_RUN: Any = (
-    (lambda proc: os.killpg(proc.pid, signal.SIGKILL)) if hasattr(os, "killpg") else (lambda proc: proc.kill())
-)
-
-
-def run_tree(cmd: Any, *, timeout: Any = None, **kw: Any) -> Any:
-    """``subprocess.run`` whose time cap ends EVERY process the run started.
-
-    ``subprocess.run`` ends only the process it started; a Playwright runner
-    that process had started would live on and write its report after the
-    grade had scrubbed the work dir. Here the run is started as its own
-    session, and when the cap passes or the wait is interrupted it is ended
-    by :data:`END_RUN`. Same arguments and same result as
-    ``subprocess.run``."""
-    pipes = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE} if kw.pop("capture_output", False) else {}
-    with subprocess.Popen(cmd, start_new_session=True, **pipes, **kw) as proc:
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except BaseException:
-            END_RUN(proc)
-            proc.communicate()
-            raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+            continue
+        target = Path(dest) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data.replace(needle, REDACTED.encode("utf-8")) if needle else data)
+        kept.append(rel.as_posix())
+    return kept
 
 
 #: The toolchain probe: one test that needs node, Playwright and a browser
@@ -739,7 +689,7 @@ class ToolchainStatus:
     detail: str
 
 
-def toolchain_check(*, run: Any = run_tree, which: Any = shutil.which) -> ToolchainStatus:
+def toolchain_check(*, run: Any = subprocess.run, which: Any = shutil.which) -> ToolchainStatus:
     """Can the UI grade run HERE? Runs a one-test spec through the exact
     command and environment ``grade_ui`` uses; ok only if that test passed.
     Used at grade time and, in CI, inside the built runtime image as the app
@@ -773,43 +723,49 @@ def grade_ui(
     workdir: Path | str,
     *,
     base_url: Optional[str],
-    run: Any = run_tree,
+    run: Any = subprocess.run,
     brief: Any = _UNSET,
 ) -> UiGrade:
     """Run the plan's steps against ``base_url``. Every step carries the
     grading boot's bearer (``grading_bearer``, the one source: no caller
-    hands this function a token). The report is read before the files the
-    run wrote are scrubbed of the bearer, so the scrub can never change what
-    is graded; the scrub runs however the run ended."""
+    hands this function a token).
+
+    The run happens in a scratch folder of its own. ``workdir``, the folder
+    the build keeps, receives only a copy with the bearer redacted
+    (:func:`keep_redacted`), made once the run has ended, however it ended.
+    The grade is read from the report as the run wrote it, before that copy
+    is made; nothing written later by a process that outlived the run can
+    reach ``workdir``."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
     if not base_url:
         return UiGrade([], ["UI run did not happen: no base URL for the rendered product"])
-    if run is run_tree:
+    if run is subprocess.run:
         toolchain = toolchain_check()
         if not toolchain.ok:
             return UiGrade([], [f"UI run did not happen: UI toolchain unavailable: {toolchain.detail}"])
     wd = Path(workdir)
     wd.mkdir(parents=True, exist_ok=True)
-    fx = write_fixtures(blueprint, wd / "fixtures", brief)
-    (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
-    out = wd / "report.json"
-    fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
+    scratch = Path(tempfile.mkdtemp(prefix="ui-grade-run-"))
+    fx = write_fixtures(blueprint, scratch / "fixtures", brief)
+    (scratch / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
+    out = scratch / "report.json"
+    fixtures = fx["pdf"].parent if fx.get("pdf") else scratch / "fixtures"
     token = grading_bearer()
     try:
-        proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
+        proc = _playwright_run(run, scratch / "grade_ui.spec.ts", base_url=base_url, out=out,
                                fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
         # Read as the run wrote it: the grade is made from this text, never
-        # from a file the scrub below has rewritten.
+        # from the redacted copy.
         report_text = _report_text(out, proc)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     finally:
         # Whatever ended the run (a report, a timeout, a crash, an
-        # interrupt), the files it wrote are scrubbed before anything else
-        # reads the work dir.
-        scrub_files(wd, token)
+        # interrupt): keep a redacted copy, then drop the scratch folder.
+        keep_redacted(scratch, wd, token)
+        shutil.rmtree(scratch, ignore_errors=True)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
     return parse_report(json.loads(report_text), blueprint, brief)
