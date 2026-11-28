@@ -592,16 +592,31 @@ def test_grading_bearer_is_the_gate_run_token(env, want):
     assert ug.grading_bearer(env) == want
 
 
-@pytest.mark.parametrize("bearer,want", [
+def _boot_token(monkeypatch, token):
+    """The grading boot's token for this test: the one source ``grade_ui``
+    reads (it takes no token from its caller)."""
+    monkeypatch.setitem(GATE_RUN_ENV, GATE_TOKEN_VAR, token)
+
+
+@pytest.mark.parametrize("boot,want", [
     (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
-    ("given-token", "given-token"),
+    ("another-boot-token", "another-boot-token"),
+    ("  padded-token  ", "padded-token"),
     ("", None),
+    ("   ", None),
 ])
-def test_grade_ui_hands_the_bearer_to_the_run(tmp_path, bearer, want):
+def test_grade_ui_hands_the_boots_bearer_to_the_run(tmp_path, monkeypatch, boot, want):
+    if boot is not None:
+        _boot_token(monkeypatch, boot)
     seen = {}
-    kw = {} if bearer is None else {"bearer": bearer}
-    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=lambda cmd, **k: seen.update(k["env"]), **kw)
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=lambda cmd, **k: seen.update(k["env"]))
     assert seen.get(ug.BEARER_ENV) == want
+
+
+def test_grade_ui_takes_no_token_from_its_caller():
+    import inspect
+
+    assert "bearer" not in inspect.signature(ug.grade_ui).parameters
 
 
 @pytest.mark.parametrize("bearer,want", [("", None), ("abc", "abc"), ("dev-x", "dev-x")])
@@ -651,8 +666,9 @@ def _leaky_run(token: str, *, report: bool):
 
 
 @pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
-def test_the_bearer_is_redacted_from_the_report_and_every_file_the_run_wrote(tmp_path, token):
-    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True), bearer=token)
+def test_the_bearer_is_redacted_from_the_report_and_every_file_the_run_wrote(tmp_path, monkeypatch, token):
+    _boot_token(monkeypatch, token)
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True))
     written = [p for p in tmp_path.rglob("*") if p.is_file()]
     assert written and not any(token.encode() in p.read_bytes() for p in written)
     assert ug.REDACTED in (tmp_path / "report.json").read_text(encoding="utf-8")
@@ -661,8 +677,9 @@ def test_the_bearer_is_redacted_from_the_report_and_every_file_the_run_wrote(tmp
 
 
 @pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
-def test_the_bearer_is_redacted_from_the_quoted_stderr_when_no_report_came(tmp_path, token):
-    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=False), bearer=token)
+def test_the_bearer_is_redacted_from_the_quoted_stderr_when_no_report_came(tmp_path, monkeypatch, token):
+    _boot_token(monkeypatch, token)
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=False))
     (err,) = g.errors
     assert "no playwright report" in err and token not in err and ug.REDACTED in err
 
@@ -680,8 +697,9 @@ def _run_then(exc: BaseException, token: str):
 
 @pytest.mark.parametrize("token", ["dev-local-token", "tok-XYZ-123"])
 @pytest.mark.parametrize("exc", [subprocess.TimeoutExpired(["npx"], 5), OSError("node died")])
-def test_the_bearer_is_scrubbed_when_the_run_times_out_or_crashes(tmp_path, token, exc):
-    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_run_then(exc, token), bearer=token)
+def test_the_bearer_is_scrubbed_when_the_run_times_out_or_crashes(tmp_path, monkeypatch, token, exc):
+    _boot_token(monkeypatch, token)
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_run_then(exc, token))
     assert g.errors == [f"UI run did not happen: {type(exc).__name__}"] and not g.ran
     written = [p for p in tmp_path.rglob("*") if p.is_file()]
     assert (tmp_path / "report.json") in written
@@ -722,12 +740,13 @@ def test_scrub_files_rewrites_only_the_files_holding_the_secret(tmp_path, secret
 
 # --- the scrub runs on every way out of the run ------------------------------
 @pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
-def test_the_bearer_is_scrubbed_even_when_the_run_is_interrupted(tmp_path, token):
+def test_the_bearer_is_scrubbed_even_when_the_run_is_interrupted(tmp_path, monkeypatch, token):
     """An interrupt is not a recorded FAIL -- it leaves ``grade_ui`` as it
     came -- and what the run wrote before it is scrubbed all the same."""
+    _boot_token(monkeypatch, token)
     with pytest.raises(KeyboardInterrupt):
         ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
-                    run=_run_then(KeyboardInterrupt(), token), bearer=token)
+                    run=_run_then(KeyboardInterrupt(), token))
     written = [p for p in tmp_path.rglob("*") if p.is_file()]
     assert (tmp_path / "report.json") in written
     assert not any(token.encode() in p.read_bytes() for p in written)
@@ -767,3 +786,115 @@ def test_a_screen_whose_address_does_not_answer_200_fails_naming_the_status(tmp_
     with h.server({"/": status}) as base:
         got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load", "screen"))
     assert got["screen:tenant_portal"] == f"failed: expected 200 got {status}"
+
+
+# --- a redirect never carries the bearer off the product's origin ------------
+def _first(bp):
+    return _route(bp["capabilities"][0]["id"])
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("status", [302, 307])
+def test_a_page_file_that_redirects_to_another_origin_arrives_there_without_the_bearer(tmp_path, bp, status):
+    """The product's page asks for one of its own files, and the product
+    answers with a redirect to another origin. The product is asked with
+    the bearer; the other origin is asked without it."""
+    token = "the-boot-token"
+    with h.server({}) as other:
+        page = '<html><script src="/hop.js"></script></html>'
+        with h.server({"/hop.js": status}, bodies={"/": page}, token=token,
+                      locations={"/hop.js": f"{other}/landing"}) as base:
+            got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=token)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert ("/hop.js", f"Bearer {token}") in base.asked and {a for _k, a in base.asked} == {f"Bearer {token}"}
+    assert other.asked and set(other.asked) == {("/landing", "")}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("status", [302, 307])
+def test_a_route_that_redirects_to_another_origin_is_followed_without_the_bearer(tmp_path, bp, status):
+    token = "the-boot-token"
+    with h.server({}) as other:
+        with h.server({_first(bp): status}, token=token, locations={_first(bp): f"{other}/landing"}) as base:
+            got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got[f"route:{_first(bp)}"] == "passed"
+    assert {a for _k, a in base.asked} == {f"Bearer {token}"}
+    assert other.asked == [("/landing", "")]
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("status", [301, 307])
+def test_a_route_that_redirects_on_its_own_origin_is_followed_with_the_bearer(tmp_path, bp, status):
+    """The negative of the two above: a redirect that stays on the product
+    (the usual added slash) is followed signed in, and the step passes on a
+    protected product."""
+    token = "the-boot-token"
+    first = _first(bp)
+    with h.server({first: status}, token=token, locations={first: first + "/"}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert (first, f"Bearer {token}") in base.asked and (first + "/", f"Bearer {token}") in base.asked
+
+
+@pytest.mark.parametrize("status,again,bodies", [
+    # 307 and 308 repeat the request: the POST and its body arrive again
+    (307, "POST {t}/", 2),
+    (308, "POST {t}/", 2),
+    # any other redirect is followed with a GET and no body
+    (302, "{t}/", 1),
+    (303, "{t}/", 1),
+])
+def test_a_redirected_post_is_repeated_or_followed_as_a_browser_would(tmp_path, status, again, bodies):
+    token = "the-boot-token"
+    first = _first(BP)
+    key = again.format(t=first)
+    with h.server({"POST " + first: status, key: 422}, token=token, locations={"POST " + first: first + "/"}) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("honest_error",), bearer=token)
+    assert got == {f"honest_error:{first}": "passed"}
+    assert base.asked == [("POST " + first, f"Bearer {token}"), (key, f"Bearer {token}")]
+    assert [data for _path, data in base.seen] == [b'"not-an-object"'] * bodies
+
+
+@pytest.mark.parametrize("loop", [1, 2])
+def test_a_route_that_redirects_for_ever_fails_after_a_fixed_number_of_hops(tmp_path, loop):
+    first = _first(BP)
+    ring = [first] + [f"{first}/{i}" for i in range(1, loop)]
+    locations = {ring[i]: ring[(i + 1) % loop] for i in range(loop)}
+    with h.server({k: 302 for k in ring}, locations=locations) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("route",), bearer="")
+    assert got[f"route:{first}"] == "failed: expected 200 got 302"
+    assert len([k for k, _a in base.asked if k in ring]) == 11
+
+
+@pytest.mark.parametrize("bearer", ["the-boot-token", ""])
+def test_a_product_that_is_down_fails_its_page_step_signed_in_or_not(tmp_path, bearer):
+    """Signed in, the page's request is made for it and cannot connect: the
+    step fails as it does with no sign-in, it does not hang."""
+    got = h.run_spec(ug.render_spec(BP), tmp_path, "http://127.0.0.1:9", only_kinds=("load",), bearer=bearer)
+    assert got["load:/"].startswith("failed")
+
+
+# --- the scrub can never change what is graded --------------------------------
+def _all_passed_run(names):
+    def run(cmd, **kw):
+        _P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(_report(names), indent=2), encoding="utf-8")
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    return run
+
+
+@pytest.mark.parametrize("token", ["e", "passed", "status", '"'])
+def test_the_grade_is_read_before_the_scrub_whatever_the_boots_token_is(tmp_path, monkeypatch, token):
+    """A token that is also a word of the report itself: the scrub rewrites
+    the file on disk, and the grade is still the one the run reported."""
+    _boot_token(monkeypatch, token)
+    names = [s.name for s in ug.ui_plan(BP)]
+    g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9", run=_all_passed_run(names))
+    assert g.errors == [] and [s["name"] for s in g.steps] == names and all(s["passed"] for s in g.steps)
+    assert ug.REDACTED.encode() in (tmp_path / "report.json").read_bytes()
+
+
+@pytest.mark.parametrize("copies", [2, 3])
+def test_scrub_files_leaves_no_copy_of_a_secret_a_file_holds_more_than_once(tmp_path, copies):
+    (tmp_path / "log.txt").write_text(" and ".join(["Bearer tok-9"] * copies), encoding="utf-8")
+    assert ug.scrub_files(tmp_path, "tok-9") == ["log.txt"]
+    assert (tmp_path / "log.txt").read_text(encoding="utf-8") == " and ".join([f"Bearer {ug.REDACTED}"] * copies)

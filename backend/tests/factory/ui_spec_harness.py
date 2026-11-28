@@ -31,27 +31,66 @@ function expect(v: any) {
     toBeVisible: async () => { if (!v || !v.__visible || !v.__visible()) fail('not visible'); },
   };
 }
-const __resp = (r: Response) => ({ status: () => r.status });
+const __resp = (r: Response) => ({ status: () => r.status, headers: () => Object.fromEntries(r.headers.entries()) });
+const __redirect = (r: Response) => (r.status >= 300 && r.status <= 399 ? r.headers.get('location') : null);
+// A request made from outside the page (the API request context, and
+// route.fetch). As Playwright's does: it follows a redirect by itself and
+// carries the caller's headers on to wherever it leads, unless maxRedirects
+// is 0 -- then the redirect is the answer. 307 and 308 repeat the request;
+// any other redirect is followed with a GET.
+const __send = async (u: string, o: any = {}): Promise<Response> => {
+  let method = o.method || 'GET'; let body = o.data;
+  for (let hop = 0; ; hop++) {
+    const r = await fetch(u, { method, body, headers: o.headers || {}, redirect: 'manual' });
+    const to = __redirect(r);
+    if (o.maxRedirects === 0 || !to || hop >= 20) return r;
+    u = new URL(to, u).toString();
+    if (r.status !== 307 && r.status !== 308) { method = 'GET'; body = undefined; }
+  }
+};
 const __request = {
-  get: async (u: string, o: any = {}) => __resp(await fetch(u, { headers: o.headers || {} })),
-  post: async (u: string, o: any) => __resp(await fetch(u, { method: 'POST', body: o.data, headers: o.headers })),
+  fetch: async (u: string, o: any = {}) => __resp(await __send(u, o)),
+  get: async (u: string, o: any = {}) => __resp(await __send(u, { ...o, method: 'GET' })),
+  post: async (u: string, o: any = {}) => __resp(await __send(u, { ...o, method: 'POST' })),
 };
 // The page is the text the product served: the last page loaded plus every
 // upload / chat reply. getByText(re) is visible iff re matches that text.
 let __html = '';
 let __url = 'about:blank';
-// The page's routes (page.route(matcher, handler)): every request the page
-// makes goes through each handler whose matcher accepts its URL, and goes
-// out with the headers that handler continues it with, as Playwright does.
+// The page's routes (page.route(matcher, handler)), as Playwright runs them.
+// A request the page makes goes to the first handler whose matcher accepts
+// its URL. The handler either answers it (route.fulfill, with what
+// route.fetch brought back) or lets it go on (route.continue, with any
+// headers it overrides). A request no handler takes goes out as
+// the page sent it.
+// Redirects, as a browser follows them: a redirect that was the ANSWER the
+// handler fulfilled is a new request by the page, so it goes through the
+// routes again. A redirect met by a request that was let go on is followed
+// inside that same request: no handler sees the hops, and the headers the
+// handler overrode are carried on to wherever they lead.
 let __routes: Array<[(u: URL) => boolean, any]> = [];
-const __pageFetch = async (u: string, init: any = {}) => {
-  let headers: Record<string, string> = { ...(init.headers || {}) };
-  for (const [match, handler] of __routes) {
-    if (!match(new URL(u))) continue;
-    await handler({ request: () => ({ headers: () => ({ ...headers }) }),
-                    continue: async (o: any = {}) => { if (o.headers) headers = o.headers; } });
+const __pageFetch = async (u: string, init: any = {}): Promise<Response> => {
+  let method = init.method || 'GET'; let body = init.body;
+  for (let hop = 0; hop <= 20; hop++) {
+    let headers: Record<string, string> = { ...(init.headers || {}) };
+    let answer: Response | null = null; let wentOn = false;
+    const taken = __routes.find(([match]) => match(new URL(u)));
+    if (taken) {
+      await taken[1]({
+        request: () => ({ url: () => u, headers: () => ({ ...headers }) }),
+        fetch: async (o: any = {}) => ({ __raw: await __send(u, { method, data: body, headers: o.headers || headers, maxRedirects: o.maxRedirects }) }),
+        fulfill: async (o: any) => { answer = o.response.__raw; },
+        continue: async (o: any = {}) => { wentOn = true; if (o.headers) headers = o.headers; },
+      });
+    }
+    if (wentOn) return __send(u, { method, data: body, headers });
+    const r: Response = answer || await fetch(u, { method, body, headers, redirect: 'manual' });
+    const to = __redirect(r);
+    if (!to) return r;
+    u = new URL(to, u).toString();
+    if (r.status !== 307 && r.status !== 308) { method = 'GET'; body = undefined; }
   }
-  return fetch(u, { ...init, headers });
+  throw new Error('net::ERR_TOO_MANY_REDIRECTS');
 };
 // What a loaded page asks for by itself: every src="..." in its HTML,
 // resolved against the page, the way a browser loads a subresource.
@@ -158,29 +197,38 @@ class Server(str):
 
     seen: List[Tuple[str, bytes]]
     auth: List[str]
+    asked: List[Tuple[str, str]]
 
 
 @contextmanager
 def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None,
-           token: Optional[str] = None) -> Iterator[Server]:
+           token: Optional[str] = None, locations: Optional[Mapping[str, str]] = None) -> Iterator[Server]:
     """An HTTP server answering each path with its status and body
     (``POST <path>`` keys a POST; the query string is ignored for keys).
     Every POST body is recorded in ``.seen`` as ``(key, bytes)``. With a
     ``token``, the server protects every path: a request without
-    ``Authorization: Bearer <token>`` is answered 401."""
+    ``Authorization: Bearer <token>`` is answered 401. A key in
+    ``locations`` is answered with that ``Location`` header beside its
+    status (a redirect when the status is one). Every request is recorded
+    in ``.asked`` as ``(key, Authorization header)``."""
     bodies = bodies or {}
+    locations = locations or {}
     seen: List[Tuple[str, bytes]] = []
     auth: List[str] = []
+    asked: List[Tuple[str, str]] = []
 
     class H(BaseHTTPRequestHandler):
         def _answer(self, key):
             given = self.headers.get("authorization") or ""
             auth.append(given)
+            asked.append((key, given))
             code = statuses.get(key, default)
             if token is not None and given != f"Bearer {token}":
                 code = 401
             body = bodies.get(key, "ok").encode()
             self.send_response(code)
+            if key in locations and code != 401:
+                self.send_header("location", locations[key])
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -204,6 +252,7 @@ def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Map
         base = Server(f"http://127.0.0.1:{srv.server_port}")
         base.seen = seen
         base.auth = auth
+        base.asked = asked
         yield base
     finally:
         srv.shutdown()

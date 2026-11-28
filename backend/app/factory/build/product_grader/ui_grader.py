@@ -345,13 +345,37 @@ BASE_JS = (
     "const url = (t: string) => new URL(t, BASE).toString();\n"
     f"const BEARER = process.env.{BEARER_ENV} || '';\n"
     "const AUTH: Record<string, string> = BEARER ? { Authorization: 'Bearer ' + BEARER } : {};\n"
-    # The page's own requests: the bearer is added only to a request whose
-    # origin is the product's (BASE). A font, script or call the page makes
-    # to another origin goes out as the page sent it.
+    # The bearer is sent to an address only when that address is the
+    # product's own origin (BASE), ONE HOP AT A TIME: no request made here
+    # follows a redirect by itself, because a followed redirect carries the
+    # header on to wherever it leads.
     "const OWN = new URL(BASE).origin;\n"
+    "const signed = (u: string, h: Record<string, string> = {}) => (new URL(u).origin === OWN ? { ...h, ...AUTH } : h);\n"
+    # The page's own requests. A request to the product is made with the
+    # bearer and its answer handed to the page as it came; when that answer
+    # is a redirect the browser asks the new address itself, and that
+    # request comes through here again only if it is the product's. A font,
+    # script or call to another origin goes out as the page sent it.
     "const signIn = async (p: any) => { if (!BEARER) return;\n"
-    "  await p.route((u: URL) => u.origin === OWN, (route: any) =>\n"
-    "    route.continue({ headers: { ...route.request().headers(), authorization: 'Bearer ' + BEARER } })); };\n"
+    "  await p.route((u: URL) => u.origin === OWN, async (route: any) => {\n"
+    "    const response = await route.fetch({ maxRedirects: 0, timeout: 0, headers: signed(route.request().url(), route.request().headers()) });\n"
+    "    await route.fulfill({ response });\n"
+    "  }); };\n"
+    # The API steps' requests. A redirect is followed here, hop by hop, each
+    # hop signed only if it is the product's: 307 and 308 repeat the request,
+    # any other redirect is followed with a GET, as a browser does.
+    "const HOPS = 10;\n"
+    "const call = async (request: any, method: string, target: string, data?: string, headers: Record<string, string> = {}) => {\n"
+    "  let u = url(target); let r: any;\n"
+    "  for (let hop = 0; hop <= HOPS; hop++) {\n"
+    "    r = await request.fetch(u, { method, data, headers: signed(u, headers), maxRedirects: 0 });\n"
+    "    const to = r.headers()['location'];\n"
+    "    if (r.status() < 300 || r.status() > 399 || !to) return r;\n"
+    "    u = new URL(to, u).toString();\n"
+    "    if (r.status() !== 307 && r.status() !== 308) { method = 'GET'; data = undefined; headers = {}; }\n"
+    "  }\n"
+    "  return r;\n"
+    "};\n"
 )
 
 
@@ -381,7 +405,7 @@ _PAGE_OK = (
 KIND_JS: Dict[str, str] = {
     "load": _PAGE_OK,
     "screen": _PAGE_OK,
-    "route": "const r = await request.get(url(s.target), { headers: AUTH }); expect(r.status()).toBe(200);",
+    "route": "const r = await call(request, 'GET', s.target); expect(r.status()).toBe(200);",
     "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
     "attach_pdf": (
         "await page.getByRole('button', { name: '+' }).first().click();\n"
@@ -394,7 +418,7 @@ KIND_JS: Dict[str, str] = {
         "await expect(page.getByText(/\\d/).last()).toBeVisible();"
     ),
     "honest_error": (
-        "const r = await request.post(url(s.target), { data: '\"not-an-object\"', headers: { ...AUTH, 'content-type': 'application/json' } });\n"
+        "const r = await call(request, 'POST', s.target, '\"not-an-object\"', { 'content-type': 'application/json' });\n"
         f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}).toContain(r.status());"
     ),
 }
@@ -681,11 +705,12 @@ def grade_ui(
     base_url: Optional[str],
     run: Any = subprocess.run,
     brief: Any = _UNSET,
-    bearer: Optional[str] = None,
 ) -> UiGrade:
     """Run the plan's steps against ``base_url``. Every step carries the
-    grading boot's bearer (``grading_bearer``); ``bearer`` replaces it. The
-    files the run wrote are scrubbed of it however the run ended."""
+    grading boot's bearer (``grading_bearer``, the one source: no caller
+    hands this function a token). The report is read before the files the
+    run wrote are scrubbed of the bearer, so the scrub can never change what
+    is graded; the scrub runs however the run ended."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -701,10 +726,13 @@ def grade_ui(
     (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
     out = wd / "report.json"
     fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
-    token = grading_bearer() if bearer is None else bearer
+    token = grading_bearer()
     try:
         proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
                                fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
+        # Read as the run wrote it: the grade is made from this text, never
+        # from a file the scrub below has rewritten.
+        report_text = _report_text(out, proc)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     finally:
@@ -712,7 +740,6 @@ def grade_ui(
         # interrupt), the files it wrote are scrubbed before anything else
         # reads the work dir.
         scrub_files(wd, token)
-    report_text = _report_text(out, proc)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
     return parse_report(json.loads(report_text), blueprint, brief)
