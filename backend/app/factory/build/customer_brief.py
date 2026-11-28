@@ -160,6 +160,49 @@ def customer_words(raw: str) -> str:
     return record.ask
 
 
+def _text_values(value: Any) -> List[str]:
+    """Every text value under ``value``, in order. A mapping's keys are field
+    names, never values; a number, a boolean or null is not text."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [text for item in value.values() for text in _text_values(item)]
+    if isinstance(value, (list, tuple)):
+        return [text for item in value for text in _text_values(item)]
+    return []
+
+
+def supplied_parts(raw: str) -> Tuple[str, List[str]]:
+    """What the customer supplied, in the two shapes the checks that look for
+    the customer's own values in the product need: ``(prose, whole)``.
+
+    - Not a complete customer brief: ``(raw, [])`` -- the text as given.
+    - A complete brief: ``prose`` is the ``ask`` as written; ``whole`` is
+      every text value of every OTHER field the record carries, at any
+      depth, in the record's order, stripped, blanks left out. The customer
+      gave each of those values whole, so a check reads each one by itself:
+      nothing in the ask or in another value (an inch mark, an unmatched
+      quote) can change how it is read.
+    - Never a field name, and never ``documents.file_types`` (the stored
+      files' own suffixes, which the Factory took, not the customer).
+    """
+    record, _problems = read_brief(raw)
+    if record is None:
+        return raw, []
+    others = {key: value for key, value in json.loads(record.text).items() if key != "ask"}
+    documents = others.get("documents")
+    if isinstance(documents, Mapping):
+        others["documents"] = {key: value for key, value in documents.items() if key != "file_types"}
+    return record.ask, [text.strip() for text in _text_values(others) if text.strip()]
+
+
+def supplied_text(raw: str) -> str:
+    """:func:`supplied_parts` as one text, each part on its own line: what a
+    check searches when it asks whether the customer said a thing."""
+    prose, whole = supplied_parts(raw)
+    return "\n".join([prose, *whole])
+
+
 def file_types_of(names: Sequence[Any]) -> List[str]:
     """The type of each uploaded file, taken from the name the session stored.
 
