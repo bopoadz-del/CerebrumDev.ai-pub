@@ -366,13 +366,29 @@ def _pass_ended(kind: str, event: Any) -> bool:
     return kind == "PHASE_STARTED" and str(getattr(role, "value", role) or "") != "WRITER"
 
 
+def _runner_took_over(kind: str, payload: Dict[str, Any]) -> bool:
+    """The ledger's four records of a runner starting on this workspace: a
+    fresh run (RUN_STARTED), the pilot cycle (PILOT_OPENED), a resume (the
+    NOTE carrying ``resumed``) and Continue with new answers (the NOTE
+    carrying ``ledger.INPUTS_REBASED_KEY``). They are the doors
+    ``BuildLedger.terminal_event`` names as reopening a run, plus the
+    resume."""
+    from app.factory.build.ledger import INPUTS_REBASED_KEY
+
+    if kind in ("RUN_STARTED", "PILOT_OPENED"):
+        return True
+    return kind == "NOTE" and bool(payload.get("resumed") or payload.get(INPUTS_REBASED_KEY))
+
+
 def floor_view(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
     """The newest continue / stop decision of this run, for the build card.
 
     Read from the NOTE the runner wrote (its typed payload and its own
     sentence), so the card states exactly what the runner decided: the pass
     now running and its limit, the writer time used and the ceiling. None
-    when this run (since its last RUN_STARTED) made no decision, and None
+    when the runner that has the build now made no decision (a decision made
+    before the last record of a runner starting -- a fresh run, a resume,
+    the pilot cycle, Continue with new answers -- was another's), and None
     once a continued pass has ended (a gate verdict, the pass aborted, the
     run's own verdict, or another phase starting after the decision), so the
     card never says "continuing" afterwards.
@@ -380,10 +396,13 @@ def floor_view(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
     found: Optional[Any] = None
     for event in events:
         kind = str(getattr(getattr(event, "kind", None), "value", getattr(event, "kind", None)) or "")
-        if kind == "RUN_STARTED":
+        payload = getattr(event, "payload", None) or {}
+        if _runner_took_over(kind, payload):
+            # Another runner has the build from here. Its continuation
+            # record starts empty, so nothing an earlier runner decided (a
+            # pass number, the writer time used, a grant) is this run's.
             found = None
             continue
-        payload = getattr(event, "payload", None) or {}
         if isinstance(payload.get(NOTE_KEY), dict):
             found = event
         elif found is not None and found.payload[NOTE_KEY].get("go") and _pass_ended(kind, event):

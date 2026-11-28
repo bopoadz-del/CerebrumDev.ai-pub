@@ -1529,3 +1529,82 @@ def test_a_stop_decision_is_kept_beside_any_state(tmp_path, monkeypatch, state):
     stop = {"continuing": False, "text": "writer not continued: x"}
     monkeypatch.setattr(bj, "_read_build_status", lambda *a, **k: {"state": state, "writer_pass": dict(stop)})
     assert bj.build_status(tmp_path)["writer_pass"] == stop
+
+
+# -- OPUSGRADE F297 62d558f (reviewer 2) fault 2: a dead runner's decision shown again after a resume
+
+
+def _took_over(kind, payload=None):
+    return SimpleNamespace(kind=kind, role=None, ts="", detail="", payload=dict(payload or {}))
+
+
+@pytest.mark.parametrize(
+    "after, shown",
+    [
+        # a runner starting on the workspace: what the one before decided is not this run's
+        ([_took_over(EventKind.NOTE, {"resumed": True})], None),
+        ([_took_over(EventKind.NOTE, {"resumed": True}), _ev(EventKind.PHASE_STARTED, BuildRole.WRITER)], None),
+        ([_took_over(EventKind.NOTE, {"inputs_rebased": True})], None),
+        ([_took_over(EventKind.PILOT_OPENED)], None),
+        ([_took_over(EventKind.RUN_STARTED)], None),
+        # notes that are not a runner starting: the decision stands
+        ([_took_over(EventKind.NOTE, {"resumed": False})], True),
+        ([_took_over(EventKind.NOTE, {"stage": "writing"})], True),
+    ],
+)
+@pytest.mark.parametrize("go", [True, False])
+def test_a_decision_made_before_another_runner_took_the_build_is_not_shown(after, shown, go):
+    """Both kinds of decision: a "continuing" and a "not continued" of the
+    runner before are equally not the new runner's."""
+    view = wc.floor_view([_note(go)] + after)
+    if shown is None:
+        assert view is None
+    else:
+        assert view is not None and view["continuing"] is go
+
+
+@pytest.mark.parametrize("go", [True, False])
+def test_the_new_runners_own_decision_is_shown_after_a_resume(go):
+    view = wc.floor_view([_note(True), _took_over(EventKind.NOTE, {"resumed": True}), _note(go)])
+    assert view is not None and view["continuing"] is go
+
+
+@pytest.mark.parametrize("pass_next, max_passes", [(2, 3), (3, 4)])
+def test_a_resumed_build_does_not_show_the_dead_runners_pass(tmp_path, monkeypatch, pass_next, max_passes):
+    """The reviewer's sequence on a real ledger through build_status: a
+    runner is continued, the server restarts under it, the build is
+    resumed. Stalled: no view. Resumed and building: still no view, because
+    the resumed runner has decided nothing yet."""
+    import os
+    import time
+
+    import app.factory.build_jobs as bj
+    from app.factory.build.ledger import BuildLedger
+
+    out = tmp_path / "build"
+    out.mkdir()
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    ledger.start_run(product_id="p", inputs_hash="abc")
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER, detail="WRITER")
+    ledger.append(
+        EventKind.NOTE, role=BuildRole.WRITER, detail=f"continuing, pass {pass_next} of {max_passes}: x",
+        payload={wc.NOTE_KEY: {"go": True, "pass_next": pass_next, "max_passes": max_passes,
+                               "writer_seconds": 3600, "ceiling_s": 9000}},
+    )
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER, detail="WRITER")
+    # While that runner lives the card is told its pass.
+    monkeypatch.setattr(bj, "_live_runner_thread", lambda _out: True)
+    live = bj.build_status(out)
+    assert live["state"] == "building" and (live["writer_pass"]["pass"], live["writer_pass"]["max_passes"]) == (pass_next, max_passes)
+    # The server restarts under it.
+    old = time.time() - (bj._ORPHAN_AFTER_S + 60)
+    os.utime(out / "build_ledger.jsonl", (old, old))
+    monkeypatch.setattr(bj, "_live_runner_thread", lambda _out: False)
+    stalled = bj.build_status(out)
+    assert stalled["state"] == "stalled" and stalled["writer_pass"] is None
+    # Try again: the resume note, the writer starts, a new runner is alive.
+    ledger.append(EventKind.NOTE, role=BuildRole.WRITER, detail="resumed", payload={"resumed": True, "phase": "WRITER"})
+    ledger.append(EventKind.PHASE_STARTED, role=BuildRole.WRITER, detail="WRITER")
+    monkeypatch.setattr(bj, "_live_runner_thread", lambda _out: True)
+    resumed = bj.build_status(out)
+    assert resumed["state"] == "building" and resumed["writer_pass"] is None
