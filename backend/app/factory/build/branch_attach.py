@@ -191,8 +191,6 @@ def drop_stop_manifest(tree: Path) -> bool:
     from app.factory.build.export_manifest import MANIFEST_FILENAME
 
     path = Path(tree) / MANIFEST_FILENAME
-    if not path.is_file():
-        return False
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):

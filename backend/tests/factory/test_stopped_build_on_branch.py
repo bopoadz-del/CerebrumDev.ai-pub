@@ -266,6 +266,17 @@ def test_drop_stop_manifest_removes_only_a_stop_record(tmp_path, manifest, dropp
     assert (tree / "MANIFEST.json").exists() is (manifest is not None and not dropped)
 
 
+@pytest.mark.parametrize("inner", ["a.txt", "stopped.json"])
+def test_drop_stop_manifest_keeps_a_manifest_that_is_not_a_file(tmp_path, inner):
+    """A MANIFEST.json that cannot be read as a file is no stop record: kept, never raised."""
+    tree = tmp_path / "tree"
+    (tree / "MANIFEST.json").mkdir(parents=True)
+    (tree / "MANIFEST.json" / inner).write_text("{}", encoding="utf-8")
+
+    assert branch_attach.drop_stop_manifest(tree) is False
+    assert (tree / "MANIFEST.json" / inner).is_file()
+
+
 def _stop_commit(tmp_path: Path, state_word: str) -> None:
     """Push a stop commit (its MANIFEST.json says stopped) to the branch."""
     stop_tree = tmp_path / "stop_tree"
@@ -460,6 +471,32 @@ def test_the_first_push_of_a_platform_branch_carries_its_message(tmp_path, remot
     push_workspace(ws, env=dict(os.environ), session_id="", run_git=_url_to_bare(remote), branch=branch, message=message)
 
     assert _git(remote, "log", "-1", "--format=%B", branch).strip() == message
+
+
+@pytest.mark.parametrize(
+    "env, message",
+    [({}, "factory: FAILED at WRITER, not certified"), ({"CEREBRUM_BUILDS_GITHUB_TOKEN": "  "}, "factory: TESTER passed")],
+)
+def test_push_workspace_refuses_without_a_builds_token(tmp_path, remote, env, message):
+    """No builds token: push_workspace raises before any git call, and no branch is cut."""
+    from app.factory.build.builds_push import BuildsPushError, push_workspace
+    from app.factory.build.platform_identity import branch_of_record, mint_platform_id
+
+    ws = tmp_path / "no_token"
+    (ws / "app").mkdir(parents=True)
+    (ws / "app" / "main.py").write_text("x = 1" + NL, encoding="utf-8")
+    branch = branch_of_record(mint_platform_id())
+    calls: list = []
+
+    def git(args, *, cwd):
+        calls.append(args)
+        return _url_to_bare(remote)(args, cwd=cwd)
+
+    with pytest.raises(BuildsPushError, match="CEREBRUM_BUILDS_GITHUB_TOKEN"):
+        push_workspace(ws, env=env, session_id="", run_git=git, branch=branch, message=message)
+
+    assert calls == []
+    assert _git(remote, "branch", "--list", branch).strip() == ""
 
 
 @pytest.mark.parametrize("readme", ["one", "two"])
