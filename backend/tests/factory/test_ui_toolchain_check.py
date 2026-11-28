@@ -138,7 +138,7 @@ def test_grade_time_toolchain_ok_runs_the_products_spec(monkeypatch, tmp_path, b
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no browser here")
 
     # the default runner is the only one gated by the check; route it to a fake
-    monkeypatch.setattr(ug.subprocess, "run", fake_run)
+    monkeypatch.setattr(ug, "run_tree", fake_run)
     g = ug.grade_ui(bp, tmp_path, base_url="http://127.0.0.1:9", run=fake_run)
     assert ran and Path(ran[0][3]).name == "grade_ui.spec.ts"
     assert (tmp_path / "grade_ui.spec.ts").read_text(encoding="utf-8") == ug.render_spec(bp)

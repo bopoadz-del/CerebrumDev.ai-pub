@@ -31,8 +31,10 @@ A skipped UI run is never a pass.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -634,21 +636,78 @@ def redact(text: Any, secret: str) -> str:
     return text.replace(secret, REDACTED) if secret else text
 
 
+class ScrubIncomplete(OSError):
+    """Files under the work dir that could be neither read and rewritten nor
+    removed, so they may still hold the run's bearer. ``left`` names them,
+    relative to the work dir."""
+
+    def __init__(self, left: List[str]) -> None:
+        super().__init__("the run's bearer could not be scrubbed from: " + ", ".join(left))
+        self.left = list(left)
+
+
 def scrub_files(root: Path, secret: str) -> List[str]:
     """Playwright's call log lists a failed request's headers, so the run's
     bearer can land in anything the run writes (the JSON report, an error
     context). Rewrite every file under ``root`` that holds ``secret`` with
-    it redacted; the paths rewritten, relative to ``root``. Nothing is
-    rewritten for an empty ``secret``."""
+    it redacted; the paths dealt with, relative to ``root``. Nothing is
+    rewritten for an empty ``secret``.
+
+    Every file is dealt with by itself, so one that fails never leaves the
+    others unscrubbed. A file that cannot be read or rewritten is removed
+    (nothing the grade reads is on disk: it was read before this ran). One
+    that cannot be removed either is named in :class:`ScrubIncomplete`,
+    raised after every other file has been dealt with."""
     if not secret:
         return []
     needle = secret.encode("utf-8")
-    done = []
-    for path in sorted(Path(root).rglob("*")):
-        if path.is_file() and needle in path.read_bytes():
-            path.write_bytes(path.read_bytes().replace(needle, REDACTED.encode("utf-8")))
-            done.append(path.relative_to(root).as_posix())
+    done, left = [], []
+    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+        rel = path.relative_to(root).as_posix()
+        try:
+            data = path.read_bytes()
+            if needle not in data:
+                continue
+            path.write_bytes(data.replace(needle, REDACTED.encode("utf-8")))
+        except OSError:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                left.append(rel)
+                continue
+        done.append(rel)
+    if left:
+        raise ScrubIncomplete(left)
     return done
+
+
+#: How a run that passed its time cap is ended. Where the system has process
+#: groups (POSIX) the run is started as its own group and the whole group is
+#: killed: the launcher, the Playwright runner it started and every browser.
+#: Where it has none, the process that was started is killed.
+END_RUN: Any = (
+    (lambda proc: os.killpg(proc.pid, signal.SIGKILL)) if hasattr(os, "killpg") else (lambda proc: proc.kill())
+)
+
+
+def run_tree(cmd: Any, *, timeout: Any = None, **kw: Any) -> Any:
+    """``subprocess.run`` whose time cap ends EVERY process the run started.
+
+    ``subprocess.run`` ends only the process it started; a Playwright runner
+    that process had started would live on and write its report after the
+    grade had scrubbed the work dir. Here the run is started as its own
+    session, and when the cap passes or the wait is interrupted it is ended
+    by :data:`END_RUN`. Same arguments and same result as
+    ``subprocess.run``."""
+    pipes = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE} if kw.pop("capture_output", False) else {}
+    with subprocess.Popen(cmd, start_new_session=True, **pipes, **kw) as proc:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except BaseException:
+            END_RUN(proc)
+            proc.communicate()
+            raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 #: The toolchain probe: one test that needs node, Playwright and a browser
@@ -669,7 +728,7 @@ class ToolchainStatus:
     detail: str
 
 
-def toolchain_check(*, run: Any = subprocess.run, which: Any = shutil.which) -> ToolchainStatus:
+def toolchain_check(*, run: Any = run_tree, which: Any = shutil.which) -> ToolchainStatus:
     """Can the UI grade run HERE? Runs a one-test spec through the exact
     command and environment ``grade_ui`` uses; ok only if that test passed.
     Used at grade time and, in CI, inside the built runtime image as the app
@@ -703,7 +762,7 @@ def grade_ui(
     workdir: Path | str,
     *,
     base_url: Optional[str],
-    run: Any = subprocess.run,
+    run: Any = run_tree,
     brief: Any = _UNSET,
 ) -> UiGrade:
     """Run the plan's steps against ``base_url``. Every step carries the
@@ -716,7 +775,7 @@ def grade_ui(
         return _unreadable_block()
     if not base_url:
         return UiGrade([], ["UI run did not happen: no base URL for the rendered product"])
-    if run is subprocess.run:
+    if run is run_tree:
         toolchain = toolchain_check()
         if not toolchain.ok:
             return UiGrade([], [f"UI run did not happen: UI toolchain unavailable: {toolchain.detail}"])
