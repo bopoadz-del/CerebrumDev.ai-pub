@@ -366,18 +366,30 @@ def _pass_ended(kind: str, event: Any) -> bool:
     return kind == "PHASE_STARTED" and str(getattr(role, "value", role) or "") != "WRITER"
 
 
+#: The payload key of the NOTE ``RoleRunner.run`` writes on every start,
+#: before any phase (``RoleRunner._note_plan_budget``). A build is started
+#: through ``build_jobs.start_runner_build`` (the chat's Try again, the
+#: architect route, the boot-time resume of an interrupted call) or the CLI,
+#: and each ends in ``RoleRunner.run``; so this one record marks a new runner
+#: on the ledger whatever the door wrote before it -- a stalled build's
+#: resume writes no ``resumed`` NOTE.
+RUNNER_START_KEY = "plan_budget"
+
+
 def _runner_took_over(kind: str, payload: Dict[str, Any]) -> bool:
-    """The ledger's four records of a runner starting on this workspace: a
-    fresh run (RUN_STARTED), the pilot cycle (PILOT_OPENED), a resume (the
-    NOTE carrying ``resumed``) and Continue with new answers (the NOTE
-    carrying ``ledger.INPUTS_REBASED_KEY``). They are the doors
-    ``BuildLedger.terminal_event`` names as reopening a run, plus the
-    resume."""
+    """A record of a runner starting on this workspace: the NOTE every
+    ``RoleRunner.run`` writes before its first phase
+    (:data:`RUNNER_START_KEY`), and the doors' own records -- a fresh run
+    (RUN_STARTED), the pilot cycle (PILOT_OPENED), a resume (the NOTE
+    carrying ``resumed``) and Continue with new answers (the NOTE carrying
+    ``ledger.INPUTS_REBASED_KEY``)."""
     from app.factory.build.ledger import INPUTS_REBASED_KEY
 
     if kind in ("RUN_STARTED", "PILOT_OPENED"):
         return True
-    return kind == "NOTE" and bool(payload.get("resumed") or payload.get(INPUTS_REBASED_KEY))
+    return kind == "NOTE" and bool(
+        payload.get(RUNNER_START_KEY) or payload.get("resumed") or payload.get(INPUTS_REBASED_KEY)
+    )
 
 
 def floor_view(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
