@@ -844,7 +844,7 @@ def test_the_stop_tree_never_follows_a_staged_symlink(tmp_path, name, secret):
     try:
         os.symlink(outside, staging / "app" / name)
     except (OSError, NotImplementedError):
-        pytest.skip("this host cannot create symlinks; Linux CI runs it")
+        pytest.skip(reason="this host cannot create symlinks; Linux CI runs it")
     tree = tmp_path / "tree"
     tree.mkdir()
 
