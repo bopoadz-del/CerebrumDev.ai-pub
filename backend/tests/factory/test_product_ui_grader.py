@@ -1188,3 +1188,142 @@ def test_keep_redacted_never_opens_what_is_not_a_regular_file(tmp_path, monkeypa
     monkeypatch.setattr(ug.Path, "read_bytes", read)
     assert ug.keep_redacted(src, dest, "") == ["a.txt"]
     assert opened == ["a.txt"]
+
+
+# --- the grader's refusals: only a dropped request is nobody's error ----------
+@pytest.mark.parametrize("refusal", [
+    "Protocol error (Fetch.continueRequest): Invalid InterceptionId.",
+    "Invalid InterceptionId.",
+])
+def test_the_dropped_request_refusal_alone_is_nobodys_error(tmp_path, refusal):
+    """The page drops requests it made; the browser refuses each with its own
+    words for a request that no longer exists. Nothing is written down as
+    the grader's error, and every step passes."""
+    token = "the-boot-token"
+    with h.server({}, token=token) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load", "screen"), bearer=token,
+                         page_drops_requests=True, drop_refusal=refusal)
+    assert "__own__" not in got and "__error__" not in got, got
+    assert set(got.values()) == {"passed"}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("refusal", [
+    "Protocol error (Fetch.continueRequest): Invalid header value",
+    "Protocol error (Fetch.continueRequest): Target page, context or browser has been closed",
+])
+def test_a_live_request_the_browser_refuses_to_continue_is_written_down_as_the_graders_error(tmp_path, bp, refusal):
+    """Any other refusal leaves a live request paused. The spec writes the
+    refusal down as the grader's own error and fails the request, so the
+    step ends (it does not hang) and the run reports every step."""
+    token = "the-boot-token"
+    with h.server({}, token=token) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=token,
+                         cdp_refuses=refusal)
+    assert "__error__" not in got, got
+    own = got.pop("__own__").splitlines()
+    assert own and all(refusal in line and "Fetch.continueRequest refused for " + base in line for line in own)
+    assert got and set(got.values()) == {"failed: net::ERR_ABORTED"}
+
+
+@pytest.mark.parametrize("fail_refusal", ["Invalid InterceptionId.", "Session closed"])
+def test_a_refused_fail_of_the_paused_request_is_written_down_too(tmp_path, fail_refusal):
+    """The browser refuses both the continue and the fail: both refusals are
+    the grader's, both are written down."""
+    token = "the-boot-token"
+    with h.server({}, token=token) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load",), bearer=token,
+                         cdp_refuses="Invalid header value", fail_refuses=fail_refusal)
+    own = got.pop("__own__").splitlines()
+    assert own[:2] == [f"Fetch.continueRequest refused for {base}/: Invalid header value",
+                       f"Fetch.failRequest refused for {base}/: {fail_refusal}"]
+    assert "__error__" not in got and got
+
+
+@pytest.mark.parametrize("own", [("Fetch.continueRequest refused for http://a/: Invalid header value",),
+                                 ("Fetch.failRequest refused for http://b/: Session closed", "second")])
+def test_steps_that_did_not_pass_in_a_run_with_the_graders_own_error_are_not_run(own):
+    """A failure in a run where the grader met its own error cannot be told
+    from one the grader caused: it is not run, blocked by that error, and is
+    no failure of the product. A step that passed is still a pass."""
+    names = [s.name for s in ug.ui_plan(BP)]
+    g = ug.parse_report(_report(names, failed=names[:2]), BP, own_errors=own)
+    rows = {s["name"]: s for s in g.steps}
+    assert [rows[n].get("blocked_by") for n in names[:2]] == [f"{ug.GRADER_OWN_BLOCK}: {own[0]}"] * 2
+    assert all(rows[n]["passed"] for n in names[2:])
+    assert g.failing == [] and not g.ok and [r["name"] for r in g.not_run] == names[:2]
+
+
+@pytest.mark.parametrize("failed", [0, 1])
+def test_with_no_own_error_a_step_that_did_not_pass_is_a_failure(failed):
+    names = [s.name for s in ug.ui_plan(BP)]
+    g = ug.parse_report(_report(names, failed=[names[failed]]), BP, own_errors=())
+    assert g.failing == [names[failed]] and g.not_run == []
+
+
+@pytest.mark.parametrize("text,secret,want", [
+    ("one\n\n  two  \n", "", ("one", "two")),
+    ("refused tok-9 here\n", "tok-9", (f"refused {ug.REDACTED} here",)),
+])
+def test_read_own_errors_reads_each_line_redacted(tmp_path, text, secret, want):
+    f = tmp_path / "own.txt"
+    f.write_text(text, encoding="utf-8")
+    assert ug.read_own_errors(f, secret) == want
+
+
+@pytest.mark.parametrize("name", ["absent.txt", "nested/absent.txt"])
+def test_read_own_errors_of_no_file_is_none(tmp_path, name):
+    assert ug.read_own_errors(tmp_path / name) == ()
+
+
+def _run_with_own_error(names, failed, lines):
+    def run(cmd, **kw):
+        _P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(_report(names, failed=failed)), encoding="utf-8")
+        _P(kw["env"][ug.OWN_ERRORS_ENV]).write_text(lines, encoding="utf-8")
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+    return run
+
+
+@pytest.mark.parametrize("token", ["tok-9", "another-token"])
+def test_grade_ui_reports_the_graders_own_error_as_its_own_never_the_products(tmp_path, monkeypatch, token):
+    """Through grade_ui: the run writes a refusal (holding the bearer) to the
+    file the grade names; the failed step is not run, blocked by the
+    grader's own error, with the bearer redacted."""
+    _boot_token(monkeypatch, token)
+    names = [s.name for s in ug.ui_plan(BP)]
+    g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9",
+                    run=_run_with_own_error(names, [names[0]], f"Fetch.continueRequest refused: {token}\n"))
+    assert g.failing == []
+    assert g.not_run == [s for s in g.steps if s["name"] == names[0]]
+    assert g.not_run[0]["blocked_by"] == f"{ug.GRADER_OWN_BLOCK}: Fetch.continueRequest refused: {ug.REDACTED}"
+
+
+@pytest.mark.parametrize("lines", ["refused once\n", "refused once\nrefused twice\n"])
+def test_grade_ui_with_no_report_names_the_graders_own_error(tmp_path, lines):
+    def run(cmd, **kw):
+        _P(kw["env"][ug.OWN_ERRORS_ENV]).write_text(lines, encoding="utf-8")
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+    g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9", run=run)
+    assert len(g.errors) == 1 and g.errors[0].endswith(f"; {ug.GRADER_OWN_BLOCK}: refused once")
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("copy broke"), KeyboardInterrupt()])
+def test_grade_ui_drops_the_scratch_folder_when_the_kept_copy_raises(tmp_path, monkeypatch, exc):
+    """The kept copy raises (the test debt of the d905379 grade): the
+    scratch folder, which holds the unredacted bearer, is still gone."""
+    made = []
+    real = ug.tempfile.mkdtemp
+
+    def mkdtemp(*a, **k):
+        made.append(_P(real(*a, **k)))
+        return str(made[-1])
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(ug.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(ug, "keep_redacted", boom)
+    names = [s.name for s in ug.ui_plan(BP)]
+    with pytest.raises(type(exc)):
+        ug.grade_ui(BP, tmp_path / "kept", base_url="http://127.0.0.1:9", run=_all_passed_run(names))
+    assert len(made) == 1 and not made[0].exists()

@@ -99,6 +99,18 @@ NO_RESULT = "no_result"
 #: What blocked a step the run's own time limit stopped before it finished.
 TIME_LIMIT = "the UI run's time limit"
 
+#: What blocked a step that did not pass in a run where the grader met an
+#: error of its own: that failure cannot be told from one the grader caused,
+#: so nothing about the product was observed in it.
+GRADER_OWN_BLOCK = "the grader's own error"
+
+#: The file the spec writes the grader's own errors to, one per line.
+OWN_ERRORS_ENV = "GRADE_OWN_ERRORS"
+
+#: Chromium's refusal to continue a paused request that no longer exists:
+#: the page dropped it meanwhile (it reloaded, moved on or closed).
+REQUEST_GONE = "Invalid InterceptionId"
+
 
 
 @dataclass(frozen=True)
@@ -365,14 +377,32 @@ BASE_JS = (
     # headers `signed` gives that hop. Only headers are set: the request's
     # body stays the browser's own, so a file upload arrives whole (a body
     # re-sent from outside the page loses the file).
+    f"const GONE = {json.dumps(REQUEST_GONE)};\n"
+    # The grader's own errors go to a file the grade reads after the run, at
+    # once, so one met between steps or in a step that then times out is
+    # still there. With no file named, they go to the run's error output.
+    f"const OWN_LOG = process.env.{OWN_ERRORS_ENV} || '';\n"
+    "const ownError = async (m: string) => {\n"
+    "  if (!OWN_LOG) { console.error(m); return; }\n"
+    "  const fs = await import('node:fs'); fs.appendFileSync(OWN_LOG, m.replace(/\\s+/g, ' ') + '\\n');\n"
+    "};\n"
     "const signIn = async (p: any) => { if (!BEARER) return;\n"
     "  const cdp = await p.context().newCDPSession(p);\n"
     "  cdp.on('Fetch.requestPaused', async (e: any) => {\n"
     "    const headers = Object.entries(signed(e.request.url, e.request.headers)).map(([name, value]) => ({ name, value }));\n"
-    # A paused request the page has dropped meanwhile (it reloaded, moved on
-    # or closed) cannot be continued and needs no continuing: the browser's
-    # refusal is the checker's own business, never a failed step.
-    "    await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers }).catch(() => {});\n"
+    # A paused request the page has dropped meanwhile cannot be continued
+    # and needs no continuing: that one refusal is nobody's error. Any other
+    # refusal leaves a live request paused: it is the grader's own error,
+    # written down for the grade, and the request is failed so the step
+    # ends instead of waiting for good.
+    "    try { await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers }); }\n"
+    "    catch (err: any) {\n"
+    "      const m = String((err && err.message) || err);\n"
+    "      if (m.includes(GONE)) return;\n"
+    "      await ownError('Fetch.continueRequest refused for ' + e.request.url + ': ' + m);\n"
+    "      try { await cdp.send('Fetch.failRequest', { requestId: e.requestId, errorReason: 'Aborted' }); }\n"
+    "      catch (f: any) { await ownError('Fetch.failRequest refused for ' + e.request.url + ': ' + String((f && f.message) || f)); }\n"
+    "    }\n"
     "  });\n"
     "  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });\n"
     "};\n"
@@ -559,7 +589,7 @@ def run_was_cut(report: Any, limit_ms: int) -> bool:
 
 def parse_report(
     report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET,
-    *, limit_ms: Optional[int] = None,
+    *, limit_ms: Optional[int] = None, own_errors: Tuple[str, ...] = (),
 ) -> UiGrade:
     """Playwright JSON reporter -> UiGrade. A planned step absent from the
     report is a failed step (a skipped step is not a passed one). A chain
@@ -569,7 +599,10 @@ def parse_report(
     passed, and it is not a failure. A run its time limit stopped leaves the
     steps it did not finish not run, blocked by that limit: a step that ran
     and failed before it is still a failure. A brief that cannot be read is a
-    block: no step is graded."""
+    block: no step is graded. In a run where the grader met errors of its own
+    (``own_errors``), a step that did not pass is not run, blocked by the
+    first of them: its failure cannot be told from one the grader caused. A
+    step that passed is still a pass."""
     run, skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -596,6 +629,11 @@ def parse_report(
         elif chain and status != "passed" and not blocker:
             blocker = st.name
         steps.append(row)
+    if own_errors:
+        for row in steps:
+            if not row["passed"] and row.get("status") != NOT_RUN:
+                row["status"] = NOT_RUN
+                row["blocked_by"] = f"{GRADER_OWN_BLOCK}: {own_errors[0]}"
     errors = [] if seen else ["playwright report has no results"]
     return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
 
@@ -606,14 +644,18 @@ def _tail(text: Any) -> str:
 
 def _playwright_run(
     run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int, bearer: str = "",
+    own_errors: Optional[Path] = None,
 ) -> Any:
     """The one way a UI spec is run: the grade and the toolchain check both
     come through here, with the same command and the same environment. A
-    non-empty ``bearer`` is handed to the spec as ``BEARER_ENV``."""
+    non-empty ``bearer`` is handed to the spec as ``BEARER_ENV``; an
+    ``own_errors`` file is named to it as ``OWN_ERRORS_ENV``."""
     env = {"PATH": RUN_PATH, "BASE_URL": base_url,
            "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)}
     if bearer:
         env[BEARER_ENV] = bearer
+    if own_errors is not None:
+        env[OWN_ERRORS_ENV] = str(own_errors)
     return run(
         ["npx", "playwright", "test", str(spec), f"--global-timeout={run_limit_ms(timeout)}",
          "--reporter=json"],
@@ -632,6 +674,17 @@ def _report_text(out: Path, proc: Any) -> str:
     if out.is_file():
         return out.read_text("utf-8")
     return getattr(proc, "stdout", "") or ""
+
+
+def read_own_errors(path: Path, secret: str = "") -> Tuple[str, ...]:
+    """The grader's own errors a run wrote to ``path``, one per non-blank
+    line, with ``secret`` redacted. None when the file is missing or cannot
+    be read: the run met none it could write down."""
+    try:
+        text = Path(path).read_text("utf-8", errors="replace")
+    except OSError:
+        return ()
+    return tuple(redact(line.strip(), secret) for line in text.splitlines() if line.strip())
 
 
 def _exit_detail(proc: Any, secret: str = "") -> str:
@@ -766,12 +819,14 @@ def grade_ui(
     out = scratch / "report.json"
     fixtures = fx["pdf"].parent if fx.get("pdf") else scratch / "fixtures"
     token = grading_bearer()
+    own_file = scratch / "grader_own_errors.txt"
     try:
         proc = _playwright_run(run, scratch / "grade_ui.spec.ts", base_url=base_url, out=out,
-                               fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
+                               fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token, own_errors=own_file)
         # Read as the run wrote it: the grade is made from this text, never
         # from the redacted copy.
         report_text = _report_text(out, proc)
+        own = read_own_errors(own_file, token)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     finally:
@@ -786,5 +841,6 @@ def grade_ui(
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     if not report_text.strip():
-        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
-    return parse_report(json.loads(report_text), blueprint, brief)
+        mine = f"; {GRADER_OWN_BLOCK}: {own[0]}" if own else ""
+        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}{mine}"])
+    return parse_report(json.loads(report_text), blueprint, brief, own_errors=own)
