@@ -176,6 +176,15 @@ class FunctionGrade:
             )
         return names + list(self.errors)
 
+    def evidence(self, capability_id: str) -> str:
+        """A failing function's evidence for the writer: why it failed, what
+        the grader called it with and what came back, each cut to
+        ``EVIDENCE_CHARS``. Empty for a name that is no failing function."""
+        for f in self.functions:
+            if f.capability_id == capability_id and not f.ok:
+                return function_evidence(f)
+        return ""
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ok": self.ok,
@@ -186,6 +195,32 @@ class FunctionGrade:
             "ungraded": [asdict(f) for f in self.ungraded],
             **({"vault": self.vault} if self.vault is not None else {}),
         }
+
+
+#: How much of each part of a failing function's evidence a finding keeps.
+EVIDENCE_CHARS = 300
+
+
+def _cut(value: Any) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
+    text = " ".join(text.split())
+    return text if len(text) <= EVIDENCE_CHARS else text[: EVIDENCE_CHARS - 3] + "..."
+
+
+def function_evidence(result: FunctionResult) -> str:
+    """Why ``result`` failed, the inputs sent and the answers observed (from
+    its probe), in that order; a part the result does not carry is left out."""
+    parts = []
+    if result.mutants_survived and (result.two_input_passed or result.one_input_passed):
+        parts.append("why: no single input field it declares changed its answer")
+    elif result.detail:
+        parts.append(f"why: {_cut(result.detail)}")
+    probe = result.probe or {}
+    if probe.get("inputs"):
+        parts.append(f"called with: {_cut(probe['inputs'])}")
+    if probe.get("answers"):
+        parts.append(f"answered: {_cut(probe['answers'])}")
+    return "; ".join(parts)
 
 
 def _in_bounds(value: Any, field_spec: Mapping[str, Any]) -> bool:

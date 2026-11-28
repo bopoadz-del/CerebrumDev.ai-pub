@@ -331,6 +331,25 @@ CHECKPOINT_STAGE = "checkpoint"
 CLI_PHASE_RAMP_HEADROOM_S = 120.0
 
 
+#: Added to a grader finding handed back word for word as it was after the
+#: writer's last round: the same check failed with the same observation.
+UNCHANGED_NOTE = (
+    " [UNCHANGED since your last round: the same check failed with the same"
+    " observation, so your last change did not reach what it checks; act on"
+    " what it expected, not on its name]"
+)
+
+
+def mark_unchanged(items: Sequence[str], last_round: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """``items`` as handed to the writer -- each one also in ``last_round``
+    (the findings the writer was handed last time) marked with
+    ``UNCHANGED_NOTE`` -- and the unchanged items themselves."""
+    last = {str(i) for i in last_round or ()}
+    unchanged = [str(i) for i in items if str(i) in last]
+    handed = [str(i) + UNCHANGED_NOTE if str(i) in last else str(i) for i in items]
+    return handed, unchanged
+
+
 def _test_defect_items(defects: Sequence[Dict[str, Any]]) -> list:
     """One typed ``test_defect`` work-list item per writer test that demanded
     a live answer from a declared placeholder capability (failure_owner)."""
@@ -4078,6 +4097,11 @@ class RoleRunner:
                         for event in grader_events:
                             previous.update((event.payload or {}).get("failure_names") or [])
                         items = tuple(grade_verdict.writer_items)
+                        last_round = (
+                            (grader_events[-1].payload or {}).get("failure_names") or []
+                            if grader_events else []
+                        )
+                        handed, unchanged = mark_unchanged(items, last_round)
                         # The ceiling is asked FIRST: when the grader's last
                         # round is also the build's last, the build has no fix
                         # round left, and the stop must say so (rounds_spent,
@@ -4147,6 +4171,16 @@ class RoleRunner:
                         log_handback(
                             str(self.state.get("session_id") or ""), len(items), rounds + 1, REWORK_BUDGET
                         )
+                        if unchanged:
+                            self.ledger.append(
+                                EventKind.NOTE,
+                                role=BuildRole.WRITER,
+                                detail=(
+                                    f"GRADER: {len(unchanged)} finding(s) unchanged two rounds running, "
+                                    "handed back marked as unchanged: " + "; ".join(unchanged)[:400]
+                                ),
+                                payload={"gate": GRADER_GATE, "unchanged": list(unchanged)},
+                            )
                         self.ledger.append(
                             EventKind.REWORK,
                             role=BuildRole.WRITER,
@@ -4159,8 +4193,8 @@ class RoleRunner:
                             payload={
                                 "gate": GRADER_GATE,
                                 "source": "GRADER",
-                                "findings": list(items),
-                                "work_list": list(items),
+                                "findings": list(handed),
+                                "work_list": list(handed),
                                 "failure_names": list(items),
                                 "round": rounds + 1,
                                 "round_build": build_rounds + 1,
@@ -4168,7 +4202,7 @@ class RoleRunner:
                                 "decision": rec,
                             },
                         )
-                        work_list = items
+                        work_list = tuple(handed)
                         done.discard(REWORK_TARGET)
                         index = BUILD_PHASES.index(REWORK_TARGET)
                         continue

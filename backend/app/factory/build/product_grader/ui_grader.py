@@ -439,6 +439,81 @@ KIND_JS: Dict[str, str] = {
 }
 KIND_JS["attach_xlsx"] = KIND_JS["attach_pdf"]
 
+#: What each kind's body checks, in words, with ``{target}`` for the step's
+#: target. A failed step is handed to the writer with this sentence and the
+#: failure text the run recorded, never as its bare name.
+KIND_EXPECTS: Dict[str, str] = {
+    "load": "GET {target} answers 200, and the page settles with no console error",
+    "screen": "GET {target} answers 200, and the page settles with no console error",
+    "route": "GET {target} with the grading bearer answers 200",
+    "bind": "the first page shows the text {target} (case-insensitive; - and _ match any character)",
+    "attach_pdf": "the first page has a '+' button that opens a file input, and the file {target} is attached through it",
+    "attach_xlsx": "the first page has a '+' button that opens a file input, and the file {target} is attached through it",
+    "parsed": "after the upload the page shows the word 'parsed' within 60 s",
+    "cited_answer": "a question typed in the first text box and sent with Enter is answered with a citation ([1], 'source' or 'citation') and a number within 90 s",
+    "honest_error": "POST {target} with a JSON body that is not an object answers 422 or 503, never 200",
+}
+
+#: How much of a step's recorded failure text a finding keeps.
+FAILURE_CHARS = 400
+
+#: Said for a failed step whose run recorded no failure text for it.
+NO_FAILURE_TEXT = "the run recorded no failure text for this step"
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def expectation(step: UiStep) -> str:
+    """What the step checks, in words; empty for a kind with no sentence."""
+    frame = KIND_EXPECTS.get(step.kind, "")
+    return frame.format(target=step.target) if frame else ""
+
+
+def _result_error(result: Mapping[str, Any]) -> str:
+    """The failure text of one Playwright result: its ``error`` message, else
+    the first message among its ``errors``."""
+    errors = [result.get("error")] + list(result.get("errors") or [])
+    for err in errors:
+        if isinstance(err, Mapping) and str(err.get("message") or "").strip():
+            return str(err["message"])
+    return ""
+
+
+def report_failures(report: Mapping[str, Any], secret: str = "") -> Dict[str, str]:
+    """Every test title in a Playwright JSON report whose results recorded a
+    failure -> the first such failure text: colour codes dropped, whitespace
+    collapsed, ``secret`` redacted, cut to ``FAILURE_CHARS``."""
+    seen: Dict[str, str] = {}
+    if not isinstance(report, Mapping):
+        return seen
+
+    def walk(suite: Mapping[str, Any]) -> None:
+        for spec in suite.get("specs") or []:
+            results = [r for t in spec.get("tests") or [] for r in t.get("results") or []]
+            for result in results:
+                text = _result_error(result) if isinstance(result, Mapping) else ""
+                if text:
+                    clean = " ".join(redact(_ANSI.sub("", text), secret).split())
+                    seen[str(spec.get("title"))] = clean[:FAILURE_CHARS]
+                    break
+        for child in suite.get("suites") or []:
+            walk(child)
+
+    for s in report.get("suites") or []:
+        walk(s)
+    return seen
+
+
+def step_evidence(row: Mapping[str, Any]) -> str:
+    """A failed step row's evidence for the writer: what it expected and
+    what the run saw. Empty when the row carries neither."""
+    parts = []
+    if row.get("expected"):
+        parts.append(f"expected: {row['expected']}")
+    if row.get("saw"):
+        parts.append(f"saw: {row['saw']}")
+    return "; ".join(parts)
+
 
 def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
     """The Playwright test file. One ``test`` per plan step, titled by name.
@@ -559,7 +634,7 @@ def run_was_cut(report: Any, limit_ms: int) -> bool:
 
 def parse_report(
     report: Mapping[str, Any], blueprint: Mapping[str, Any], brief: Any = _UNSET,
-    *, limit_ms: Optional[int] = None,
+    *, limit_ms: Optional[int] = None, secret: str = "",
 ) -> UiGrade:
     """Playwright JSON reporter -> UiGrade. A planned step absent from the
     report is a failed step (a skipped step is not a passed one). A chain
@@ -569,11 +644,14 @@ def parse_report(
     passed, and it is not a failure. A run its time limit stopped leaves the
     steps it did not finish not run, blocked by that limit: a step that ran
     and failed before it is still a failure. A brief that cannot be read is a
-    block: no step is graded."""
+    block: no step is graded. A step that ran and failed carries what it
+    expected and the failure text the run recorded for it (``secret``
+    redacted), so the finding handed on says what to change."""
     run, skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
     seen = report_statuses(report)
+    failures = report_failures(report, secret)
     cut = run_was_cut(report, run_limit_ms(RUN_TIMEOUT_S) if limit_ms is None else limit_ms)
     steps: List[Dict[str, Any]] = []
     # The chain step that failed first: the chain steps Playwright skipped
@@ -595,6 +673,9 @@ def parse_report(
             row["blocked_by"] = TIME_LIMIT
         elif chain and status != "passed" and not blocker:
             blocker = st.name
+        if status != "passed" and row.get("status") != NOT_RUN:
+            row["expected"] = expectation(st)
+            row["saw"] = failures.get(st.name) or NO_FAILURE_TEXT
         steps.append(row)
     errors = [] if seen else ["playwright report has no results"]
     return UiGrade(steps, errors, not_applicable=[_not_applicable_row(st) for st in skip])
@@ -787,4 +868,4 @@ def grade_ui(
             shutil.rmtree(scratch, ignore_errors=True)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
-    return parse_report(json.loads(report_text), blueprint, brief)
+    return parse_report(json.loads(report_text), blueprint, brief, secret=token)

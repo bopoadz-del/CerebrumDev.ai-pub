@@ -1003,6 +1003,23 @@ def _grade_ui(
     return ui, ui_ran, ui_not_run
 
 
+#: Ends a finding's locator and starts its evidence (``grader_findings``
+#: reads the locator up to it).
+EVIDENCE_SEP = " -- "
+
+
+def _with_evidence(item: str, evidence: str) -> str:
+    """``item`` followed by its evidence, or ``item`` alone when there is none."""
+    return f"{item}{EVIDENCE_SEP}{evidence}" if evidence else item
+
+
+def _fn_evidence(functions: Any, name: str) -> str:
+    """The function grade's evidence for ``name``; empty when the grade
+    offers none."""
+    evidence = getattr(functions, "evidence", None)
+    return str(evidence(name) or "") if callable(evidence) else ""
+
+
 def run_grader(
     *,
     blueprint: Mapping[str, Any],
@@ -1196,13 +1213,17 @@ def run_grader(
     items: List[str] = []
     factory_owed: List[str] = []
     fn_failing = list(functions.failing)
+    # A failing function or screen step is handed on with what was checked
+    # and what came back: a bare name tells the writer nothing to change.
     if not functions.ok:
         for name in fn_failing:
-            items.append(f"function grade FAIL: {name}")
+            items.append(_with_evidence(f"function grade FAIL: {name}", _fn_evidence(functions, name)))
     ui_failing = list(ui.failing) if ui_ran else []
     if ui_ran:
+        rows = {str(r.get("name")): r for r in getattr(ui, "steps", None) or []}
         for name in ui_failing:
-            items.append(f"UI step FAIL: {name}")
+            evidence = _ui_steps.step_evidence(rows.get(name) or {})
+            items.append(_with_evidence(f"UI step FAIL: {name}", evidence))
         # A step that did not run is a gap in the grade, not a finding about
         # the tree: it blocks certification and is not handed to the writer.
         for row in getattr(ui, "not_run", None) or []:
