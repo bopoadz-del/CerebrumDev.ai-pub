@@ -257,12 +257,47 @@ def failed_export_manifest(
     }
 
 
+def stopped_export_manifest(
+    status: Dict[str, Any],
+    *,
+    product_id: str,
+    platform_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The MANIFEST.json a STALLED build ships with on "Download as-is".
+
+    The build stopped before it finished; no gate rejected it. So the
+    manifest records the stop under ``stopped`` (the status's own state,
+    marker and sentence) and carries no ``failed`` record and no failed
+    label. Like the failed one it is never certified and makes no store,
+    acceptance or pilot claim."""
+    from app.factory.build.failure_record import acceptance_score
+
+    return {
+        "schema": MANIFEST_SCHEMA,
+        "product_id": product_id,
+        "platform_id": platform_id,
+        "certified": False,
+        "build_state": status.get("state"),
+        "stopped": {
+            "state": str(status.get("state") or ""),
+            "marker": str(status.get("honesty") or ""),
+            "detail": str(status.get("detail") or ""),
+        },
+        "acceptance": acceptance_score(status),
+        "build_level": status.get("build_level"),
+        "advisory_checks": list(status.get("advisory_checks") or []),
+    }
+
+
+def manifest_text(manifest: Dict[str, Any]) -> str:
+    """The manifest as the text every export writes it in."""
+    return json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+
+
 def write_export_manifest(product_root: Path | str, manifest: Dict[str, Any]) -> Path:
     root = Path(product_root)
     path = root / MANIFEST_FILENAME
-    path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(manifest_text(manifest), encoding="utf-8")
     return path
 
 

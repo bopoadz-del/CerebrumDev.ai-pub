@@ -1995,14 +1995,20 @@ def build_status(
             output_dir,
         )
     if idle_s > _STALL_AFTER_S and not in_flight_call:
+        # This reading is reached only with the runner thread ALIVE: with it
+        # gone, the orphan reading just above has already answered (its
+        # threshold is lower). So the process is not gone: the status says
+        # what is seen, and carries ``runner_live`` so no door hands out a
+        # copy of a tree that is being written.
         return _with_level_grade(
             {
                 "state": "stalled",
                 "detail": (
                     f"no build activity for {int(idle_s // 60)} min — the build "
-                    "process is gone (restart or redeploy); generate again"
+                    "process is still running"
                 ),
                 "pilot_ready": False,
+                "runner_live": True,
                 **progress,
                 **activity,
             },
