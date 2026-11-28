@@ -79,18 +79,28 @@ let __routes: Array<[(u: URL) => boolean, any]> = [];
 // replaces the request's headers; with none it goes on unchanged). Only
 // headers can be set: the body stays the browser's own. A hop the browser
 // reaches by following a redirect starts from the headers the hop before
-// went out with.
-let __cdpPaused: any = null; let __cdpOn = false; let __cdpSeq = 0;
-const __cdpWaiting = new Map<string, (h: Record<string, string> | null) => void>();
+// went out with. CDP_REFUSES: Chromium refuses to continue a live request
+// with that text; 'Fetch.failRequest' then fails it with the reason it was
+// given, as Chromium names it (errorReason 'Aborted' is net::ERR_ABORTED), and
+// CDP_FAIL_REFUSES makes that refused too (the request then goes on as sent).
+let __cdpPaused: any = null; let __cdpOn = false; let __cdpSeq = 0; let __cdpFailReason = '';
+const __cdpWaiting = new Map<string, (h: Record<string, string> | null | false) => void>();
 const __cdp = {
   on: (name: string, fn: any) => { if (name === 'Fetch.requestPaused') __cdpPaused = fn; },
   send: async (method: string, params: any = {}) => {
     if (method === 'Fetch.enable') __cdpOn = true;
     if (method === 'Fetch.continueRequest') {
       // A request the page dropped while it was paused: Chromium refuses to continue it.
-      if (String(params.requestId).startsWith('dropped')) throw new Error('Protocol error (Fetch.continueRequest): Invalid InterceptionId.');
+      if (String(params.requestId).startsWith('dropped')) throw new Error(process.env.DROP_REFUSAL || 'Protocol error (Fetch.continueRequest): Invalid InterceptionId.');
+      if (process.env.CDP_REFUSES) throw new Error(process.env.CDP_REFUSES);
       const go = __cdpWaiting.get(params.requestId); __cdpWaiting.delete(params.requestId);
       if (go) go(params.headers ? Object.fromEntries(params.headers.map((h: any) => [h.name, h.value])) : null);
+    }
+    if (method === 'Fetch.failRequest') {
+      __cdpFailReason = String(params.errorReason);
+      const go = __cdpWaiting.get(params.requestId); __cdpWaiting.delete(params.requestId);
+      if (process.env.CDP_FAIL_REFUSES) { if (go) go(null); throw new Error(process.env.CDP_FAIL_REFUSES); }
+      if (go) go(false);
     }
     return {};
   },
@@ -107,10 +117,11 @@ const __pageFetch = async (u: string, init: any = {}): Promise<Response> => {
       // ends this run, as it fails the running step under Playwright.
       if (process.env.PAGE_DROPS_REQUESTS) __cdpPaused({ requestId: 'dropped' + (++__cdpSeq), request: { url: u, method, headers: {} } });
       const id = 'req' + (++__cdpSeq);
-      const given = await new Promise<Record<string, string> | null>((resolve) => {
+      const given = await new Promise<Record<string, string> | null | false>((resolve) => {
         __cdpWaiting.set(id, resolve);
         __cdpPaused({ requestId: id, request: { url: u, method, headers: { ...headers } } });
       });
+      if (given === false) throw new Error('net::ERR_' + __cdpFailReason.toUpperCase());
       if (given) headers = given;
     }
     let answer: Response | null = null; let wentOn = false;
@@ -217,7 +228,14 @@ def require_node() -> str:
 
 
 def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None,
-             bearer: Optional[str] = None, page_drops_requests: bool = False) -> Dict[str, str]:
+             bearer: Optional[str] = None, page_drops_requests: bool = False,
+             cdp_refuses: Optional[str] = None, drop_refusal: Optional[str] = None,
+             fail_refuses: Optional[str] = None, own_path: Optional[Path] = None,
+             keep_stderr: bool = False) -> Dict[str, str]:
+    """The outcome of each step run; ``__own__`` holds the grader's own
+    errors the spec wrote down, when it wrote any. ``own_path`` names the
+    file the spec writes them to (default: one in ``tmp``); with
+    ``keep_stderr`` the run's error output is under ``__stderr__``."""
     body = "\n".join(line for line in spec.splitlines() if not line.startswith("import "))
     f = tmp / "spec_run.mts"
     f.write_text(PRELUDE + body + RUNNER, encoding="utf-8")
@@ -230,10 +248,23 @@ def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtu
         env["GRADE_BEARER"] = bearer
     if page_drops_requests:
         env["PAGE_DROPS_REQUESTS"] = "1"
+    for var, value in (("CDP_REFUSES", cdp_refuses), ("DROP_REFUSAL", drop_refusal),
+                       ("CDP_FAIL_REFUSES", fail_refuses)):
+        if value is not None:
+            env[var] = value
+    own = tmp / "own_errors.txt" if own_path is None else Path(own_path)
+    if own_path is None:
+        own.unlink(missing_ok=True)
+    env["GRADE_OWN_ERRORS"] = str(own)
     p = subprocess.run([require_node(), str(f)], capture_output=True, text=True, timeout=60, env=env)
     for line in p.stdout.splitlines():
         if line.startswith("@@UI@@"):
-            return json.loads(line[6:])
+            got = json.loads(line[6:])
+            if own.is_file():
+                got["__own__"] = own.read_text("utf-8")
+            if keep_stderr:
+                got["__stderr__"] = p.stderr
+            return got
     return {"__error__": p.stderr.strip() or "no output"}
 
 
