@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import subprocess
 
 import pytest
 
@@ -539,3 +541,543 @@ def test_bind_opens_the_front_page_itself(tmp_path, bp):
     with h.server({}, bodies={"/": page}) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("bind",))
     assert got == {"bind:tenant": "passed"}
+
+
+# --- the steps call the product with the grading boot's bearer --------------
+from app.factory.build.authority import capability_route as _route  # noqa: E402
+from app.factory.build.image_sufficiency import GATE_RUN_ENV, GATE_TOKEN_VAR  # noqa: E402
+
+_API_KINDS = ("load", "screen", "route", "honest_error")
+
+
+def _honest(bp):
+    return {f"POST {_route(bp['capabilities'][0]['id'])}": 422}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("protected", [True, False])
+def test_a_product_with_or_without_sign_in_passes_with_the_grading_bearer(tmp_path, bp, protected):
+    """One product answers 401 to any request without the boot's bearer, the
+    other needs none: under the grading bearer both pass every page, route
+    and honest-error step, and every request the steps made carried it."""
+    token = ug.grading_bearer()
+    with h.server(_honest(bp), token=token if protected else None) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer=token)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert base.auth and set(base.auth) == {f"Bearer {token}"}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("bearer", ["", "not-the-boot-token"])
+def test_a_protected_product_called_without_its_bearer_fails_naming_status_and_route(tmp_path, bp, bearer):
+    """Without the boot's bearer (none, or a wrong one) the protected product
+    answers 401, and each failed step names its route and the status seen."""
+    with h.server(_honest(bp), token=ug.grading_bearer()) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer=bearer)
+    routes = [f"route:{_route(c['id'])}" for c in bp["capabilities"]]
+    for name in routes + ["load:/"]:
+        assert got[name] == "failed: expected 200 got 401", (name, got)
+    honest = f"honest_error:{_route(bp['capabilities'][0]['id'])}"
+    assert got[honest].startswith("failed") and "401" in got[honest]
+
+
+@pytest.mark.parametrize("env,want", [
+    (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
+    ({GATE_TOKEN_VAR: " other-token "}, "other-token"),
+    ({GATE_TOKEN_VAR: None}, ""),
+    ({}, ""),
+    ({"SOME_OTHER_VAR": "x"}, ""),
+])
+def test_grading_bearer_is_the_gate_run_token(env, want):
+    assert ug.grading_bearer(env) == want
+
+
+def _boot_token(monkeypatch, token):
+    """The grading boot's token for this test: the one source ``grade_ui``
+    reads (it takes no token from its caller)."""
+    monkeypatch.setitem(GATE_RUN_ENV, GATE_TOKEN_VAR, token)
+
+
+@pytest.mark.parametrize("boot,want", [
+    (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
+    ("another-boot-token", "another-boot-token"),
+    ("  padded-token  ", "padded-token"),
+    ("", None),
+    ("   ", None),
+])
+def test_grade_ui_hands_the_boots_bearer_to_the_run(tmp_path, monkeypatch, boot, want):
+    if boot is not None:
+        _boot_token(monkeypatch, boot)
+    seen = {}
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=lambda cmd, **k: seen.update(k["env"]))
+    assert seen.get(ug.BEARER_ENV) == want
+
+
+def test_grade_ui_takes_no_token_from_its_caller():
+    import inspect
+
+    assert "bearer" not in inspect.signature(ug.grade_ui).parameters
+
+
+@pytest.mark.parametrize("bearer,want", [("", None), ("abc", "abc"), ("dev-x", "dev-x")])
+def test_playwright_run_sets_the_bearer_only_when_given(tmp_path, bearer, want):
+    seen = {}
+    ug._playwright_run(lambda cmd, **k: seen.update(k["env"]), tmp_path / "s.spec.ts", base_url="http://b",
+                       out=tmp_path / "o.json", fixtures=tmp_path, timeout=120, bearer=bearer)
+    assert seen.get(ug.BEARER_ENV) == want
+    assert seen["BASE_URL"] == "http://b"
+
+
+def test_the_spec_never_carries_the_token_itself():
+    for bp in BPS:
+        spec = ug.render_spec(bp)
+        assert GATE_RUN_ENV[GATE_TOKEN_VAR] not in spec
+        assert f"process.env.{ug.BEARER_ENV}" in spec
+
+
+@pytest.mark.parametrize("brief", [12345, ["not", "a", "brief"]])
+def test_grade_ui_with_an_unreadable_brief_runs_nothing(tmp_path, brief):
+    """A value that is not a customer brief stops the UI grade before any
+    run: the bearer is never handed to a run that should not happen."""
+    calls = []
+    got = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
+                      run=lambda cmd, **k: calls.append(k), brief=brief)
+    assert calls == []
+    assert got.errors == [ug.BRIEF_UNREADABLE] and not got.ran
+
+
+# --- the run's bearer never stays in what the run wrote down ----------------
+def _leaky_run(token: str, *, report: bool):
+    """A run whose call log names the request headers, the way Playwright's
+    does when a request cannot connect: into the JSON report (or, with no
+    report, only stderr) and an error-context file next to it."""
+    def run(cmd, **kw):
+        wd = _P(kw["cwd"])
+        log = f"Authorization: Bearer {token}"
+        if report:
+            body = {"suites": [{"title": "grade_ui.spec.ts", "specs": [{"title": "load:/", "ok": False, "tests": [
+                {"results": [{"status": "failed", "error": {"message": log}}]}]}]}]}
+            _P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(body), encoding="utf-8")
+        ctx = wd / "test-results" / "load" / "error-context.md"
+        ctx.parent.mkdir(parents=True, exist_ok=True)
+        ctx.write_text(log, encoding="utf-8")
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": log})()
+    return run
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+def test_the_bearer_is_redacted_from_the_report_and_every_file_the_run_wrote(tmp_path, monkeypatch, token):
+    _boot_token(monkeypatch, token)
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True))
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert written and not any(token.encode() in p.read_bytes() for p in written)
+    assert ug.REDACTED in (tmp_path / "report.json").read_text(encoding="utf-8")
+    assert ug.REDACTED in (tmp_path / "test-results" / "load" / "error-context.md").read_text(encoding="utf-8")
+    assert token not in json.dumps(dataclasses.asdict(g))
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+def test_the_bearer_is_redacted_from_the_quoted_stderr_when_no_report_came(tmp_path, monkeypatch, token):
+    _boot_token(monkeypatch, token)
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=False))
+    (err,) = g.errors
+    assert "no playwright report" in err and token not in err and ug.REDACTED in err
+
+
+def _run_then(exc: BaseException, token: str):
+    """A run that writes the bearer the way Playwright's call log does, then
+    ends with ``exc`` (a subprocess timeout, a crash) instead of returning."""
+    leak = _leaky_run(token, report=True)
+
+    def run(cmd, **kw):
+        leak(cmd, **kw)
+        raise exc
+    return run
+
+
+@pytest.mark.parametrize("token", ["dev-local-token", "tok-XYZ-123"])
+@pytest.mark.parametrize("exc", [subprocess.TimeoutExpired(["npx"], 5), OSError("node died")])
+def test_the_bearer_is_scrubbed_when_the_run_times_out_or_crashes(tmp_path, monkeypatch, token, exc):
+    _boot_token(monkeypatch, token)
+    g = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_run_then(exc, token))
+    assert g.errors == [f"UI run did not happen: {type(exc).__name__}"] and not g.ran
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert (tmp_path / "report.json") in written
+    assert not any(token.encode() in p.read_bytes() for p in written)
+    assert ug.REDACTED in (tmp_path / "test-results" / "load" / "error-context.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_an_empty_bearer_sends_no_authorization_header(tmp_path, bp):
+    """With no bearer the steps send no Authorization at all (not an empty
+    ``Bearer``), and an open product passes every step."""
+    with h.server(_honest(bp)) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer="")
+    assert got and all(v == "passed" for v in got.values()), got
+    assert base.auth and set(base.auth) == {""}
+
+
+@pytest.mark.parametrize("text,secret,want", [
+    ("Bearer abc and abc", "abc", f"Bearer {ug.REDACTED} and {ug.REDACTED}"),
+    ("nothing here", "abc", "nothing here"),
+    ("Bearer abc", "", "Bearer abc"),
+    (None, "abc", ""),
+])
+def test_redact(text, secret, want):
+    assert ug.redact(text, secret) == want
+
+
+@pytest.mark.parametrize("secret", ["s3cret", "other-9"])
+def test_keep_redacted_copies_every_file_and_redacts_the_ones_holding_the_secret(tmp_path, secret):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    (src / "a").mkdir(parents=True)
+    (src / "a" / "hit.json").write_text(f'{{"h": "Bearer {secret}"}}', encoding="utf-8")
+    (src / "clean.txt").write_text("no token", encoding="utf-8")
+    assert ug.keep_redacted(src, dest, secret) == ["a/hit.json", "clean.txt"]
+    assert (dest / "a" / "hit.json").read_text(encoding="utf-8") == f'{{"h": "Bearer {ug.REDACTED}"}}'
+    assert (dest / "clean.txt").read_text(encoding="utf-8") == "no token"
+    # What the run wrote is left as it was: only the kept copy is redacted.
+    assert secret in (src / "a" / "hit.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", ["a.json", "deep/b.txt"])
+def test_keep_redacted_with_no_secret_copies_the_files_as_they_are(tmp_path, name):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    (src / name).parent.mkdir(parents=True, exist_ok=True)
+    (src / name).write_bytes(b"Bearer  and [grading bearer] stay as written")
+    assert ug.keep_redacted(src, dest, "") == [name]
+    assert (dest / name).read_bytes() == b"Bearer  and [grading bearer] stay as written"
+
+
+# --- the scrub runs on every way out of the run ------------------------------
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+def test_the_bearer_is_scrubbed_even_when_the_run_is_interrupted(tmp_path, monkeypatch, token):
+    """An interrupt is not a recorded FAIL -- it leaves ``grade_ui`` as it
+    came -- and what the run wrote before it is scrubbed all the same."""
+    _boot_token(monkeypatch, token)
+    with pytest.raises(KeyboardInterrupt):
+        ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
+                    run=_run_then(KeyboardInterrupt(), token))
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert (tmp_path / "report.json") in written
+    assert not any(token.encode() in p.read_bytes() for p in written)
+
+
+# --- the bearer goes to the product's own origin and nowhere else ------------
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("bearer", ["the-boot-token", ""])
+def test_a_page_request_to_another_origin_never_carries_the_bearer(tmp_path, bp, bearer):
+    """The product's page loads one file of its own and one from another
+    origin. With a bearer, every request to the product carries it and no
+    request to the other origin does; with none, nothing carries one."""
+    with h.server({}) as other:
+        page = f'<html><script src="/own.js"></script><img src="{other}/pixel.png"></html>'
+        with h.server({}, bodies={"/": page}, token=bearer or None) as base:
+            got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=bearer)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert base.auth and set(base.auth) == {f"Bearer {bearer}" if bearer else ""}
+    assert other.auth and set(other.auth) == {""}
+
+
+# --- a screen reached inside the loaded page is still loaded and judged ------
+@pytest.mark.parametrize("bp", BPS)
+def test_every_screen_after_the_first_page_is_loaded_and_passes_on_an_honest_product(tmp_path, bp):
+    """After ``load:/`` every screen's address differs from the loaded
+    page's only by its fragment, and a browser makes no request for that
+    move. Each screen is still loaded by itself: one request for the first
+    page and one for each screen, and every step passes."""
+    with h.server({}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"))
+    assert got == {"load:/": "passed", **{f"screen:{m}": "passed" for m in bp["ui_modules"]}}
+    assert len(base.auth) == 1 + len(bp["ui_modules"])
+
+
+@pytest.mark.parametrize("status", [500, 404])
+def test_a_screen_whose_address_does_not_answer_200_fails_naming_the_status(tmp_path, status):
+    with h.server({"/": status}) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load", "screen"))
+    assert got["screen:tenant_portal"] == f"failed: expected 200 got {status}"
+
+
+# --- a redirect never carries the bearer off the product's origin ------------
+def _first(bp):
+    return _route(bp["capabilities"][0]["id"])
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("status", [302, 307])
+def test_a_page_file_that_redirects_to_another_origin_arrives_there_without_the_bearer(tmp_path, bp, status):
+    """The product's page asks for one of its own files, and the product
+    answers with a redirect to another origin. The product is asked with
+    the bearer; the other origin is asked without it."""
+    token = "the-boot-token"
+    with h.server({}) as other:
+        page = '<html><script src="/hop.js"></script></html>'
+        with h.server({"/hop.js": status}, bodies={"/": page}, token=token,
+                      locations={"/hop.js": f"{other}/landing"}) as base:
+            got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=token)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert ("/hop.js", f"Bearer {token}") in base.asked and {a for _k, a in base.asked} == {f"Bearer {token}"}
+    assert other.asked and set(other.asked) == {("/landing", "")}
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("status", [302, 307])
+def test_a_route_that_redirects_to_another_origin_is_followed_without_the_bearer(tmp_path, bp, status):
+    token = "the-boot-token"
+    with h.server({}) as other:
+        with h.server({_first(bp): status}, token=token, locations={_first(bp): f"{other}/landing"}) as base:
+            got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got[f"route:{_first(bp)}"] == "passed"
+    assert {a for _k, a in base.asked} == {f"Bearer {token}"}
+    assert other.asked == [("/landing", "")]
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("status", [301, 307])
+def test_a_route_that_redirects_on_its_own_origin_is_followed_with_the_bearer(tmp_path, bp, status):
+    """The negative of the two above: a redirect that stays on the product
+    (the usual added slash) is followed signed in, and the step passes on a
+    protected product."""
+    token = "the-boot-token"
+    first = _first(bp)
+    with h.server({first: status}, token=token, locations={first: first + "/"}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got and all(v == "passed" for v in got.values()), got
+    assert (first, f"Bearer {token}") in base.asked and (first + "/", f"Bearer {token}") in base.asked
+
+
+@pytest.mark.parametrize("status,again,bodies", [
+    # 307 and 308 repeat the request: the POST and its body arrive again
+    (307, "POST {t}/", 2),
+    (308, "POST {t}/", 2),
+    # any other redirect is followed with a GET and no body
+    (302, "{t}/", 1),
+    (303, "{t}/", 1),
+])
+def test_a_redirected_post_is_repeated_or_followed_as_a_browser_would(tmp_path, status, again, bodies):
+    token = "the-boot-token"
+    first = _first(BP)
+    key = again.format(t=first)
+    with h.server({"POST " + first: status, key: 422}, token=token, locations={"POST " + first: first + "/"}) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("honest_error",), bearer=token)
+    assert got == {f"honest_error:{first}": "passed"}
+    assert base.asked == [("POST " + first, f"Bearer {token}"), (key, f"Bearer {token}")]
+    assert [data for _path, data in base.seen] == [b'"not-an-object"'] * bodies
+
+
+@pytest.mark.parametrize("loop", [1, 2])
+def test_a_route_that_redirects_for_ever_fails_after_a_fixed_number_of_hops(tmp_path, loop):
+    first = _first(BP)
+    ring = [first] + [f"{first}/{i}" for i in range(1, loop)]
+    locations = {ring[i]: ring[(i + 1) % loop] for i in range(loop)}
+    with h.server({k: 302 for k in ring}, locations=locations) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("route",), bearer="")
+    assert got[f"route:{first}"] == "failed: expected 200 got 302"
+    assert len([k for k, _a in base.asked if k in ring]) == 11
+
+
+@pytest.mark.parametrize("bearer", ["the-boot-token", ""])
+def test_a_product_that_is_down_fails_its_page_step_signed_in_or_not(tmp_path, bearer):
+    """Signed in, the page's request is made for it and cannot connect: the
+    step fails as it does with no sign-in, it does not hang."""
+    got = h.run_spec(ug.render_spec(BP), tmp_path, "http://127.0.0.1:9", only_kinds=("load",), bearer=bearer)
+    assert got["load:/"].startswith("failed")
+
+
+# --- the scrub can never change what is graded --------------------------------
+def _all_passed_run(names):
+    def run(cmd, **kw):
+        _P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(_report(names), indent=2), encoding="utf-8")
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    return run
+
+
+@pytest.mark.parametrize("token", ["e", "passed", "status", '"'])
+def test_the_grade_is_read_before_the_scrub_whatever_the_boots_token_is(tmp_path, monkeypatch, token):
+    """A token that is also a word of the report itself: the scrub rewrites
+    the file on disk, and the grade is still the one the run reported."""
+    _boot_token(monkeypatch, token)
+    names = [s.name for s in ug.ui_plan(BP)]
+    g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9", run=_all_passed_run(names))
+    assert g.errors == [] and [s["name"] for s in g.steps] == names and all(s["passed"] for s in g.steps)
+    assert ug.REDACTED.encode() in (tmp_path / "report.json").read_bytes()
+
+
+@pytest.mark.parametrize("copies", [2, 3])
+def test_keep_redacted_leaves_no_copy_of_a_secret_a_file_holds_more_than_once(tmp_path, copies):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    src.mkdir()
+    (src / "log.txt").write_text(" and ".join(["Bearer tok-9"] * copies), encoding="utf-8")
+    assert ug.keep_redacted(src, dest, "tok-9") == ["log.txt"]
+    assert (dest / "log.txt").read_text(encoding="utf-8") == " and ".join([f"Bearer {ug.REDACTED}"] * copies)
+
+
+@pytest.mark.parametrize("status", [302, 307])
+def test_a_first_page_that_redirects_to_another_origin_is_opened_there_without_the_bearer(tmp_path, status):
+    """The navigation itself is redirected (a product that sends visitors to
+    a sign-in page elsewhere): the product is asked with the bearer, the
+    other origin without it."""
+    token = "the-boot-token"
+    with h.server({}) as other:
+        with h.server({"/": status}, token=token, locations={"/": f"{other}/landing"}) as base:
+            got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load",), bearer=token)
+    assert got == {"load:/": "passed"}
+    assert base.asked == [("/", f"Bearer {token}")] and other.asked == [("/landing", "")]
+
+
+# --- the kept folder holds only what the grade copied into it ------------------
+import threading as _threading  # noqa: E402
+import time as _time  # noqa: E402
+
+
+def _files_holding(root, secret):
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() and secret.encode() in p.read_bytes())
+
+
+@pytest.mark.parametrize("held", ["trace.txt", "report.json"])
+def test_a_file_that_cannot_be_read_is_not_kept_and_the_others_are(tmp_path, monkeypatch, held):
+    """One file failing must not stop the others, first in order or last."""
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    for rel in ("a-first/trace.txt", "m/mid.json", "report.json"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("Authorization: Bearer tok-9", encoding="utf-8")
+    real_read = _P.read_bytes
+
+    def read_bytes(self):
+        if self.name == held:
+            raise PermissionError(13, "held by another process", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(_P, "read_bytes", read_bytes)
+    kept = ug.keep_redacted(src, dest, "tok-9")
+    monkeypatch.setattr(_P, "read_bytes", real_read)
+    assert kept == [rel for rel in ("a-first/trace.txt", "m/mid.json", "report.json") if not rel.endswith(held)]
+    assert sorted(p.name for p in dest.rglob("*") if p.is_file()) == sorted({"trace.txt", "mid.json", "report.json"} - {held})
+    assert _files_holding(dest, "tok-9") == []
+
+
+def _run_with_a_late_writer(token, delay, *, raises):
+    """A run that leaves something behind which writes the bearer into the
+    run's own folder LATER (a process that outlived the run's time cap),
+    then returns its report or raises as a time cap does."""
+    leak = _leaky_run(token, report=True)
+
+    def run(cmd, **kw):
+        leak(cmd, **kw)
+        late = _P(kw["cwd"]) / "written-late.log"
+
+        def write_later():
+            _time.sleep(delay)
+            try:
+                late.parent.mkdir(parents=True, exist_ok=True)
+                late.write_text(f"Authorization: Bearer {token}", encoding="utf-8")
+            except OSError:
+                pass  # the run's folder is gone: that is the point
+
+        _threading.Thread(target=write_later, daemon=True).start()
+        if raises:
+            raise subprocess.TimeoutExpired(["npx"], 5)
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+    return run
+
+
+@pytest.mark.parametrize("token", ["tok-one-123", "another.token.456"])
+@pytest.mark.parametrize("raises", [True, False])
+def test_what_a_run_writes_after_it_ended_never_reaches_the_kept_folder(tmp_path, monkeypatch, token, raises):
+    """Whether the run returned or hit its cap, a write that comes later
+    lands in the run's own folder (or nowhere), never in the folder the
+    build keeps; and what the run wrote in time is kept, redacted."""
+    _boot_token(monkeypatch, token)
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_run_with_a_late_writer(token, 0.4, raises=raises))
+    _time.sleep(1.0)
+    kept = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file())
+    assert "written-late.log" not in kept
+    assert "report.json" in kept and "test-results/load/error-context.md" in kept
+    assert _files_holding(tmp_path, token) == []
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_the_run_happens_outside_the_kept_folder(tmp_path, bp):
+    """The spec, the report and the fixtures are handed to the run in a
+    folder that is not the kept one, and that folder is gone afterwards."""
+    seen = {}
+
+    def run(cmd, **kw):
+        seen.update(cwd=_P(kw["cwd"]), spec=_P(cmd[3]), out=_P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]),
+                    fixtures=_P(kw["env"]["GRADE_FIXTURES"]))
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    ug.grade_ui(bp, tmp_path / "kept", base_url="http://127.0.0.1:9", run=run)
+    kept = (tmp_path / "kept").resolve()
+    for where in seen.values():
+        assert kept not in where.resolve().parents and where.resolve() != kept
+    assert seen["spec"].parent == seen["cwd"] == seen["out"].parent
+    assert not seen["cwd"].exists()
+    assert (tmp_path / "kept" / "grade_ui.spec.ts").read_text(encoding="utf-8") == ug.render_spec(bp)
+
+
+@pytest.mark.parametrize("fn", ["grade_ui", "toolchain_check"])
+def test_the_grade_and_the_toolchain_check_start_the_run_as_master_does(fn):
+    import inspect
+
+    assert inspect.signature(getattr(ug, fn)).parameters["run"].default is subprocess.run
+
+
+# --- the page is signed in by headers alone: an upload arrives whole ----------
+@pytest.mark.parametrize("bp", BPS)
+def test_an_upload_reaches_a_protected_product_whole_and_signed(tmp_path, bp):
+    """The document steps on a product that needs the bearer: each file the
+    page uploads arrives byte for byte, carrying the bearer, and so does the
+    question. (Re-sending the page's request from outside the page, as
+    route.fetch does, loses the file: see the harness.)"""
+    token = "the-boot-token"
+    fx = ug.write_fixtures(bp, tmp_path / "fx")
+    with h.server({}, bodies={"/": f"tenant {bp['product_id']}", "POST /__upload": "parsed ok", "POST /__ask": "total 1,240 [1]"},
+                  token=token) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, fixtures=fx["pdf"].parent, bearer=token,
+                         only_kinds=("load", "bind", "attach_pdf", "attach_xlsx", "parsed", "cited_answer"))
+    assert set(got.values()) == {"passed"}, got
+    uploads = [b for k, b in base.seen if k.startswith("/__upload")]
+    assert uploads == [fx["pdf"].read_bytes(), fx["xlsx"].read_bytes()]
+    posts = [(k, a) for k, a in base.asked if k in ("POST /__upload", "POST /__ask")]
+    assert posts == [("POST /__upload", f"Bearer {token}")] * 2 + [("POST /__ask", f"Bearer {token}")]
+    assert {a for _k, a in base.asked} == {f"Bearer {token}"}
+
+
+@pytest.mark.parametrize("bp", BPS)
+def test_the_page_is_signed_in_by_setting_headers_never_by_resending_the_request(bp):
+    spec = ug.render_spec(bp)
+    assert "Fetch.continueRequest" in spec and "Fetch.enable" in spec
+    for resend in ("route.fetch", "route.fulfill", ".route("):
+        assert resend not in spec
+
+
+# --- test debt of the 7dfccb5 grade: redirects with no or a relative Location --
+@pytest.mark.parametrize("location", [None, ""])
+def test_a_redirect_status_with_no_location_is_the_answer(tmp_path, location):
+    """A 302 that names no address is not followed: the step fails on the
+    302, and only the product was asked, signed in."""
+    token = "the-boot-token"
+    first = _first(BP)
+    locations = {} if location is None else {first: location}
+    with h.server({first: 302}, token=token, locations=locations) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got[f"route:{first}"] == "failed: expected 200 got 302"
+    assert [a for k, a in base.asked if k == first] == [f"Bearer {token}"]
+
+
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("leaf", ["b", "./c"])
+def test_a_relative_location_is_resolved_against_the_hop_that_gave_it(tmp_path, bp, leaf):
+    """<route> -> <route>/a/ -> a relative address: it is read against
+    <route>/a/, the hop that gave it, not against the first address."""
+    token = "the-boot-token"
+    first = _first(bp)
+    last = f"{first}/a/{leaf.lstrip('./')}"
+    with h.server({first: 302, first + "/a/": 302}, token=token,
+                  locations={first: first + "/a/", first + "/a/": leaf}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("route",), bearer=token)
+    assert got[f"route:{first}"] == "passed"
+    assert [(k, a) for k, a in base.asked if k.startswith(first)][:3] == [
+        (first, f"Bearer {token}"), (first + "/a/", f"Bearer {token}"), (last, f"Bearer {token}")]
