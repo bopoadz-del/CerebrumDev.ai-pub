@@ -6186,23 +6186,24 @@ def quote_for_tester(brief: Any) -> str:
     return stage_quote(brief) or ""
 
 
-def smoke_header(quote: str) -> List[str]:
+def smoke_header() -> List[str]:
     """The opening of the suite the tester writes.
 
-    When the run carries a customer brief, that brief is a line of the suite.
-    The line's value is the brief, byte for byte.
+    The customer brief is never a line of it. The suite is a file the Factory
+    renders into the product, and the grader's prompt-leak scan reads every
+    string value in the product: a brief stamped here is the Factory's own
+    finding, and it holds the product's tier whatever the writer repairs.
+    The tester's quote of the brief lives in the build state instead.
     """
-    lines = ['"""The platform runs, and it runs without the store."""']
-    if quote:
-        lines.append("TESTER_PROMPT = " + json.dumps(quote))
-    return lines
+    return ['"""The platform runs, and it runs without the store."""']
 
 
 def run_tester(ctx: RoleContext) -> RoleResult:
     """Acceptance inspector: write the code-phase suite. tests/ only.
 
     When the run carries a customer brief, the tester's prompt is that
-    brief quoted verbatim — the same text the writer and the grader see.
+    brief quoted verbatim — the same text the writer and the grader see —
+    kept in the build state, never written into the suite.
 
     Factory-gated tests judge the coder's 20–30 minute pass: imports,
     dispatch load, handle() returning a mapping, model round-trip, routes
@@ -6298,7 +6299,7 @@ def run_tester(ctx: RoleContext) -> RoleResult:
 
     # -- capability + offline dispatch ------------------------------------
     smoke = [
-        *smoke_header(quoted),
+        *smoke_header(),
         "",
         "import os",
         "",

@@ -18,8 +18,9 @@ import app.routers.session_product as api
 from app.core.auth import DEV_LOCAL_TENANT
 from app.core.session_store import create_session, get_session, update_session
 from app.factory.build.authority import BuildRole
-from app.factory.build.customer_brief import emit_brief, format_report, read_brief
+from app.factory.build.customer_brief import emit_brief, format_report, read_brief, supplied_text
 from app.factory.build.grader import shown_customer_brief
+from app.factory.build.product_grader.scan_generated import prompt_leak
 from app.factory.build.ledger import EventKind
 from app.factory.build.roles_handlers import (
     _compiled_writer_brief,
@@ -68,8 +69,7 @@ class _Ctx:
 def _same_quote(raw, ask):
     assert json.loads(raw)["ask"] == ask
     assert _compiled_writer_brief(_Ctx(raw)).startswith(raw)
-    line = next(item for item in smoke_header(quote_for_tester(raw)) if item.startswith("TESTER_PROMPT"))
-    assert json.loads(line.split("=", 1)[1].strip()) == raw
+    assert quote_for_tester(raw) == raw
     assert shown_customer_brief(raw) == raw
     assert shown_customer_brief({"summary": "a factory contract"}) == ""
 
@@ -291,12 +291,15 @@ class _TesterPlan:
     "raw",
     [emit_brief(ASK_A, []), emit_brief(ASK_B, ["sheet.xlsx"])],
 )
-def test_the_tester_records_and_stamps_the_brief_verbatim(tmp_path, monkeypatch, raw):
-    """run_tester keeps the quote in state AND in the smoke suite it writes.
+def test_the_tester_records_the_brief_and_never_stamps_it(tmp_path, monkeypatch, raw):
+    """run_tester keeps the quote in state, and the suite it writes carries
+    none of the brief: the grader's own prompt-leak scan over the rendered
+    tree finds nothing in the Factory's file, while the same scan does find
+    the same clause the moment a product file copies it.
 
-    A dropped ``if quoted:`` block loses the state record; a lost
-    ``smoke_header`` loses the suite line. Both are the planted defects this
-    test exists to catch.
+    A dropped ``if quoted:`` block loses the state record; a brief line back
+    in ``smoke_header`` is a leak in tests/test_smoke.py. Both are the planted
+    defects this test exists to catch.
     """
     monkeypatch.setattr(
         "app.factory.coder.propose_domain_test_cases",
@@ -322,5 +325,18 @@ def test_the_tester_records_and_stamps_the_brief_verbatim(tmp_path, monkeypatch,
     assert result.ok, result.detail
     assert ctx.state["tester_prompt"] == raw
     assert ctx.state["customer_brief_quote"] == raw
-    smoke = (tmp_path / "build" / "tests" / "test_smoke.py").read_text(encoding="utf-8")
-    assert "TESTER_PROMPT = " + json.dumps(raw) in smoke
+    root = tmp_path / "build"
+    smoke = (root / "tests" / "test_smoke.py").read_text(encoding="utf-8")
+    assert json.loads(raw)["ask"] not in smoke
+    assert smoke_header() == [smoke.splitlines()[0]]
+    said = supplied_text(raw)
+    assert prompt_leak(root, raw, "", said) == {}
+    # The scan is live on this very tree: a product file that copies the ask
+    # is caught, and the Factory's suite still is not.
+    (root / "app").mkdir(exist_ok=True)
+    (root / "app" / "copied.py").write_text(
+        "TEXT = " + json.dumps(json.loads(raw)["ask"]) + "\n", encoding="utf-8"
+    )
+    leaks = prompt_leak(root, raw, "", said)
+    assert list(leaks) == ["app/copied.py"]
+    assert leaks["app/copied.py"] == [" ".join(json.loads(raw)["ask"].rstrip(".").split())]
