@@ -1209,6 +1209,7 @@ _FAILURE_SUMMARIES = {
     "budget_skipped": "A build step was skipped because the run was out of budget.",
     "writer_behaviour_failed": "A generated capability did not accept its own request.",
     "writer_no_output": "The coder produced no output for this step.",
+    "codewhale_worker_failed": "The coding agent's session ended before it finished this step.",
     "packager_failed": "The build failed while packaging the product for delivery.",
 }
 
@@ -1532,7 +1533,31 @@ def queued_for_slot(notes: Sequence[Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _writer_pass(events: Sequence[Any]) -> Optional[Dict[str, Any]]:
+    from app.factory.build.writer_continuation import floor_view
+
+    return floor_view(events)
+
+
 def build_status(
+    output_dir: Path | str,
+    *,
+    blueprint: Any = None,
+    plan: Any = None,
+) -> Dict[str, Any]:
+    """Read the build's state off disk (:func:`_read_build_status`), with the
+    writer-continuation view settled against the state it is shown beside:
+    "continuing" is a statement about a build that is building. A build in
+    any other state (failed, stalled, finished) carries no continuing view,
+    whether or not a later ledger event said the pass was over."""
+    status = _read_build_status(output_dir, blueprint=blueprint, plan=plan)
+    view = status.get("writer_pass")
+    if isinstance(view, dict) and view.get("continuing") and status.get("state") != "building":
+        status["writer_pass"] = None
+    return status
+
+
+def _read_build_status(
     output_dir: Path | str,
     *,
     blueprint: Any = None,
@@ -1794,6 +1819,9 @@ def build_status(
         # The build's own declared end (server clock); a poller waits on
         # this, never on a number of its own.
         "deadline": declared_deadline(events),
+        # The writer-continuation decision (pass n of max, writer time used of
+        # the ceiling) as data, so the build card states it on its face.
+        "writer_pass": _writer_pass(events),
         **monitor,
         **_cycle_fields(ledger, terminal),
         **session_status(Path(output_dir)),

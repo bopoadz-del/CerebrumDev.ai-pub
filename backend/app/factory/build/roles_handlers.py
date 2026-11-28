@@ -4038,10 +4038,26 @@ def _run_writer_via_codewhale_worker(ctx: RoleContext) -> RoleResult:
     from app.factory.build import factory_owned as _owned
 
     owned_lines = tuple(_owned.rework_findings(_owned.recorded(Path(dest))))
+    resumed = bool(ctx.state.get("writer_resumed"))
+    done_section = ""
+    from app.factory.build import writer_continuation as _cont
+
+    if ctx.state.get(_cont.RESUMED_KEY):
+        # A resumed pass (a continuation after a cut, or the user's Try
+        # again) is told what the kept checkout already holds: the steps it
+        # reported, the files on disk and the tests that last failed, so it
+        # never redoes finished work.
+        done_section = _cont.render_done_section(
+            _cont.done_steps(Path(dest)),
+            _cont.done_files(Path(dest)),
+            pass_label=_cont.pass_label(ctx.state),
+            failing=_cont.failing_tests(Path(dest)),
+        )
     prompt = render_writer_prompt(
         ctx.blueprint,
         brief=brief,
-        resume=bool(ctx.state.get("writer_resumed")),
+        resume=resumed,
+        done_section=done_section,
         # The work list a rework round was handed (grader / gate findings):
         # rendered as REWORK FINDINGS so the agent patches in place and fixes
         # only these instead of re-authoring the whole product (v16).
