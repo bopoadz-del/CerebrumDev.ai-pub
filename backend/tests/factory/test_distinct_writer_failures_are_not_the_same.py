@@ -27,7 +27,7 @@ from app.factory.build.authority import BuildRole
 from app.factory.build.gates import GateResult
 from app.factory.build.ledger import EventKind
 from app.factory.build.roles import ROLE_IMPLEMENTATIONS
-from app.factory.build.runner import Outcome, RoleRunner, _failure_keys
+from app.factory.build.runner import REWORK_BUDGET, Outcome, RoleRunner, _failure_keys
 
 ROOT = Path(__file__).resolve().parents[3]
 SMOKE = ROOT / "blueprints/examples/runner_smoke.yaml"
@@ -99,21 +99,27 @@ def _recording_writer(captured):
 
 
 def test_a_different_second_failure_gets_its_own_rework_round(tmp_path, stub_coder, monkeypatch):
-    """Cap 1 (ORDERS_08NOV_1330Z): the ONE rework round goes to the first
-    failure; a DIFFERENT second failure must stop with ITS finding named --
+    """Each DIFFERENT failure gets its own rework round, up to REWORK_BUDGET
+    per gate; the failure after the last round stops with ITS finding named --
     never a SAME_FAILURE_TWICE that hides what the writer must hear next."""
-    _writer_gate_sequence(monkeypatch, [FIRST, SECOND])
+    distinct = [FIRST, SECOND] + [
+        _verdict(f"zorblat_extra_reason_{n}", f"quillfeather: extra thing wrong number {n}")
+        for n in range(REWORK_BUDGET - 1)
+    ]
+    _writer_gate_sequence(monkeypatch, distinct)
     captured: list = []
     runner = RoleRunner(load_blueprint(SMOKE), tmp_path / "build", roles=_recording_writer(captured), brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
 
     assert "SAME_FAILURE_TWICE" not in (outcome.detail or ""), outcome.detail
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
-    assert len(reworks) == 1, [e.detail for e in reworks]
-    # The rework round handed the writer the FIRST finding...
+    assert len(reworks) == REWORK_BUDGET, [e.detail for e in reworks]
+    # Round 1 handed the writer the FIRST finding, round 2 the SECOND...
     assert any("the first thing wrong" in item for item in captured[1]), captured
-    # ...and the stop names the SECOND finding, so the next build hears it.
-    assert "a different thing wrong" in (outcome.detail or ""), outcome.detail
+    assert any("a different thing wrong" in item for item in captured[2]), captured
+    # ...and the stop names the failure after the last round, so the next build hears it.
+    last = distinct[-1].findings[0].split(": ", 1)[1]
+    assert last in (outcome.detail or ""), outcome.detail
     assert outcome.outcome is Outcome.FAILED_BUDGET_SPENT
 
 

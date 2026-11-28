@@ -1416,12 +1416,81 @@ describe('the stop, said once: one step name, one tone, fix rounds as history', 
     check: 'writer_contract',
     finding: "app/actions/contract_settings.py:47: the declared code 'AE' is a literal",
   }
+  // The records build_status wrote for two builds the six-round ceiling
+  // stopped at the grader (backend test_foreman_on_rework_three, the two
+  // grader-ceiling tests; budget 3 a gate). A gate's round carries its own
+  // gate name; the grader's send-back is filed on step 3 under 'grader'.
+  const gateRound = (gate: string, round_gate: number, round_build: number) => ({
+    ...rework,
+    gate,
+    gate_name: gate === 'WRITER' ? 'writer_gate' : 'tester_gate',
+    check: gate === 'WRITER' ? 'writer_behaviour' : 'gates',
+    round_gate,
+    gate_budget: 3,
+    round_build,
+  })
+  const graderRecord = (cls: string, round_gate: number, round_build: number) => ({
+    ...rework,
+    class: cls,
+    gate_name: 'grader',
+    check: 'grader',
+    finding: 'function grade FAIL: analytics_surface',
+    round_gate,
+    gate_budget: 3,
+    round_build,
+  })
 
   it.each([
     [[rework], 'Fix rounds used: 1 of 6 (Workers: 1 of 1).'],
     [
       [rework, { ...rework, gate: 'TESTER', round_gate: 2, gate_budget: 2, round_build: 3 }],
       'Fix rounds used: 3 of 6 (Tester: 2 of 2).',
+    ],
+    // Four gate rounds, the grader's two (its own records, counted against
+    // the grader's budget), then the STOP, which is no round.
+    [
+      [
+        gateRound('WRITER', 1, 1),
+        gateRound('WRITER', 2, 2),
+        gateRound('WRITER', 3, 3),
+        gateRound('TESTER', 1, 4),
+        graderRecord('REWORK', 1, 5),
+        graderRecord('REWORK', 2, 6),
+        graderRecord('STOP', 2, 6),
+      ],
+      'Fix rounds used: 6 of 6 (Quality check: 2 of 3).',
+    ],
+    // The review's third round is also the build's sixth (two Workers
+    // rounds, one Tester round, three review rounds): the line names the
+    // review and its own count, never the step it sent back.
+    [
+      [
+        gateRound('WRITER', 1, 1),
+        gateRound('WRITER', 2, 2),
+        gateRound('TESTER', 1, 3),
+        graderRecord('REWORK', 1, 4),
+        graderRecord('REWORK', 2, 5),
+        graderRecord('REWORK', 3, 6),
+        graderRecord('STOP', 3, 6),
+      ],
+      'Fix rounds used: 6 of 6 (Quality check: 3 of 3).',
+    ],
+    // A review round below the ceiling, after a Workers round.
+    [[gateRound('WRITER', 1, 1), graderRecord('REWORK', 1, 2)], 'Fix rounds used: 2 of 6 (Quality check: 1 of 3).'],
+    // The ceiling met before any grader round: six gate rounds, then the
+    // grader's first refusal is the STOP (zero of its three). The last fix
+    // round is the tester's.
+    [
+      [
+        gateRound('WRITER', 1, 1),
+        gateRound('WRITER', 2, 2),
+        gateRound('WRITER', 3, 3),
+        gateRound('TESTER', 1, 4),
+        gateRound('TESTER', 2, 5),
+        gateRound('TESTER', 3, 6),
+        graderRecord('STOP', 0, 6),
+      ],
+      'Fix rounds used: 6 of 6 (Tester: 3 of 3).',
     ],
   ])('fixRoundsLine says the rounds in typed numbers, never the finding (%#)', (decisions, line) => {
     expect(fixRoundsLine({ state: 'failed', decisions })).toBe(line)

@@ -4,7 +4,7 @@ import type {
   BuildStatus,
   FactoryCodeCliProbe,
 } from './api/factory'
-import { REVIEW_GATE, isCountedUnit, stepLabel, stepRunning, unitName } from './stepNames'
+import { REVIEW_GATE, REVIEW_NAME, isCountedUnit, stepLabel, stepRunning, unitName } from './stepNames'
 import {
   FACTORY_CODE_CLI_CREDENTIALS_MISSING,
   FACTORY_CODE_CLI_FAILED,
@@ -327,7 +327,10 @@ export function fixRoundsLine(build: BuildStatus | null | undefined): string | n
   const rounds = (build?.decisions ?? []).filter((d) => d.class === 'REWORK')
   const last = rounds[rounds.length - 1]
   if (!last) return null
-  const step = `${stepLabel(last.gate)}: ${last.round_gate} of ${last.gate_budget}`
+  // The round is named by the check whose budget it is counted against: the
+  // review's own rounds read as the review's, not as the step it sent back.
+  const who = namesReviewGate(last.gate_name, last.check) ? REVIEW_NAME : stepLabel(last.gate)
+  const step = `${who}: ${last.round_gate} of ${last.gate_budget}`
   return `Fix rounds used: ${last.round_build} of ${last.build_ceiling} (${step}).`
 }
 

@@ -535,7 +535,7 @@ def test_a_repair_never_consumes_the_writers_rework_budget(
     outcome = runner.run()
     assert outcome.ok, outcome.detail
     assert len(writes) == 2
-    assert len(_grader_reworks(runner)) == REWORK_BUDGET
+    assert len(_grader_reworks(runner)) == 1 < REWORK_BUDGET
     assert len(_repair_notes(runner)) == 1
 
 

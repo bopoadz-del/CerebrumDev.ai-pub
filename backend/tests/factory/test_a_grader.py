@@ -843,14 +843,15 @@ def _fake_pass_harness(monkeypatch):
 
 
 @pytest.mark.parametrize("capability", ["zorblat_check", "plinket_check"])
-def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_blueprint, tmp_path, monkeypatch, capability):
+def test_runner_hands_back_to_the_writer_for_its_rounds_then_stops(smoke_blueprint, tmp_path, monkeypatch, capability):
     """A NOT_CERTIFIED verdict hands the quoted items back to the WRITER in
-    the build -- the grader's own two rounds; a third failure stops the run.
+    the build -- the grader's own REWORK_BUDGET rounds; one more failure
+    stops the run.
     Never the TESTER's machinery."""
     from app.factory.build import grader as grader_mod
     from app.factory.build.authority import BuildRole
     from app.factory.build.ledger import EventKind
-    from app.factory.build.runner import RoleRunner
+    from app.factory.build.runner import REWORK_BUDGET, RoleRunner
 
     monkeypatch.delenv(grader_mod.DISABLE_ENV, raising=False)
 
@@ -874,14 +875,15 @@ def test_runner_hands_back_to_the_writer_for_two_rounds_then_stops(smoke_bluepri
     runner = RoleRunner(smoke_blueprint, tmp_path / "build", roles=roles, brief='{"ask": "Count the items on hand.", "documents": {"file_types": [], "uploads": false}}')
     outcome = runner.run()
     assert not outcome.ok
-    assert outcome.detail.startswith("GRADER: NOT_CERTIFIED after 1 round(s)")
+    assert outcome.detail.startswith(f"GRADER: NOT_CERTIFIED after {REWORK_BUDGET} round(s)")
     assert f"function grade FAIL: {capability}" in outcome.detail
     # the run started its ledger: the first event is RUN_STARTED (pins
     # run()'s first if for CI-M -- start_run writes exactly that event)
     events = list(runner.ledger.events())
     assert events and events[0].kind is EventKind.RUN_STARTED
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
-    assert len(reworks) == 1
+    assert len(reworks) == REWORK_BUDGET
+    assert [(r.payload or {}).get("round") for r in reworks] == list(range(1, REWORK_BUDGET + 1))
     assert all((r.payload or {}).get("gate") == grader_mod.GRADER_GATE for r in reworks)
     assert all((r.payload or {}).get("source") == "GRADER" for r in reworks)
     # the writer received the quoted items as its work list
