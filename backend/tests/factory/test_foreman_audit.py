@@ -204,7 +204,9 @@ def test_the_floor_reader_dedupes_and_drafts_a_floor_entry():
 def _run(tmp_path, monkeypatch, verdicts, *, audit, replies):
     monkeypatch.setenv("FACTORY_CODER_ENABLED", "0")
     monkeypatch.delenv("FACTORY_AUTO_PILOT", raising=False)
-    monkeypatch.delenv(fm.FLAG_ENV, raising=False)
+    # These tests count the AUDIT's model calls; the rework foreman (on by
+    # default) shares the scripted model, so it is switched off here.
+    monkeypatch.setenv(fm.FLAG_ENV, "off")
     monkeypatch.setenv(fm.AUDIT_FLAG_ENV, audit)
     monkeypatch.setenv("FACTORY_OUTPUTS_ROOT", str(tmp_path / "outputs"))
     llm = _Llm(*replies)

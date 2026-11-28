@@ -84,22 +84,26 @@ def _drive(runner, verdicts):
 
 
 def test_touching_factory_files_spends_no_rework_budget(tmp_path):
+    from app.factory.build.runner import REWORK_BUDGET
+
     runner = _runner(tmp_path)
+    findings = [
+        _product_finding(f"quillfeather_{n}", f"app/zorblat.py:{n + 3}: real finding number {n}")
+        for n in range(REWORK_BUDGET + 1)
+    ]
     decisions = _drive(runner, [
         _touched(tmp_path, "a", "tests/test_domain_acceptance.py"),
         _touched(tmp_path, "b", "constraints.txt"),
-        _product_finding("quillfeather_first", "app/zorblat.py:3: the first real finding"),
-        _product_finding("quillfeather_second", "app/zorblat.py:9: the second real finding"),
+        *findings,
     ])
     kinds = [d.kind for d in decisions]
-    # Rework cap 1 (1330Z): the two factory-file touches still spend no
-    # rework (REPROMPT); the first real finding gets the ONE rework; the
-    # second stops the run.
-    assert kinds == ["REPROMPT", "REPROMPT", "REWORK", "STOP"], [(d.kind, d.detail) for d in decisions]
+    # The two factory-file touches spend no rework (REPROMPT); each real
+    # finding gets a rework round up to REWORK_BUDGET; the next one stops.
+    assert kinds == ["REPROMPT", "REPROMPT"] + ["REWORK"] * REWORK_BUDGET + ["STOP"], [(d.kind, d.detail) for d in decisions]
     reworks = [e for e in runner.ledger.events() if e.kind is EventKind.REWORK]
     assert not [e for e in reworks if TOUCHED in (e.detail or "")]
-    assert any("the first real finding" in e.detail for e in reworks)
-    assert any("the second real finding" in d.detail for d in decisions if d.kind == "STOP")
+    assert any("real finding number 0" in e.detail for e in reworks)
+    assert any(f"real finding number {REWORK_BUDGET}" in d.detail for d in decisions if d.kind == "STOP")
 
 
 def test_the_reprompt_names_the_touched_files(tmp_path):

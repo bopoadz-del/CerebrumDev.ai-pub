@@ -241,13 +241,17 @@ def push_to_branch_of_record(
     platform_id: str,
     message: str,
     env: Optional[Mapping[str, str]] = None,
+    *,
+    stop: bool = False,
 ) -> str:
     """Commit ``workspace`` onto ``build/<platform_id>``; return the new head.
 
     The ONE place a phase reaches its platform's branch: an existing branch is
     checkpointed (phase-forward, nothing rewritten); an archived one is first
     recreated from its newest archive tag; a platform with no branch yet gets
-    it cut from cerebrum-builds ``main`` (which carries the Store gate)."""
+    it cut from cerebrum-builds ``main`` (which carries the Store gate). The
+    commit carries ``message`` on every path, the first push included.
+    ``stop``: see branch_attach.checkpoint."""
     from app.factory.build.branch_attach import checkpoint
     from app.factory.build.builds_push import push_workspace
 
@@ -255,9 +259,9 @@ def push_to_branch_of_record(
     remote = builds_remote(env)
     branch = branch_of_record(platform_id)
     if branch_head(remote, platform_id) is None and restore_branch(remote, platform_id) is None:
-        push_workspace(Path(workspace), env=env, session_id="", branch=branch)
+        push_workspace(Path(workspace), env=env, session_id="", branch=branch, message=message)
         return branch_head(remote, platform_id) or ""
-    return checkpoint(Path(workspace), branch, message, env)
+    return checkpoint(Path(workspace), branch, message, env, stop=stop)
 
 
 def release_certified(remote: str, platform_id: str) -> Optional[tuple]:
