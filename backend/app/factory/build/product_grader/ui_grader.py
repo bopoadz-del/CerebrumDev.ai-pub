@@ -31,6 +31,7 @@ A skipped UI run is never a pass.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -368,7 +369,10 @@ BASE_JS = (
     "  const cdp = await p.context().newCDPSession(p);\n"
     "  cdp.on('Fetch.requestPaused', async (e: any) => {\n"
     "    const headers = Object.entries(signed(e.request.url, e.request.headers)).map(([name, value]) => ({ name, value }));\n"
-    "    await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers });\n"
+    # A paused request the page has dropped meanwhile (it reloaded, moved on
+    # or closed) cannot be continued and needs no continuing: the browser's
+    # refusal is the checker's own business, never a failed step.
+    "    await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers }).catch(() => {});\n"
     "  });\n"
     "  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });\n"
     "};\n"
@@ -655,18 +659,23 @@ def keep_redacted(src: Path, dest: Path, secret: str) -> List[str]:
     ``dest`` only ever receives what this function writes, and it writes
     only redacted bytes. So nothing the run writes later -- a process that
     outlived the run's time cap goes on writing into ``src`` -- can reach
-    the kept folder, and a file that cannot be read is simply not kept."""
+    the kept folder. A file or folder that cannot be listed, read or
+    written (it vanished meanwhile, it is locked, the place it goes to is
+    taken) is not kept, and the rest still is: this never raises for one."""
     needle = secret.encode("utf-8")
     kept = []
-    for path in sorted(p for p in Path(src).rglob("*") if p.is_file()):
+    # os.walk skips a folder it cannot list (one removed while the copy is
+    # made) instead of raising for it.
+    found = sorted(Path(folder) / name for folder, _dirs, names in os.walk(src) for name in names)
+    for path in found:
         rel = path.relative_to(src)
+        target = Path(dest) / rel
         try:
             data = path.read_bytes()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data.replace(needle, REDACTED.encode("utf-8")) if needle else data)
         except OSError:
             continue
-        target = Path(dest) / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data.replace(needle, REDACTED.encode("utf-8")) if needle else data)
         kept.append(rel.as_posix())
     return kept
 
@@ -763,9 +772,15 @@ def grade_ui(
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     finally:
         # Whatever ended the run (a report, a timeout, a crash, an
-        # interrupt): keep a redacted copy, then drop the scratch folder.
-        keep_redacted(scratch, wd, token)
-        shutil.rmtree(scratch, ignore_errors=True)
+        # interrupt): keep a redacted copy, then drop the scratch folder,
+        # whatever the copy met. What an earlier run of this workspace left
+        # under test-results goes first, as Playwright empties it for a run:
+        # the kept folder shows this run's failures only.
+        try:
+            shutil.rmtree(wd / "test-results", ignore_errors=True)
+            keep_redacted(scratch, wd, token)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
     if not report_text.strip():
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
     return parse_report(json.loads(report_text), blueprint, brief)

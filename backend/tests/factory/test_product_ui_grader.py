@@ -1081,3 +1081,86 @@ def test_a_relative_location_is_resolved_against_the_hop_that_gave_it(tmp_path, 
     assert got[f"route:{first}"] == "passed"
     assert [(k, a) for k, a in base.asked if k.startswith(first)][:3] == [
         (first, f"Bearer {token}"), (first + "/a/", f"Bearer {token}"), (last, f"Bearer {token}")]
+
+
+# --- the grader's own errors are never the product's --------------------------
+@pytest.mark.parametrize("bp", BPS)
+def test_a_request_the_page_dropped_while_paused_is_not_a_failed_step(tmp_path, bp):
+    """The page drops requests it made (a poll cut by a reload): the browser
+    refuses to continue them. The steps are graded as on a quiet page."""
+    token = "the-boot-token"
+    with h.server({}, token=token) as base:
+        quiet = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=token)
+        noisy = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "screen"), bearer=token,
+                           page_drops_requests=True)
+    assert "__error__" not in noisy, noisy
+    assert noisy == quiet
+    assert set(quiet.values()) == {"passed"}
+
+
+@pytest.mark.parametrize("taken", ["report.json", "deep/note.txt"])
+def test_keep_redacted_skips_a_file_whose_place_is_taken_and_keeps_the_rest(tmp_path, taken):
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    for name in ("report.json", "deep/note.txt", "z.txt"):
+        (src / name).parent.mkdir(parents=True, exist_ok=True)
+        (src / name).write_text("Bearer tok-9", encoding="utf-8")
+    (dest / taken).mkdir(parents=True)  # a folder sits where the file must go
+    kept = ug.keep_redacted(src, dest, "tok-9")
+    assert kept == sorted({"report.json", "deep/note.txt", "z.txt"} - {taken})
+    assert (dest / "z.txt").read_text(encoding="utf-8") == f"Bearer {ug.REDACTED}"
+
+
+@pytest.mark.parametrize("gone", ["a/one.txt", "b/c/two.txt"])
+def test_keep_redacted_skips_what_vanishes_while_the_copy_is_made(tmp_path, monkeypatch, gone):
+    """A process left running after the run removes a folder mid-copy."""
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    for name in ("a/one.txt", "b/c/two.txt", "stay.txt"):
+        (src / name).parent.mkdir(parents=True, exist_ok=True)
+        (src / name).write_text("x", encoding="utf-8")
+    real_read = ug.Path.read_bytes
+
+    def read(self):
+        if self.name == "stay.txt" and (src / gone).parent.exists():
+            import shutil as _sh
+            _sh.rmtree((src / gone).parent)
+        return real_read(self)
+
+    monkeypatch.setattr(ug.Path, "read_bytes", read)
+    order = sorted(["a/one.txt", "b/c/two.txt", "stay.txt"])
+    kept = ug.keep_redacted(src, dest, "")
+    # Whatever was read before the folder went is kept; what went is not, and nothing raises.
+    assert "stay.txt" in kept and set(kept) <= set(order)
+    assert (gone in kept) == (order.index(gone) < order.index("stay.txt"))
+
+
+@pytest.mark.parametrize("taken", ["report.json", "grade_ui.spec.ts"])
+def test_a_kept_folder_that_cannot_take_a_file_neither_crashes_the_grade_nor_leaves_the_run_behind(
+        tmp_path, monkeypatch, taken):
+    token = "tok-one-123"
+    _boot_token(monkeypatch, token)
+    made = []
+    real_mkdtemp = ug.tempfile.mkdtemp
+
+    def mkdtemp(**kw):
+        made.append(real_mkdtemp(dir=str(tmp_path / "tmp"), **kw))
+        return made[-1]
+
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(ug.tempfile, "mkdtemp", mkdtemp)
+    wd = tmp_path / "ws"
+    (wd / taken).mkdir(parents=True)
+    g = ug.grade_ui(BPS[0], wd, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True))
+    assert isinstance(g, ug.UiGrade)
+    assert made and not any(ug.Path(m).exists() for m in made)
+    assert not any(token.encode() in p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
+
+
+@pytest.mark.parametrize("old", ["test-results/old-step/error-context.md", "test-results/screen-s1/trace.txt"])
+def test_the_kept_folder_shows_this_runs_failures_only(tmp_path, monkeypatch, old):
+    token = "tok-one-123"
+    _boot_token(monkeypatch, token)
+    (tmp_path / old).parent.mkdir(parents=True)
+    (tmp_path / old).write_text("an earlier run's failure", encoding="utf-8")
+    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True))
+    assert not (tmp_path / old).exists()
+    assert (tmp_path / "test-results" / "load" / "error-context.md").is_file()

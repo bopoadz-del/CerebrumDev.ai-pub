@@ -87,6 +87,8 @@ const __cdp = {
   send: async (method: string, params: any = {}) => {
     if (method === 'Fetch.enable') __cdpOn = true;
     if (method === 'Fetch.continueRequest') {
+      // A request the page dropped while it was paused: Chromium refuses to continue it.
+      if (String(params.requestId).startsWith('dropped')) throw new Error('Protocol error (Fetch.continueRequest): Invalid InterceptionId.');
       const go = __cdpWaiting.get(params.requestId); __cdpWaiting.delete(params.requestId);
       if (go) go(params.headers ? Object.fromEntries(params.headers.map((h: any) => [h.name, h.value])) : null);
     }
@@ -99,6 +101,11 @@ const __pageFetch = async (u: string, init: any = {}): Promise<Response> => {
   for (let hop = 0; hop <= 20; hop++) {
     let headers: Record<string, string> = { ...carried };
     if (__cdpOn && __cdpPaused) {
+      // PAGE_DROPS_REQUESTS: beside each request, one the page made and dropped
+      // before it was continued (a poll cut by a reload). Its handler runs
+      // unawaited, as the browser's event does: a rejection nobody handles
+      // ends this run, as it fails the running step under Playwright.
+      if (process.env.PAGE_DROPS_REQUESTS) __cdpPaused({ requestId: 'dropped' + (++__cdpSeq), request: { url: u, method, headers: {} } });
       const id = 'req' + (++__cdpSeq);
       const given = await new Promise<Record<string, string> | null>((resolve) => {
         __cdpWaiting.set(id, resolve);
@@ -210,7 +217,7 @@ def require_node() -> str:
 
 
 def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None,
-             bearer: Optional[str] = None) -> Dict[str, str]:
+             bearer: Optional[str] = None, page_drops_requests: bool = False) -> Dict[str, str]:
     body = "\n".join(line for line in spec.splitlines() if not line.startswith("import "))
     f = tmp / "spec_run.mts"
     f.write_text(PRELUDE + body + RUNNER, encoding="utf-8")
@@ -221,6 +228,8 @@ def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtu
         env["BASE_URL"] = base_url
     if bearer is not None:
         env["GRADE_BEARER"] = bearer
+    if page_drops_requests:
+        env["PAGE_DROPS_REQUESTS"] = "1"
     p = subprocess.run([require_node(), str(f)], capture_output=True, text=True, timeout=60, env=env)
     for line in p.stdout.splitlines():
         if line.startswith("@@UI@@"):
