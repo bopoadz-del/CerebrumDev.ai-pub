@@ -630,6 +630,22 @@ class Outcome(str, Enum):
     STOPPED_BY_OWNER = "STOPPED_BY_OWNER"
 
 
+#: The outcomes that stop a build before it is done. The work as it stood is
+#: pushed to the branch of record at each of them (_checkpoint_stop). A
+#: success, a hand-off to the Store gate and a collect-all report are not
+#: stops: they push by their own path or not at all.
+STOP_OUTCOMES = frozenset(
+    {
+        Outcome.FAILED_GATE,
+        Outcome.FAILED_BUDGET_SPENT,
+        Outcome.FAILED_TIME_BUDGET,
+        Outcome.FAILED_ROLE_ERROR,
+        Outcome.FAILED_AUTHORITY,
+        Outcome.STOPPED_BY_OWNER,
+    }
+)
+
+
 #: The decision reason a stopped build's terminal event carries.
 STOPPED_BY_OWNER_REASON = "stopped_by_owner"
 
@@ -1158,18 +1174,114 @@ class RoleRunner:
             return branch_of_record(pid)
         return str(self.state.get("attached_branch") or "")
 
-    def _push_branch_of_record(self, message: str) -> str:
+    def _push_branch_of_record(
+        self, message: str, tree: Optional[Path] = None, *, stop: bool = False
+    ) -> str:
         from app.factory.build.platform_identity import branch_of_record, is_platform_id
 
+        source = Path(tree) if tree is not None else self.workspace
         pid = str(self.state.get("platform_id") or "")
         branch = self._branch_of_record()
         if is_platform_id(pid) and branch == branch_of_record(pid):
             from app.factory.build.platform_branch import push_to_branch_of_record
 
-            return push_to_branch_of_record(self.workspace, pid, message)
+            return push_to_branch_of_record(source, pid, message, stop=stop)
         from app.factory.build.branch_attach import checkpoint
 
-        return checkpoint(self.workspace, branch, message)
+        return checkpoint(source, branch, message, stop=stop)
+
+    def _stop_tree(self, tree: Path) -> None:
+        """Lay the work as it stands into ``tree``: the product directory,
+        then the files of a writer pass that was still staged when the run
+        stopped (a stop inside the writer step leaves its work there, kept
+        for the resume). Only exported files are carried."""
+        from app.factory.build.builds_push import _sync_workspace_onto_tree, is_exported
+
+        _sync_workspace_onto_tree(self.workspace, tree)
+        staging = self._staging_for(BuildRole.WRITER)
+        staged = sorted(staging.rglob("*")) if staging is not None else []
+        for src in staged:
+            rel = src.relative_to(staging)
+            if src.is_symlink() or not src.is_file() or not is_exported(rel):
+                continue
+            out = tree / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if out.exists():
+                os.chmod(out, stat.S_IWRITE | stat.S_IREAD)
+            shutil.copyfile(src, out)
+
+    def _checkpoint_stop(self, outcome: "Outcome", phase: Optional[BuildRole]) -> None:
+        """Push the work as it stood when the run stopped to the branch of
+        record, phase-forward like every checkpoint.
+
+        The commit and its MANIFEST.json say FAILED (or STOPPED, for the
+        owner's Stop), the step, the check and ``certified: false``. It is
+        never tagged or registered. A push that fails is recorded as a NOTE
+        and never replaces the stop's own reason."""
+        if outcome not in STOP_OUTCOMES:
+            return
+        branch = self._branch_of_record()
+        if not branch:
+            # No branch of record (no builds token, nothing attached): the
+            # work stays in the kept workspace, exported by "Take a copy".
+            return
+        import tempfile
+
+        from app.factory.build.branch_attach import stop_checkpoint_message
+        from app.factory.build.export_manifest import (
+            failed_export_manifest,
+            write_export_manifest,
+        )
+        from app.factory.build_jobs import build_status
+
+        word = "STOPPED" if outcome is Outcome.STOPPED_BY_OWNER else "FAILED"
+        step = phase.value if phase is not None else ""
+        tree = Path(tempfile.mkdtemp(prefix="cerebrum-stop-"))
+        try:
+            self._stop_tree(tree)
+            status = build_status(self.workspace, blueprint=self.blueprint, plan=self.plan)
+            manifest = failed_export_manifest(
+                status,
+                product_id=str(getattr(self.blueprint, "product_id", "") or self.workspace.name),
+                platform_id=str(self.state.get("platform_id") or "") or None,
+            )
+            manifest["stopped"] = {
+                "state": word,
+                "outcome": outcome.value,
+                "step": step,
+                "stop": status.get("stop"),
+            }
+            write_export_manifest(tree, manifest)
+            completed = self.ledger.completed_roles()
+            passed = [r.value for r in BUILD_PHASES if r in completed]
+            message = stop_checkpoint_message(word, step, str(manifest.get("failed_label") or ""), passed)
+            sha = self._push_branch_of_record(message, tree=tree, stop=True)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=phase,
+                detail=f"stop checkpoint: the work as it stood is on {branch} at {sha[:12]}",
+                payload={"stop_checkpoint": sha, "branch": branch, "certified": False},
+            )
+        except Exception as exc:  # noqa: BLE001 -- the stop's own reason stays the reason
+            # A git call's error text can carry the authenticated remote URL
+            # (a timed-out command prints its whole argv): scrubbed before it
+            # reaches the log or the ledger.
+            from app.factory.build.builds_push import _scrub, builds_token
+
+            error = _scrub(f"{type(exc).__name__}: {exc}", builds_token(os.environ))
+            logger.warning("stop checkpoint failed: %s", error)
+            self.ledger.append(
+                EventKind.NOTE,
+                role=phase,
+                detail=f"stop checkpoint not pushed: {type(exc).__name__}",
+                payload={
+                    "stop_checkpoint": "",
+                    "branch": branch,
+                    "push_error": error[:300],
+                },
+            )
+        finally:
+            remove_staging(tree)
 
     def _rework_rounds_this_cycle(self) -> int:
         return sum(1 for e in self._cycle_events() if e.kind is EventKind.REWORK)
@@ -2735,6 +2847,7 @@ class RoleRunner:
             detail=detail,
             payload=payload,
         )
+        self._checkpoint_stop(outcome, phase)
         if kind is EventKind.RUN_FAILED and outcome is not Outcome.STOPPED_BY_OWNER:
             # A stopped build makes no further model call, not even to
             # narrate itself: the owner said why it ended.
