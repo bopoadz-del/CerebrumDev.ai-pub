@@ -29,6 +29,8 @@ from tests.factory.test_branch_is_platform import STORE, _failed_platform
         # the key present but false, or on another kind: no runner started
         ("NOTE", {wc.RUNNER_START_KEY: False}, False),
         ("PHASE_STARTED", {wc.RUNNER_START_KEY: True}, False),
+        ("GATE_PASSED", {wc.RUNNER_START_KEY: True}, False),
+        ("REWORK", {wc.RUNNER_START_KEY: True}, False),
         ("NOTE", {"budget_class": "small"}, False),
     ],
 )
