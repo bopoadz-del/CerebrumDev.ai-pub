@@ -24,7 +24,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from app.factory.build.builds_push import (
     BRANCH_PREFIX,
@@ -176,6 +176,46 @@ def checkpoint_message(phase: str) -> str:
     return "factory: %s passed\n\n%s: %s" % (phase, CHECKPOINT_TRAILER, phase)
 
 
+def drop_stop_manifest(tree: Path) -> bool:
+    """Remove a stop's MANIFEST.json from ``tree`` (the tree about to be
+    committed by a phase checkpoint).
+
+    A stop commit carries a MANIFEST.json saying the work was not certified.
+    A re-entry clones the branch, so that manifest also comes back inside the
+    workspace. A phase checkpoint is work that moved on: whichever side
+    brought the stop's manifest, it must not stay at the tip and describe a
+    stop the branch is no longer at. Read from its typed ``stopped`` record
+    only; any other manifest is kept. Returns True when removed."""
+    import json
+
+    from app.factory.build.export_manifest import MANIFEST_FILENAME
+
+    path = Path(tree) / MANIFEST_FILENAME
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict) or not isinstance(record.get("stopped"), dict):
+        return False
+    path.unlink()
+    return True
+
+
+def stop_checkpoint_message(state_word: str, step: str, check: str, passed: Sequence[str]) -> str:
+    """The commit message for the work as it stood when a run stopped.
+
+    The subject says the run stopped and is not certified. The trailer still
+    names the phases that had passed, because the stop commit is the branch
+    tip and checkpointed_phases reads only from the tip. The phase the run
+    stopped in is not among them, so a re-entry runs it again."""
+    subject = "factory: %s at %s, not certified" % (state_word, step or "no step")
+    body = "check: %s\ncertified: false" % (check or "-")
+    msg = "%s\n\n%s" % (subject, body)
+    if passed:
+        msg += "\n\n%s: %s" % (CHECKPOINT_TRAILER, ",".join(passed))
+    return msg
+
+
 def checkpointed_phases(workspace: Path) -> tuple:
     """Phases recorded as passed by checkpoint commits at the branch tip.
 
@@ -197,8 +237,15 @@ def checkpointed_phases(workspace: Path) -> tuple:
 
 
 def _git(args, cwd: Path) -> subprocess.CompletedProcess:
+    """Run git. A call that runs out of time is a BuildsPushError naming only
+    the git verb: the timeout's own text is the whole command line, which
+    carries the authenticated remote URL."""
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env, timeout=600)
+    try:
+        return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env, timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        verb = str(args[0]) if args else "git"
+        raise BuildsPushError(f"git {verb} timed out after {exc.timeout:g}s") from None
 
 
 def _remote_url(env: Mapping[str, str]) -> str:
@@ -369,12 +416,20 @@ def carry_gate_onto_branch(branch: str, env: Mapping[str, str] | None = None) ->
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def checkpoint(workspace: Path, branch: str, message: str, env: Mapping[str, str] | None = None) -> str:
+def checkpoint(
+    workspace: Path,
+    branch: str,
+    message: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    stop: bool = False,
+) -> str:
     """Commit the exportable tree onto ``branch`` and push it. Returns the sha.
 
     Phase-forward only: the branch is fetched and the workspace is laid over
     it, so nothing on the branch is rewritten. Factory-internal files never
-    ship (builds_push.is_exported).
+    ship (builds_push.is_exported). ``stop``: this commit is a stop's own
+    checkpoint and keeps its stop manifest; any other checkpoint drops one.
     """
     import tempfile
 
@@ -394,6 +449,8 @@ def checkpoint(workspace: Path, branch: str, message: str, env: Mapping[str, str
         if proc.returncode != 0:
             raise BuildsPushError(f"checkpoint clone failed: {(proc.stderr or '')[-300:]}")
         _sync_workspace_onto_tree(Path(workspace), tmp)
+        if not stop:
+            drop_stop_manifest(tmp)
         # The Store gate belongs to cerebrum-builds `main`, and a branch runs
         # the copy IN ITS OWN TREE. Carry main's current gate onto every
         # checkpoint, so a branch built under an older gate is judged by

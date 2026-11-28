@@ -281,6 +281,9 @@ def _scrub(text: Optional[str], token: str = "") -> str:
     return blob
 
 
+#: The commit message of a branch cut with nothing else to say.
+SEED_MESSAGE = "factory: seed cli-pivot workspace"
+
 #: GitHub refuses any single file above this size (its hard per-file limit).
 GITHUB_MAX_FILE_BYTES = 100 * 1024 * 1024
 #: A push GitHub rejects is retried this many times in all before the build
@@ -466,12 +469,14 @@ def push_workspace(
     run_git: Optional[Callable[..., subprocess.CompletedProcess]] = None,
     suffix: Optional[str] = None,
     branch: Optional[str] = None,
+    message: str = SEED_MESSAGE,
 ) -> BuildsRef:
     """Commit ``workspace`` onto a ``build/**`` branch cut from ``main``.
 
     ``branch``: the platform's branch of record (``build/<platform_id>``),
     created here the first time it is pushed. Without it a legacy per-run
-    ``build/sess_<id>-<tag>`` is named."""
+    ``build/sess_<id>-<tag>`` is named. ``message``: the commit message (a
+    phase or stop checkpoint that cuts the branch names itself)."""
     token = builds_token(env)
     if not token:
         raise BuildsPushError(
@@ -509,7 +514,7 @@ def push_workspace(
                 "commit",
                 "--allow-empty",
                 "-m",
-                "factory: seed cli-pivot workspace",
+                message,
             ],
             cwd=tmp,
         )

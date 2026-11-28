@@ -223,13 +223,32 @@ BUILD_ACTION_IDS = (
 )
 
 
+def as_is_copy_offered(build: Any) -> bool:
+    """Whether the platform may be taken as a copy as it stands: the build
+    stopped (it failed, or it stalled) and nothing is working on it.
+
+    The rule the ``download_copy`` action in the list below and the typed
+    ``take_copy`` both read, on the live status; the package route refuses a
+    stalled build by it too, so the route serves every copy these two offer.
+    (The route's ``as_is`` download also answers the explicit ask in other
+    finished states; that wider rule is its own and is not offered here.) A
+    build that is building, and a stalled one whose runner is still alive
+    (``runner_live``), would hand over a splice of two writer passes."""
+    if not isinstance(build, dict):
+        return False
+    state = build.get("state")
+    return state == "failed" or (state == "stalled" and not build.get("runner_live"))
+
+
 def allowed_build_actions(build: Any, *, reaches_pilot: Optional[bool] = None) -> list:
     """The ordered build actions the server will accept in this state.
 
     Read from typed fields only -- the state, the stop record's kind, the
-    pilot flag and the delivery link -- and kept in step with the doors that
-    accept them: ``take_copy`` and ``continue_with_intake`` answer only a
-    failed run, so a stalled one offers neither; a finished run offers no
+    runner flag, the pilot flag and the delivery link -- and kept in step
+    with the doors that accept them: ``download_copy`` is offered exactly
+    when :func:`as_is_copy_offered` (a failed build, and a stalled one
+    nothing is working on); ``continue_with_intake`` answers only a failed
+    run, so a stalled one does not offer it; a finished run offers no
     stopped-build action at all. ``reaches_pilot`` is the session's build
     level (False: the level stops at code, so no pilot checks are offered)."""
     if not isinstance(build, dict):
@@ -240,6 +259,8 @@ def allowed_build_actions(build: Any, *, reaches_pilot: Optional[bool] = None) -
     if state == "building":
         return ["try_again"] if build.get("n3_waiting") else ["stop"]
     if state == "stalled":
+        if as_is_copy_offered(build):
+            return ["try_again", "download_copy", "start_over"]
         return ["try_again", "start_over"]
     if state == "failed":
         kind = str((build.get("stop") or {}).get("kind") or "")

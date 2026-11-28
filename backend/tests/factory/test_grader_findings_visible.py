@@ -173,10 +173,16 @@ def test_a_send_back_is_in_the_ledger_the_log_and_the_build_status(
         for line in lines
     )
     assert any(f"session={session} 2/2 rule=factory_file" in line and "owner=factory" in line for line in lines)
-    # What went back is logged where it is decided: one hand-back, then the
-    # spent budget stops the run and nothing more goes to the writer.
+    # What went back is logged where it is decided: one hand-back per round
+    # of the gate's budget, then the spent budget stops the run and nothing
+    # more goes to the writer.
+    from app.factory.build.runner import REWORK_BUDGET
+
     sent = [line for line in lines if line.startswith(f"grader handback session={session} ")]
-    assert sent == [f"grader handback session={session} to_writer=1 round=1/1"]
+    assert sent == [
+        f"grader handback session={session} to_writer=1 round={n}/{REWORK_BUDGET}"
+        for n in range(1, REWORK_BUDGET + 1)
+    ]
     assert lines[-1] == f"grader stop session={session} to_writer=0 reason=grader_not_certified"
     assert not any("to_writer=yes" in line for line in lines)
 

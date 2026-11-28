@@ -85,6 +85,23 @@ def test_prompt_leak_fires_on_a_copied_brief_clause_only(value, leaked, tmp_path
     assert found == ({"app/x.py": [value]} if leaked else {})
 
 
+@pytest.mark.parametrize("ask, value, leaked", [
+    (SUPPLIED, "Remind the tenant thirty days before renewal", True),   # the customer's ask: still a leak
+    (SUPPLIED, '"documents": {"file_types": []', False),                # the record's own text: never the ask
+    # A line break in the ask is escaped in the record's text; the clause after
+    # it is the customer's and is found only when the ask is read.
+    ("Track every unit\nthirty days before renewal", "thirty days before renewal", True),
+    ("Track every unit\nthirty days before renewal", "days before", False),  # part of a clause
+])
+def test_prompt_leak_reads_a_customer_brief_record_by_its_ask(ask, value, leaked, tmp_path):
+    from app.factory.build.customer_brief import emit_brief
+
+    record = emit_brief(ask)
+    root = _product(tmp_path, {"app/x.py": f"MSG = {value!r}\n"})
+    found = scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}")
+    assert found == ({"app/x.py": [value]} if leaked else {})
+
+
 @pytest.mark.parametrize("prompt, leaked", [
     ("a prompt that never carried the brief", False),   # the writer was never told it
     (SUPPLIED, True),                                   # the writer was told it and copied it
@@ -94,3 +111,35 @@ def test_prompt_leak_needs_the_clause_in_the_dispatched_prompt(prompt, leaked, t
     root = _product(tmp_path, {"app/x.py": f"MSG = {value!r}\n"})
     found = scan_generated.prompt_leak(root, SUPPLIED, "", prompt)
     assert found == ({"app/x.py": [value]} if leaked else {})
+
+
+@pytest.mark.parametrize("field, value", [
+    ("client", "Orchard Row Estates"),
+    ("site", {"name": "Pier Nine Depot"}),
+])
+def test_prompt_leak_finds_a_value_of_a_records_other_field(field, value, tmp_path):
+    import json
+
+    record = json.dumps({"ask": SUPPLIED, "documents": {"uploads": False, "file_types": []}, field: value})
+    copied = value if isinstance(value, str) else value["name"]
+    root = _product(tmp_path, {"app/x.py": f"MSG = {copied!r}\n"})
+    found = scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}")
+    assert found == {"app/x.py": [copied]}
+
+
+@pytest.mark.parametrize("name", ["client name", "site of the works"])
+def test_prompt_leak_never_reads_a_records_field_name(name, tmp_path):
+    import json
+
+    record = json.dumps({"ask": SUPPLIED, "documents": {"uploads": False, "file_types": []}, name: "x"})
+    root = _product(tmp_path, {"app/x.py": f"MSG = {name!r}\n"})
+    assert scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}") == {}
+
+
+@pytest.mark.parametrize("ask", ['Lay 4" pipe per unit and remind the tenant early', 'Lay 4" and 6" pipe per unit'])
+def test_prompt_leak_finds_another_fields_value_whatever_quotes_the_ask_holds(ask, tmp_path):
+    import json
+
+    record = json.dumps({"ask": ask, "documents": {"uploads": False, "file_types": []}, "client": "Orchard Row Estates"})
+    root = _product(tmp_path, {"app/x.py": "MSG = 'Orchard Row Estates'\n"})
+    assert scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}") == {"app/x.py": ["Orchard Row Estates"]}

@@ -10,6 +10,12 @@ attach a real PDF and XLSX; parsed status appears; a cited answer with a
 number renders; an invalid request is answered honestly with 422/503 (never
 a 200); every declared route returns 200 and renders with no console errors.
 
+Every step calls the product the way the grading boot runs it: with the
+bearer that boot sets (``image_sufficiency.GATE_RUN_ENV``, the one source),
+on the API requests and on every request the page makes to the product's
+own origin. A request the page makes to any other origin carries no bearer.
+A product that needs no token ignores the header and is graded the same.
+
 Which of those steps run is read from the customer brief's ``documents``
 field (``customer_brief``): whether the customer uploads documents, and
 which file types. No other text is consulted. A kind with no file type is
@@ -34,6 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.factory.build.authority import capability_route
+from app.factory.build.image_sufficiency import GATE_RUN_ENV, GATE_TOKEN_VAR
 
 RUN_TIMEOUT_S = 600
 #: Playwright is told to stop its own steps this long before a run's cap, so
@@ -328,25 +335,88 @@ def write_fixtures(blueprint: Mapping[str, Any], dest: Path, brief: Any = _UNSET
 
 #: Every target is resolved against BASE_URL (the rendered product). A
 #: missing BASE_URL throws -- it never falls back to a relative URL.
+#: The run's bearer reaches the spec through this variable, never baked into
+#: the spec file. Unset or empty: the steps send no Authorization header.
+BEARER_ENV = "GRADE_BEARER"
+
 BASE_JS = (
     "const BASE = process.env.BASE_URL;\n"
     "if (!BASE) throw new Error('BASE_URL is not set: UI run cannot happen');\n"
     "const url = (t: string) => new URL(t, BASE).toString();\n"
+    f"const BEARER = process.env.{BEARER_ENV} || '';\n"
+    "const AUTH: Record<string, string> = BEARER ? { Authorization: 'Bearer ' + BEARER } : {};\n"
+    # The bearer is sent to an address only when that address is the
+    # product's own origin (BASE), ONE HOP AT A TIME: no request made here
+    # follows a redirect by itself, because a followed redirect carries the
+    # header on to wherever it leads.
+    "const OWN = new URL(BASE).origin;\n"
+    # The headers one request goes out with: the bearer when its address is
+    # the product's, and never the bearer when it is not (a hop the browser
+    # reached by following a redirect arrives carrying the headers of the
+    # hop before). A page's own Authorization for another origin is kept.
+    "const signed = (u: string, h: Record<string, string> = {}) => {\n"
+    "  const own = new URL(u).origin === OWN; const out: Record<string, string> = {};\n"
+    "  for (const [n, v] of Object.entries(h)) { if (!(n.toLowerCase() === 'authorization' && (own || v === AUTH.Authorization))) out[n] = v; }\n"
+    "  return own ? { ...out, ...AUTH } : out;\n"
+    "};\n"
+    # The page's own requests. The browser pauses every request the page
+    # makes, each hop of a redirect included, and it goes on with the
+    # headers `signed` gives that hop. Only headers are set: the request's
+    # body stays the browser's own, so a file upload arrives whole (a body
+    # re-sent from outside the page loses the file).
+    "const signIn = async (p: any) => { if (!BEARER) return;\n"
+    "  const cdp = await p.context().newCDPSession(p);\n"
+    "  cdp.on('Fetch.requestPaused', async (e: any) => {\n"
+    "    const headers = Object.entries(signed(e.request.url, e.request.headers)).map(([name, value]) => ({ name, value }));\n"
+    "    await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers });\n"
+    "  });\n"
+    "  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });\n"
+    "};\n"
+    # The API steps' requests. A redirect is followed here, hop by hop, each
+    # hop signed only if it is the product's: 307 and 308 repeat the request,
+    # any other redirect is followed with a GET, as a browser does.
+    "const HOPS = 10;\n"
+    "const call = async (request: any, method: string, target: string, data?: string, headers: Record<string, string> = {}) => {\n"
+    "  let u = url(target); let r: any;\n"
+    "  for (let hop = 0; hop <= HOPS; hop++) {\n"
+    "    r = await request.fetch(u, { method, data, headers: signed(u, headers), maxRedirects: 0 });\n"
+    "    const to = r.headers()['location'];\n"
+    "    if (r.status() < 300 || r.status() > 399 || !to) return r;\n"
+    "    u = new URL(to, u).toString();\n"
+    "    if (r.status() !== 307 && r.status() !== 308) { method = 'GET'; data = undefined; headers = {}; }\n"
+    "  }\n"
+    "  return r;\n"
+    "};\n"
 )
+
+
+def grading_bearer(env: Optional[Mapping[str, str]] = None) -> str:
+    """The bearer the grading boot runs the product with: the gate run
+    environment's token (``env`` defaults to ``GATE_RUN_ENV``). Empty when
+    that environment sets none."""
+    source = GATE_RUN_ENV if env is None else env
+    return str(source.get(GATE_TOKEN_VAR) or "").strip()
 
 #: An invalid request must be answered honestly. A 200 is never honest.
 HONEST_ERROR_STATUSES = (422, 503)
 
 #: Per-kind Playwright body. Kept as data so every kind's assertion is
 #: inspectable (and testable) on its own.
+#: A page step asks for the address and reads the status of the answer. A
+#: move inside the document already loaded (only the ``#fragment`` differs,
+#: which is how every screen after the first page is reached) makes no
+#: request, and the browser returns no response for it: the address is then
+#: loaded again by itself, so the status read is the one that address gets.
 _PAGE_OK = (
-    "const r = await page.goto(url(s.target)); expect(r?.status()).toBe(200);\n"
+    "let r = await page.goto(url(s.target));\n"
+    "if (r === null) r = await page.reload();\n"
+    "expect(r?.status()).toBe(200);\n"
     "await page.waitForLoadState('networkidle'); expect(errs).toEqual([]);"
 )
 KIND_JS: Dict[str, str] = {
     "load": _PAGE_OK,
     "screen": _PAGE_OK,
-    "route": "const r = await request.get(url(s.target)); expect(r.status()).toBe(200);",
+    "route": "const r = await call(request, 'GET', s.target); expect(r.status()).toBe(200);",
     "bind": "await expect(page.getByText(new RegExp(s.target.replace(/[-_]/g, '.'), 'i')).first()).toBeVisible();",
     "attach_pdf": (
         "await page.getByRole('button', { name: '+' }).first().click();\n"
@@ -359,7 +429,7 @@ KIND_JS: Dict[str, str] = {
         "await expect(page.getByText(/\\d/).last()).toBeVisible();"
     ),
     "honest_error": (
-        "const r = await request.post(url(s.target), { data: '\"not-an-object\"', headers: { 'content-type': 'application/json' } });\n"
+        "const r = await call(request, 'POST', s.target, '\"not-an-object\"', { 'content-type': 'application/json' });\n"
         f"expect({json.dumps(list(HONEST_ERROR_STATUSES))}).toContain(r.status());"
     ),
 }
@@ -387,7 +457,7 @@ def render_spec(blueprint: Mapping[str, Any], brief: Any = _UNSET) -> str:
         + BASE_JS +
         "const errs: string[] = [];\n"
         "let page: any;\n"
-        "const open = async (browser: any) => { const p = await browser.newPage();\n"
+        "const open = async (browser: any) => { const p = await browser.newPage(); await signIn(p);\n"
         "  p.on('console', (m: any) => { if (m.type() === 'error') errs.push(m.text()); });\n"
         "  p.on('pageerror', (e: any) => errs.push(String(e))); return p; };\n"
         "const run = async (s: any, request: any) => {\n"
@@ -530,15 +600,21 @@ def _tail(text: Any) -> str:
     return " ".join(str(text or "").split())[-OUTPUT_TAIL_CHARS:]
 
 
-def _playwright_run(run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int) -> Any:
+def _playwright_run(
+    run: Any, spec: Path, *, base_url: str, out: Path, fixtures: Path, timeout: int, bearer: str = "",
+) -> Any:
     """The one way a UI spec is run: the grade and the toolchain check both
-    come through here, with the same command and the same environment."""
+    come through here, with the same command and the same environment. A
+    non-empty ``bearer`` is handed to the spec as ``BEARER_ENV``."""
+    env = {"PATH": RUN_PATH, "BASE_URL": base_url,
+           "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)}
+    if bearer:
+        env[BEARER_ENV] = bearer
     return run(
         ["npx", "playwright", "test", str(spec), f"--global-timeout={run_limit_ms(timeout)}",
          "--reporter=json"],
         cwd=str(spec.parent),
-        env={"PATH": RUN_PATH, "BASE_URL": base_url,
-             "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out), "GRADE_FIXTURES": str(fixtures)},
+        env=env,
         timeout=timeout,
         capture_output=True,
         text=True,
@@ -554,8 +630,45 @@ def _report_text(out: Path, proc: Any) -> str:
     return getattr(proc, "stdout", "") or ""
 
 
-def _exit_detail(proc: Any) -> str:
-    return f"exit {getattr(proc, 'returncode', None)}; stderr: {_tail(getattr(proc, 'stderr', ''))}"
+def _exit_detail(proc: Any, secret: str = "") -> str:
+    return f"exit {getattr(proc, 'returncode', None)}; stderr: {_tail(redact(getattr(proc, 'stderr', ''), secret))}"
+
+
+#: What stands in for the run's bearer wherever the run wrote it down.
+REDACTED = "[grading bearer]"
+
+
+def redact(text: Any, secret: str) -> str:
+    """``text`` with every copy of ``secret`` replaced by :data:`REDACTED`;
+    unchanged when ``secret`` is empty."""
+    text = str(text or "")
+    return text.replace(secret, REDACTED) if secret else text
+
+
+def keep_redacted(src: Path, dest: Path, secret: str) -> List[str]:
+    """Copy what a run wrote under ``src`` into ``dest``, the folder the
+    build keeps, with every copy of ``secret`` replaced by :data:`REDACTED`
+    (Playwright's call log lists a failed request's headers, so the run's
+    bearer can be in anything the run wrote). The paths kept, relative to
+    ``dest``. An empty ``secret`` copies the files as they are.
+
+    ``dest`` only ever receives what this function writes, and it writes
+    only redacted bytes. So nothing the run writes later -- a process that
+    outlived the run's time cap goes on writing into ``src`` -- can reach
+    the kept folder, and a file that cannot be read is simply not kept."""
+    needle = secret.encode("utf-8")
+    kept = []
+    for path in sorted(p for p in Path(src).rglob("*") if p.is_file()):
+        rel = path.relative_to(src)
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        target = Path(dest) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data.replace(needle, REDACTED.encode("utf-8")) if needle else data)
+        kept.append(rel.as_posix())
+    return kept
 
 
 #: The toolchain probe: one test that needs node, Playwright and a browser
@@ -613,6 +726,16 @@ def grade_ui(
     run: Any = subprocess.run,
     brief: Any = _UNSET,
 ) -> UiGrade:
+    """Run the plan's steps against ``base_url``. Every step carries the
+    grading boot's bearer (``grading_bearer``, the one source: no caller
+    hands this function a token).
+
+    The run happens in a scratch folder of its own. ``workdir``, the folder
+    the build keeps, receives only a copy with the bearer redacted
+    (:func:`keep_redacted`), made once the run has ended, however it ended.
+    The grade is read from the report as the run wrote it, before that copy
+    is made; nothing written later by a process that outlived the run can
+    reach ``workdir``."""
     _run, _skip, block = _split_plan(blueprint, brief)
     if block:
         return _unreadable_block()
@@ -624,16 +747,25 @@ def grade_ui(
             return UiGrade([], [f"UI run did not happen: UI toolchain unavailable: {toolchain.detail}"])
     wd = Path(workdir)
     wd.mkdir(parents=True, exist_ok=True)
-    fx = write_fixtures(blueprint, wd / "fixtures", brief)
-    (wd / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
-    out = wd / "report.json"
-    fixtures = fx["pdf"].parent if fx.get("pdf") else wd / "fixtures"
+    scratch = Path(tempfile.mkdtemp(prefix="ui-grade-run-"))
+    fx = write_fixtures(blueprint, scratch / "fixtures", brief)
+    (scratch / "grade_ui.spec.ts").write_text(render_spec(blueprint, brief), encoding="utf-8")
+    out = scratch / "report.json"
+    fixtures = fx["pdf"].parent if fx.get("pdf") else scratch / "fixtures"
+    token = grading_bearer()
     try:
-        proc = _playwright_run(run, wd / "grade_ui.spec.ts", base_url=base_url, out=out,
-                               fixtures=fixtures, timeout=RUN_TIMEOUT_S)
+        proc = _playwright_run(run, scratch / "grade_ui.spec.ts", base_url=base_url, out=out,
+                               fixtures=fixtures, timeout=RUN_TIMEOUT_S, bearer=token)
+        # Read as the run wrote it: the grade is made from this text, never
+        # from the redacted copy.
+        report_text = _report_text(out, proc)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
-    report_text = _report_text(out, proc)
+    finally:
+        # Whatever ended the run (a report, a timeout, a crash, an
+        # interrupt): keep a redacted copy, then drop the scratch folder.
+        keep_redacted(scratch, wd, token)
+        shutil.rmtree(scratch, ignore_errors=True)
     if not report_text.strip():
-        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc)}"])
+        return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}"])
     return parse_report(json.loads(report_text), blueprint, brief)

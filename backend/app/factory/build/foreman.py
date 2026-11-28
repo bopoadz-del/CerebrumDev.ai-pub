@@ -32,8 +32,9 @@ Code validates every instruction before it reaches the writer:
 
 A refused instruction is regenerated ONCE with the refusal; a second refusal
 falls back to the raw typed findings (the behaviour before the foreman) and
-is recorded. ``FACTORY_FOREMAN`` = ``off`` (default) | ``shadow`` | ``on``:
-shadow calls, validates and records, and leaves the work list untouched.
+is recorded. ``FACTORY_FOREMAN`` = ``on`` (default) | ``shadow`` | ``off``:
+shadow calls, validates and records, and leaves the work list untouched; off
+makes no call. A value that is not one of the three is the default.
 
 A third entry point, :func:`audit_workspace` (F4), runs once per build after
 TESTER passes and only PROPOSES checks for a human (``FACTORY_FOREMAN_AUDIT``);
@@ -77,7 +78,7 @@ LlmCall = architect.LlmCall
 
 def foreman_mode() -> str:
     raw = str(os.getenv(FLAG_ENV, "") or "").strip().lower()
-    return raw if raw in MODES else "off"
+    return raw if raw in MODES else "on"
 
 
 # -- the typed output -----------------------------------------------------------

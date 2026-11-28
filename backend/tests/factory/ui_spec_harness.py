@@ -31,38 +31,143 @@ function expect(v: any) {
     toBeVisible: async () => { if (!v || !v.__visible || !v.__visible()) fail('not visible'); },
   };
 }
-const __resp = (r: Response) => ({ status: () => r.status });
+const __resp = (r: Response) => ({ status: () => r.status, headers: () => Object.fromEntries(r.headers.entries()) });
+const __redirect = (r: Response) => (r.status >= 300 && r.status <= 399 ? r.headers.get('location') : null);
+// A request made from outside the page (the API request context, and
+// route.fetch). As Playwright's does: it follows a redirect by itself and
+// carries the caller's headers on to wherever it leads, unless maxRedirects
+// is 0 -- then the redirect is the answer. 307 and 308 repeat the request;
+// any other redirect is followed with a GET.
+const __send = async (u: string, o: any = {}): Promise<Response> => {
+  let method = o.method || 'GET'; let body = o.data;
+  for (let hop = 0; ; hop++) {
+    const r = await fetch(u, { method, body, headers: o.headers || {}, redirect: 'manual' });
+    const to = __redirect(r);
+    if (o.maxRedirects === 0 || !to || hop >= 20) return r;
+    u = new URL(to, u).toString();
+    if (r.status !== 307 && r.status !== 308) { method = 'GET'; body = undefined; }
+  }
+};
 const __request = {
-  get: async (u: string) => __resp(await fetch(u)),
-  post: async (u: string, o: any) => __resp(await fetch(u, { method: 'POST', body: o.data, headers: o.headers })),
+  fetch: async (u: string, o: any = {}) => __resp(await __send(u, o)),
+  get: async (u: string, o: any = {}) => __resp(await __send(u, { ...o, method: 'GET' })),
+  post: async (u: string, o: any = {}) => __resp(await __send(u, { ...o, method: 'POST' })),
 };
 // The page is the text the product served: the last page loaded plus every
 // upload / chat reply. getByText(re) is visible iff re matches that text.
 let __html = '';
 let __url = 'about:blank';
+// The page's routes (page.route(matcher, handler)), as Playwright runs them.
+// A request the page makes goes to the first handler whose matcher accepts
+// its URL. The handler either answers it (route.fulfill, with what
+// route.fetch brought back) or lets it go on (route.continue, with any
+// headers it overrides). A request no handler takes goes out as
+// the page sent it.
+// Redirects, as a browser follows them: a redirect that was the ANSWER the
+// handler fulfilled is a new request by the page, so it goes through the
+// routes again. A redirect met by a request that was let go on is followed
+// inside that same request: no handler sees the hops, and the headers the
+// handler overrode are carried on to wherever they lead.
+// One limit of route.fetch, seen in real Chromium (headless_shell-1187): it
+// re-sends the request from outside the page, and a file the page uploads
+// is not in the body it re-sends. Here: a body that is not text is not sent.
+let __routes: Array<[(u: URL) => boolean, any]> = [];
+// The page's CDP session with the Fetch domain enabled
+// (page.context().newCDPSession(page), 'Fetch.enable'), as Chromium runs it:
+// EVERY request the page makes is paused, each hop of a redirect too, and
+// goes on with the headers 'Fetch.continueRequest' gives it (the list
+// replaces the request's headers; with none it goes on unchanged). Only
+// headers can be set: the body stays the browser's own. A hop the browser
+// reaches by following a redirect starts from the headers the hop before
+// went out with.
+let __cdpPaused: any = null; let __cdpOn = false; let __cdpSeq = 0;
+const __cdpWaiting = new Map<string, (h: Record<string, string> | null) => void>();
+const __cdp = {
+  on: (name: string, fn: any) => { if (name === 'Fetch.requestPaused') __cdpPaused = fn; },
+  send: async (method: string, params: any = {}) => {
+    if (method === 'Fetch.enable') __cdpOn = true;
+    if (method === 'Fetch.continueRequest') {
+      const go = __cdpWaiting.get(params.requestId); __cdpWaiting.delete(params.requestId);
+      if (go) go(params.headers ? Object.fromEntries(params.headers.map((h: any) => [h.name, h.value])) : null);
+    }
+    return {};
+  },
+};
+const __pageFetch = async (u: string, init: any = {}): Promise<Response> => {
+  let method = init.method || 'GET'; let body = init.body;
+  let carried: Record<string, string> = { ...(init.headers || {}) };
+  for (let hop = 0; hop <= 20; hop++) {
+    let headers: Record<string, string> = { ...carried };
+    if (__cdpOn && __cdpPaused) {
+      const id = 'req' + (++__cdpSeq);
+      const given = await new Promise<Record<string, string> | null>((resolve) => {
+        __cdpWaiting.set(id, resolve);
+        __cdpPaused({ requestId: id, request: { url: u, method, headers: { ...headers } } });
+      });
+      if (given) headers = given;
+    }
+    let answer: Response | null = null; let wentOn = false;
+    const taken = __routes.find(([match]) => match(new URL(u)));
+    if (taken) {
+      await taken[1]({
+        request: () => ({ url: () => u, headers: () => ({ ...headers }) }),
+        fetch: async (o: any = {}) => ({ __raw: await __send(u, { method, data: typeof body === 'string' ? body : undefined, headers: o.headers || headers, maxRedirects: o.maxRedirects }) }),
+        fulfill: async (o: any) => { answer = o.response.__raw; },
+        continue: async (o: any = {}) => { wentOn = true; if (o.headers) headers = o.headers; },
+      });
+    }
+    if (wentOn) return __send(u, { method, data: body, headers });
+    const r: Response = answer || await fetch(u, { method, body, headers, redirect: 'manual' });
+    const to = __redirect(r);
+    if (!to) return r;
+    u = new URL(to, u).toString();
+    // A redirect the handler fulfilled is a new request by the page; one the
+    // browser followed carries the headers of the hop before.
+    carried = answer ? { ...(init.headers || {}) } : headers;
+    if (r.status !== 307 && r.status !== 308) { method = 'GET'; body = undefined; }
+  }
+  throw new Error('net::ERR_TOO_MANY_REDIRECTS');
+};
+// What a loaded page asks for by itself: every src="..." in its HTML,
+// resolved against the page, the way a browser loads a subresource.
+const __subresources = async (html: string, pageUrl: string) => {
+  for (const m of html.matchAll(/\ssrc="([^"]+)"/g)) { await __pageFetch(new URL(m[1], pageUrl).toString()); }
+};
 const __base = () => process.env.BASE_URL || '';
 const __loc = (find: (t: string) => boolean, act: any = {}) => {
   const l: any = { first: () => l, last: () => l, __visible: () => find(__html), ...act };
   return l;
 };
+const __load = async (u: string) => {
+  const r = await __pageFetch(u); __html = await r.text(); __url = u; await __subresources(__html, u); return __resp(r);
+};
 const __page = {
-  goto: async (u: string) => { const r = await fetch(u); __html = await r.text(); __url = u; return __resp(r); },
+  // As a browser does: an address that differs from the loaded page's only
+  // by its #fragment is a move inside that document -- no request is made
+  // and there is no response (null). Anything else loads the address.
+  goto: async (u: string) => {
+    if (u.includes('#') && u.split('#')[0] === __url.split('#')[0]) { __url = u; return null; }
+    return __load(u);
+  },
+  reload: async () => __load(__url),
   url: () => __url,
+  route: async (match: any, handler: any) => { __routes.push([match, handler]); },
+  context: () => ({ newCDPSession: async () => __cdp }),
   waitForLoadState: async () => {}, on: () => {},
   getByText: (re: RegExp) => __loc((t) => re.test(t)),
   getByRole: (role: string, o: any = {}) => __loc(() => true, {
-    click: async () => { const r = await fetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || '') }); __html += '\n' + await r.text(); },
+    click: async () => { const r = await __pageFetch(__base() + '/__click', { method: 'POST', body: role + ':' + (o.name || '') }); __html += '\n' + await r.text(); },
     fill: async (v: string) => { (__page as any).__typed = v; },
     press: async (k: string) => {
       if (k !== 'Enter') return;
-      const r = await fetch(__base() + '/__ask', { method: 'POST', body: (__page as any).__typed || '' });
+      const r = await __pageFetch(__base() + '/__ask', { method: 'POST', body: (__page as any).__typed || '' });
       __html += '\n' + await r.text();
     },
   }),
   locator: (sel: string) => __loc(() => true, {
     setInputFiles: async (p: string) => {
       const fs = await import('node:fs');
-      const r = await fetch(__base() + '/__upload?name=' + encodeURIComponent(p.split('/').pop() || ''), { method: 'POST', body: fs.readFileSync(p) });
+      const r = await __pageFetch(__base() + '/__upload?name=' + encodeURIComponent(p.split('/').pop() || ''), { method: 'POST', body: fs.readFileSync(p) });
       __html += '\n' + await r.text();
     },
   }),
@@ -78,7 +183,7 @@ test.beforeAll = (fn: any) => { __before.push(fn); };
 """
 
 RUNNER = r"""
-for (const b of __before) await b({ browser: { newPage: async () => __page } });
+for (const b of __before) await b({ browser: { newPage: async () => { __routes = []; __cdpPaused = null; __cdpOn = false; return __page; } } });
 const __only = (process.env.ONLY_KINDS || '').split(',').filter(Boolean);
 const __out: Record<string, string> = {};
 for (const [name, fn, group] of __tests) {
@@ -104,7 +209,8 @@ def require_node() -> str:
     return node
 
 
-def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None) -> Dict[str, str]:
+def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtures: Optional[Path] = None,
+             bearer: Optional[str] = None) -> Dict[str, str]:
     body = "\n".join(line for line in spec.splitlines() if not line.startswith("import "))
     f = tmp / "spec_run.mts"
     f.write_text(PRELUDE + body + RUNNER, encoding="utf-8")
@@ -113,6 +219,8 @@ def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtu
         env["GRADE_FIXTURES"] = str(fixtures)
     if base_url is not None:
         env["BASE_URL"] = base_url
+    if bearer is not None:
+        env["GRADE_BEARER"] = bearer
     p = subprocess.run([require_node(), str(f)], capture_output=True, text=True, timeout=60, env=env)
     for line in p.stdout.splitlines():
         if line.startswith("@@UI@@"):
@@ -121,24 +229,43 @@ def run_spec(spec: str, tmp: Path, base_url: Optional[str], only_kinds=(), fixtu
 
 
 class Server(str):
-    """The base URL, carrying what the product received (``seen``)."""
+    """The base URL, carrying what the product received (``seen``) and the
+    Authorization header of every request (``auth``)."""
 
     seen: List[Tuple[str, bytes]]
+    auth: List[str]
+    asked: List[Tuple[str, str]]
 
 
 @contextmanager
-def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None) -> Iterator[Server]:
+def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Mapping[str, str]] = None,
+           token: Optional[str] = None, locations: Optional[Mapping[str, str]] = None) -> Iterator[Server]:
     """An HTTP server answering each path with its status and body
     (``POST <path>`` keys a POST; the query string is ignored for keys).
-    Every POST body is recorded in ``.seen`` as ``(key, bytes)``."""
+    Every POST body is recorded in ``.seen`` as ``(key, bytes)``. With a
+    ``token``, the server protects every path: a request without
+    ``Authorization: Bearer <token>`` is answered 401. A key in
+    ``locations`` is answered with that ``Location`` header beside its
+    status (a redirect when the status is one). Every request is recorded
+    in ``.asked`` as ``(key, Authorization header)``."""
     bodies = bodies or {}
+    locations = locations or {}
     seen: List[Tuple[str, bytes]] = []
+    auth: List[str] = []
+    asked: List[Tuple[str, str]] = []
 
     class H(BaseHTTPRequestHandler):
         def _answer(self, key):
+            given = self.headers.get("authorization") or ""
+            auth.append(given)
+            asked.append((key, given))
             code = statuses.get(key, default)
+            if token is not None and given != f"Bearer {token}":
+                code = 401
             body = bodies.get(key, "ok").encode()
             self.send_response(code)
+            if key in locations and code != 401:
+                self.send_header("location", locations[key])
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -161,6 +288,8 @@ def server(statuses: Mapping[str, int], default: int = 200, bodies: Optional[Map
     try:
         base = Server(f"http://127.0.0.1:{srv.server_port}")
         base.seen = seen
+        base.auth = auth
+        base.asked = asked
         yield base
     finally:
         srv.shutdown()

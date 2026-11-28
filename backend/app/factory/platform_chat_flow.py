@@ -943,8 +943,19 @@ def _live_build_thread(output_dir: Path | str):
     return live_runner_thread(output_dir)
 
 
-def _generation_status(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
-    """Live ledger status, falling back to the persisted generation snapshot."""
+def _live_generation_status(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
+    """The status read from the build's own ledger now (``unknown`` when the
+    workspace has no ledger), or ``{}`` when the session has no generation
+    or no workspace. Never the persisted snapshot: what a door offers on
+    this is what the package route, which reads the ledger too, will serve."""
+    return _generation_status(state, output_root, snapshot=False)
+
+
+def _generation_status(
+    state: Any, output_root: Optional[Path] = None, *, snapshot: bool = True
+) -> Dict[str, Any]:
+    """Live ledger status, falling back to the persisted generation snapshot
+    (``snapshot`` False: the live status only, whatever it reads)."""
     pd = getattr(state, "product_design", None)
     gen = getattr(pd, "generation", None) if pd else None
     if not gen:
@@ -964,8 +975,10 @@ def _generation_status(state: Any, output_root: Optional[Path] = None) -> Dict[s
             except Exception:  # noqa: BLE001 — dict still has capabilities
                 blueprint = raw_bp
         st = build_status(out, blueprint=blueprint, plan=plan)
-        if st.get("state") != "unknown":
+        if st.get("state") != "unknown" or not snapshot:
             return st
+    if not snapshot:
+        return {}
     persisted = gen.get("build")
     return dict(persisted) if isinstance(persisted, dict) else {}
 
@@ -1748,14 +1761,32 @@ def start_over_confirm_prompt(state: Any) -> Dict[str, Any]:
 
 
 def take_copy(state: Any, output_root: Optional[Path] = None) -> Dict[str, Any]:
-    """The typed "Take a copy" on a FAILED build: the as-is export, whose
-    MANIFEST.json names FAILED(gate, check, finding) and ``certified: false``.
-    It changes nothing: the platform and its branch stay as they are."""
-    if not is_generation_terminal_failure(state, output_root):
+    """The typed "Take a copy" on a build that stopped: the as-is export,
+    never certified. Offered by the rule the action list reads
+    (``floor_actions.as_is_copy_offered``), on the same live status the
+    list and the package route read: a failed build, and a stalled one
+    nothing is working on. A status the ledger cannot give now (no
+    workspace, no ledger) is not offered: the route would not serve what a
+    remembered snapshot promised. It starts no build and moves no branch."""
+    from app.factory.floor_actions import as_is_copy_offered
+
+    status = _live_generation_status(state, output_root)
+    if not as_is_copy_offered(status):
         return {
             "sse": "info",
             "ok": False,
             "summary": "This build did not stop with a failure, so there is no copy to download.",
+        }
+    if status.get("state") == "stalled":
+        return {
+            "sse": "info",
+            "ok": True,
+            "summary": (
+                "Your copy is the platform as it stood when the build stopped: "
+                "the export is labelled as not finished, its MANIFEST.json "
+                "records where it stopped, and it is not certified."
+            ),
+            "download": {"as_is": True},
         }
     return {
         "sse": "info",
