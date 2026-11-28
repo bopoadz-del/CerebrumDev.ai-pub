@@ -134,3 +134,12 @@ def test_prompt_leak_never_reads_a_records_field_name(name, tmp_path):
     record = json.dumps({"ask": SUPPLIED, "documents": {"uploads": False, "file_types": []}, name: "x"})
     root = _product(tmp_path, {"app/x.py": f"MSG = {name!r}\n"})
     assert scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}") == {}
+
+
+@pytest.mark.parametrize("ask", ['Lay 4" pipe per unit and remind the tenant early', 'Lay 4" and 6" pipe per unit'])
+def test_prompt_leak_finds_another_fields_value_whatever_quotes_the_ask_holds(ask, tmp_path):
+    import json
+
+    record = json.dumps({"ask": ask, "documents": {"uploads": False, "file_types": []}, "client": "Orchard Row Estates"})
+    root = _product(tmp_path, {"app/x.py": "MSG = 'Orchard Row Estates'\n"})
+    assert scan_generated.prompt_leak(root, record, "", f"Brief:\n{record}") == {"app/x.py": ["Orchard Row Estates"]}

@@ -1174,15 +1174,66 @@ def test_supplied_text_returns_what_is_not_a_complete_record_as_given(raw, want)
 
 
 @pytest.mark.parametrize(
-    "extra, lines",
+    "extra, whole",
     [
-        ({}, ["Track repairs by unit."]),
-        ({"client": "Orchard Row Estates"}, ["Track repairs by unit.", '"Orchard Row Estates"']),
-        ({"motto": 'Say "hello" twice'}, ["Track repairs by unit.", 'Say "hello" twice']),
-        ({"a": {"b": ["x y", {"c": "z w"}]}}, ["Track repairs by unit.", '"x y"', '"z w"']),
+        ({}, []),
+        ({"client": "Orchard Row Estates"}, ["Orchard Row Estates"]),
+        ({"motto": 'Say "hello" twice', "size": '6" main'}, ['Say "hello" twice', '6" main']),
+        ({"a": {"b": ["x y", {"c": "  z w  "}]}, "n": 4, "blank": "  "}, ["x y", "z w"]),
     ],
 )
-def test_supplied_text_is_the_ask_then_each_other_value_as_a_quoted_span(extra, lines):
-    from app.factory.build.customer_brief import supplied_text
+def test_supplied_parts_are_the_ask_and_each_other_value_by_itself(extra, whole):
+    from app.factory.build.customer_brief import supplied_parts, supplied_text
 
-    assert supplied_text(_record("Track repairs by unit.", **extra)).split("\n") == lines
+    record = _record("Track repairs by unit.", **extra)
+    assert supplied_parts(record) == ("Track repairs by unit.", whole)
+    assert supplied_text(record).split("\n") == ["Track repairs by unit.", *whole]
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        'Track repairs for 4" pipe by unit.',  # one unmatched quote: an inch mark
+        'Lay 4" pipe and 6" main per unit, then 2" laterals.',  # three
+        "Track repairs by unit.",  # none: the negative
+    ],
+)
+@pytest.mark.parametrize("client", ["Nimbus", "Orchard Row Estates"])
+def test_an_unmatched_quote_in_the_ask_does_not_hide_a_value_of_another_field(ask, client):
+    """An inch mark in the ask must not shift how a later value is read: the
+    value is a literal by itself, and no literal runs from one part into
+    the next."""
+    forbidden = grader.derive_forbidden({}, _record(ask, client=client), "")
+    assert client in forbidden, forbidden
+    assert not [v for v in forbidden if "\n" in v], forbidden
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [('6" main', "Nimbus"), ('Gate "B', "Orchard Row Estates")],
+)
+def test_an_unmatched_quote_in_one_value_does_not_hide_the_next_value(first, second):
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", size=first, client=second), "")
+    assert first in forbidden and second in forbidden, forbidden
+
+
+@pytest.mark.parametrize(
+    "value, literal",
+    [
+        ("ab", False),  # shorter than a quoted span may be
+        ("abc", True),
+        ("x" * 60, True),
+        ("x" * 61, False),  # longer than a quoted span may be
+    ],
+)
+def test_a_whole_value_is_a_literal_within_the_bounds_of_a_quoted_span(value, literal):
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", note=value), "")
+    assert (value in forbidden) is literal
+
+
+@pytest.mark.parametrize("note", ['Keep the "Harbour Gate" log for acct_5502 ' + "x" * 40, 'Use "Pier Nine" ' + "y" * 60])
+def test_a_long_value_is_still_read_for_its_own_quoted_spans_and_identifiers(note):
+    """A value too long to be a literal whole is read as the ask is."""
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", note=note), "")
+    assert note not in forbidden
+    assert forbidden == grader.derive_forbidden({}, note, "")

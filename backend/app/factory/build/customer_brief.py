@@ -172,28 +172,35 @@ def _text_values(value: Any) -> List[str]:
     return []
 
 
-def supplied_text(raw: str) -> str:
-    """What the customer supplied, as the checks that look for the customer's
-    own values in the product read it. ``raw`` when it is not a complete
-    customer brief. For a complete brief:
+def supplied_parts(raw: str) -> Tuple[str, List[str]]:
+    """What the customer supplied, in the two shapes the checks that look for
+    the customer's own values in the product need: ``(prose, whole)``.
 
-    - the ``ask``, as written (prose: its own quoted spans and identifiers
-      are what a check finds in it);
-    - then every text value of any OTHER field the record carries, each on
-      its own line in double quotes: the customer gave that value whole, so
-      it is read as a quoted span is;
-    - never a field name, and never ``documents.file_types`` (the stored
+    - Not a complete customer brief: ``(raw, [])`` -- the text as given.
+    - A complete brief: ``prose`` is the ``ask`` as written; ``whole`` is
+      every text value of every OTHER field the record carries, at any
+      depth, in the record's order, stripped, blanks left out. The customer
+      gave each of those values whole, so a check reads each one by itself:
+      nothing in the ask or in another value (an inch mark, an unmatched
+      quote) can change how it is read.
+    - Never a field name, and never ``documents.file_types`` (the stored
       files' own suffixes, which the Factory took, not the customer).
     """
     record, _problems = read_brief(raw)
     if record is None:
-        return raw
+        return raw, []
     others = {key: value for key, value in json.loads(record.text).items() if key != "ask"}
     documents = others.get("documents")
     if isinstance(documents, Mapping):
         others["documents"] = {key: value for key, value in documents.items() if key != "file_types"}
-    whole = [text for text in _text_values(others) if text.strip()]
-    return "\n".join([record.ask] + [f'"{text}"' if '"' not in text else text for text in whole])
+    return record.ask, [text.strip() for text in _text_values(others) if text.strip()]
+
+
+def supplied_text(raw: str) -> str:
+    """:func:`supplied_parts` as one text, each part on its own line: what a
+    check searches when it asks whether the customer said a thing."""
+    prose, whole = supplied_parts(raw)
+    return "\n".join([prose, *whole])
 
 
 def file_types_of(names: Sequence[Any]) -> List[str]:

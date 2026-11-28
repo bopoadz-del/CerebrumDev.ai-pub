@@ -162,11 +162,26 @@ def test_a_brief_record_makes_no_literal_of_its_own_field_names(tree, monkeypatc
 
 
 @pytest.mark.parametrize("tree", list(gr.CASES), indirect=True)
-@pytest.mark.parametrize("extra", [{}, {"client": "Orchard Row Estates"}])
-def test_a_literal_from_a_brief_record_is_still_a_writer_finding(tree, monkeypatch, extra):
+@pytest.mark.parametrize(
+    "extra, said",
+    [
+        ({}, ()),
+        ({"client": "Orchard Row Estates"}, ()),
+        # a one-word value after an ask that holds an inch mark: the clause
+        # check has no fallback for one word, so only the literal check finds it
+        ({"client": "Nimbus"}, ('Lay 4" pipe per unit.',)),
+    ],
+)
+def test_a_literal_from_a_brief_record_is_still_a_writer_finding(tree, monkeypatch, extra, said):
     """The negative: what the customer did supply (in the ask, or as the
     value of another field) and the writer copied is found and handed back."""
+    import json
+
+    from app.factory.build.customer_brief import emit_brief
+
     supplied = _record_brief(tree, **extra)
+    if said:
+        supplied = json.dumps({**json.loads(emit_brief(client_brief(tree, *said), ["rent_roll.pdf"])), **extra})
     literal = extra.get("client") or _a_forbidden_literal(tree, supplied)
     planted = "app/writer_planted_constant.py"
     tree.write_writer_file(planted, f"PLANTED = {literal!r}\n")
