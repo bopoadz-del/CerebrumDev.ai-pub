@@ -51,13 +51,54 @@ NEW_PLATFORM_WALL_S = 2400.0
 #: Share of viable capabilities that resolved to NO Store block above which
 #: the plan classes the build "new_platform" (mostly new blocks).
 NEW_PLATFORM_NO_BLOCK_SHARE_THRESHOLD = 0.5
+#: The least wall a writer's FIRST pass is given, whatever its plan class or
+#: cycle. The class walls above stay what they are; this floor, not a new
+#: table, lifts every one of them (``writer_first_pass_wall``). A bigger
+#: class wall is kept, so no class can get less than another by accident.
+WRITER_FIRST_PASS_MIN_S = 7200.0
+#: Room above the first pass for the contract gate, the grader and a rework
+#: round before the hard ceiling. Bounded above by the jobs that wait on a
+#: build: each waits ready + ceiling + Store-gate wall, and its job timeout
+#: must outlast that (``test_release_cycle``). The tightest is the live
+#: pilot job (210 min = 12600 s): 12600 - 1200 ready - 1800 gate = 9600 s
+#: of ceiling at most. The room is 30 min, one full ``FIX_ALLOWANCE_S``
+#: round after a first pass that runs its whole floor: ceiling 9000 s,
+#: 600 s inside the pilot job. A longer room needs a longer job first;
+#: the guard in ``test_release_cycle`` refuses it before then.
+CEILING_ROOM_S = 1800.0
 #: Last-resort ceiling. Never the default; never granted silently.
+#: Computed from the first-pass floor, so raising the floor moves it too.
 #:
-#: The same number lives on ``BuildBudget.hard_ceiling_s``, which is where it
-#: is ENFORCED -- this module only PROPOSES values, and two of the runner's
-#: extension paths never ask it. One literal, one place, so proposer and
+#: ``BuildBudget.hard_ceiling_s`` reads this value, which is where it is
+#: ENFORCED -- this module only PROPOSES values, and two of the runner's
+#: extension paths never ask it. One number, one place, so proposer and
 #: enforcer cannot drift; ``test_budget_ceiling`` asserts they are equal.
-CEILING_S = 7200.0
+CEILING_S = WRITER_FIRST_PASS_MIN_S + CEILING_ROOM_S
+
+
+def plan_class_wall(budget_class: Any) -> float:
+    """The class wall the planner's budget class names (small by default)."""
+    if str(budget_class or "small") == "new_platform":
+        return NEW_PLATFORM_WALL_S
+    return SMALL_PLATFORM_WALL_S
+
+
+def writer_first_pass_wall(*walls_s: Any) -> float:
+    """The wall a writer's first pass (or a box that must hold it) gets.
+
+    The largest of the walls given and ``WRITER_FIRST_PASS_MIN_S``: a wall
+    can only be raised to the floor, never cut below a larger one. A wall
+    that is missing or not a number counts as zero.
+    """
+    best = WRITER_FIRST_PASS_MIN_S
+    for wall in walls_s:
+        try:
+            value = float(wall or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if value > best:
+            best = value
+    return best
 
 #: Owner ruling 2026-11-21: the writer's FIRST pass gets a full hour, and
 #: every granted rework round -- a WRITER-gate rejection or a TESTER

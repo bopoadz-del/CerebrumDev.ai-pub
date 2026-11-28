@@ -87,6 +87,10 @@ class CapabilitySpec(BaseModel):
     id: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
     block_ids: List[str] = Field(default_factory=list)
+    #: Store kits the architect picked for this capability, from the kit
+    #: index it was shown. A pick draws a kit into the build only for a
+    #: block the kit lists and this capability binds (kit_pack.drawn_kits).
+    kit_ids: List[str] = Field(default_factory=list)
     strategy_hint: Optional[CapabilityStrategyHint] = None
     required: bool = True
     #: External systems this capability calls, as connector slugs. One that
