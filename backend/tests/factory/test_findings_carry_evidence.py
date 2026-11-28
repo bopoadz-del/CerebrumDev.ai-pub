@@ -371,3 +371,34 @@ def test_run_grader_hands_each_failure_on_with_its_evidence(
                'called with: [{"n": 1}]; answered: [{"t": 7}]')
     assert fn_item in verdict.writer_items
     assert not any(i.startswith("UI step FAIL: other:step") for i in verdict.writer_items)
+
+
+@pytest.mark.parametrize("bp, words", [(BPS[0], "header"), (BPS[1], "sent Bearer")])
+def test_grade_ui_redacts_its_own_bearer_from_the_failure_text(tmp_path, bp, words):
+    import json
+    from pathlib import Path
+
+    names = [st.name for st in ug.ui_plan(bp, NO_DOCS)]
+    seen = {}
+
+    def fake(cmd, **kw):
+        env = kw["env"]
+        seen["bearer"] = env[ug.BEARER_ENV]
+        results = {n: [{"status": "passed"}] for n in names}
+        results[names[0]] = [{"status": "failed", "error": {"message": f"{words} {env[ug.BEARER_ENV]}"}}]
+        Path(env["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(_report(results)), encoding="utf-8")
+
+    g = ug.grade_ui(bp, tmp_path, base_url="http://x", run=fake, brief=NO_DOCS)
+    row = {r["name"]: r for r in g.steps}[names[0]]
+    assert seen["bearer"] and seen["bearer"] not in row["saw"]
+    assert row["saw"] == f"{words} {ug.REDACTED}"
+
+
+@pytest.mark.parametrize("a, b", [("UI step FAIL: load:/ -- saw: x", "UI step FAIL: load:/ -- saw: y"),
+                                  ("function grade FAIL: cap_q -- why: rc=1", "function grade FAIL: cap_q -- why: rc=4")])
+def test_unchanged_is_against_the_round_just_before_not_an_older_one(
+    smoke_blueprint, tmp_path, monkeypatch, a, b  # noqa: F811
+):
+    r, handed = _run_rounds(monkeypatch, tmp_path, smoke_blueprint, [_nc(a), _nc(b), _nc(a), _nc(a)] + [_nc(a)] * 2)
+    reworks = [h for h in handed if h]
+    assert reworks[:3] == [(a,), (b,), (a,)]
