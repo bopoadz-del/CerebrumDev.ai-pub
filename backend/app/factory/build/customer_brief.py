@@ -160,6 +160,42 @@ def customer_words(raw: str) -> str:
     return record.ask
 
 
+def _text_values(value: Any) -> List[str]:
+    """Every text value under ``value``, in order. A mapping's keys are field
+    names, never values; a number, a boolean or null is not text."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [text for item in value.values() for text in _text_values(item)]
+    if isinstance(value, (list, tuple)):
+        return [text for item in value for text in _text_values(item)]
+    return []
+
+
+def supplied_text(raw: str) -> str:
+    """What the customer supplied, as the checks that look for the customer's
+    own values in the product read it. ``raw`` when it is not a complete
+    customer brief. For a complete brief:
+
+    - the ``ask``, as written (prose: its own quoted spans and identifiers
+      are what a check finds in it);
+    - then every text value of any OTHER field the record carries, each on
+      its own line in double quotes: the customer gave that value whole, so
+      it is read as a quoted span is;
+    - never a field name, and never ``documents.file_types`` (the stored
+      files' own suffixes, which the Factory took, not the customer).
+    """
+    record, _problems = read_brief(raw)
+    if record is None:
+        return raw
+    others = {key: value for key, value in json.loads(record.text).items() if key != "ask"}
+    documents = others.get("documents")
+    if isinstance(documents, Mapping):
+        others["documents"] = {key: value for key, value in documents.items() if key != "file_types"}
+    whole = [text for text in _text_values(others) if text.strip()]
+    return "\n".join([record.ask] + [f'"{text}"' if '"' not in text else text for text in whole])
+
+
 def file_types_of(names: Sequence[Any]) -> List[str]:
     """The type of each uploaded file, taken from the name the session stored.
 

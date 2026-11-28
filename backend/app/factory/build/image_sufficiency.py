@@ -68,10 +68,7 @@ PROBE_RESULT = "IMAGE_PROBE "
 #: gate does: a product that correctly refuses to start without its deploy
 #: token is not an image that cannot load the app (live cycle 4 fintech:
 #: "ConfigError: PLATFORM_TOKEN is required" judged as a missing image path).
-#: The variable that carries the run's bearer. The UI grade reads the token
-#: it calls the product with from GATE_RUN_ENV under this name.
-GATE_TOKEN_VAR = "PLATFORM_TOKEN"
-GATE_RUN_ENV = {GATE_TOKEN_VAR: "dev-local-token"}
+GATE_RUN_ENV = {"PLATFORM_TOKEN": "dev-local-token"}
 
 # Settings the operator supplies at deploy time are stood in for exactly as
 # the Factory's harness and acceptance script do (deploy_time_settings, one

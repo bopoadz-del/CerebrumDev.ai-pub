@@ -89,9 +89,7 @@ def test_a_fail_closed_block_backed_handler_is_judged_only_when_its_block_runs(t
         assert row in verdict.writer_items, verdict.items
         assert classes == {"handler_error"}, verdict.reasons
         (judged,) = [f for f in functions["functions"] if f["capability_id"] == cid]
-        # Fix 4: the tree's other capabilities accept input one (they make
-        # the state), and this handler still refuses it -- a writer's FAIL.
-        assert judged["detail"] == fg.REFUSED_ALTHOUGH_STORED and judged["blocks_cannot_run"] == {}
+        assert judged["detail"] == fg.BLOCK_UNAVAILABLE and judged["blocks_cannot_run"] == {}
     else:
         assert not any(cid in item for item in verdict.writer_items), verdict.writer_items
         ungraded = [u for u in verdict.ungraded if u.startswith(f"function ungraded: {cid}: ")]

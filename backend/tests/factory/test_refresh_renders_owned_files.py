@@ -57,22 +57,3 @@ def test_the_build_runner_refreshes_with_render_absent():
     from app.factory.build.runner import RoleRunner
 
     assert "render_absent=True" in inspect.getsource(RoleRunner._refresh_factory_files)
-
-
-import pytest  # noqa: E402
-
-from app.factory.build.factory_refresh import product_display_name  # noqa: E402
-
-
-@pytest.mark.parametrize("fields, shown", [
-    ({"product_id": "property", "product_name": "Harbor Lettings"}, "Harbor Lettings"),
-    ({"product_id": "logistics", "product_name": "Dock Ledger"}, "Dock Ledger"),
-    ({"product_id": "logistics", "product_name": ""}, "logistics"),   # no name: the id
-    ({"product_id": "", "product_name": ""}, "Platform"),              # neither: the console default
-])
-def test_product_display_name_gives_one_name_for_the_object_and_its_mapping(fields, shown):
-    from types import SimpleNamespace
-
-    # The refresh renders under the object; the grader reads the mapping.
-    assert product_display_name(SimpleNamespace(**fields)) == shown
-    assert product_display_name(dict(fields)) == shown

@@ -279,46 +279,12 @@ def test_nested_report_suites_are_read(depth):  # U5
     assert g.ok and [s["passed"] for s in g.steps] == [True] * len(names)
 
 
-# The product id is the vertical slug and the name is the architect's choice:
-# a name that does not contain the id is the ordinary case.
-NAMED = [
-    {"product_id": "property", "product_name": "Harbor Lettings", "capabilities": [{"id": "rent_roll"}]},
-    {"product_id": "logistics", "product_name": "Dock Ledger", "capabilities": [{"id": "berth_log"}]},
-    {"product_id": "logistics", "capabilities": [{"id": "berth_log"}]},  # no name: the console shows the id
-]
-
-
-@pytest.mark.parametrize("i,served,ok", [(0, 0, True), (1, 1, True), (2, 2, True), (0, 1, False), (1, 0, False), (1, 2, False)])
-def test_bind_needs_the_name_the_factory_console_shows(tmp_path, i, served, ok):  # U12
-    from app.factory.build.factory_refresh import product_display_name
-    from app.factory.build.store_acceptance import render_ui_index
-
-    # The page is the Factory's own console, rendered as the build renders it.
-    page = render_ui_index(product_display_name(NAMED[served]))
-    with h.server({}, bodies={"/": page}) as base:
-        got = h.run_spec(ug.render_spec(NAMED[i]), tmp_path, base, only_kinds=("load", "bind"))
+@pytest.mark.parametrize("i,served,ok", [(0, 0, True), (1, 1, True), (0, 1, False), (1, 0, False)])
+def test_bind_needs_the_products_own_id_on_the_page(tmp_path, i, served, ok):  # U12
+    bp = BPS[i]
+    with h.server({}, bodies={"/": f"<h1>tenant {BPS[served]['product_id']}</h1>"}) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load", "bind"))
     assert got["load:/"] == "passed" and (got["bind:tenant"] == "passed") is ok
-
-
-@pytest.mark.parametrize("bp, shown", [(NAMED[0], "Harbor Lettings"), (NAMED[2], "logistics")])
-def test_console_title_is_what_the_console_renders(bp, shown):
-    from app.factory.build.store_acceptance import render_ui_index
-
-    assert ug.console_title(bp) == shown
-    assert f"<h1>{shown}</h1>" in render_ui_index(ug.console_title(bp))
-    assert [s.target for s in ug.ui_plan(bp) if s.kind == "bind"] == [shown]
-
-
-@pytest.mark.parametrize("page, ok", [
-    ("<h1>Harbor   Lettings</h1>", True),                       # whitespace collapsed, as Playwright does
-    ("<h1>HARBOR LETTINGS</h1>", True),                         # case-insensitive
-    ('<h1 class="Harbor Lettings">other</h1>', False),          # markup is not text
-    ("<title>Harbor Lettings</title><h1>other</h1>", False),    # the tab title is not on the page
-])
-def test_bind_reads_the_pages_text_not_its_markup(tmp_path, page, ok):
-    with h.server({}, bodies={"/": page}) as base:
-        got = h.run_spec(ug.render_spec(NAMED[0]), tmp_path, base, only_kinds=("load", "bind"))
-    assert (got["bind:tenant"] == "passed") is ok
 
 
 @pytest.mark.parametrize("i", [0, 1])
@@ -407,7 +373,7 @@ def _flow(tmp_path, bp, *, page="", upload="parsed ok", answer="total 1,240 [1]"
 
 @pytest.mark.parametrize("bp", BPS)
 def test_full_flow_passes_on_a_product_that_answers(tmp_path, bp):
-    got, seen, fx = _flow(tmp_path, bp, page=f"<h1>{bp['product_name']}</h1>")
+    got, seen, fx = _flow(tmp_path, bp, page=f"tenant {bp['product_id']}")
     assert set(got.values()) == {"passed"}, got
     uploads = [(k, b) for k, b in seen if k.startswith("/__upload")]
     assert [k for k, _ in uploads] == ["/__upload?name=fixture.pdf", "/__upload?name=fixture.xlsx"]  # N6
@@ -419,7 +385,7 @@ def test_full_flow_passes_on_a_product_that_answers(tmp_path, bp):
 
 
 @pytest.mark.parametrize("bp", BPS)
-def test_bind_fails_without_the_product_name(tmp_path, bp):  # N4
+def test_bind_fails_without_the_product_id(tmp_path, bp):  # N4
     got, _, _ = _flow(tmp_path, bp, page="tenant somebody-else")
     assert got["bind:tenant"].startswith("failed")
 
@@ -569,95 +535,7 @@ def test_a_whole_file_serial_spec_would_hide_screens_and_routes(tmp_path, bp):
 @pytest.mark.parametrize("bp", BPS)
 def test_bind_opens_the_front_page_itself(tmp_path, bp):
     """bind does not rely on the load step having run before it."""
-    page = f"<h1>{ug.console_title(bp)}</h1>"
+    page = f"<h1>{bp['product_id']}</h1>"
     with h.server({}, bodies={"/": page}) as base:
         got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("bind",))
     assert got == {"bind:tenant": "passed"}
-
-
-# --- the steps call the product with the grading boot's bearer --------------
-from app.factory.build.authority import capability_route as _route  # noqa: E402
-from app.factory.build.image_sufficiency import GATE_RUN_ENV, GATE_TOKEN_VAR  # noqa: E402
-
-_API_KINDS = ("load", "screen", "route", "honest_error")
-
-
-def _honest(bp):
-    return {f"POST {_route(bp['capabilities'][0]['id'])}": 422}
-
-
-@pytest.mark.parametrize("bp", BPS)
-@pytest.mark.parametrize("protected", [True, False])
-def test_a_product_with_or_without_sign_in_passes_with_the_grading_bearer(tmp_path, bp, protected):
-    """One product answers 401 to any request without the boot's bearer, the
-    other needs none: under the grading bearer both pass every page, route
-    and honest-error step, and every request the steps made carried it."""
-    token = ug.grading_bearer()
-    with h.server(_honest(bp), token=token if protected else None) as base:
-        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer=token)
-    assert got and all(v == "passed" for v in got.values()), got
-    assert base.auth and set(base.auth) == {f"Bearer {token}"}
-
-
-@pytest.mark.parametrize("bp", BPS)
-@pytest.mark.parametrize("bearer", ["", "not-the-boot-token"])
-def test_a_protected_product_called_without_its_bearer_fails_naming_status_and_route(tmp_path, bp, bearer):
-    """Without the boot's bearer (none, or a wrong one) the protected product
-    answers 401, and each failed step names its route and the status seen."""
-    with h.server(_honest(bp), token=ug.grading_bearer()) as base:
-        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=_API_KINDS, bearer=bearer)
-    routes = [f"route:{_route(c['id'])}" for c in bp["capabilities"]]
-    for name in routes + ["load:/"]:
-        assert got[name] == "failed: expected 200 got 401", (name, got)
-    honest = f"honest_error:{_route(bp['capabilities'][0]['id'])}"
-    assert got[honest].startswith("failed") and "401" in got[honest]
-
-
-@pytest.mark.parametrize("env,want", [
-    (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
-    ({GATE_TOKEN_VAR: " other-token "}, "other-token"),
-    ({GATE_TOKEN_VAR: None}, ""),
-    ({}, ""),
-    ({"SOME_OTHER_VAR": "x"}, ""),
-])
-def test_grading_bearer_is_the_gate_run_token(env, want):
-    assert ug.grading_bearer(env) == want
-
-
-@pytest.mark.parametrize("bearer,want", [
-    (None, GATE_RUN_ENV[GATE_TOKEN_VAR]),
-    ("given-token", "given-token"),
-    ("", None),
-])
-def test_grade_ui_hands_the_bearer_to_the_run(tmp_path, bearer, want):
-    seen = {}
-    kw = {} if bearer is None else {"bearer": bearer}
-    ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=lambda cmd, **k: seen.update(k["env"]), **kw)
-    assert seen.get(ug.BEARER_ENV) == want
-
-
-@pytest.mark.parametrize("bearer,want", [("", None), ("abc", "abc"), ("dev-x", "dev-x")])
-def test_playwright_run_sets_the_bearer_only_when_given(tmp_path, bearer, want):
-    seen = {}
-    ug._playwright_run(lambda cmd, **k: seen.update(k["env"]), tmp_path / "s.spec.ts", base_url="http://b",
-                       out=tmp_path / "o.json", fixtures=tmp_path, timeout=120, bearer=bearer)
-    assert seen.get(ug.BEARER_ENV) == want
-    assert seen["BASE_URL"] == "http://b"
-
-
-def test_the_spec_never_carries_the_token_itself():
-    for bp in BPS:
-        spec = ug.render_spec(bp)
-        assert GATE_RUN_ENV[GATE_TOKEN_VAR] not in spec
-        assert f"process.env.{ug.BEARER_ENV}" in spec
-
-
-@pytest.mark.parametrize("brief", [12345, ["not", "a", "brief"]])
-def test_grade_ui_with_an_unreadable_brief_runs_nothing(tmp_path, brief):
-    """A value that is not a customer brief stops the UI grade before any
-    run: the bearer is never handed to a run that should not happen."""
-    calls = []
-    got = ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9",
-                      run=lambda cmd, **k: calls.append(k), brief=brief)
-    assert calls == []
-    assert got.errors == [ug.BRIEF_UNREADABLE] and not got.ran

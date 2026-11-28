@@ -100,18 +100,19 @@ def _clauses(text: str) -> List[str]:
     return [" ".join(p.split()) for p in parts if len(p.split()) > 1]
 
 
-def prompt_leak(product_root, supplied_text: str, factory_text: str, prompt_text: str) -> Dict[str, List[str]]:
+def prompt_leak(product_root, supplied: str, factory_text: str, prompt_text: str) -> Dict[str, List[str]]:
     """{relpath: clauses of the user-supplied brief copied into that file's
     string values}. A clause counts only when the writer was actually given
     it (it is in the dispatched prompt) and it is not the Factory's own text
     (the prompt with the brief removed) -- so Factory boilerplate the brief
     happens to share is never a leak. A ``customer_brief.v1`` record
-    contributes only its ``ask``, never the record's own field names."""
-    from app.factory.build.customer_brief import customer_words
+    is read as ``customer_brief.supplied_text`` gives it: the ask and the
+    values of any other field, never the record's own field names."""
+    from app.factory.build.customer_brief import supplied_text
 
     spans = [
         clause
-        for clause in _clauses(customer_words(supplied_text or ""))
+        for clause in _clauses(supplied_text(supplied or ""))
         if clause in " ".join(prompt_text.split()) and not _token_in(clause, " ".join(factory_text.split()))
     ]
     return _found_in(_constants_by_file(product_root), spans)

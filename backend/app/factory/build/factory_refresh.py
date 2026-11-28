@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, List, Mapping
+from typing import Any, List
 
 _LF = "\n"
 
@@ -133,15 +133,12 @@ def merged_requirements(root: Path) -> str:
 
 
 def product_display_name(blueprint: Any) -> str:
-    """The name a refresh renders under: the brief's product name, else its id.
-
-    ``blueprint`` is the blueprint object or its mapping form (the grader
-    reads the mapping); both give the same name."""
-    if isinstance(blueprint, Mapping):
-        name, pid = blueprint.get("product_name"), blueprint.get("product_id")
-    else:
-        name, pid = getattr(blueprint, "product_name", ""), getattr(blueprint, "product_id", "")
-    return str(name or pid or "Platform")
+    """The name a refresh renders under: the brief's product name, else its id."""
+    return str(
+        getattr(blueprint, "product_name", "")
+        or getattr(blueprint, "product_id", "")
+        or "Platform"
+    )
 
 
 def refresh_factory_files(

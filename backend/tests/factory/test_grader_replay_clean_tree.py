@@ -133,3 +133,46 @@ def test_one_literal_is_billed_by_who_wrote_the_file(tree, monkeypatch):
         assert not any(rel in item for item in verdict.writer_items), verdict.writer_items
     tasks = " ".join(replay.grade.get("next_tasks") or [])
     assert planted in tasks and vendored not in tasks and stamped not in tasks, tasks
+
+
+# -- a customer brief RECORD through the grade path ----------------------------
+
+
+def _record_brief(tree, **extra):
+    """The same invented brief as a ``customer_brief.v1`` record with one
+    stored file, the shape the Floor dispatches, plus any other fields."""
+    import json
+
+    from app.factory.build.customer_brief import emit_brief
+
+    record = json.loads(emit_brief(client_brief(tree), ["rent_roll.pdf"]))
+    return json.dumps({**record, **extra})
+
+
+RECORD_WORDS = ("ask", "documents", "uploads", "file_types", "pdf")
+
+
+@pytest.mark.parametrize("tree", list(gr.CASES), indirect=True)
+def test_a_brief_record_makes_no_literal_of_its_own_field_names(tree, monkeypatch):
+    """Graded with the brief as a record, no finding names a word of the
+    record's own format, in any layer of the tree."""
+    replay = gr.grade(tree, monkeypatch, supplied=_record_brief(tree))
+    named = {literal for row in _literal_rows(replay) for literal in row.get("literals") or []}
+    assert named.isdisjoint(RECORD_WORDS), sorted(named)
+
+
+@pytest.mark.parametrize("tree", list(gr.CASES), indirect=True)
+@pytest.mark.parametrize("extra", [{}, {"client": "Orchard Row Estates"}])
+def test_a_literal_from_a_brief_record_is_still_a_writer_finding(tree, monkeypatch, extra):
+    """The negative: what the customer did supply (in the ask, or as the
+    value of another field) and the writer copied is found and handed back."""
+    supplied = _record_brief(tree, **extra)
+    literal = extra.get("client") or _a_forbidden_literal(tree, supplied)
+    planted = "app/writer_planted_constant.py"
+    tree.write_writer_file(planted, f"PLANTED = {literal!r}\n")
+
+    replay = gr.grade(tree, monkeypatch, supplied=supplied)
+    rows = {row["file"]: row for row in _literal_rows(replay)}
+    assert planted in rows and literal in rows[planted]["literals"], sorted(rows)
+    assert not replay.certified
+    assert any(planted in item for item in replay.verdict.writer_items), replay.verdict.writer_items

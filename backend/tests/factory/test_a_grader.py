@@ -142,7 +142,7 @@ def test_derive_forbidden_takes_brief_shapes_not_prose():
         ('Bill acct_7731 monthly from the "Orchard Row" rent roll.', ["roll.pdf", "rates.xlsx"], "Orchard Row"),
     ],
 )
-def test_derive_forbidden_reads_a_customer_brief_record_by_its_ask_only(ask, files, said):
+def test_derive_forbidden_reads_a_record_with_no_other_field_as_its_ask(ask, files, said):
     from app.factory.build.customer_brief import emit_brief
 
     forbidden = grader.derive_forbidden({}, emit_brief(ask, files), "")
@@ -1104,3 +1104,85 @@ def test_ui_steps_that_did_not_run_are_ungraded_not_handed_to_the_writer(
         assert gap in verdict.ungraded
         assert f"UI step FAIL: {name}" not in verdict.items
         assert not any(name in item for item in verdict.writer_items)
+
+
+# -- a record's other fields: their values are the customer's, their names are not
+
+
+def _record(ask, **extra):
+    import json
+
+    return json.dumps({"ask": ask, "documents": {"uploads": False, "file_types": []}, **extra})
+
+
+@pytest.mark.parametrize(
+    "extra, said, names",
+    [
+        ({"client": "Orchard Row Estates"}, ["Orchard Row Estates"], ["client"]),
+        (
+            {"site": {"name": "Pier Nine Depot", "codes": ["acct_5502", "Gate B North"]}},
+            ["Pier Nine Depot", "acct_5502", "Gate B North"],
+            ["site", "name", "codes"],
+        ),
+    ],
+)
+def test_derive_forbidden_reads_the_values_of_a_records_other_fields(extra, said, names):
+    forbidden = grader.derive_forbidden({}, _record("Track repairs by unit.", **extra), "")
+    for value in said:
+        assert value in forbidden, forbidden
+    for name in names + ["ask", "documents", "uploads", "file_types"]:
+        assert name not in forbidden, forbidden
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"units": 240, "urgent": True, "notes": None, "blank": "   "},  # not text
+        {"tags": []},
+    ],
+)
+def test_a_records_values_that_are_not_text_add_no_literal(extra):
+    ask = 'Bill acct_7731 from the "Orchard Row" rent roll.'
+    assert grader.derive_forbidden({}, _record(ask, **extra), "") == grader.derive_forbidden({}, ask, "")
+
+
+@pytest.mark.parametrize("types", [["pdf", "xlsx"], ["Site Plans Folder"]])
+def test_the_file_types_the_factory_took_are_never_a_literal_and_a_documents_note_is(types):
+    import json
+
+    record = json.dumps({
+        "ask": "Keep a log of site visits per unit.",
+        "documents": {"uploads": True, "file_types": types, "note": "Harbour Scans Only"},
+    })
+    forbidden = grader.derive_forbidden({}, record, "")
+    assert "Harbour Scans Only" in forbidden
+    for value in types:
+        assert value not in forbidden and value.lower() not in forbidden, forbidden
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [
+        ("Track repairs by unit.", "Track repairs by unit."),  # not a record: as given
+        ('{"ask": "Track repairs."}', '{"ask": "Track repairs."}'),  # incomplete record: as given
+    ],
+)
+def test_supplied_text_returns_what_is_not_a_complete_record_as_given(raw, want):
+    from app.factory.build.customer_brief import supplied_text
+
+    assert supplied_text(raw) == want
+
+
+@pytest.mark.parametrize(
+    "extra, lines",
+    [
+        ({}, ["Track repairs by unit."]),
+        ({"client": "Orchard Row Estates"}, ["Track repairs by unit.", '"Orchard Row Estates"']),
+        ({"motto": 'Say "hello" twice'}, ["Track repairs by unit.", 'Say "hello" twice']),
+        ({"a": {"b": ["x y", {"c": "z w"}]}}, ["Track repairs by unit.", '"x y"', '"z w"']),
+    ],
+)
+def test_supplied_text_is_the_ask_then_each_other_value_as_a_quoted_span(extra, lines):
+    from app.factory.build.customer_brief import supplied_text
+
+    assert supplied_text(_record("Track repairs by unit.", **extra)).split("\n") == lines
