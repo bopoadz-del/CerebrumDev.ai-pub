@@ -49,14 +49,14 @@ ITEM_SHAPES: Tuple[Tuple[str, str, str, str, str], ...] = (
         "function grade FAIL: ",
         "function_check",
         "This feature did not give a correct answer when the quality check called it.",
-        "",
+        " -- ",
         CAPABILITY,
     ),
     (
         "UI step FAIL: ",
         "screen_walk",
         "This screen step did not work when the quality check walked through the app.",
-        "",
+        " -- ",
         STEP,
     ),
     (

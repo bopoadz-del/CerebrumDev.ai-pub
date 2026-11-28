@@ -739,7 +739,10 @@ def test_capability_without_a_declared_contract_is_judged_by_testers_one_input_r
     )
     assert verdict.tier == (grader.CERTIFIED if certified else grader.NOT_CERTIFIED)
     assert verdict.ungraded == ()
-    assert (f"function grade FAIL: {gap}" in verdict.items) is (not certified)
+    # The item names the capability, then (after the grader's separator) why.
+    located = {i.split(grader.EVIDENCE_SEP)[0] for i in verdict.items}
+    assert (f"function grade FAIL: {gap}" in located) is (not certified)
+    assert all(grader.EVIDENCE_SEP + "why: " in i for i in verdict.items if i.startswith("function grade FAIL: "))
     assert not any(r["class"] in ("ungraded", "stub_handler") for r in verdict.reasons)
     record = json.loads((ws / "grade.json").read_text("utf-8"))
     (fn,) = [f for f in record["layer1"]["functions"]["functions"] if f["capability_id"] == gap]
@@ -756,7 +759,8 @@ def test_red_function_grade_verdict_quotes_the_failing_capability(tmp_path, inde
     )
     assert verdict.tier == grader.NOT_CERTIFIED
     assert not verdict.ok
-    assert f"function grade FAIL: {bad_cid}" in verdict.items
+    (item,) = [i for i in verdict.items if i.split(grader.EVIDENCE_SEP)[0] == f"function grade FAIL: {bad_cid}"]
+    assert "why: two inputs gave one result; called with: " in item and "; answered: " in item
     # option (b): the verdict carries the failing capability's reason class
     assert {"capability": bad_cid, "class": "stub_handler", "layer": "function"} in verdict.reasons
 

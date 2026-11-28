@@ -86,7 +86,7 @@ def test_a_fail_closed_block_backed_handler_is_judged_only_when_its_block_runs(t
     classes = {r.get("class") for r in verdict.reasons if r.get("capability") == cid and r.get("layer") == "function"}
     functions = replay.grade["layer1"]["functions"]
     if block_runs:
-        assert row in verdict.writer_items, verdict.items
+        assert row in {i.split(" -- ")[0] for i in verdict.writer_items}, verdict.items
         assert classes == {"handler_error"}, verdict.reasons
         (judged,) = [f for f in functions["functions"] if f["capability_id"] == cid]
         assert judged["detail"] == fg.BLOCK_UNAVAILABLE and judged["blocks_cannot_run"] == {}
