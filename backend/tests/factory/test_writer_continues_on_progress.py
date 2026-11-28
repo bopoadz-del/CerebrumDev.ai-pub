@@ -132,6 +132,51 @@ def _decisions(runner):
 # -- 0. the run's writer time counts every pass -------------------------------
 
 
+@pytest.mark.parametrize(
+    "kind, payload, took_over",
+    [
+        ("RUN_STARTED", {}, True),
+        ("PILOT_OPENED", {}, True),
+        ("NOTE", {"resumed": True}, True),
+        ("NOTE", {"inputs_rebased": True}, True),
+        # a note that is neither a resume nor new answers: the same runner
+        ("NOTE", {"continuing": True}, False),
+        ("NOTE", {}, False),
+        # only a NOTE carries a resume; another kind with the same key is not one
+        ("PHASE_STARTED", {"resumed": True}, False),
+    ],
+)
+def test_runner_took_over_reads_the_records_of_a_runner_starting(kind, payload, took_over):
+    from app.factory.build.ledger import INPUTS_REBASED_KEY
+
+    assert INPUTS_REBASED_KEY == "inputs_rebased"
+    assert wc._runner_took_over(kind, payload) is took_over
+
+
+@pytest.mark.parametrize("pass_next, max_passes", [(2, 3), (3, 4)])
+def test_writer_pass_is_the_card_view_of_the_ledgers_newest_decision(pass_next, max_passes):
+    from app.factory import build_jobs
+
+    note = SimpleNamespace(
+        kind=EventKind.NOTE,
+        ts="2026-11-24T07:24:00+00:00",
+        detail=f"continuing, pass {pass_next} of {max_passes}: x",
+        payload={
+            wc.NOTE_KEY: {
+                "go": True,
+                "pass_next": pass_next,
+                "max_passes": max_passes,
+                "writer_seconds": 3600,
+                "ceiling_s": 9000,
+            }
+        },
+    )
+    view = build_jobs._writer_pass([note])
+    assert (view["pass"], view["max_passes"], view["continuing"]) == (pass_next, max_passes, True)
+    # no decision in the ledger: nothing to show
+    assert build_jobs._writer_pass([]) is None
+
+
 @pytest.mark.parametrize("passes", [[3600.0], [1200.0, 900.5, 30.0]])
 def test_every_writer_pass_adds_its_time_to_the_run_total(tmp_path, monkeypatch, passes):
     runner, _ = _runner(tmp_path, monkeypatch, cut_steps=1)
