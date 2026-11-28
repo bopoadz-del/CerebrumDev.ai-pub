@@ -710,7 +710,7 @@ def own_errors_in_output(text: Any, secret: str = "") -> Tuple[str, ...]:
     ``secret`` redacted. None when no line carries the mark."""
     out: List[str] = []
     for line in str(text or "").splitlines():
-        line = line.strip()
+        line = line.lstrip()
         if not line.startswith(OWN_ERROR_MARK):
             continue
         body = line[len(OWN_ERROR_MARK):].strip()
