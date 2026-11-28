@@ -209,12 +209,15 @@ def _open_model_call_note(activity_notes: Any) -> Any:
     keep 'inside watchdog' after harvest or HUNG_KILLED_BY_WALL.
     """
     from app.factory.build.model_call import closes_model_call
+    from app.factory.build.writer_continuation import _runner_took_over
 
     for note in reversed(list(activity_notes or ())):
         payload = getattr(note, "payload", None) or {}
-        # A resume starts a new attempt: a call the earlier one left open
-        # (killed by a deploy, a restart, a stop) is not this run's call.
-        if closes_model_call(payload) or payload.get("resumed"):
+        # A runner taking the ledger over starts a new attempt: a call the
+        # earlier one left open (killed by a deploy, a restart, a stop) is
+        # not this run's call -- a stalled build's resume writes no
+        # ``resumed`` NOTE, only the new runner's start note.
+        if closes_model_call(payload) or _runner_took_over("NOTE", payload):
             return None
         if payload.get("model_call"):
             return note

@@ -67,7 +67,27 @@ def test_the_runner_start_note_is_the_one_every_run_writes(tmp_path, wall):
     assert wc.floor_view(events) is None
 
 
-def _continued_writer(tmp_path, sid, pass_next, max_passes, *, stalled, call_open=False):
+def _note(payload):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(kind=EventKind.NOTE, payload=payload, detail="", ts="")
+
+
+@pytest.mark.parametrize("deadline_s", [7200.0, 5400.0])
+def test_open_model_call_note_ends_at_a_runner_start(deadline_s):
+    """``build_jobs._open_model_call_note``: a call left open before a new
+    runner's start note is not the new runner's call; one opened after it is."""
+    from app.factory.build_jobs import _open_model_call_note
+
+    call = _note({"stage": "dispatch", "model_call": True, "deadline_s": deadline_s})
+    start = _note({wc.RUNNER_START_KEY: True, "wall_clock_s": deadline_s})
+    assert _open_model_call_note([call, start]) is None
+    # the negative: the new runner's own call, after its start note
+    assert _open_model_call_note([start, call]) is call
+    assert _open_model_call_note([call]) is call
+
+
+def _continued_writer(tmp_path, sid, pass_next, max_passes, *, stalled, call_open=False, deadline_s=7200.0):
     out, state = _failed_platform(tmp_path, sid, passed=("COLLECTOR", "CLONER"))
     p = out / "build_ledger.jsonl"
     lines = p.read_text(encoding="utf-8").splitlines(True)[:-2]
@@ -95,7 +115,7 @@ def _continued_writer(tmp_path, sid, pass_next, max_passes, *, stalled, call_ope
             EventKind.NOTE,
             role=BuildRole.WRITER,
             detail="dispatching compiled brief via the coder CLI",
-            payload={"stage": "dispatch", "model_call": True, "deadline_s": 7200.0},
+            payload={"stage": "dispatch", "model_call": True, "deadline_s": deadline_s},
         )
     if stalled:
         old = time.time() - 600
@@ -210,3 +230,25 @@ def test_a_live_continued_pass_still_shows_its_line(tmp_path, monkeypatch, pass_
     wp = st.get("writer_pass") or {}
     assert wp.get("continuing") is True
     assert (wp.get("pass"), wp.get("max_passes")) == (pass_next, max_passes)
+
+
+@pytest.mark.parametrize("door", ["try_again", "boot_resume"])
+@pytest.mark.parametrize("deadline_s", [7200.0, 5400.0])
+def test_a_takeover_of_a_stalled_build_drops_the_dead_runners_open_call(
+    tmp_path, monkeypatch, deadline_s, door
+):
+    """The dead runner's coder call, left open by the stall, is not shown as
+    the new runner's call in progress (the new runner's roles make none)."""
+    from app.factory import build_jobs as bj
+
+    out, state = _continued_writer(
+        tmp_path, f"sess_c{door[0]}{int(deadline_s)}", 2, 3, stalled=True, call_open=True, deadline_s=deadline_s,
+    )
+    monkeypatch.setattr(bj, "_live_runner_thread", lambda _o: False)
+    take_over = {"try_again": _try_again, "boot_resume": _boot_resume}[door]
+    reply, during = take_over(monkeypatch, out, state)
+
+    assert during is not None, ("the resumed WRITER role never ran", reply)
+    assert during["state"] == "building"
+    assert not during.get("model_call_in_progress"), during
+    assert during.get("model_call_deadline_s") != deadline_s, during
