@@ -368,22 +368,31 @@ def _succeeded_build_actions(ledger: Any) -> list:
     )
 
 
-def zip_generated_product(out: Path, archive_base: Path) -> Path:
+def zip_generated_product(
+    out: Path, archive_base: Path, *, extra: Optional[Dict[str, bytes]] = None
+) -> Path:
     """Zip ``out`` to ``{archive_base}.zip``, omitting TESTER caches.
 
     ``shutil.make_archive`` copies the whole tree, including ``__pycache__``
     and ``.pytest_cache`` left by the factory's own pytest run. Those are
     not the product; the live winery-hospitality export shipped 146 files
     of which a large slice was bytecode.
+
+    ``extra`` is paperwork that belongs to THIS zip and not to the tree
+    (``{name in the zip: bytes}``): it is written into the zip only, and a
+    file of the same name in the tree is left out. The tree is not touched.
     """
     import time as _time
 
+    extra = dict(extra or {})
     zip_path = Path(str(archive_base) + ".zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         _maybe_write_prototype_marker(zf, out)
+        for name in sorted(extra):
+            zf.writestr(name, extra[name])
         for path in sorted(out.rglob("*")):
             rel = path.relative_to(out)
-            if not is_exported(rel):
+            if not is_exported(rel) or rel.as_posix() in extra:
                 continue
             if not path.is_file():
                 continue
@@ -511,11 +520,14 @@ def download_product_package(
 
     blueprint, plan = _session_product_inputs(state)
     status = build_status(out, blueprint=blueprint, plan=plan)
-    # "Still being built" is also a stalled reading whose runner is alive
-    # (``runner_live``): the tree is being written, whatever the ledger's
-    # silence says. The stopped-build rule the action list shares
-    # (floor_actions.as_is_copy_offered) refuses it too.
-    if status["state"] == "building" or (status["state"] == "stalled" and status.get("runner_live")):
+    # "Still being built" is also a stalled build the stopped-build rule
+    # refuses (floor_actions.as_is_copy_offered: its runner is alive, so the
+    # tree is being written whatever the ledger's silence says). The action
+    # list and take_copy read the same rule, so this route serves every copy
+    # they offer.
+    from app.factory.floor_actions import as_is_copy_offered
+
+    if status["state"] == "building" or (status["state"] == "stalled" and not as_is_copy_offered(status)):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -572,24 +584,34 @@ def download_product_package(
                 "Nothing here has been verified beyond what the gate verdict above\n"
                 "says. Use it as source material, not as a product.\n"
             )
-        (out / "EXPORTED-AS-IS.md").write_text(note, encoding="utf-8")
         # Rule 1: a failed build is still a product. Its MANIFEST names the
-        # failing gate/check/finding, k/N, the build level and certified:false
-        # -- replacing any certified manifest a refused export left behind.
+        # failing gate/check/finding, k/N, the build level and certified:false.
+        # A stalled build's names where and why it stopped, under "stopped",
+        # and records no failed gate: none failed it.
         from app.factory.build.export_manifest import (
+            MANIFEST_FILENAME,
             failed_export_manifest,
-            write_export_manifest,
+            manifest_text,
+            stopped_export_manifest,
         )
 
-        write_export_manifest(
-            out,
-            failed_export_manifest(
-                status,
-                product_id=str(product_id),
-                platform_id=getattr(state.product_design, "platform_id", None),
-            ),
+        manifest = (stopped_export_manifest if stalled else failed_export_manifest)(
+            status,
+            product_id=str(product_id),
+            platform_id=getattr(state.product_design, "platform_id", None),
         )
-        archive = zip_generated_product(out, out.parent / f"{out.name}-as-is-export")
+        # The note and the manifest are THIS zip's paperwork: they go into
+        # the zip and nowhere else. The build's own tree is not written to,
+        # so a build that is continued and then finishes never ships them
+        # (and a certified manifest in the tree is never replaced).
+        archive = zip_generated_product(
+            out,
+            out.parent / f"{out.name}-as-is-export",
+            extra={
+                "EXPORTED-AS-IS.md": note.encode("utf-8"),
+                MANIFEST_FILENAME: manifest_text(manifest).encode("utf-8"),
+            },
+        )
         return FileResponse(
             archive,
             filename=f"cerebrumdev-{product_id}-{'STOPPED' if stalled else 'FAILED-GATES'}-as-is.zip",

@@ -227,10 +227,12 @@ def as_is_copy_offered(build: Any) -> bool:
     """Whether the platform may be taken as a copy as it stands: the build
     stopped (it failed, or it stalled) and nothing is working on it.
 
-    The ONE rule the three doors share -- the ``download_copy`` action in the
-    list below, the typed ``take_copy`` and the package route's ``as_is``
-    download -- so none of them offers what another refuses. A build that is
-    building, and a stalled one whose runner is still alive
+    The rule the ``download_copy`` action in the list below and the typed
+    ``take_copy`` both read, on the live status; the package route refuses a
+    stalled build by it too, so the route serves every copy these two offer.
+    (The route's ``as_is`` download also answers the explicit ask in other
+    finished states; that wider rule is its own and is not offered here.) A
+    build that is building, and a stalled one whose runner is still alive
     (``runner_live``), would hand over a splice of two writer passes."""
     if not isinstance(build, dict):
         return False

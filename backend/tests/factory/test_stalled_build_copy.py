@@ -92,6 +92,11 @@ def test_a_stalled_build_nothing_is_working_on_can_be_downloaded(client, tmp_pat
     assert f"Why it stopped: {build['detail']}" in note
     manifest = json.loads(zf.read("MANIFEST.json"))
     assert manifest["certified"] is False and manifest["build_state"] == "stalled"
+    # The stop is recorded as a stop: no gate failed this build.
+    assert manifest["stopped"] == {"state": "stalled", "marker": build.get("honesty") or "", "detail": build["detail"]}
+    assert "failed" not in manifest and "failed_label" not in manifest
+    # With no runner left, both ages read as the restart they are.
+    assert "restarted" in build["detail"] and "still running" not in build["detail"]
 
 
 @pytest.mark.parametrize("idle_s", [QUIET, QUIET + 3600])
@@ -103,6 +108,8 @@ def test_a_stalled_build_whose_runner_is_alive_is_not_handed_out(client, tmp_pat
     monkeypatch.setattr(build_jobs, "_live_runner_thread", lambda _out: True)
     build, actions = _read(client, sid)
     assert build["state"] == "stalled" and build["runner_live"] is True
+    # What the status says agrees with the refusal: the process is running.
+    assert "still running" in build["detail"] and "is gone" not in build["detail"]
     assert actions == ["try_again", "start_over"]
     pkg = client.get(f"/v1/sessions/{sid}/product/package?as_is=1")
     assert pkg.status_code == 409 and "still being built" in pkg.json()["detail"]
@@ -174,7 +181,137 @@ def test_a_failed_build_keeps_its_gate_failed_paperwork(client, tmp_path, detail
     pkg = client.get(f"/v1/sessions/{sid}/product/package?as_is=1")
     assert pkg.status_code == 200, pkg.text
     assert "FAILED-GATES-as-is" in pkg.headers.get("content-disposition", "")
-    note = zipfile.ZipFile(io.BytesIO(pkg.content)).read("EXPORTED-AS-IS.md").decode("utf-8")
+    zf = zipfile.ZipFile(io.BytesIO(pkg.content))
+    note = zf.read("EXPORTED-AS-IS.md").decode("utf-8")
     assert "THIS BUILD FAILED ITS GATES" in note and "STOPPED BEFORE IT FINISHED" not in note
+    manifest = json.loads(zf.read("MANIFEST.json"))
+    assert manifest["failed"]["gate"] == "WRITER" and "stopped" not in manifest
     reply = platform_chat_flow.take_copy(get_session(sid))
     assert reply["ok"] is True and "labelled FAILED" in reply["summary"]
+
+
+
+# -- the export is this zip's paperwork: the build's tree is not written to ----
+
+
+def _succeed(out):
+    ledger = BuildLedger(out / "build_ledger.jsonl")
+    for role in (BuildRole.WRITER, BuildRole.TESTER, BuildRole.STORE_MANAGER):
+        ledger.append(EventKind.GATE_PASSED, role=role, payload={"gate": role.value})
+    ledger.append(EventKind.RUN_SUCCEEDED, payload={"outcome": "SUCCESS", "pilot_ready": False})
+
+
+def _tree(out):
+    return {p.relative_to(out).as_posix(): p.read_bytes() for p in sorted(out.rglob("*")) if p.is_file()}
+
+
+@pytest.mark.parametrize("case", ["orphaned", "failed"])
+def test_an_as_is_download_writes_nothing_into_the_builds_tree(client, tmp_path, case):
+    """The note and the manifest go into the zip only. A manifest the tree
+    already holds is left as it is, byte for byte."""
+    sid = f"sess_tree_untouched_{case}"
+    out = _workspace(tmp_path, sid, **({"idle_s": ORPHANED} if case == "orphaned" else {"failed": "WRITER gate failed: x"}))
+    (out / "MANIFEST.json").write_text('{"kept": "the tree\'s own"}', encoding="utf-8")
+    before = _tree(out)
+    pkg = client.get(f"/v1/sessions/{sid}/product/package?as_is=1")
+    assert pkg.status_code == 200, pkg.text
+    zf = zipfile.ZipFile(io.BytesIO(pkg.content))
+    assert "EXPORTED-AS-IS.md" in zf.namelist()
+    assert json.loads(zf.read("MANIFEST.json"))["certified"] is False  # the zip's own manifest
+    assert zf.namelist().count("MANIFEST.json") == 1
+    assert _tree(out) == before
+
+
+@pytest.mark.parametrize("idle_s", [ORPHANED, QUIET])
+def test_a_stalled_build_downloaded_then_continued_to_success_ships_no_stop_note(client, tmp_path, idle_s):
+    """The sequence the button invites: download the stalled copy, press Try
+    again, the build finishes. The finished platform's zip holds no note
+    saying it stopped."""
+    from app.routers.session_product import zip_generated_product
+
+    sid = f"sess_then_success_{int(idle_s)}"
+    out = _workspace(tmp_path, sid, idle_s=idle_s)
+    assert client.get(f"/v1/sessions/{sid}/product/package?as_is=1").status_code == 200
+    _succeed(out)
+    build, _actions = _read(client, sid)
+    assert build["state"] == "succeeded"
+    names = zipfile.ZipFile(zip_generated_product(out, tmp_path / f"shipped-{int(idle_s)}")).namelist()
+    assert "README.md" in names and "EXPORTED-AS-IS.md" not in names and "MANIFEST.json" not in names
+
+
+@pytest.mark.parametrize("held", [None, b"the tree's own"])
+def test_zip_extra_is_written_once_and_replaces_a_tree_file_of_its_name(tmp_path, held):
+    from app.routers.session_product import zip_generated_product
+
+    out = tmp_path / "tree"
+    out.mkdir()
+    (out / "README.md").write_text("x", encoding="utf-8")
+    if held is not None:
+        (out / "NOTE.md").write_bytes(held)
+    zf = zipfile.ZipFile(zip_generated_product(out, tmp_path / "with", extra={"NOTE.md": b"the zip's own"}))
+    assert zf.namelist().count("NOTE.md") == 1 and zf.read("NOTE.md") == b"the zip's own"
+    plain = zipfile.ZipFile(zip_generated_product(out, tmp_path / "without"))
+    assert ("NOTE.md" in plain.namelist()) is (held is not None)
+    assert held is None or plain.read("NOTE.md") == held
+
+
+# -- the doors read the live status, never a remembered one --------------------
+
+
+@pytest.mark.parametrize("remembered", ["stalled", "failed"])
+def test_a_remembered_stop_with_no_ledger_offers_no_copy(client, tmp_path, remembered):
+    """The workspace is there, its ledger is not, and the session still
+    remembers a stopped build. The list and take_copy read the ledger, find
+    nothing, and offer no copy."""
+    sid = f"sess_remembered_{remembered}"
+    out = _workspace(tmp_path, sid, idle_s=ORPHANED)
+    (out / "build_ledger.jsonl").unlink()
+    state = get_session(sid)
+    state.product_design.generation["build"] = {"state": remembered, "detail": "remembered"}
+    update_session(sid, state)
+    _build, actions = _read(client, sid)
+    assert "download_copy" not in actions
+    assert platform_chat_flow.take_copy(get_session(sid))["ok"] is False
+
+
+# -- the route's wider explicit ask keeps its gate-failed paperwork -------------
+
+
+@pytest.mark.parametrize("case", ["succeeded", "no_ledger"])
+def test_an_as_is_download_of_a_build_that_did_not_stall_keeps_the_gate_failed_label(client, tmp_path, case):
+    """Only a stalled build is labelled "stopped". The explicit as-is ask on
+    a finished build, or on a tree with no ledger, is served as before and
+    labelled as before; the list offers no copy there."""
+    sid = f"sess_wider_ask_{case}"
+    out = _workspace(tmp_path, sid)
+    if case == "succeeded":
+        _succeed(out)
+    else:
+        (out / "build_ledger.jsonl").unlink()
+    _build, actions = _read(client, sid)
+    assert "download_copy" not in actions
+    pkg = client.get(f"/v1/sessions/{sid}/product/package?as_is=1")
+    assert pkg.status_code == 200, pkg.text
+    disposition = pkg.headers.get("content-disposition", "")
+    assert "FAILED-GATES-as-is" in disposition and "STOPPED" not in disposition
+    zf = zipfile.ZipFile(io.BytesIO(pkg.content))
+    assert "THIS BUILD FAILED ITS GATES" in zf.read("EXPORTED-AS-IS.md").decode("utf-8")
+    assert "stopped" not in json.loads(zf.read("MANIFEST.json"))
+
+
+@pytest.mark.parametrize(
+    "status, marker",
+    [
+        ({"state": "stalled", "detail": "the factory server restarted", "honesty": "BUILD_THREAD_ORPHANED"}, "BUILD_THREAD_ORPHANED"),
+        ({"state": "stalled", "detail": "no build activity for 32 min"}, ""),
+    ],
+)
+def test_the_stopped_manifest_records_the_stop_and_no_failed_gate(status, marker):
+    from app.factory.build.export_manifest import MANIFEST_SCHEMA, manifest_text, stopped_export_manifest
+
+    manifest = stopped_export_manifest(status, product_id="p", platform_id="plt_x")
+    assert manifest["schema"] == MANIFEST_SCHEMA and manifest["certified"] is False
+    assert manifest["stopped"] == {"state": "stalled", "marker": marker, "detail": status["detail"]}
+    assert (manifest["product_id"], manifest["platform_id"], manifest["build_state"]) == ("p", "plt_x", "stalled")
+    assert not {"failed", "failed_label", "next_continue", "failure_narrative"} & set(manifest)
+    assert json.loads(manifest_text(manifest)) == manifest and manifest_text(manifest).endswith("\n")
