@@ -671,6 +671,10 @@ def keep_redacted(src: Path, dest: Path, secret: str) -> List[str]:
         rel = path.relative_to(src)
         target = Path(dest) / rel
         try:
+            # Only a regular file is read: a pipe a left-over process made
+            # would hold the read, and so the grade, until someone writes.
+            if not path.is_file():
+                continue
             data = path.read_bytes()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data.replace(needle, REDACTED.encode("utf-8")) if needle else data)

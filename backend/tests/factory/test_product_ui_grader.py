@@ -1164,3 +1164,27 @@ def test_the_kept_folder_shows_this_runs_failures_only(tmp_path, monkeypatch, ol
     ug.grade_ui(BPS[0], tmp_path, base_url="http://127.0.0.1:9", run=_leaky_run(token, report=True))
     assert not (tmp_path / old).exists()
     assert (tmp_path / "test-results" / "load" / "error-context.md").is_file()
+
+
+@pytest.mark.parametrize("odd", ["pipe", "deep/sock"])
+def test_keep_redacted_never_opens_what_is_not_a_regular_file(tmp_path, monkeypatch, odd):
+    """A pipe left in the run folder would hold a read for ever: it is not
+    opened at all, and the regular files beside it are kept."""
+    src, dest = tmp_path / "run", tmp_path / "kept"
+    for name in (odd, "a.txt"):
+        (src / name).parent.mkdir(parents=True, exist_ok=True)
+        (src / name).write_text("x", encoding="utf-8")
+    real_is_file, real_read = ug.Path.is_file, ug.Path.read_bytes
+    opened = []
+
+    def is_file(self):
+        return False if self.name == _P(odd).name else real_is_file(self)
+
+    def read(self):
+        opened.append(self.name)
+        return real_read(self)
+
+    monkeypatch.setattr(ug.Path, "is_file", is_file)
+    monkeypatch.setattr(ug.Path, "read_bytes", read)
+    assert ug.keep_redacted(src, dest, "") == ["a.txt"]
+    assert opened == ["a.txt"]
