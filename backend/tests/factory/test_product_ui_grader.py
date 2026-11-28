@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 import subprocess
@@ -1305,6 +1306,122 @@ def test_grade_ui_with_no_report_names_the_graders_own_error(tmp_path, lines):
         return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
     g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9", run=run)
     assert len(g.errors) == 1 and g.errors[0].endswith(f"; {ug.GRADER_OWN_BLOCK}: refused once")
+
+
+# --- the grader's own error survives a file it cannot write (7b89449 grade) ---
+@pytest.mark.parametrize("bp", BPS)
+@pytest.mark.parametrize("refusal", [
+    "Protocol error (Fetch.continueRequest): Invalid header value",
+    "Protocol error (Fetch.continueRequest): Target page, context or browser has been closed",
+])
+def test_an_own_errors_file_that_cannot_be_written_still_ends_the_step(tmp_path, bp, refusal):
+    """The own-errors file cannot be written (its folder does not exist).
+    The paused request is still failed, so the step ends; the run does not
+    crash; and the refusal reaches the run's error output as a marked line
+    the grade reads back as the grader's own error."""
+    token = "the-boot-token"
+    missing = tmp_path / "no_such_dir" / "own.txt"
+    with h.server({}, token=token) as base:
+        got = h.run_spec(ug.render_spec(bp), tmp_path, base, only_kinds=("load",), bearer=token,
+                         cdp_refuses=refusal, own_path=missing, keep_stderr=True)
+    assert "__error__" not in got, got
+    stderr = got.pop("__stderr__")
+    assert "__own__" not in got and got and set(got.values()) == {"failed: net::ERR_ABORTED"}
+    own = ug.own_errors_in_output(stderr)
+    assert any(line.startswith("own-errors file not written: ") for line in own), own
+    assert f"Fetch.continueRequest refused for {base}/: {refusal}" in own
+
+
+@pytest.mark.parametrize("refusal,flat", [("refused\nhere", "refused here"), ("refused\r\n\there", "refused here")])
+def test_a_refusal_over_several_lines_is_one_own_error_line(tmp_path, refusal, flat):
+    """A refusal whose text runs over several lines is written down as one
+    line, in the file and, when the file cannot be written, in the run's
+    error output."""
+    token = "the-boot-token"
+    with h.server({}, token=token) as base:
+        got = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load",), bearer=token,
+                         cdp_refuses=refusal)
+        printed = h.run_spec(ug.render_spec(BP), tmp_path, base, only_kinds=("load",), bearer=token,
+                             cdp_refuses=refusal, own_path=tmp_path / "absent" / "own.txt", keep_stderr=True)
+    own = got.pop("__own__").splitlines()
+    want = f"Fetch.continueRequest refused for {base}/: {flat}"
+    assert own and set(own) == {want}
+    assert want in ug.own_errors_in_output(printed["__stderr__"])
+
+
+@pytest.mark.parametrize("text,secret,want", [
+    ("noise\n[grader own error] refused once\n", "", ("refused once",)),
+    ("  [grader own error] tok-9 refused\n[grader own error] \n[grader own error] second\n", "tok-9",
+     (f"{ug.REDACTED} refused", "second")),
+])
+def test_own_errors_in_output_reads_only_the_marked_lines(text, secret, want):
+    assert ug.own_errors_in_output(text, secret) == want
+
+
+@pytest.mark.parametrize("text", ["", None, "refused once\nthe product printed this\n", "x [grader own error] late"])
+def test_own_errors_in_output_without_the_mark_is_none(text):
+    assert ug.own_errors_in_output(text) == ()
+
+
+def _report_with_stderr(names, items):
+    report = _report(names, failed=[names[0]])
+    report["suites"][0]["specs"][0]["tests"][0]["results"][0]["stderr"] = items
+    return report
+
+
+@pytest.mark.parametrize("items,want", [
+    ([{"text": "[grader own error] refused once\n"}], ("refused once",)),
+    ([{"buffer": base64.b64encode(b"[grader own error] refused tok-9\n").decode()}, {"text": "plain\n"}],
+     (f"refused {ug.REDACTED}",)),
+])
+def test_report_own_errors_reads_each_results_error_output(items, want):
+    names = [s.name for s in ug.ui_plan(BP)]
+    assert ug.report_own_errors(_report_with_stderr(names, items), "tok-9") == want
+
+
+@pytest.mark.parametrize("report", [
+    "not a report",
+    {"suites": [{"specs": [{"title": "a", "tests": [{"results": [{"stderr": [{"text": "plain line\n"}]}]}]}]}]},
+    {"suites": [{"specs": [{"title": "a", "tests": [{"results": [{"stderr": [{"buffer": "!!not base64!!"}, 7]}]}]}]}]},
+])
+def test_report_own_errors_of_a_report_with_none_is_none(report):
+    assert ug.report_own_errors(report) == ()
+
+
+def _run_printing(names, line, where):
+    def run(cmd, **kw):
+        report = _report(names, failed=[names[0]])
+        if where == "report":
+            report = _report_with_stderr(names, [{"text": line}])
+        _P(kw["env"]["PLAYWRIGHT_JSON_OUTPUT_NAME"]).write_text(json.dumps(report), encoding="utf-8")
+        return type("P", (), {"returncode": 1, "stdout": "", "stderr": line if where == "stderr" else ""})()
+    return run
+
+
+@pytest.mark.parametrize("where,token", [("stderr", "tok-9"), ("report", "another-token")])
+def test_grade_ui_reads_the_graders_own_error_it_could_only_print(tmp_path, monkeypatch, where, token):
+    """Through grade_ui: no own-errors file was written, the refusal was
+    printed as a marked line (to the run's error output, or to the step's
+    output the report keeps). The failed step is not run, blocked by the
+    grader's own error, with the bearer redacted: never the product's."""
+    _boot_token(monkeypatch, token)
+    names = [s.name for s in ug.ui_plan(BP)]
+    line = f"{ug.OWN_ERROR_MARK}Fetch.continueRequest refused: {token}\n"
+    g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9", run=_run_printing(names, line, where))
+    assert g.failing == []
+    assert [r["name"] for r in g.not_run] == [names[0]]
+    assert g.not_run[0]["blocked_by"] == f"{ug.GRADER_OWN_BLOCK}: Fetch.continueRequest refused: {ug.REDACTED}"
+
+
+@pytest.mark.parametrize("where", ["stderr", "report"])
+def test_grade_ui_without_the_mark_keeps_the_products_failure(tmp_path, monkeypatch, where):
+    """The negative: a line printed without the mark is not the grader's own
+    error, and the failed step stays the product's failure."""
+    _boot_token(monkeypatch, "tok-9")
+    names = [s.name for s in ug.ui_plan(BP)]
+    g = ug.grade_ui(BP, tmp_path, base_url="http://127.0.0.1:9",
+                    run=_run_printing(names, "Fetch.continueRequest refused: tok-9\n", where))
+    assert g.failing == [names[0]] and g.not_run == []
 
 
 @pytest.mark.parametrize("exc", [RuntimeError("copy broke"), KeyboardInterrupt()])

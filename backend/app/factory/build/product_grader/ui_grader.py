@@ -30,6 +30,7 @@ A skipped UI run is never a pass.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -106,6 +107,12 @@ GRADER_OWN_BLOCK = "the grader's own error"
 
 #: The file the spec writes the grader's own errors to, one per line.
 OWN_ERRORS_ENV = "GRADE_OWN_ERRORS"
+
+#: What opens a line of the run's error output that is one of the grader's
+#: own errors (one the spec could not write to that file). The spec writes
+#: it and the grade reads it: it is the grader's own record, never the
+#: product's words.
+OWN_ERROR_MARK = "[grader own error] "
 
 #: Chromium's refusal to continue a paused request that no longer exists:
 #: the page dropped it meanwhile (it reloaded, moved on or closed).
@@ -380,11 +387,18 @@ BASE_JS = (
     f"const GONE = {json.dumps(REQUEST_GONE)};\n"
     # The grader's own errors go to a file the grade reads after the run, at
     # once, so one met between steps or in a step that then times out is
-    # still there. With no file named, they go to the run's error output.
+    # still there. With no file named, or a file that cannot be written,
+    # they go to the run's error output as marked lines the grade reads
+    # too: writing one down never throws.
     f"const OWN_LOG = process.env.{OWN_ERRORS_ENV} || '';\n"
+    f"const OWN_MARK = {json.dumps(OWN_ERROR_MARK)};\n"
     "const ownError = async (m: string) => {\n"
-    "  if (!OWN_LOG) { console.error(m); return; }\n"
-    "  const fs = await import('node:fs'); fs.appendFileSync(OWN_LOG, m.replace(/\\s+/g, ' ') + '\\n');\n"
+    "  const line = m.replace(/\\s+/g, ' ');\n"
+    "  if (OWN_LOG) {\n"
+    "    try { const fs = await import('node:fs'); fs.appendFileSync(OWN_LOG, line + '\\n'); return; }\n"
+    "    catch (w: any) { console.error(OWN_MARK + ('own-errors file not written: ' + String((w && w.message) || w)).replace(/\\s+/g, ' ')); }\n"
+    "  }\n"
+    "  console.error(OWN_MARK + line);\n"
     "};\n"
     "const signIn = async (p: any) => { if (!BEARER) return;\n"
     "  const cdp = await p.context().newCDPSession(p);\n"
@@ -392,16 +406,19 @@ BASE_JS = (
     "    const headers = Object.entries(signed(e.request.url, e.request.headers)).map(([name, value]) => ({ name, value }));\n"
     # A paused request the page has dropped meanwhile cannot be continued
     # and needs no continuing: that one refusal is nobody's error. Any other
-    # refusal leaves a live request paused: it is the grader's own error,
-    # written down for the grade, and the request is failed so the step
-    # ends instead of waiting for good.
+    # refusal leaves a live request paused: the request is failed first, so
+    # the step ends instead of waiting for good whatever the writing-down
+    # meets, then the refusal is written down for the grade as the
+    # grader's own error.
     "    try { await cdp.send('Fetch.continueRequest', { requestId: e.requestId, headers }); }\n"
     "    catch (err: any) {\n"
     "      const m = String((err && err.message) || err);\n"
     "      if (m.includes(GONE)) return;\n"
-    "      await ownError('Fetch.continueRequest refused for ' + e.request.url + ': ' + m);\n"
+    "      let failRefused = '';\n"
     "      try { await cdp.send('Fetch.failRequest', { requestId: e.requestId, errorReason: 'Aborted' }); }\n"
-    "      catch (f: any) { await ownError('Fetch.failRequest refused for ' + e.request.url + ': ' + String((f && f.message) || f)); }\n"
+    "      catch (f: any) { failRefused = 'Fetch.failRequest refused for ' + e.request.url + ': ' + String((f && f.message) || f); }\n"
+    "      await ownError('Fetch.continueRequest refused for ' + e.request.url + ': ' + m);\n"
+    "      if (failRefused) await ownError(failRefused);\n"
     "    }\n"
     "  });\n"
     "  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });\n"
@@ -687,6 +704,59 @@ def read_own_errors(path: Path, secret: str = "") -> Tuple[str, ...]:
     return tuple(redact(line.strip(), secret) for line in text.splitlines() if line.strip())
 
 
+def own_errors_in_output(text: Any, secret: str = "") -> Tuple[str, ...]:
+    """The grader's own errors a run printed to its error output: each line
+    that opens with :data:`OWN_ERROR_MARK`, the mark taken off, with
+    ``secret`` redacted. None when no line carries the mark."""
+    out: List[str] = []
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line.startswith(OWN_ERROR_MARK):
+            continue
+        body = line[len(OWN_ERROR_MARK):].strip()
+        if body:
+            out.append(redact(body, secret))
+    return tuple(out)
+
+
+def report_own_errors(report: Any, secret: str = "") -> Tuple[str, ...]:
+    """The grader's own errors a step printed while Playwright ran it: the
+    JSON report keeps each result's error output (``stderr``, as ``text`` or
+    base64 ``buffer``), read as :func:`own_errors_in_output` reads it."""
+    chunks: List[str] = []
+
+    def walk(suite: Any) -> None:
+        if not isinstance(suite, Mapping):
+            return
+        for spec in suite.get("specs") or []:
+            for test in (spec.get("tests") or []) if isinstance(spec, Mapping) else []:
+                for result in (test.get("results") or []) if isinstance(test, Mapping) else []:
+                    for item in (result.get("stderr") or []) if isinstance(result, Mapping) else []:
+                        chunks.append(_output_text(item))
+        for child in suite.get("suites") or []:
+            walk(child)
+
+    if isinstance(report, Mapping):
+        for s in report.get("suites") or []:
+            walk(s)
+    return own_errors_in_output("".join(chunks), secret)
+
+
+def _output_text(item: Any) -> str:
+    """One entry of a report result's output: its ``text``, or its base64
+    ``buffer`` decoded; a bare string as it is."""
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, Mapping):
+        return ""
+    if isinstance(item.get("text"), str):
+        return item["text"]
+    try:
+        return base64.b64decode(str(item.get("buffer") or "")).decode("utf-8", errors="replace")
+    except (ValueError, TypeError):
+        return ""
+
+
 def _exit_detail(proc: Any, secret: str = "") -> str:
     return f"exit {getattr(proc, 'returncode', None)}; stderr: {_tail(redact(getattr(proc, 'stderr', ''), secret))}"
 
@@ -826,7 +896,9 @@ def grade_ui(
         # Read as the run wrote it: the grade is made from this text, never
         # from the redacted copy.
         report_text = _report_text(out, proc)
-        own = read_own_errors(own_file, token)
+        # The grader's own errors: those written to its file, and those it
+        # could only print to the run's error output.
+        own = read_own_errors(own_file, token) + own_errors_in_output(getattr(proc, "stderr", ""), token)
     except Exception as exc:  # noqa: BLE001 -- a run that could not start is a FAIL, recorded
         return UiGrade([], [f"UI run did not happen: {type(exc).__name__}"])
     finally:
@@ -843,4 +915,5 @@ def grade_ui(
     if not report_text.strip():
         mine = f"; {GRADER_OWN_BLOCK}: {own[0]}" if own else ""
         return UiGrade([], [f"UI run did not happen: no playwright report: {_exit_detail(proc, token)}{mine}"])
-    return parse_report(json.loads(report_text), blueprint, brief, own_errors=own)
+    report = json.loads(report_text)
+    return parse_report(report, blueprint, brief, own_errors=own + report_own_errors(report, token))
