@@ -315,3 +315,33 @@ def test_the_stopped_manifest_records_the_stop_and_no_failed_gate(status, marker
     assert (manifest["product_id"], manifest["platform_id"], manifest["build_state"]) == ("p", "plt_x", "stalled")
     assert not {"failed", "failed_label", "next_continue", "failure_narrative"} & set(manifest)
     assert json.loads(manifest_text(manifest)) == manifest and manifest_text(manifest).endswith("\n")
+
+
+# -- nothing to download: the route says so before it reads anything ------------
+
+
+@pytest.mark.parametrize("generation", [None, {}, {"product_id": "p", "engine": "runner"}])
+@pytest.mark.parametrize("ask", ["", "?as_is=1"])
+def test_a_session_with_no_generated_product_has_nothing_to_download(client, generation, ask):
+    """No generation, an empty one, or one that names no folder: 404 with
+    the reason, on the plain ask and on the as-is ask alike."""
+    sid = f"sess_none_{len(ask)}_{0 if generation is None else len(generation) + 1}"
+    create_session(sid, "tester")
+    state = get_session(sid)
+    state.product_design.generation = generation
+    update_session(sid, state)
+    pkg = client.get(f"/v1/sessions/{sid}/product/package{ask}")
+    assert pkg.status_code == 404, pkg.text
+    assert "no generated product" in pkg.json()["detail"]
+
+
+@pytest.mark.parametrize("ask", ["", "?as_is=1"])
+def test_a_generated_product_whose_folder_is_gone_has_nothing_to_download(client, tmp_path, ask):
+    sid = f"sess_gone_{len(ask)}"
+    create_session(sid, "tester")
+    state = get_session(sid)
+    state.product_design.generation = {"output_dir": str(tmp_path / "never-made"), "product_id": "p", "engine": "runner"}
+    update_session(sid, state)
+    pkg = client.get(f"/v1/sessions/{sid}/product/package{ask}")
+    assert pkg.status_code == 404, pkg.text
+    assert "not found on disk" in pkg.json()["detail"]
