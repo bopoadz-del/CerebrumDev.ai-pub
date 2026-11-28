@@ -84,13 +84,14 @@ def test_no_failure_text_where_none_was_recorded(report):
     assert ug.report_failures(report) == {}
 
 
-def test_failure_text_first_failing_result_wins_and_nested_suites_are_read():
+@pytest.mark.parametrize("first, second", [("first", "second"), ("retry one", "retry two")])
+def test_failure_text_first_failing_result_wins_and_nested_suites_are_read(first, second):
     report = {"suites": [{"suites": [{"specs": [{"title": "s", "tests": [{"results": [
         {"status": "passed"},
-        {"status": "failed", "error": {"message": "first"}},
-        {"status": "failed", "error": {"message": "second"}},
+        {"status": "failed", "error": {"message": first}},
+        {"status": "failed", "error": {"message": second}},
     ]}]}]}]}]}
-    assert ug.report_failures(report) == {"s": "first"}
+    assert ug.report_failures(report) == {"s": first}
 
 
 # --- parse_report rows ------------------------------------------------------
@@ -131,8 +132,8 @@ def test_parse_report_redacts_the_bearer_it_is_given(secret):
     assert rows["load:/"]["saw"] == f"header {ug.REDACTED}"
 
 
-def test_a_not_run_chain_step_carries_no_evidence():
-    bp = BPS[1]
+@pytest.mark.parametrize("bp", BPS)
+def test_a_not_run_chain_step_carries_no_evidence(bp):
     brief = {"ask": "Read files.", "documents": {"file_types": ["pdf"], "uploads": True}}
     names = [s.name for s in ug.ui_plan(bp, brief)]
     statuses = _passed(names)
@@ -143,11 +144,13 @@ def test_a_not_run_chain_step_carries_no_evidence():
     assert rows["attach:pdf"]["saw"] == "no + button"
 
 
-def test_every_step_kind_has_an_expectation():
+@pytest.mark.parametrize("target", ["/t", "/v1/other"])
+def test_every_step_kind_has_an_expectation(target):
     kinds = set(ug.KIND_JS)
     assert kinds == set(ug.KIND_EXPECTS)
-    assert all(ug.expectation(ug.UiStep("n", k, "/t")) for k in kinds)
-    assert ug.expectation(ug.UiStep("n", "no_such_kind", "/t")) == ""
+    assert all(ug.expectation(ug.UiStep("n", k, target)) for k in kinds)
+    assert target in ug.expectation(ug.UiStep("n", "route", target))
+    assert ug.expectation(ug.UiStep("n", "no_such_kind", target)) == ""
 
 
 @pytest.mark.parametrize("row, want", [
@@ -181,9 +184,9 @@ def test_a_survived_mutant_says_no_field_moved_the_answer(passed_kind):
     assert fg.function_evidence(r) == "why: no single input field it declares changed its answer"
 
 
-def test_function_evidence_leaves_out_parts_it_lacks():
-    assert fg.function_evidence(fg.FunctionResult("cap_z", False, [], [], "")) == ""
-    assert fg.function_evidence(fg.FunctionResult("cap_z", False, [], [], "rc=1")) == "why: rc=1"
+@pytest.mark.parametrize("detail, want", [("", ""), ("rc=1", "why: rc=1"), ("rc=9", "why: rc=9")])
+def test_function_evidence_leaves_out_parts_it_lacks(detail, want):
+    assert fg.function_evidence(fg.FunctionResult("cap_z", False, [], [], detail)) == want
 
 
 @pytest.mark.parametrize("n, cut", [(fg.EVIDENCE_CHARS, False), (fg.EVIDENCE_CHARS + 1, True)])
@@ -192,11 +195,12 @@ def test_evidence_cut_boundary(n, cut):
     assert len(got) == fg.EVIDENCE_CHARS and got.endswith("...") is cut
 
 
-def test_grade_evidence_is_for_failing_functions_only():
+@pytest.mark.parametrize("bad_id, detail", [("cap_bad", "rc=2"), ("cap_worse", "rc=3")])
+def test_grade_evidence_is_for_failing_functions_only(bad_id, detail):
     good = fg.FunctionResult("cap_ok", True, ["field_dependence"], [], "")
-    bad = fg.FunctionResult("cap_bad", False, [], ["field_dependence"], "rc=2")
+    bad = fg.FunctionResult(bad_id, False, [], ["field_dependence"], detail)
     grade = fg.FunctionGrade([good, bad], min_functions=1)
-    assert grade.evidence("cap_bad") == "why: rc=2"
+    assert grade.evidence(bad_id) == f"why: {detail}"
     assert grade.evidence("cap_ok") == "" and grade.evidence("nope") == ""
 
 
@@ -222,10 +226,10 @@ def test_no_evidence_leaves_the_item_bare(item):
     assert grader._with_evidence(item, "") == item
 
 
-def test_the_findings_separator_is_the_graders():
+@pytest.mark.parametrize("prefix", ["UI step FAIL: ", "function grade FAIL: "])
+def test_the_findings_separator_is_the_graders(prefix):
     seps = {shape[0]: shape[3] for shape in gf.ITEM_SHAPES}
-    assert seps["UI step FAIL: "] == grader.EVIDENCE_SEP
-    assert seps["function grade FAIL: "] == grader.EVIDENCE_SEP
+    assert seps[prefix] == grader.EVIDENCE_SEP
 
 
 class _Fns:
